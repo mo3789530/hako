@@ -1,0 +1,28 @@
+{
+	"name": "axon devcontainer",
+	"image": "mcr.microsoft.com/devcontainers/ubuntu",
+    "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+	"workspaceFolder": "/workspace",
+    "mounts": [],
+	// Features to add to the dev container. More info: https://containers.dev/features.
+	"features": {
+		"ghcr.io/devcontainers/features/common-utils:2": {},
+		"ghcr.io/devcontainers/features/git:1": {},
+		"ghcr.io/eitsupi/devcontainer-features/go-task:1": {},
+    "ghcr.io/devcontainers/features/go:1":{},
+    "ghcr.io/devcontainers/features/rust:1": {}
+	},
+	// "forwardPorts": [5432],p
+	// "postCreateCommand": "java -version",
+	// Configure tool-specific properties.
+	"customizations": 
+		"vscode": {
+			// Add the IDs of extensions you want installed when the container is created.
+			"extensions": [
+				"golang.go",
+				"VisualStudioExptTeam.vscodeintellicode",
+				"christian-kohler.path-intellisense",
+			]
+		}
+	}
+}
