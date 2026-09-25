@@ -30,3 +30,10 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Terraform local state and working directories
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log

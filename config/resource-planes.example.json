@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "resource_planes": [
+    {
+      "id": "rp-tokyo-01",
+      "provider": "aws",
+      "account_id": "123456789012",
+      "region": "ap-northeast-1",
+      "capabilities": [
+        "microvm",
+        "container",
+        "private-network",
+        "persistent-volume"
+      ],
+      "command_queue_url": "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-commands",
+      "result_queue_url": "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-results"
+    }
+  ]
+}
