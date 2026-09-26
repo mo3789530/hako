@@ -7,6 +7,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO hako_api;
 -- If this bootstrap template was applied before migration 000043, rerun this
 -- explicit grant for the newly introduced one-time setup state table.
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE github_installation_setup_states TO hako_api;
+-- Workload Run tables are introduced in migrations 000046-000048.
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE workload_runs, workload_run_events, workload_artifacts TO hako_api;
 
 -- The Dispatcher role can claim/publish Outbox rows but cannot alter schema or
 -- access Workspace, Tenant, User, Session, or Operation tables.
