@@ -26,6 +26,42 @@ variable "github_webhook_secret_arn" {
   default     = ""
 }
 
+variable "github_app_slug" {
+  description = "GitHub App slug for its installation setup URL."
+  type        = string
+  default     = ""
+}
+
+variable "github_app_id" {
+  description = "Numeric ID of the GitHub App Hako expects to verify."
+  type        = number
+  default     = 0
+}
+
+variable "github_app_client_id" {
+  description = "OAuth client ID of the GitHub App."
+  type        = string
+  default     = ""
+}
+
+variable "github_app_client_secret_arn" {
+  description = "Secrets Manager ARN containing the GitHub App OAuth client secret."
+  type        = string
+  default     = ""
+}
+
+variable "github_app_callback_url" {
+  description = "HTTPS OAuth callback URL registered in the GitHub App settings."
+  type        = string
+  default     = ""
+}
+
+variable "github_app_setup_enabled" {
+  description = "Enable tenant-scoped GitHub App Installation setup and verification."
+  type        = bool
+  default     = false
+}
+
 variable "api_lambda_image_uri" {
   description = "Optional immutable same-Region ECR image URI for the blue/green API Lambda candidate. Empty keeps ZIP deployment active."
   type        = string

@@ -40,18 +40,24 @@ only to the configured Secrets Manager ARN and creates an unauthenticated API
 Gateway route only when enabled. No GitHub App is registered automatically;
 normalized events are not yet dispatched, and installation/repository
 ownership checks must be added before creating work. Tenant owners/admins can
-currently submit and list inert installation claims through the tenant API;
-claims remain `pending` and cannot authorize GitHub API access. The repository
-list endpoint only serves an active tenant binding. A storage operation can
-apply normalized repository-added/removed events, and a transactional Inbox
-processor resolves the active Tenant binding and marks those deliveries
-processed atomically. An opt-in one-minute EventBridge Lambda drains batches
+submit inert installation claims through the tenant API; those claims remain
+`pending`. A separate opt-in setup flow redirects through the GitHub App
+Installation setup URL and then GitHub OAuth authorization. Hako exchanges the
+short-lived code, lists Installations visible to that user, verifies the
+configured App ID, rechecks the Tenant role, and consumes one-time state while
+creating the active binding in a single transaction. User access tokens are
+not persisted. The repository list endpoint only serves an active tenant
+binding. A storage operation can apply normalized repository-added/removed
+events, and a transactional Inbox processor resolves the active Tenant binding
+and marks those deliveries processed atomically. An opt-in one-minute
+EventBridge Lambda drains batches
 of at most 10 eligible schema-v1 `installation_repositories` deliveries using
 the dedicated `hako_webhook_processor` DSQL role. It deliberately leaves
-unbound Installations and all other event types pending. GitHub App callback
-verification/claim activation, processing of other event types, and operational
-replay/audit tooling remain outstanding. See `docs/github-webhook-processor.md`
-and `internal/store/githubwebhook` integration tests.
+unbound Installations and all other event types pending. App private-key and
+Installation-token management, additional event processors, and operational
+replay/retention tooling remain outstanding. See
+`docs/github-installation-setup.md`, `docs/github-webhook-processor.md`, and
+the relevant integration tests.
 
 ## Integration model
 

@@ -170,6 +170,11 @@ resource "aws_iam_role_policy" "api_lambda" {
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
         Resource = var.github_webhook_secret_arn
+        }], !var.github_app_setup_enabled ? [] : [{
+        Sid      = "ReadGitHubAppOAuthClientSecret"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = var.github_app_client_secret_arn
     }])
   })
 }
@@ -195,6 +200,11 @@ resource "aws_lambda_function" "api" {
       HAKO_DEFAULT_WORKSPACE_IMAGE         = var.default_workspace_image
       HAKO_DEFAULT_WORKSPACE_RUNTIME_CLASS = var.default_workspace_runtime_class
       HAKO_GITHUB_WEBHOOK_SECRET_ARN       = var.github_webhook_secret_arn
+      HAKO_GITHUB_APP_SLUG                 = var.github_app_setup_enabled ? var.github_app_slug : ""
+      HAKO_GITHUB_APP_ID                   = var.github_app_setup_enabled ? tostring(var.github_app_id) : ""
+      HAKO_GITHUB_APP_CLIENT_ID            = var.github_app_setup_enabled ? var.github_app_client_id : ""
+      HAKO_GITHUB_APP_CLIENT_SECRET_ARN    = var.github_app_setup_enabled ? var.github_app_client_secret_arn : ""
+      HAKO_GITHUB_APP_CALLBACK_URL         = var.github_app_setup_enabled ? var.github_app_callback_url : ""
     }
   }
 
@@ -229,6 +239,11 @@ resource "aws_lambda_function" "api_image" {
       HAKO_DEFAULT_WORKSPACE_RUNTIME_CLASS = var.default_workspace_runtime_class
       HAKO_API_HTTP_MODE                   = "true"
       HAKO_GITHUB_WEBHOOK_SECRET_ARN       = var.github_webhook_secret_arn
+      HAKO_GITHUB_APP_SLUG                 = var.github_app_setup_enabled ? var.github_app_slug : ""
+      HAKO_GITHUB_APP_ID                   = var.github_app_setup_enabled ? tostring(var.github_app_id) : ""
+      HAKO_GITHUB_APP_CLIENT_ID            = var.github_app_setup_enabled ? var.github_app_client_id : ""
+      HAKO_GITHUB_APP_CLIENT_SECRET_ARN    = var.github_app_setup_enabled ? var.github_app_client_secret_arn : ""
+      HAKO_GITHUB_APP_CALLBACK_URL         = var.github_app_setup_enabled ? var.github_app_callback_url : ""
     }
   }
 
@@ -548,6 +563,16 @@ resource "aws_apigatewayv2_route" "github_webhook" {
   count              = var.github_webhook_secret_arn == "" ? 0 : 1
   api_id             = aws_apigatewayv2_api.control_plane.id
   route_key          = "POST /v1/integrations/github/webhook"
+  target             = "integrations/${aws_apigatewayv2_integration.api_lambda.id}"
+  authorization_type = "NONE"
+}
+
+# GitHub's setup redirect carries an OAuth code plus our one-time state. Hako
+# exchanges the code and verifies the installing user before binding a Tenant.
+resource "aws_apigatewayv2_route" "github_setup_callback" {
+  count              = var.github_app_setup_enabled ? 1 : 0
+  api_id             = aws_apigatewayv2_api.control_plane.id
+  route_key          = "GET /v1/integrations/github/setup/callback"
   target             = "integrations/${aws_apigatewayv2_integration.api_lambda.id}"
   authorization_type = "NONE"
 }

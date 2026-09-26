@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -18,6 +20,7 @@ import (
 	"github.com/mo3789530/hako/internal/api"
 	"github.com/mo3789530/hako/internal/apigwlambda"
 	"github.com/mo3789530/hako/internal/auth"
+	"github.com/mo3789530/hako/internal/githubapp"
 	"github.com/mo3789530/hako/internal/githubwebhook"
 	"github.com/mo3789530/hako/internal/store/dsql"
 	webhookinbox "github.com/mo3789530/hako/internal/store/githubwebhook"
@@ -61,7 +64,37 @@ func main() {
 			log.Fatalf("configure GitHub webhook handler: %v", err)
 		}
 	}
-	handler := api.NewHandlerWithGitHubWebhook(verifier, databasePool, webhookHandler, createConfig)
+	var setupVerifier githubapp.SetupVerifier
+	appSlug := strings.TrimSpace(os.Getenv("HAKO_GITHUB_APP_SLUG"))
+	appIDValue := strings.TrimSpace(os.Getenv("HAKO_GITHUB_APP_ID"))
+	appClientID := strings.TrimSpace(os.Getenv("HAKO_GITHUB_APP_CLIENT_ID"))
+	appClientSecretARN := strings.TrimSpace(os.Getenv("HAKO_GITHUB_APP_CLIENT_SECRET_ARN"))
+	appCallbackURL := strings.TrimSpace(os.Getenv("HAKO_GITHUB_APP_CALLBACK_URL"))
+	setupValues := []string{appSlug, appIDValue, appClientID, appClientSecretARN, appCallbackURL}
+	configuredSetupValues := 0
+	for _, value := range setupValues {
+		if value != "" {
+			configuredSetupValues++
+		}
+	}
+	if configuredSetupValues != 0 && configuredSetupValues != len(setupValues) {
+		log.Fatal("configure all GitHub App setup variables together, including HAKO_GITHUB_APP_CALLBACK_URL")
+	}
+	if configuredSetupValues == len(setupValues) {
+		appID, err := strconv.ParseInt(appIDValue, 10, 64)
+		if err != nil || appID <= 0 {
+			log.Fatal("HAKO_GITHUB_APP_ID must be a positive integer")
+		}
+		clientSecret, err := loadSecretString(ctx, appClientSecretARN, "GitHub App OAuth client secret")
+		if err != nil {
+			log.Fatalf("load GitHub App OAuth client secret: %v", err)
+		}
+		setupVerifier, err = githubapp.NewSetupClient(githubapp.SetupConfig{Slug: appSlug, AppID: appID, ClientID: appClientID, ClientSecret: string(clientSecret), CallbackURL: appCallbackURL})
+		if err != nil {
+			log.Fatalf("configure GitHub App setup verifier: %v", err)
+		}
+	}
+	handler := api.NewHandlerWithGitHubApp(verifier, databasePool, webhookHandler, setupVerifier, createConfig)
 	// The ZIP deployment uses the Go Lambda runtime directly. The OCI image
 	// includes Lambda Web Adapter and must run this same app as an HTTP server.
 	if shouldStartLambdaRuntime(os.Getenv("AWS_LAMBDA_RUNTIME_API"), os.Getenv("HAKO_API_HTTP_MODE")) {
@@ -99,16 +132,20 @@ func main() {
 }
 
 func loadGitHubWebhookSecret(ctx context.Context, secretARN string) ([]byte, error) {
+	return loadSecretString(ctx, secretARN, "GitHub webhook secret")
+}
+
+func loadSecretString(ctx context.Context, secretARN, name string) ([]byte, error) {
 	awsConfig, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
-		return nil, errors.New("load AWS configuration for GitHub webhook secret")
+		return nil, fmt.Errorf("load AWS configuration for %s", name)
 	}
 	result, err := secretsmanager.NewFromConfig(awsConfig).GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: &secretARN})
 	if err != nil {
-		return nil, errors.New("read GitHub webhook secret from Secrets Manager")
+		return nil, fmt.Errorf("read %s from Secrets Manager", name)
 	}
 	if result.SecretString == nil || strings.TrimSpace(*result.SecretString) == "" {
-		return nil, errors.New("GitHub webhook secret must be a non-empty SecretString")
+		return nil, fmt.Errorf("%s must be a non-empty SecretString", name)
 	}
 	return []byte(*result.SecretString), nil
 }

@@ -7,6 +7,12 @@ module "control_plane" {
   cognito_cli_callback_urls                = var.cognito_cli_callback_urls
   api_lambda_zip_path                      = var.api_lambda_zip_path
   github_webhook_secret_arn                = var.github_webhook_secret_arn
+  github_app_slug                          = var.github_app_slug
+  github_app_id                            = var.github_app_id
+  github_app_client_id                     = var.github_app_client_id
+  github_app_client_secret_arn             = var.github_app_client_secret_arn
+  github_app_callback_url                  = var.github_app_callback_url
+  github_app_setup_enabled                 = var.github_app_setup_enabled
   api_lambda_image_uri                     = var.api_lambda_image_uri
   api_lambda_image_active                  = var.api_lambda_image_active
   default_workspace_image                  = var.default_workspace_image

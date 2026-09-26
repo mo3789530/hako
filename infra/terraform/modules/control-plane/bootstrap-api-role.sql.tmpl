@@ -4,6 +4,9 @@ CREATE ROLE hako_api WITH LOGIN;
 AWS IAM GRANT hako_api TO 'REPLACE_WITH_API_LAMBDA_ROLE_ARN';
 GRANT USAGE ON SCHEMA public TO hako_api;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO hako_api;
+-- If this bootstrap template was applied before migration 000043, rerun this
+-- explicit grant for the newly introduced one-time setup state table.
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE github_installation_setup_states TO hako_api;
 
 -- The Dispatcher role can claim/publish Outbox rows but cannot alter schema or
 -- access Workspace, Tenant, User, Session, or Operation tables.

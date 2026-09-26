@@ -1614,8 +1614,8 @@ Hakoは最初は **Lambda MicroVMを使ったRemote Development Environment** �
 
 以下はWorkspace Runtime/Gatewayの基盤整備後に進める追加機能です。GitHub Appの権限・Webhookの検証を先行させ、ユーザー提供のWorkflow/Issue/PRデータはすべて信頼されない入力として扱います。詳細な設計と実装順は[Hako Software Factory](docs/software-factory.md)に記載します。
 
-- [ ] GitHub Appを登録し、Secrets Manager保管、最小権限、Installation tokenの短期利用・失効方針を実装する。
-- [ ] TenantとGitHub App Installation/Repositoryを対応付け、Repository Registry APIとRBACを追加する（Owner/Admin向けInstallation claim作成・一覧API、active binding/Repository schema、active InstallationのRepository一覧API、確認済みBinding限定の同期、transactional Inbox processor、Repositoryイベントのscheduled batch consumerまで追加。GitHub callback検証・Installation claimのactive化は未実装）。
+- [ ] GitHub Appを登録し、Secrets Manager保管、最小権限、Installation tokenの短期利用・失効方針を実装する（OAuth client secretはSecrets Manager ARNから取得可能。App private keyとInstallation token lifecycleは未実装）。
+- [ ] TenantとGitHub App Installation/Repositoryを対応付け、Repository Registry APIとRBACを追加する（Owner/Admin向けclaim/list、Repository Registry、active binding限定同期、scheduled processorに加え、Setup URL→one-time state→OAuth user token→user-visible Installation照合→active bindingのcallbackを実装。Terraformは明示opt-in。詳細は[GitHub Installation Setup](docs/github-installation-setup.md)）。
 - [ ] Webhook ingressでraw bodyのHMAC-SHA256検証、Delivery ID冪等化、サイズ制限、監査、再送を実装する（raw body検証、サイズ制限、event/action allowlist、任意の未認証API Gateway route、Secrets Manager ARN参照、durable inboxとDelivery ID冪等化まで実装。監査と再送運用は未実装）。[Hako Software Factory](docs/software-factory.md)。
 - [ ] GitHub webhookをversion付きHako Repository Eventへ正規化し、durable inbox/outbox経由で処理する（schema v1 eventをraw deliveryと同じInbox行へ保存。Installation repository added/removedはactive tenant binding確認と同期・processed記録を同一transactionで行い、専用DSQL roleで1分ごとに最大10件を処理するscheduled consumerを追加。他event consumer/installation・repository ownership確認は未実装）。詳細は[Webhook Processor](docs/github-webhook-processor.md)。
 - [ ] Job/Agent/Preview Runの共通状態・Operation・timeout/cancel/log/artifact metadataを設計する。Workspaceとのlifecycle分離を維持する。

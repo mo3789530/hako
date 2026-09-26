@@ -17,6 +17,7 @@ import (
 	"github.com/mo3789530/hako/internal/auth"
 	"github.com/mo3789530/hako/internal/authz"
 	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/githubapp"
 	"github.com/mo3789530/hako/internal/idempotency"
 	"github.com/mo3789530/hako/internal/scheduler"
 	"github.com/mo3789530/hako/internal/store/audit"
@@ -101,16 +102,22 @@ const maxJSONRequestBytes = 16 << 10
 // NewHandler builds the Echo API with a minimal public liveness endpoint and
 // verifies Cognito access tokens on all application API routes.
 func NewHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, createConfig ...WorkspaceCreateConfig) *echo.Echo {
-	return newHandler(verifier, pool, nil, createConfig...)
+	return newHandler(verifier, pool, nil, nil, createConfig...)
 }
 
 // NewHandlerWithGitHubWebhook adds the unauthenticated-by-Cognito but
 // HMAC-authenticated GitHub delivery endpoint when webhookHandler is non-nil.
 func NewHandlerWithGitHubWebhook(verifier *auth.CognitoVerifier, pool transaction.Beginner, webhookHandler http.Handler, createConfig ...WorkspaceCreateConfig) *echo.Echo {
-	return newHandler(verifier, pool, webhookHandler, createConfig...)
+	return newHandler(verifier, pool, webhookHandler, nil, createConfig...)
 }
 
-func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webhookHandler http.Handler, createConfig ...WorkspaceCreateConfig) *echo.Echo {
+// NewHandlerWithGitHubApp enables both the signed webhook ingress and the
+// one-time, OAuth-verified Installation setup callback when configured.
+func NewHandlerWithGitHubApp(verifier *auth.CognitoVerifier, pool transaction.Beginner, webhookHandler http.Handler, setupVerifier githubapp.SetupVerifier, createConfig ...WorkspaceCreateConfig) *echo.Echo {
+	return newHandler(verifier, pool, webhookHandler, setupVerifier, createConfig...)
+}
+
+func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webhookHandler http.Handler, setupVerifier githubapp.SetupVerifier, createConfig ...WorkspaceCreateConfig) *echo.Echo {
 	var workspaceConfig WorkspaceCreateConfig
 	if len(createConfig) > 0 {
 		workspaceConfig = createConfig[0]
@@ -127,7 +134,14 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 			return nil
 		})
 	}
+	if setupVerifier != nil {
+		e.GET("/v1/integrations/github/setup/callback", completeGitHubInstallationSetup(pool, setupVerifier))
+	}
 	protected := e.Group("", CognitoMiddleware(verifier))
+	if setupVerifier != nil {
+		protected.POST("/v1/tenants/:tenant_id/github/installations/setup", beginGitHubInstallationSetup(pool, setupVerifier),
+			RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+	}
 	protected.GET("/v1/health", health, RequireScopes(auth.HakoAPIScope))
 	protected.GET("/v1/tenants/:tenant_id/membership", tenantMembership,
 		RequireScopes(auth.HakoAPIScope),

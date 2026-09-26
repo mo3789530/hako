@@ -33,7 +33,8 @@ The first Terraform apply creates the cluster and API Lambda. Until bootstrap co
 5. Test a health/API request before sending traffic. For any future migration that adds tables, grant the `hako_api` role the required privileges on those tables before deploying API code that uses them. The bootstrap SQL deliberately does not grant DDL or database-admin privileges.
 6. Only after DSQL bootstrap and Resource Plane queues are ready, provide the Resource Plane manifest JSON and set `enable_outbox_dispatcher = true` in the Control Plane root. Apply and verify a successful scheduled invocation before routing production traffic.
 7. To enable webhook event processing, set `enable_github_webhook_processor = true` only after its role mapping and migration are ready; verify the processor Logs and Errors alarm.
-8. Detach the migration policy from the short-lived principal when migration work is complete.
+8. To enable Tenant GitHub App setup, configure both the App Setup URL and OAuth callback URL as `https://<api-host>/v1/integrations/github/setup/callback`, store the OAuth client secret in Secrets Manager, provide the App settings, and set `github_app_setup_enabled = true`. Terraform grants the API role access only to that secret ARN. Setup enablement also requires migration `000043`; grant `hako_api` DML on `github_installation_setup_states` using the bootstrap template.
+9. Detach the migration policy from the short-lived principal when migration work is complete.
 
 Aurora DSQL distinguishes `dsql:DbConnectAdmin` for the built-in `admin` role from `dsql:DbConnect` for custom roles, and requires an `AWS IAM GRANT` mapping plus SQL privileges for the custom role. See [Aurora DSQL authentication and authorization](https://docs.aws.amazon.com/aurora-dsql/latest/userguide/authentication-authorization.html) and [database roles with IAM authentication](https://docs.aws.amazon.com/aurora-dsql/latest/userguide/using-database-and-iam-roles.html).
 

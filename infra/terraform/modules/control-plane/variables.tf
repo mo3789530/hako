@@ -25,6 +25,53 @@ variable "github_webhook_secret_arn" {
   }
 }
 
+variable "github_app_slug" {
+  description = "GitHub App slug used to generate the tenant Installation setup URL."
+  type        = string
+  default     = ""
+}
+
+variable "github_app_id" {
+  description = "Numeric GitHub App ID verified on the OAuth Installation callback."
+  type        = number
+  default     = 0
+}
+
+variable "github_app_client_id" {
+  description = "OAuth client ID used to exchange the setup callback code."
+  type        = string
+  default     = ""
+}
+
+variable "github_app_client_secret_arn" {
+  description = "Secrets Manager ARN containing the GitHub App OAuth client secret."
+  type        = string
+  default     = ""
+}
+
+variable "github_app_callback_url" {
+  description = "HTTPS OAuth callback URL registered in the GitHub App settings."
+  type        = string
+  default     = ""
+}
+
+variable "github_app_setup_enabled" {
+  description = "Enable the secure Tenant GitHub App Installation setup flow when all App OAuth settings are configured."
+  type        = bool
+  default     = false
+
+  validation {
+    condition = !var.github_app_setup_enabled || (
+      can(regex("^[A-Za-z0-9-]{1,100}$", var.github_app_slug)) &&
+      var.github_app_id > 0 &&
+      length(trimspace(var.github_app_client_id)) > 0 &&
+      can(regex("^https://[^?#]+$", var.github_app_callback_url)) &&
+      can(regex("^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+$", var.github_app_client_secret_arn))
+    )
+    error_message = "GitHub App setup requires a valid slug, positive App ID, OAuth client ID, HTTPS callback URL, and Secrets Manager client-secret ARN."
+  }
+}
+
 variable "api_lambda_image_uri" {
   description = "Optional immutable same-Region ECR image URI (including @sha256 digest) used to create a blue/green API Lambda candidate. Empty omits the candidate."
   type        = string
