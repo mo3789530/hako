@@ -39,7 +39,9 @@ different content is rejected. Terraform grants the API Lambda read access
 only to the configured Secrets Manager ARN and creates an unauthenticated API
 Gateway route only when enabled. No GitHub App is registered automatically;
 normalized events are not yet dispatched, and installation/repository
-ownership checks must be added before creating work. See
+ownership checks must be added before creating work. Tenant owners/admins can
+currently submit and list inert installation claims through the tenant API;
+claims remain `pending` and cannot authorize GitHub API access. See
 `internal/githubwebhook` and `internal/store/githubwebhook` tests.
 
 ## Integration model
@@ -86,6 +88,14 @@ can store each tenant's `app_id`, private-key Secret ARN, and webhook-secret
 reference separately; webhook ingress would then resolve an opaque
 integration ID before selecting that App's secret. Never select a tenant based
 only on an unverified request header or repository name.
+
+`POST` and `GET /v1/tenants/{tenant_id}/github/installations` are owner/admin
+routes for recording and viewing pending installation claims. A request is
+not proof of installation ownership: it does not create the global active
+binding and cannot be used to mint an installation token. Only a verified
+GitHub App setup callback should transition a claim to active. The active
+binding table enforces that one Installation ID cannot be owned by multiple
+Hako Tenants; repository rows reference that active binding.
 
 ### Webhook ingress and normalized events
 

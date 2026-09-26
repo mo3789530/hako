@@ -20,6 +20,7 @@ import (
 	"github.com/mo3789530/hako/internal/idempotency"
 	"github.com/mo3789530/hako/internal/scheduler"
 	"github.com/mo3789530/hako/internal/store/audit"
+	"github.com/mo3789530/hako/internal/store/githubregistry"
 	"github.com/mo3789530/hako/internal/store/operations"
 	"github.com/mo3789530/hako/internal/store/placementpolicies"
 	"github.com/mo3789530/hako/internal/store/resourceplanehealth"
@@ -139,6 +140,12 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 	protected.PUT("/v1/tenants/:tenant_id/placement-policy", putTenantPlacementPolicy(pool),
 		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool),
 	)
+	protected.GET("/v1/tenants/:tenant_id/github/installations", listGitHubInstallations(pool),
+		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool),
+	)
+	protected.POST("/v1/tenants/:tenant_id/github/installations", requestGitHubInstallation(pool),
+		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool),
+	)
 	protected.GET("/v1/admin/resource-planes/:resource_plane_id/health", getResourcePlaneHealth(pool),
 		RequireScopes(auth.HakoAPIScope), RequireCognitoGroup("hako-admin"), HakoUserMiddleware(pool),
 	)
@@ -166,6 +173,100 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 		TenantMembershipMiddleware(pool),
 	)
 	return e
+}
+
+func listGitHubInstallations(pool transaction.Beginner) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		user, ok := HakoUserFromContext(c)
+		if !ok || pool == nil {
+			return databaseUnavailable(c)
+		}
+		tenantID := domain.TenantID(strings.TrimSpace(c.Param("tenant_id")))
+		installations, err := transaction.Within(c.Request().Context(), pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) ([]githubregistry.Installation, error) {
+			if _, err := authz.RequireTenantRole(ctx, tx, user.ID, tenantID, domain.TenantRoleOwner, domain.TenantRoleAdmin); err != nil {
+				return nil, err
+			}
+			return githubregistry.List(ctx, tx, tenantID)
+		})
+		if errors.Is(err, authz.ErrTenantAccessDenied) {
+			return tenantNotFound(c)
+		}
+		if err != nil {
+			return databaseUnavailable(c)
+		}
+		return c.JSON(http.StatusOK, map[string]any{"installations": installations})
+	}
+}
+
+func requestGitHubInstallation(pool transaction.Beginner) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		user, ok := HakoUserFromContext(c)
+		if !ok || pool == nil {
+			return databaseUnavailable(c)
+		}
+		var request struct {
+			InstallationID int64  `json:"installation_id"`
+			AccountLogin   string `json:"account_login"`
+		}
+		if err := decodeJSONRequest(c, &request); err != nil {
+			if isRequestTooLarge(err) {
+				return requestTooLarge(c)
+			}
+			return invalidGitHubInstallationRequest(c)
+		}
+		tenantID := domain.TenantID(strings.TrimSpace(c.Param("tenant_id")))
+		installation := githubregistry.Installation{
+			TenantID: tenantID, InstallationID: request.InstallationID,
+			AccountLogin: request.AccountLogin, RequestedBy: user.ID,
+		}
+		if _, err := githubregistry.NormalizeInstallation(installation); err != nil {
+			return invalidGitHubInstallationRequest(c)
+		}
+		now := time.Now().UTC()
+		type requestResult struct {
+			installation githubregistry.Installation
+			created      bool
+		}
+		result, err := transaction.Within(c.Request().Context(), pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (requestResult, error) {
+			if _, err := authz.RequireTenantRole(ctx, tx, user.ID, tenantID, domain.TenantRoleOwner, domain.TenantRoleAdmin); err != nil {
+				return requestResult{}, err
+			}
+			requested, created, err := githubregistry.Request(ctx, tx, installation, now)
+			if err != nil {
+				return requestResult{}, err
+			}
+			details, err := json.Marshal(map[string]any{"installation_id": requested.InstallationID, "account_login": requested.AccountLogin, "status": requested.Status})
+			if err != nil {
+				return requestResult{}, fmt.Errorf("encode GitHub installation audit details: %w", err)
+			}
+			if err := audit.Append(ctx, tx, audit.Event{
+				TenantID: tenantID, ActorID: user.ID, Action: "tenant.github_installation.request",
+				TargetType: "github_app_installation", TargetID: fmt.Sprint(requested.InstallationID), Details: details, OccurredAt: now,
+			}); err != nil {
+				return requestResult{}, err
+			}
+			return requestResult{installation: requested, created: created}, nil
+		})
+		installation, created := result.installation, result.created
+		if errors.Is(err, authz.ErrTenantAccessDenied) {
+			return tenantNotFound(c)
+		}
+		if errors.Is(err, githubregistry.ErrInstallationConflict) {
+			return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "installation_conflict", Message: "GitHub App installation request conflicts with existing tenant state"}})
+		}
+		if err != nil {
+			return databaseUnavailable(c)
+		}
+		status := http.StatusAccepted
+		if !created {
+			status = http.StatusOK
+		}
+		return c.JSON(status, map[string]any{"installation": installation, "verified": false})
+	}
+}
+
+func invalidGitHubInstallationRequest(c *echo.Context) error {
+	return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_request", Message: "a positive installation_id and valid account_login are required"}})
 }
 
 func getResourcePlaneHealth(pool transaction.Beginner) echo.HandlerFunc {

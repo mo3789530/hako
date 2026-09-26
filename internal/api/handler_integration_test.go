@@ -81,6 +81,38 @@ func TestTenantMembershipRouteResolvesUserAndRejectsNonMembers(t *testing.T) {
 	}
 	handler := NewHandler(verifier, pool, WorkspaceCreateConfig{RequiredCapabilities: []string{"microvm"}, RuntimeClass: "standard", Image: "hako/go:test"})
 
+	requestInstallation := func(subject, method, tenantID, body string) *httptest.ResponseRecorder {
+		token := signTenantAPIToken(t, privateKey, issuer, subject, "openid hako/api")
+		request := httptest.NewRequest(method, "/v1/tenants/"+tenantID+"/github/installations", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+token)
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		return recorder
+	}
+	installationBody := `{"installation_id":12345,"account_login":"acme"}`
+	if response := requestInstallation("member-subject", http.MethodPost, "tenant_member", installationBody); response.Code != http.StatusNotFound {
+		t.Fatalf("tenant member requested GitHub installation: HTTP %d %s", response.Code, response.Body.String())
+	}
+	requested := requestInstallation("owner-subject", http.MethodPost, "tenant_member", installationBody)
+	if requested.Code != http.StatusAccepted || !strings.Contains(requested.Body.String(), `"verified":false`) || !strings.Contains(requested.Body.String(), `"status":"pending"`) {
+		t.Fatalf("tenant owner installation request = HTTP %d %s", requested.Code, requested.Body.String())
+	}
+	listed := requestInstallation("owner-subject", http.MethodGet, "tenant_member", "")
+	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), `"installation_id":12345`) {
+		t.Fatalf("tenant owner installation list = HTTP %d %s", listed.Code, listed.Body.String())
+	}
+	if response := requestInstallation("owner-subject", http.MethodGet, "tenant_other", ""); response.Code != http.StatusNotFound {
+		t.Fatalf("tenant owner read another tenant's GitHub installation: HTTP %d", response.Code)
+	}
+	var activeBindings int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM github_app_installation_bindings WHERE installation_id = $1`, 12345).Scan(&activeBindings); err != nil {
+		t.Fatal(err)
+	}
+	if activeBindings != 0 {
+		t.Fatal("pending installation request must not become an active tenant binding")
+	}
+
 	response := requestTenantMembership(t, handler, signTenantAPIToken(t, privateKey, issuer, "member-subject", "openid hako/api"), "tenant_member")
 	if response.Code != http.StatusOK {
 		t.Fatalf("member request returned HTTP %d: %s", response.Code, response.Body.String())
