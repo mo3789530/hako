@@ -29,14 +29,17 @@ short-lived Job and Agent workloads without turning a Workspace into a job.
 
 ## Implementation status
 
-The repository contains a Go verifier for GitHub's raw-body
-`X-Hub-Signature-256`, bounded body reads, UUID-shaped delivery IDs, and a
-narrow initial event/action allowlist (`push`, installation changes, pull
-requests, and workflow jobs). It is a library boundary only: there is not yet
-an HTTP webhook route, durable Delivery-ID inbox/idempotency claim, GitHub App
-configuration, or Secrets Manager integration. Verified payloads remain
-untrusted and must be checked against the installation/repository registry
-before creating work. See `internal/githubwebhook` and its tests.
+The API can optionally expose `POST /v1/integrations/github/webhook` when
+`HAKO_GITHUB_WEBHOOK_SECRET_ARN` is configured. The handler validates the
+exact raw-body `X-Hub-Signature-256`, bounded JSON, UUID-shaped Delivery ID,
+and initial event/action allowlist, then durably records the delivery in the
+Control Plane database. Replays with the same ID and payload are acknowledged
+as duplicates; ID reuse with different content is rejected. Terraform grants
+the API Lambda read access only to the configured Secrets Manager ARN and
+creates an unauthenticated API Gateway route only when enabled. No GitHub App
+is registered automatically, events are not yet normalized or processed,
+and installation/repository ownership checks must be added before creating
+work. See `internal/githubwebhook` and `internal/store/githubwebhook` tests.
 
 ## Integration model
 

@@ -149,7 +149,7 @@ resource "aws_iam_role_policy" "api_lambda" {
   role = aws_iam_role.api_lambda.id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
         Sid    = "WriteFunctionLogs"
         Effect = "Allow"
@@ -165,7 +165,12 @@ resource "aws_iam_role_policy" "api_lambda" {
         Action   = ["dsql:DbConnect"]
         Resource = aws_dsql_cluster.control_plane.arn
       }
-    ]
+      ], var.github_webhook_secret_arn == "" ? [] : [{
+        Sid      = "ReadGitHubWebhookSecret"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = var.github_webhook_secret_arn
+    }])
   })
 }
 
@@ -189,6 +194,7 @@ resource "aws_lambda_function" "api" {
       HAKO_DSQL_DATABASE                   = "postgres"
       HAKO_DEFAULT_WORKSPACE_IMAGE         = var.default_workspace_image
       HAKO_DEFAULT_WORKSPACE_RUNTIME_CLASS = var.default_workspace_runtime_class
+      HAKO_GITHUB_WEBHOOK_SECRET_ARN       = var.github_webhook_secret_arn
     }
   }
 
@@ -222,6 +228,7 @@ resource "aws_lambda_function" "api_image" {
       HAKO_DEFAULT_WORKSPACE_IMAGE         = var.default_workspace_image
       HAKO_DEFAULT_WORKSPACE_RUNTIME_CLASS = var.default_workspace_runtime_class
       HAKO_API_HTTP_MODE                   = "true"
+      HAKO_GITHUB_WEBHOOK_SECRET_ARN       = var.github_webhook_secret_arn
     }
   }
 
@@ -407,6 +414,16 @@ resource "aws_apigatewayv2_route" "api_lambda" {
 resource "aws_apigatewayv2_route" "public_healthz" {
   api_id             = aws_apigatewayv2_api.control_plane.id
   route_key          = "GET /healthz"
+  target             = "integrations/${aws_apigatewayv2_integration.api_lambda.id}"
+  authorization_type = "NONE"
+}
+
+# GitHub authenticates webhook requests using the configured raw-body HMAC;
+# this path deliberately bypasses the Cognito JWT default route.
+resource "aws_apigatewayv2_route" "github_webhook" {
+  count              = var.github_webhook_secret_arn == "" ? 0 : 1
+  api_id             = aws_apigatewayv2_api.control_plane.id
+  route_key          = "POST /v1/integrations/github/webhook"
   target             = "integrations/${aws_apigatewayv2_integration.api_lambda.id}"
   authorization_type = "NONE"
 }

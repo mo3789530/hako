@@ -1,17 +1,31 @@
 package githubwebhook
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testSecret = "test-webhook-secret"
 const testDeliveryID = "a1b2c3d4-e5f6-4789-8abc-def012345678"
+
+type fakeInbox struct {
+	inserted bool
+	err      error
+	calls    int
+}
+
+func (f *fakeInbox) Record(context.Context, VerifiedDelivery, time.Time) (bool, error) {
+	f.calls++
+	return f.inserted, f.err
+}
 
 func signedHeaders(body []byte, event, deliveryID string) http.Header {
 	mac := hmac.New(sha256.New, []byte(testSecret))
@@ -95,5 +109,76 @@ func TestReadBounded(t *testing.T) {
 	request = httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader("too large"))
 	if _, err := ReadBounded(request, 3); err == nil {
 		t.Fatal("oversized body was accepted")
+	}
+}
+
+func TestHTTPHandlerPersistsAndAcknowledgesDuplicate(t *testing.T) {
+	inbox := &fakeInbox{inserted: true}
+	handler, err := NewHTTPHandler([]byte(testSecret), inbox, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"action":"opened"}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/integrations/github/webhook", strings.NewReader(string(body)))
+	request.Header = signedHeaders(body, "pull_request", testDeliveryID)
+	request.Header.Set("Content-Type", "application/json; charset=utf-8")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), `"duplicate":false`) || inbox.calls != 1 {
+		t.Fatalf("first response = %d %s, calls=%d", response.Code, response.Body.String(), inbox.calls)
+	}
+	inbox.inserted = false
+	request = httptest.NewRequest(http.MethodPost, "/v1/integrations/github/webhook", strings.NewReader(string(body)))
+	request.Header = signedHeaders(body, "pull_request", testDeliveryID)
+	request.Header.Set("Content-Type", "application/json")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), `"duplicate":true`) || inbox.calls != 2 {
+		t.Fatalf("duplicate response = %d %s, calls=%d", response.Code, response.Body.String(), inbox.calls)
+	}
+}
+
+func TestHTTPHandlerRejectsInvalidRequestsAndRetriesStoreFailures(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		content    string
+		body       string
+		storeErr   error
+		wantStatus int
+	}{
+		{name: "method", method: http.MethodGet, content: "application/json", body: `{}`, wantStatus: http.StatusMethodNotAllowed},
+		{name: "content type", method: http.MethodPost, content: "text/plain", body: `{}`, wantStatus: http.StatusUnsupportedMediaType},
+		{name: "signature", method: http.MethodPost, content: "application/json", body: `{}`, wantStatus: http.StatusUnauthorized},
+		{name: "database unavailable", method: http.MethodPost, content: "application/json", body: `{}`, storeErr: errors.New("db unavailable"), wantStatus: http.StatusServiceUnavailable},
+		{name: "delivery collision", method: http.MethodPost, content: "application/json", body: `{}`, storeErr: ErrDeliveryIDConflict, wantStatus: http.StatusConflict},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			inbox := &fakeInbox{inserted: true, err: test.storeErr}
+			handler, err := NewHTTPHandler([]byte(testSecret), inbox, 4)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(test.method, "/webhook", strings.NewReader(test.body))
+			request.Header.Set("Content-Type", test.content)
+			if test.name != "signature" {
+				request.Header = signedHeaders([]byte(test.body), "push", testDeliveryID)
+				request.Header.Set("Content-Type", test.content)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", response.Code, test.wantStatus, response.Body.String())
+			}
+		})
+	}
+	oversized, _ := NewHTTPHandler([]byte(testSecret), &fakeInbox{}, 2)
+	request := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(`{}`+" "))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	oversized.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("oversized request status = %d", response.Code)
 	}
 }

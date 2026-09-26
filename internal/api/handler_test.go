@@ -92,6 +92,29 @@ func TestHealthRequiresValidAccessTokenAndHakoScope(t *testing.T) {
 	}
 }
 
+func TestGitHubWebhookRouteIsPublicOnlyWhenConfigured(t *testing.T) {
+	called := false
+	webhookHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = r.Method == http.MethodPost
+		w.WriteHeader(http.StatusAccepted)
+	})
+	handler := NewHandlerWithGitHubWebhook(nil, nil, webhookHandler)
+	request := httptest.NewRequest(http.MethodPost, "/v1/integrations/github/webhook", strings.NewReader("{}"))
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted || !called {
+		t.Fatalf("configured webhook route = %d called=%v", recorder.Code, called)
+	}
+
+	handler = NewHandler(nil, nil)
+	request = httptest.NewRequest(http.MethodPost, "/v1/integrations/github/webhook", strings.NewReader("{}"))
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("disabled webhook route status = %d, want protected-route 401", recorder.Code)
+	}
+}
+
 func TestDecodeJSONRequestRejectsUnknownTrailingAndOversizedBodies(t *testing.T) {
 	tests := []struct {
 		name         string

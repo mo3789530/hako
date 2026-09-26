@@ -100,6 +100,16 @@ const maxJSONRequestBytes = 16 << 10
 // NewHandler builds the Echo API with a minimal public liveness endpoint and
 // verifies Cognito access tokens on all application API routes.
 func NewHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, createConfig ...WorkspaceCreateConfig) *echo.Echo {
+	return newHandler(verifier, pool, nil, createConfig...)
+}
+
+// NewHandlerWithGitHubWebhook adds the unauthenticated-by-Cognito but
+// HMAC-authenticated GitHub delivery endpoint when webhookHandler is non-nil.
+func NewHandlerWithGitHubWebhook(verifier *auth.CognitoVerifier, pool transaction.Beginner, webhookHandler http.Handler, createConfig ...WorkspaceCreateConfig) *echo.Echo {
+	return newHandler(verifier, pool, webhookHandler, createConfig...)
+}
+
+func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webhookHandler http.Handler, createConfig ...WorkspaceCreateConfig) *echo.Echo {
 	var workspaceConfig WorkspaceCreateConfig
 	if len(createConfig) > 0 {
 		workspaceConfig = createConfig[0]
@@ -110,6 +120,12 @@ func NewHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, creat
 	e := echo.New()
 	e.HTTPErrorHandler = apiErrorHandler
 	e.GET("/healthz", publicHealth)
+	if webhookHandler != nil {
+		e.POST("/v1/integrations/github/webhook", func(c *echo.Context) error {
+			webhookHandler.ServeHTTP(c.Response(), c.Request())
+			return nil
+		})
+	}
 	protected := e.Group("", CognitoMiddleware(verifier))
 	protected.GET("/v1/health", health, RequireScopes(auth.HakoAPIScope))
 	protected.GET("/v1/tenants/:tenant_id/membership", tenantMembership,

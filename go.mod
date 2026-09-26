@@ -5,6 +5,7 @@ go 1.27.0
 require (
 	github.com/aws/aws-lambda-go v1.54.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.12
+	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.39.4
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.52.0
 	github.com/awslabs/aurora-dsql-connectors/go/pgx v0.4.0
 	github.com/golang-jwt/jwt/v5 v5.3.0

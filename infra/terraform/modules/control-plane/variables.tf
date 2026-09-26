@@ -14,6 +14,17 @@ variable "api_lambda_zip_path" {
   type        = string
 }
 
+variable "github_webhook_secret_arn" {
+  description = "Optional Secrets Manager ARN holding the GitHub App webhook SecretString. Empty disables the unauthenticated webhook route."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.github_webhook_secret_arn == "" || can(regex("^arn:[a-z0-9-]+:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:.+$", var.github_webhook_secret_arn))
+    error_message = "github_webhook_secret_arn must be empty or a Secrets Manager secret ARN."
+  }
+}
+
 variable "api_lambda_image_uri" {
   description = "Optional immutable same-Region ECR image URI (including @sha256 digest) used to create a blue/green API Lambda candidate. Empty omits the candidate."
   type        = string

@@ -4,6 +4,7 @@ package githubwebhook
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,19 +12,85 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"strings"
+	"time"
 )
 
 const DefaultMaxBodyBytes int64 = 1 << 20
 
 var ErrInvalidDelivery = errors.New("invalid GitHub webhook delivery")
+var ErrDeliveryIDConflict = errors.New("GitHub Delivery ID was reused with a different payload")
 
 type VerifiedDelivery struct {
 	DeliveryID string
 	Event      string
 	Action     string
 	Payload    json.RawMessage
+}
+
+type Inbox interface {
+	Record(context.Context, VerifiedDelivery, time.Time) (bool, error)
+}
+
+type HTTPHandler struct {
+	secret       []byte
+	inbox        Inbox
+	maxBodyBytes int64
+	now          func() time.Time
+}
+
+func NewHTTPHandler(secret []byte, inbox Inbox, maxBodyBytes int64) (*HTTPHandler, error) {
+	if len(secret) == 0 {
+		return nil, errors.New("GitHub webhook secret is required")
+	}
+	if inbox == nil {
+		return nil, errors.New("GitHub webhook inbox is required")
+	}
+	if maxBodyBytes <= 0 {
+		maxBodyBytes = DefaultMaxBodyBytes
+	}
+	return &HTTPHandler{secret: append([]byte(nil), secret...), inbox: inbox, maxBodyBytes: maxBodyBytes, now: time.Now}, nil
+}
+
+func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		http.Error(w, "content type must be application/json", http.StatusUnsupportedMediaType)
+		return
+	}
+	body, err := ReadBounded(r, h.maxBodyBytes)
+	if err != nil {
+		http.Error(w, "invalid webhook request", http.StatusBadRequest)
+		return
+	}
+	delivery, err := Verify(r.Header, body, h.secret, h.maxBodyBytes)
+	if err != nil {
+		http.Error(w, "invalid webhook request", http.StatusUnauthorized)
+		return
+	}
+	inserted, err := h.inbox.Record(r.Context(), delivery, h.now().UTC())
+	if errors.Is(err, ErrDeliveryIDConflict) {
+		http.Error(w, "delivery ID conflict", http.StatusConflict)
+		return
+	}
+	if err != nil {
+		http.Error(w, "webhook temporarily unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	duplicate := !inserted
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(struct {
+		DeliveryID string `json:"delivery_id"`
+		Duplicate  bool   `json:"duplicate"`
+	}{DeliveryID: delivery.DeliveryID, Duplicate: duplicate})
 }
 
 // Verify authenticates the exact raw request bytes before JSON decoding. It

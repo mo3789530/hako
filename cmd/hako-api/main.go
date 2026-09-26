@@ -12,11 +12,16 @@ import (
 	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/mo3789530/hako/internal/api"
 	"github.com/mo3789530/hako/internal/apigwlambda"
 	"github.com/mo3789530/hako/internal/auth"
+	"github.com/mo3789530/hako/internal/githubwebhook"
 	"github.com/mo3789530/hako/internal/store/dsql"
+	webhookinbox "github.com/mo3789530/hako/internal/store/githubwebhook"
+	"github.com/mo3789530/hako/internal/store/transaction"
 )
 
 func main() {
@@ -44,7 +49,19 @@ func main() {
 		RuntimeClass:         runtimeClass,
 		Image:                strings.TrimSpace(os.Getenv("HAKO_DEFAULT_WORKSPACE_IMAGE")),
 	}
-	handler := api.NewHandler(verifier, databasePool, createConfig)
+	var webhookHandler http.Handler
+	secretARN := strings.TrimSpace(os.Getenv("HAKO_GITHUB_WEBHOOK_SECRET_ARN"))
+	if secretARN != "" {
+		secret, err := loadGitHubWebhookSecret(ctx, secretARN)
+		if err != nil {
+			log.Fatalf("load GitHub webhook secret: %v", err)
+		}
+		webhookHandler, err = githubwebhook.NewHTTPHandler(secret, webhookinbox.Inbox{Pool: databasePool, Policy: transaction.DefaultPolicy()}, githubwebhook.DefaultMaxBodyBytes)
+		if err != nil {
+			log.Fatalf("configure GitHub webhook handler: %v", err)
+		}
+	}
+	handler := api.NewHandlerWithGitHubWebhook(verifier, databasePool, webhookHandler, createConfig)
 	// The ZIP deployment uses the Go Lambda runtime directly. The OCI image
 	// includes Lambda Web Adapter and must run this same app as an HTTP server.
 	if shouldStartLambdaRuntime(os.Getenv("AWS_LAMBDA_RUNTIME_API"), os.Getenv("HAKO_API_HTTP_MODE")) {
@@ -79,6 +96,21 @@ func main() {
 			log.Printf("shutdown Hako API: %v", err)
 		}
 	}
+}
+
+func loadGitHubWebhookSecret(ctx context.Context, secretARN string) ([]byte, error) {
+	awsConfig, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
+		return nil, errors.New("load AWS configuration for GitHub webhook secret")
+	}
+	result, err := secretsmanager.NewFromConfig(awsConfig).GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: &secretARN})
+	if err != nil {
+		return nil, errors.New("read GitHub webhook secret from Secrets Manager")
+	}
+	if result.SecretString == nil || strings.TrimSpace(*result.SecretString) == "" {
+		return nil, errors.New("GitHub webhook secret must be a non-empty SecretString")
+	}
+	return []byte(*result.SecretString), nil
 }
 
 func shouldStartLambdaRuntime(runtimeAPI, httpMode string) bool {

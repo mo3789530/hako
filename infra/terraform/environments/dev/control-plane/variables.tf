@@ -20,6 +20,12 @@ variable "api_lambda_zip_path" {
   default     = "../../../../../build/hako-api.zip"
 }
 
+variable "github_webhook_secret_arn" {
+  description = "Optional Secrets Manager ARN holding the GitHub App webhook secret; empty disables GitHub webhook ingress."
+  type        = string
+  default     = ""
+}
+
 variable "api_lambda_image_uri" {
   description = "Optional immutable same-Region ECR image URI for the blue/green API Lambda candidate. Empty keeps ZIP deployment active."
   type        = string
