@@ -58,9 +58,24 @@ names are metadata only and do not select the source revision.
 
 ## Current scope and follow-up
 
-This change provides the persistence/domain foundation and state/artifact store
-only. It does not yet create runs from Push/PR events, launch a Fake/AWS
-Runtime, execute repository code, publish GitHub Checks, upload artifacts, or
-expose Workload Run APIs. The next scheduler/consumer must preserve Tenant
-authorization, trust policy, bounded timeouts, isolated execution, and
-redacted-log requirements before enabling repository-triggered Jobs.
+The persistence/domain foundation and state/artifact store are implemented.
+The local Fake Runtime also has an explicit Go test Job entry point for an
+already-checked-out repository and immutable commit. It verifies `HEAD` before
+execution and invokes `go test ./...` only inside a one-shot Podman container
+with networking disabled, a read-only repository, a read-only optional module
+cache, no host environment forwarding, dropped capabilities, resource limits,
+and a non-root UID. The bounded `/tmp` tmpfs is executable because `go test`
+must launch test binaries there; the repository and container root filesystem
+remain read-only. Logs are size-limited and common GitHub/AWS/Bearer/JWT token
+forms plus caller-provided secrets are redacted before a result is exposed.
+The runtime is injectable in tests so the container policy and commit check
+can be validated without executing repository code on the host.
+
+`JobRuntime` currently keeps results and redacted logs in a Tenant-checked,
+process-local idempotency cache. It is not yet wired to `workload_runs`,
+`workload_artifacts`, S3, the GitHub webhook inbox, a scheduler/dispatcher, or
+GitHub Checks; process restart therefore loses the cached Job result. Do not
+use this local Fake Runtime as a production executor. In particular, deployable
+workers still need immutable image verification, durable result/artifact
+storage, cancellation cleanup, trust-level/network policy, and end-to-end
+authorization before repository-triggered Jobs are enabled.

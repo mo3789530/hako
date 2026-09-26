@@ -1619,7 +1619,7 @@ Hakoは最初は **Lambda MicroVMを使ったRemote Development Environment** �
 - [ ] Webhook ingressでraw bodyのHMAC-SHA256検証、Delivery ID冪等化、サイズ制限、監査、再送を実装する（raw body検証、サイズ制限、event/action allowlist、任意の未認証API Gateway route、Secrets Manager ARN参照、durable inboxとDelivery ID冪等化まで実装。監査と再送運用は未実装）。[Hako Software Factory](docs/software-factory.md)。
 - [ ] GitHub webhookをversion付きHako Repository Eventへ正規化し、durable inbox/outbox経由で処理する（schema v1 eventをraw deliveryと同じInbox行へ保存。Installation repository added/removedの同期とInstallation created/deleted/suspend/unsuspend lifecycle処理を、専用DSQL role・scheduled batch consumerで実行。suspend中はRepositoryアクセス不可、deleteはclaimをrevoked化してRepository registryを削除。他event consumerと運用replay/retentionは未実装）。詳細は[Webhook Processor](docs/github-webhook-processor.md)。
 - [ ] Job/Agent/Preview Runの共通状態・Operation・timeout/cancel/log/artifact metadataを設計する（WorkloadRun domain/DSQL/store、Tenant+repository binding、revision付きstate transition、cancel/timeout、redacted log artifact metadataを追加。API・scheduler・runtime dispatchは未実装）。[Workload Run設計](docs/software-factory-workloads.md)。
-- [ ] Fake Runtime上でRepository commitに対する`go test ./...` Jobを実行し、結果とredacted logsを保存する。
+- [ ] Fake Runtime上でRepository commitに対する`go test ./...` Jobを実行し、結果とredacted logsを保存する（commit照合・ネットワーク無効/読み取り専用Podman実行・ログredaction・サイズ制限・プロセス内結果cacheまで実装。`workload_runs`/`workload_artifacts`およびS3への永続化は未接続）。[Workload Run設計](docs/software-factory-workloads.md)。
 - [ ] GitHub Checks APIでqueued/in-progress/completed check、commit SHA照合、summary/annotationを返す。
 - [ ] GitHub Actions `workflow_job.queued`を受け、専用権限でephemeral runnerを登録し、1 Job実行後にderegister・Runtime cleanupする。
 - [ ] `.hako/factory.yaml`のversioned strict schema、allowlisted step、network/secret policyを実装し、既存GitHub Actionsと共存させる。
