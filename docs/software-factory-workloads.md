@@ -71,11 +71,18 @@ forms plus caller-provided secrets are redacted before a result is exposed.
 The runtime is injectable in tests so the container policy and commit check
 can be validated without executing repository code on the host.
 
-`JobRuntime` currently keeps results and redacted logs in a Tenant-checked,
-process-local idempotency cache. It is not yet wired to `workload_runs`,
-`workload_artifacts`, S3, the GitHub webhook inbox, a scheduler/dispatcher, or
-GitHub Checks; process restart therefore loses the cached Job result. Do not
-use this local Fake Runtime as a production executor. In particular, deployable
-workers still need immutable image verification, durable result/artifact
-storage, cancellation cleanup, trust-level/network policy, and end-to-end
-authorization before repository-triggered Jobs are enabled.
+`internal/workloadjobs.Service` connects the Fake Runtime to persisted
+`workload_runs` state and `workload_artifacts` metadata. It refuses a cancelled
+or non-pending run, checks the commit against the persisted run, uses the
+remaining immutable run timeout, and atomically records the terminal state and
+redacted-log metadata after an `ArtifactWriter` stores the bytes. PostgreSQL
+integration tests cover successful/failed completion, metadata, commit
+mismatch, and cancellation-before-start.
+
+The artifact byte store is still an injected interface; a concrete S3 writer
+and deployed worker/dispatcher are not implemented. The standalone local
+`JobRuntime` also keeps a process-local cache, so it is not a durable queue or
+production executor. Before repository-triggered Jobs are enabled, deployable
+workers still need image digest verification, a production artifact writer,
+in-flight cancellation cleanup, trust-level/network policy, and end-to-end
+authorization.
