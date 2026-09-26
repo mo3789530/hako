@@ -41,8 +41,11 @@ Gateway route only when enabled. No GitHub App is registered automatically;
 normalized events are not yet dispatched, and installation/repository
 ownership checks must be added before creating work. Tenant owners/admins can
 currently submit and list inert installation claims through the tenant API;
-claims remain `pending` and cannot authorize GitHub API access. See
-`internal/githubwebhook` and `internal/store/githubwebhook` tests.
+claims remain `pending` and cannot authorize GitHub API access. The repository
+list endpoint only serves an active tenant binding. A storage operation can
+apply normalized repository-added/removed events, but webhook dispatch into
+that operation is not wired yet. See `internal/githubwebhook`,
+`internal/store/githubwebhook`, and `internal/store/githubregistry` tests.
 
 ## Integration model
 
@@ -96,6 +99,12 @@ binding and cannot be used to mint an installation token. Only a verified
 GitHub App setup callback should transition a claim to active. The active
 binding table enforces that one Installation ID cannot be owned by multiple
 Hako Tenants; repository rows reference that active binding.
+
+Do not activate a claim based only on the `installation_id` or `state` query
+parameters on GitHub's setup redirect. GitHub warns that the installation ID
+can be spoofed; the callback must use a GitHub user access token and verify
+that the installation belongs to the authorizing user before creating the
+active binding ([GitHub setup URL guidance](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/about-the-setup-url)).
 
 ### Webhook ingress and normalized events
 

@@ -34,11 +34,13 @@ type Installation struct {
 
 func NormalizeInstallation(installation Installation) (Installation, error) {
 	installation.AccountLogin = strings.TrimSpace(installation.AccountLogin)
-	if installation.TenantID == "" || installation.InstallationID <= 0 || !accountLoginPattern.MatchString(installation.AccountLogin) || installation.RequestedBy == "" {
+	if installation.TenantID == "" || installation.InstallationID <= 0 || !validAccountLogin(installation.AccountLogin) || installation.RequestedBy == "" {
 		return Installation{}, ErrInvalidInstallation
 	}
 	return installation, nil
 }
+
+func validAccountLogin(login string) bool { return accountLoginPattern.MatchString(login) }
 
 // Request creates an inert pending tenant claim. It never binds the GitHub
 // installation globally; that requires a later authenticated callback flow.

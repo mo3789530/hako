@@ -102,6 +102,13 @@ func TestTenantMembershipRouteResolvesUserAndRejectsNonMembers(t *testing.T) {
 	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), `"installation_id":12345`) {
 		t.Fatalf("tenant owner installation list = HTTP %d %s", listed.Code, listed.Body.String())
 	}
+	repositoryListRequest := httptest.NewRequest(http.MethodGet, "/v1/tenants/tenant_member/github/installations/12345/repositories", nil)
+	repositoryListRequest.Header.Set("Authorization", "Bearer "+signTenantAPIToken(t, privateKey, issuer, "owner-subject", "openid hako/api"))
+	repositoryListResponse := httptest.NewRecorder()
+	handler.ServeHTTP(repositoryListResponse, repositoryListRequest)
+	if repositoryListResponse.Code != http.StatusNotFound {
+		t.Fatalf("pending Installation exposed repositories: HTTP %d %s", repositoryListResponse.Code, repositoryListResponse.Body.String())
+	}
 	if response := requestInstallation("owner-subject", http.MethodGet, "tenant_other", ""); response.Code != http.StatusNotFound {
 		t.Fatalf("tenant owner read another tenant's GitHub installation: HTTP %d", response.Code)
 	}

@@ -146,6 +146,9 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 	protected.POST("/v1/tenants/:tenant_id/github/installations", requestGitHubInstallation(pool),
 		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool),
 	)
+	protected.GET("/v1/tenants/:tenant_id/github/installations/:installation_id/repositories", listGitHubRepositories(pool),
+		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool),
+	)
 	protected.GET("/v1/admin/resource-planes/:resource_plane_id/health", getResourcePlaneHealth(pool),
 		RequireScopes(auth.HakoAPIScope), RequireCognitoGroup("hako-admin"), HakoUserMiddleware(pool),
 	)
@@ -267,6 +270,36 @@ func requestGitHubInstallation(pool transaction.Beginner) echo.HandlerFunc {
 
 func invalidGitHubInstallationRequest(c *echo.Context) error {
 	return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_request", Message: "a positive installation_id and valid account_login are required"}})
+}
+
+func listGitHubRepositories(pool transaction.Beginner) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		user, ok := HakoUserFromContext(c)
+		if !ok || pool == nil {
+			return databaseUnavailable(c)
+		}
+		tenantID := domain.TenantID(strings.TrimSpace(c.Param("tenant_id")))
+		installationID, err := strconv.ParseInt(strings.TrimSpace(c.Param("installation_id")), 10, 64)
+		if err != nil || installationID <= 0 {
+			return invalidGitHubInstallationRequest(c)
+		}
+		repositories, err := transaction.Within(c.Request().Context(), pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) ([]githubregistry.Repository, error) {
+			if _, err := authz.RequireTenantRole(ctx, tx, user.ID, tenantID, domain.TenantRoleOwner, domain.TenantRoleAdmin); err != nil {
+				return nil, err
+			}
+			return githubregistry.ListRepositories(ctx, tx, tenantID, installationID)
+		})
+		if errors.Is(err, authz.ErrTenantAccessDenied) {
+			return tenantNotFound(c)
+		}
+		if errors.Is(err, githubregistry.ErrInstallationNotActive) {
+			return c.JSON(http.StatusNotFound, errorResponse{Error: errorBody{Code: "not_found", Message: "Active GitHub Installation not found"}})
+		}
+		if err != nil {
+			return databaseUnavailable(c)
+		}
+		return c.JSON(http.StatusOK, map[string]any{"repositories": repositories})
+	}
 }
 
 func getResourcePlaneHealth(pool transaction.Beginner) echo.HandlerFunc {
