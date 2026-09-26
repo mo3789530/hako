@@ -11,3 +11,12 @@ CREATE ROLE hako_dispatcher WITH LOGIN;
 AWS IAM GRANT hako_dispatcher TO 'REPLACE_WITH_OUTBOX_DISPATCHER_ROLE_ARN';
 GRANT USAGE ON SCHEMA public TO hako_dispatcher;
 GRANT SELECT, UPDATE ON TABLE outbox_events TO hako_dispatcher;
+
+-- The webhook processor only reads pending delivery/binding state, updates
+-- inbox delivery status, and synchronizes the Tenant's repository registry.
+CREATE ROLE hako_webhook_processor WITH LOGIN;
+AWS IAM GRANT hako_webhook_processor TO 'REPLACE_WITH_GITHUB_WEBHOOK_PROCESSOR_ROLE_ARN';
+GRANT USAGE ON SCHEMA public TO hako_webhook_processor;
+GRANT SELECT ON TABLE github_webhook_deliveries, github_app_installation_bindings, tenant_github_installations TO hako_webhook_processor;
+GRANT UPDATE (processing_status) ON TABLE github_webhook_deliveries TO hako_webhook_processor;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE tenant_github_repositories TO hako_webhook_processor;

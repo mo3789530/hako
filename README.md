@@ -1615,9 +1615,9 @@ Hakoは最初は **Lambda MicroVMを使ったRemote Development Environment** �
 以下はWorkspace Runtime/Gatewayの基盤整備後に進める追加機能です。GitHub Appの権限・Webhookの検証を先行させ、ユーザー提供のWorkflow/Issue/PRデータはすべて信頼されない入力として扱います。詳細な設計と実装順は[Hako Software Factory](docs/software-factory.md)に記載します。
 
 - [ ] GitHub Appを登録し、Secrets Manager保管、最小権限、Installation tokenの短期利用・失効方針を実装する。
-- [ ] TenantとGitHub App Installation/Repositoryを対応付け、Repository Registry APIとRBACを追加する（Owner/Admin向けInstallation claim作成・一覧API、active binding/Repository schema、active InstallationのRepository一覧API、確認済みBinding限定の同期とtransactional Inbox processorを追加。GitHub callback検証・active化とscheduled/queue consumer接続は未実装）。
+- [ ] TenantとGitHub App Installation/Repositoryを対応付け、Repository Registry APIとRBACを追加する（Owner/Admin向けInstallation claim作成・一覧API、active binding/Repository schema、active InstallationのRepository一覧API、確認済みBinding限定の同期、transactional Inbox processor、Repositoryイベントのscheduled batch consumerまで追加。GitHub callback検証・Installation claimのactive化は未実装）。
 - [ ] Webhook ingressでraw bodyのHMAC-SHA256検証、Delivery ID冪等化、サイズ制限、監査、再送を実装する（raw body検証、サイズ制限、event/action allowlist、任意の未認証API Gateway route、Secrets Manager ARN参照、durable inboxとDelivery ID冪等化まで実装。監査と再送運用は未実装）。[Hako Software Factory](docs/software-factory.md)。
-- [ ] GitHub webhookをversion付きHako Repository Eventへ正規化し、durable inbox/outbox経由で処理する（schema v1 eventをraw deliveryと同じInbox行へ保存。Installation repository added/removedはactive tenant binding確認と同期・processed記録を同一transactionで行うprocessorを追加。他event consumer/outbox dispatcher/installation・repository ownership確認は未実装）。
+- [ ] GitHub webhookをversion付きHako Repository Eventへ正規化し、durable inbox/outbox経由で処理する（schema v1 eventをraw deliveryと同じInbox行へ保存。Installation repository added/removedはactive tenant binding確認と同期・processed記録を同一transactionで行い、専用DSQL roleで1分ごとに最大10件を処理するscheduled consumerを追加。他event consumer/installation・repository ownership確認は未実装）。詳細は[Webhook Processor](docs/github-webhook-processor.md)。
 - [ ] Job/Agent/Preview Runの共通状態・Operation・timeout/cancel/log/artifact metadataを設計する。Workspaceとのlifecycle分離を維持する。
 - [ ] Fake Runtime上でRepository commitに対する`go test ./...` Jobを実行し、結果とredacted logsを保存する。
 - [ ] GitHub Checks APIでqueued/in-progress/completed check、commit SHA照合、summary/annotationを返す。

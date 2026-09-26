@@ -73,3 +73,19 @@ output "outbox_dispatcher_schedule_arn" {
 output "outbox_dispatcher_error_alarm_name" {
   value = module.control_plane.outbox_dispatcher_error_alarm_name
 }
+
+output "github_webhook_processor_role_arn" {
+  value = module.control_plane.github_webhook_processor_role_arn
+}
+
+output "github_webhook_processor_lambda_arn" {
+  value = module.control_plane.github_webhook_processor_lambda_arn
+}
+
+output "github_webhook_processor_schedule_arn" {
+  value = module.control_plane.github_webhook_processor_schedule_arn
+}
+
+output "github_webhook_processor_error_alarm_name" {
+  value = module.control_plane.github_webhook_processor_error_alarm_name
+}

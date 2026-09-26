@@ -124,13 +124,17 @@ func (i Inbox) Record(ctx context.Context, delivery githubwebhook.VerifiedDelive
 	if receivedAt.IsZero() {
 		receivedAt = time.Now().UTC()
 	}
+	var installationID any
+	if normalized.InstallationID > 0 {
+		installationID = normalized.InstallationID
+	}
 	digest := sha256.Sum256(delivery.Payload)
 	payloadHash := hex.EncodeToString(digest[:])
 	return transaction.Within(ctx, i.Pool, i.Policy, func(ctx context.Context, tx pgx.Tx) (bool, error) {
 		tag, err := tx.Exec(ctx, `INSERT INTO github_webhook_deliveries
-			(delivery_id, event_type, action, payload_json, payload_sha256, received_at, processing_status, event_schema_version, normalized_event_json)
-			VALUES ($1, $2, $3, $4, $5, $6, 'received', $7, $8)
-			ON CONFLICT (delivery_id) DO NOTHING`, delivery.DeliveryID, delivery.Event, delivery.Action, string(delivery.Payload), payloadHash, receivedAt, githubwebhook.RepositoryEventSchemaVersion, string(normalizedJSON))
+			(delivery_id, event_type, action, payload_json, payload_sha256, received_at, processing_status, event_schema_version, normalized_event_json, installation_id)
+			VALUES ($1, $2, $3, $4, $5, $6, 'received', $7, $8, $9)
+			ON CONFLICT (delivery_id) DO NOTHING`, delivery.DeliveryID, delivery.Event, delivery.Action, string(delivery.Payload), payloadHash, receivedAt, githubwebhook.RepositoryEventSchemaVersion, string(normalizedJSON), installationID)
 		if err != nil {
 			return false, fmt.Errorf("insert GitHub webhook delivery: %w", err)
 		}
@@ -147,9 +151,9 @@ func (i Inbox) Record(ctx context.Context, delivery githubwebhook.VerifiedDelive
 		}
 		if schemaVersion == 0 {
 			if _, err := tx.Exec(ctx, `UPDATE github_webhook_deliveries
-				SET event_schema_version = $2, normalized_event_json = $3
+				SET event_schema_version = $2, normalized_event_json = $3, installation_id = $5
 				WHERE delivery_id = $1 AND payload_sha256 = $4 AND event_schema_version = 0`,
-				delivery.DeliveryID, githubwebhook.RepositoryEventSchemaVersion, string(normalizedJSON), payloadHash); err != nil {
+				delivery.DeliveryID, githubwebhook.RepositoryEventSchemaVersion, string(normalizedJSON), payloadHash, installationID); err != nil {
 				return false, fmt.Errorf("backfill normalized GitHub event: %w", err)
 			}
 		}

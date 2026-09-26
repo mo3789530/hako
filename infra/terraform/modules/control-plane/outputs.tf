@@ -58,6 +58,26 @@ output "outbox_dispatcher_error_alarm_name" {
   value       = try(aws_cloudwatch_metric_alarm.outbox_dispatcher_errors[0].alarm_name, null)
 }
 
+output "github_webhook_processor_role_arn" {
+  description = "IAM role ARN to map to the least-privilege hako_webhook_processor DSQL user."
+  value       = aws_iam_role.github_webhook_processor.arn
+}
+
+output "github_webhook_processor_lambda_arn" {
+  description = "ARN of the optional scheduled GitHub Webhook Processor Lambda; null unless enabled."
+  value       = try(aws_lambda_function.github_webhook_processor[0].arn, null)
+}
+
+output "github_webhook_processor_schedule_arn" {
+  description = "EventBridge schedule ARN for the optional GitHub Webhook Processor; null unless enabled."
+  value       = try(aws_cloudwatch_event_rule.github_webhook_processor[0].arn, null)
+}
+
+output "github_webhook_processor_error_alarm_name" {
+  description = "CloudWatch invocation error alarm for the optional processor; null unless enabled."
+  value       = try(aws_cloudwatch_metric_alarm.github_webhook_processor_errors[0].alarm_name, null)
+}
+
 output "http_api_endpoint" {
   description = "Invoke URL of the Hako Control Plane HTTP API default stage."
   value       = aws_apigatewayv2_api.control_plane.api_endpoint

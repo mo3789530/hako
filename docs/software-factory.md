@@ -45,9 +45,13 @@ claims remain `pending` and cannot authorize GitHub API access. The repository
 list endpoint only serves an active tenant binding. A storage operation can
 apply normalized repository-added/removed events, and a transactional Inbox
 processor resolves the active Tenant binding and marks those deliveries
-processed atomically. There is not yet a scheduled/queue consumer, and other
-event types are not dispatched. See `internal/githubwebhook`,
-`internal/store/githubwebhook`, and `internal/store/githubregistry` tests.
+processed atomically. An opt-in one-minute EventBridge Lambda drains batches
+of at most 10 eligible schema-v1 `installation_repositories` deliveries using
+the dedicated `hako_webhook_processor` DSQL role. It deliberately leaves
+unbound Installations and all other event types pending. GitHub App callback
+verification/claim activation, processing of other event types, and operational
+replay/audit tooling remain outstanding. See `docs/github-webhook-processor.md`
+and `internal/store/githubwebhook` integration tests.
 
 ## Integration model
 

@@ -370,6 +370,130 @@ resource "aws_cloudwatch_metric_alarm" "outbox_dispatcher_errors" {
   tags                = local.common_tags
 }
 
+resource "aws_iam_role" "github_webhook_processor" {
+  name = "${var.api_name}-github-webhook-processor"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+  tags = local.common_tags
+}
+
+resource "aws_iam_role_policy" "github_webhook_processor" {
+  count = var.enable_github_webhook_processor ? 1 : 0
+
+  name = "${var.api_name}-github-webhook-processor-runtime"
+  role = aws_iam_role.github_webhook_processor.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "WriteFunctionLogs"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "${aws_cloudwatch_log_group.github_webhook_processor[0].arn}:*"
+      },
+      {
+        Sid      = "ConnectAsHakoWebhookProcessor"
+        Effect   = "Allow"
+        Action   = ["dsql:DbConnect"]
+        Resource = aws_dsql_cluster.control_plane.arn
+      }
+    ]
+  })
+}
+
+resource "aws_cloudwatch_log_group" "github_webhook_processor" {
+  count = var.enable_github_webhook_processor ? 1 : 0
+
+  name              = "/aws/lambda/${var.api_name}-github-webhook-processor"
+  retention_in_days = var.lambda_log_retention_days
+  tags              = local.common_tags
+}
+
+resource "aws_lambda_function" "github_webhook_processor" {
+  count = var.enable_github_webhook_processor ? 1 : 0
+
+  function_name    = "${var.api_name}-github-webhook-processor"
+  role             = aws_iam_role.github_webhook_processor.arn
+  runtime          = "provided.al2023"
+  handler          = "bootstrap"
+  architectures    = ["arm64"]
+  filename         = var.github_webhook_processor_lambda_zip_path
+  source_code_hash = filebase64sha256(var.github_webhook_processor_lambda_zip_path)
+  memory_size      = 512
+  timeout          = 60
+
+  environment {
+    variables = {
+      HAKO_DSQL_HOST     = "${aws_dsql_cluster.control_plane.identifier}.dsql.${var.aws_region}.on.aws"
+      HAKO_DSQL_USER     = "hako_webhook_processor"
+      HAKO_DSQL_DATABASE = "postgres"
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.github_webhook_processor,
+    aws_iam_role_policy.github_webhook_processor,
+  ]
+
+  tags = local.common_tags
+}
+
+resource "aws_cloudwatch_event_rule" "github_webhook_processor" {
+  count = var.enable_github_webhook_processor ? 1 : 0
+
+  name                = "${var.api_name}-github-webhook-processor"
+  description         = "Drain pending GitHub Installation repository events from the Hako webhook inbox."
+  schedule_expression = "rate(1 minute)"
+  state               = "ENABLED"
+  tags                = local.common_tags
+}
+
+resource "aws_cloudwatch_event_target" "github_webhook_processor" {
+  count = var.enable_github_webhook_processor ? 1 : 0
+
+  rule      = aws_cloudwatch_event_rule.github_webhook_processor[0].name
+  target_id = "hako-github-webhook-processor"
+  arn       = aws_lambda_function.github_webhook_processor[0].arn
+
+  retry_policy {
+    maximum_event_age_in_seconds = 3600
+    maximum_retry_attempts       = 2
+  }
+}
+
+resource "aws_lambda_permission" "github_webhook_processor_eventbridge" {
+  count = var.enable_github_webhook_processor ? 1 : 0
+
+  statement_id  = "AllowGitHubWebhookProcessorSchedule"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.github_webhook_processor[0].function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.github_webhook_processor[0].arn
+}
+
+resource "aws_cloudwatch_metric_alarm" "github_webhook_processor_errors" {
+  count = var.enable_github_webhook_processor ? 1 : 0
+
+  alarm_name          = "${var.api_name}-github-webhook-processor-errors"
+  alarm_description   = "The Hako GitHub Webhook Processor reported invocation errors. Check logs and pending inbox deliveries."
+  namespace           = "AWS/Lambda"
+  metric_name         = "Errors"
+  statistic           = "Sum"
+  period              = 60
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  dimensions          = { FunctionName = aws_lambda_function.github_webhook_processor[0].function_name }
+  tags                = local.common_tags
+}
+
 resource "aws_apigatewayv2_api" "control_plane" {
   name          = var.api_name
   protocol_type = "HTTP"

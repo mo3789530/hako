@@ -1,4 +1,4 @@
-.PHONY: fmt lint test test-integration test-integration-local test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-resource-controller-lambda terraform-fmt terraform-validate
+.PHONY: fmt lint test test-integration test-integration-local test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda terraform-fmt terraform-validate
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -not -path './.git/*')
@@ -40,6 +40,11 @@ build-dispatcher-lambda:
 	mkdir -p build/dispatcher-lambda
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o build/dispatcher-lambda/bootstrap ./cmd/hako-dispatcher-lambda
 	cd build/dispatcher-lambda && zip -q ../hako-dispatcher.zip bootstrap
+
+build-webhook-processor-lambda:
+	mkdir -p build/webhook-processor-lambda
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o build/webhook-processor-lambda/bootstrap ./cmd/hako-webhook-processor-lambda
+	cd build/webhook-processor-lambda && zip -q ../hako-webhook-processor.zip bootstrap
 
 build-resource-controller-lambda:
 	mkdir -p build/resource-controller-lambda

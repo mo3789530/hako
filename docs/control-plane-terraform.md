@@ -11,6 +11,7 @@ From the repository root:
 ```sh
 make build-api-lambda
 make build-dispatcher-lambda # only when enable_outbox_dispatcher = true
+make build-webhook-processor-lambda # only when enable_github_webhook_processor = true
 tofu -chdir=infra/terraform/environments/dev/control-plane init
 tofu -chdir=infra/terraform/environments/dev/control-plane plan \
   -var='cognito_issuer_url=https://cognito-idp.ap-northeast-1.amazonaws.com/ap-northeast-1_Example' \
@@ -27,11 +28,12 @@ The first Terraform apply creates the cluster and API Lambda. Until bootstrap co
 
 1. Attach the module output `dsql_migration_admin_policy_arn` to a dedicated, short-lived migration principal. That principal also needs AWS credentials and network reachability to the DSQL endpoint.
 2. Use a DSQL-compatible PostgreSQL client to connect to the output `dsql_endpoint` as database user `admin` with IAM authentication, then run `make migrate` with `HAKO_DSQL_HOST`, `AWS_REGION`, and `HAKO_DSQL_USER=admin` set.
-3. Edit `infra/terraform/modules/control-plane/bootstrap-api-role.sql.tmpl`, replacing the API and Dispatcher role ARN placeholders with outputs `api_lambda_role_arn` and `outbox_dispatcher_role_arn`; run the statements once as `admin` after the schema migrations finish. The API role receives current-table DML grants; the Dispatcher database role receives `SELECT`/`UPDATE` on `outbox_events` only. A newly added table requires a deliberate API grant review and a rerun of the relevant grant statement before deploying code that accesses it.
+3. Edit `infra/terraform/modules/control-plane/bootstrap-api-role.sql.tmpl`, replacing the API and Dispatcher role ARN placeholders with outputs `api_lambda_role_arn` and `outbox_dispatcher_role_arn`; if enabling the GitHub Webhook Processor, also replace its placeholder with `github_webhook_processor_role_arn`. Run the statements once as `admin` after the schema migrations finish. The API role receives current-table DML grants; the Dispatcher role receives Outbox-only grants; the webhook processor receives delivery/binding read, delivery-status update, and repository-registry DML grants. A newly added table requires a deliberate grant review before deploying code that accesses it.
 4. Apply the Resource Plane root with the exact Dispatcher and Result Consumer role ARNs so its command/result queue policies trust those roles.
 5. Test a health/API request before sending traffic. For any future migration that adds tables, grant the `hako_api` role the required privileges on those tables before deploying API code that uses them. The bootstrap SQL deliberately does not grant DDL or database-admin privileges.
 6. Only after DSQL bootstrap and Resource Plane queues are ready, provide the Resource Plane manifest JSON and set `enable_outbox_dispatcher = true` in the Control Plane root. Apply and verify a successful scheduled invocation before routing production traffic.
-7. Detach the migration policy from the short-lived principal when migration work is complete.
+7. To enable webhook event processing, set `enable_github_webhook_processor = true` only after its role mapping and migration are ready; verify the processor Logs and Errors alarm.
+8. Detach the migration policy from the short-lived principal when migration work is complete.
 
 Aurora DSQL distinguishes `dsql:DbConnectAdmin` for the built-in `admin` role from `dsql:DbConnect` for custom roles, and requires an `AWS IAM GRANT` mapping plus SQL privileges for the custom role. See [Aurora DSQL authentication and authorization](https://docs.aws.amazon.com/aurora-dsql/latest/userguide/authentication-authorization.html) and [database roles with IAM authentication](https://docs.aws.amazon.com/aurora-dsql/latest/userguide/using-database-and-iam-roles.html).
 

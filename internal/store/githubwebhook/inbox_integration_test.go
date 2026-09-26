@@ -122,3 +122,55 @@ func TestProcessInstallationRepositoryDeliveryIsAtomicAndRetryable(t *testing.T)
 		t.Fatalf("synced Repository count = %d, want 1", repositoryCount)
 	}
 }
+
+func TestProcessBatchDrainsOnlyActiveInstallationRepositoryEvents(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	now := time.Now().UTC()
+	if _, err := pool.Exec(ctx, `INSERT INTO tenants (id, name, created_at) VALUES ('tenant_hook_batch', 'Webhook batch', $1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO users (id, cognito_subject, email, created_at) VALUES ('usr_hook_batch', 'hook-batch-sub', '', $1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO tenant_github_installations (tenant_id, installation_id, account_login, status, requested_by, requested_at, updated_at)
+		VALUES ('tenant_hook_batch', 801, 'acme', 'active', 'usr_hook_batch', $1, $1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO github_app_installation_bindings (installation_id, tenant_id, bound_at) VALUES (801, 'tenant_hook_batch', $1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	inbox := Inbox{Pool: pool, Policy: transaction.DefaultPolicy()}
+	active := githubwebhook.VerifiedDelivery{DeliveryID: "c1b2c3d4-e5f6-4789-8abc-def012345678", Event: "installation_repositories", Action: "added", Payload: []byte(`{"action":"added","installation":{"id":801},"repositories_added":[{"id":802,"name":"api","default_branch":"main","owner":{"login":"acme"}}]}`)}
+	inactive := githubwebhook.VerifiedDelivery{DeliveryID: "d1b2c3d4-e5f6-4789-8abc-def012345678", Event: "installation_repositories", Action: "added", Payload: []byte(`{"action":"added","installation":{"id":803},"repositories_added":[{"id":804,"name":"worker","default_branch":"main","owner":{"login":"acme"}}]}`)}
+	otherEvent := githubwebhook.VerifiedDelivery{DeliveryID: "e1b2c3d4-e5f6-4789-8abc-def012345678", Event: "pull_request", Action: "opened", Payload: []byte(`{"action":"opened","installation":{"id":801},"repository":{"id":805,"name":"api","owner":{"login":"acme"}},"pull_request":{"number":1,"state":"open","head":{"ref":"feature/test","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"base":{"ref":"main"}}}`)}
+	for _, delivery := range []githubwebhook.VerifiedDelivery{active, inactive, otherEvent} {
+		if _, err := inbox.Record(ctx, delivery, now); err != nil {
+			t.Fatalf("record %s: %v", delivery.Event, err)
+		}
+	}
+	stats, err := ProcessBatch(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("process batch: %v", err)
+	}
+	if stats != (BatchStats{Claimed: 1, Processed: 1}) {
+		t.Fatalf("batch stats = %+v, want one eligible processed event", stats)
+	}
+	stats, err = ProcessBatch(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(2*time.Second))
+	if err != nil || stats != (BatchStats{}) {
+		t.Fatalf("empty batch stats = %+v, err=%v", stats, err)
+	}
+	var activeStatus, inactiveStatus, otherStatus string
+	for id, target := range map[string]*string{active.DeliveryID: &activeStatus, inactive.DeliveryID: &inactiveStatus, otherEvent.DeliveryID: &otherStatus} {
+		if err := pool.QueryRow(ctx, `SELECT processing_status FROM github_webhook_deliveries WHERE delivery_id = $1`, id).Scan(target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if activeStatus != "processed" || inactiveStatus != "received" || otherStatus != "received" {
+		t.Fatalf("statuses active=%s inactive=%s other=%s", activeStatus, inactiveStatus, otherStatus)
+	}
+}
