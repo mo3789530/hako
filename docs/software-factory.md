@@ -32,14 +32,15 @@ short-lived Job and Agent workloads without turning a Workspace into a job.
 The API can optionally expose `POST /v1/integrations/github/webhook` when
 `HAKO_GITHUB_WEBHOOK_SECRET_ARN` is configured. The handler validates the
 exact raw-body `X-Hub-Signature-256`, bounded JSON, UUID-shaped Delivery ID,
-and initial event/action allowlist, then durably records the delivery in the
-Control Plane database. Replays with the same ID and payload are acknowledged
-as duplicates; ID reuse with different content is rejected. Terraform grants
-the API Lambda read access only to the configured Secrets Manager ARN and
-creates an unauthenticated API Gateway route only when enabled. No GitHub App
-is registered automatically, events are not yet normalized or processed,
-and installation/repository ownership checks must be added before creating
-work. See `internal/githubwebhook` and `internal/store/githubwebhook` tests.
+and initial event/action allowlist, then durably records the raw delivery and
+version-1 normalized Hako event in the Control Plane database. Replays with
+the same ID and payload are acknowledged as duplicates; ID reuse with
+different content is rejected. Terraform grants the API Lambda read access
+only to the configured Secrets Manager ARN and creates an unauthenticated API
+Gateway route only when enabled. No GitHub App is registered automatically;
+normalized events are not yet dispatched, and installation/repository
+ownership checks must be added before creating work. See
+`internal/githubwebhook` and `internal/store/githubwebhook` tests.
 
 ## Integration model
 
@@ -76,6 +77,15 @@ ID; owner/name are display and routing fields, not durable identity. A
 repository must have exactly one owning Hako Tenant unless an explicit
 multi-tenant sharing model is later designed. Revoke repository access when
 an installation is removed or the repository is removed from the installation.
+
+The initial multi-tenant model uses one Hako-owned GitHub App installed by
+multiple customers: each GitHub Installation belongs to exactly one Hako
+Tenant, and each installed repository is registered under that Tenant. Do not
+create a new GitHub App per Tenant for the standard flow. A later BYO-App mode
+can store each tenant's `app_id`, private-key Secret ARN, and webhook-secret
+reference separately; webhook ingress would then resolve an opaque
+integration ID before selecting that App's secret. Never select a tenant based
+only on an unverified request header or repository name.
 
 ### Webhook ingress and normalized events
 

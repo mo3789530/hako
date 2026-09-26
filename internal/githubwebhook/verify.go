@@ -75,6 +75,10 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid webhook request", http.StatusUnauthorized)
 		return
 	}
+	if _, err := Normalize(delivery); err != nil {
+		http.Error(w, "unsupported or incomplete webhook event", http.StatusUnprocessableEntity)
+		return
+	}
 	inserted, err := h.inbox.Record(r.Context(), delivery, h.now().UTC())
 	if errors.Is(err, ErrDeliveryIDConflict) {
 		http.Error(w, "delivery ID conflict", http.StatusConflict)

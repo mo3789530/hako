@@ -15,6 +15,8 @@ import (
 
 const testSecret = "test-webhook-secret"
 const testDeliveryID = "a1b2c3d4-e5f6-4789-8abc-def012345678"
+const validPushWebhookPayload = `{"ref":"refs/heads/main","after":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","installation":{"id":12},"repository":{"id":42,"name":"api","owner":{"login":"acme"}}}`
+const validPullRequestWebhookPayload = `{"action":"opened","installation":{"id":12},"repository":{"id":42,"name":"api","owner":{"login":"acme"}},"pull_request":{"number":17,"state":"open","head":{"ref":"feature/add","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"base":{"ref":"main"}}}`
 
 type fakeInbox struct {
 	inserted bool
@@ -112,13 +114,91 @@ func TestReadBounded(t *testing.T) {
 	}
 }
 
+func TestNormalizeBuildsVersionedHakoEvents(t *testing.T) {
+	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	tests := []struct {
+		name     string
+		event    string
+		payload  string
+		wantType string
+		check    func(RepositoryEvent) bool
+	}{
+		{
+			name: "push", event: "push",
+			payload:  `{"ref":"refs/heads/main","after":"` + sha + `","installation":{"id":12},"repository":{"id":42,"name":"api","default_branch":"main","owner":{"login":"acme"}},"sender":{"login":"dev"}}`,
+			wantType: "repository.push",
+			check: func(got RepositoryEvent) bool {
+				return got.Repository != nil && got.Repository.GitHubID == 42 && got.Ref == "refs/heads/main" && got.CommitSHA == sha && got.Actor == "dev"
+			},
+		},
+		{
+			name: "pull request", event: "pull_request",
+			payload:  `{"action":"opened","installation":{"id":12},"repository":{"id":42,"name":"api","owner":{"login":"acme"}},"pull_request":{"number":9,"state":"open","head":{"ref":"feature/add","sha":"` + sha + `"},"base":{"ref":"main"}}}`,
+			wantType: "repository.pull_request.opened",
+			check: func(got RepositoryEvent) bool {
+				return got.PullRequest != nil && got.PullRequest.Number == 9 && got.CommitSHA == sha
+			},
+		},
+		{
+			name: "workflow job", event: "workflow_job",
+			payload:  `{"action":"queued","installation":{"id":12},"repository":{"id":42,"name":"api","owner":{"login":"acme"}},"workflow_job":{"id":5,"run_id":4,"name":"test","head_branch":"main","head_sha":"` + sha + `","status":"queued"}}`,
+			wantType: "repository.workflow_job.queued",
+			check: func(got RepositoryEvent) bool {
+				return got.WorkflowJob != nil && got.WorkflowJob.ID == 5 && got.WorkflowJob.RunID == 4
+			},
+		},
+		{
+			name: "installation", event: "installation",
+			payload:  `{"action":"created","installation":{"id":12,"account":{"login":"acme"}}}`,
+			wantType: "github.installation.created",
+			check:    func(got RepositoryEvent) bool { return got.InstallationID == 12 && got.Actor == "acme" },
+		},
+		{
+			name: "installation repositories", event: "installation_repositories",
+			payload:  `{"action":"added","installation":{"id":12},"repositories_added":[{"id":42,"name":"api","owner":{"login":"acme"}}]}`,
+			wantType: "github.installation_repositories.added",
+			check: func(got RepositoryEvent) bool {
+				return got.InstallationID == 12 && len(got.RepositoriesAdded) == 1 && got.RepositoriesAdded[0].GitHubID == 42
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			action := ""
+			if test.name == "pull request" || test.name == "workflow job" || test.name == "installation" || test.name == "installation repositories" {
+				action = map[string]string{"pull request": "opened", "workflow job": "queued", "installation": "created", "installation repositories": "added"}[test.name]
+			}
+			got, err := Normalize(VerifiedDelivery{DeliveryID: testDeliveryID, Event: test.event, Action: action, Payload: []byte(test.payload)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.SchemaVersion != RepositoryEventSchemaVersion || got.DeliveryID != testDeliveryID || got.Type != test.wantType || !test.check(got) {
+				t.Fatalf("normalized event = %+v", got)
+			}
+		})
+	}
+}
+
+func TestNormalizeRejectsMissingOrMismatchedRequiredFields(t *testing.T) {
+	tests := []VerifiedDelivery{
+		{DeliveryID: testDeliveryID, Event: "push", Payload: []byte(`{"ref":"refs/heads/main"}`)},
+		{DeliveryID: testDeliveryID, Event: "pull_request", Action: "opened", Payload: []byte(`{"action":"opened"}`)},
+		{DeliveryID: testDeliveryID, Event: "installation", Action: "created", Payload: []byte(`{"action":"deleted","installation":{"id":12}}`)},
+	}
+	for index, delivery := range tests {
+		if _, err := Normalize(delivery); err == nil {
+			t.Fatalf("invalid delivery %d was accepted", index)
+		}
+	}
+}
+
 func TestHTTPHandlerPersistsAndAcknowledgesDuplicate(t *testing.T) {
 	inbox := &fakeInbox{inserted: true}
 	handler, err := NewHTTPHandler([]byte(testSecret), inbox, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := []byte(`{"action":"opened"}`)
+	body := []byte(validPullRequestWebhookPayload)
 	request := httptest.NewRequest(http.MethodPost, "/v1/integrations/github/webhook", strings.NewReader(string(body)))
 	request.Header = signedHeaders(body, "pull_request", testDeliveryID)
 	request.Header.Set("Content-Type", "application/json; charset=utf-8")
@@ -149,14 +229,14 @@ func TestHTTPHandlerRejectsInvalidRequestsAndRetriesStoreFailures(t *testing.T) 
 	}{
 		{name: "method", method: http.MethodGet, content: "application/json", body: `{}`, wantStatus: http.StatusMethodNotAllowed},
 		{name: "content type", method: http.MethodPost, content: "text/plain", body: `{}`, wantStatus: http.StatusUnsupportedMediaType},
-		{name: "signature", method: http.MethodPost, content: "application/json", body: `{}`, wantStatus: http.StatusUnauthorized},
-		{name: "database unavailable", method: http.MethodPost, content: "application/json", body: `{}`, storeErr: errors.New("db unavailable"), wantStatus: http.StatusServiceUnavailable},
-		{name: "delivery collision", method: http.MethodPost, content: "application/json", body: `{}`, storeErr: ErrDeliveryIDConflict, wantStatus: http.StatusConflict},
+		{name: "signature", method: http.MethodPost, content: "application/json", body: validPushWebhookPayload, wantStatus: http.StatusUnauthorized},
+		{name: "database unavailable", method: http.MethodPost, content: "application/json", body: validPushWebhookPayload, storeErr: errors.New("db unavailable"), wantStatus: http.StatusServiceUnavailable},
+		{name: "delivery collision", method: http.MethodPost, content: "application/json", body: validPushWebhookPayload, storeErr: ErrDeliveryIDConflict, wantStatus: http.StatusConflict},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			inbox := &fakeInbox{inserted: true, err: test.storeErr}
-			handler, err := NewHTTPHandler([]byte(testSecret), inbox, 4)
+			handler, err := NewHTTPHandler([]byte(testSecret), inbox, 1024)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -172,6 +252,16 @@ func TestHTTPHandlerRejectsInvalidRequestsAndRetriesStoreFailures(t *testing.T) 
 				t.Fatalf("status = %d, want %d: %s", response.Code, test.wantStatus, response.Body.String())
 			}
 		})
+	}
+	invalidEvent, _ := NewHTTPHandler([]byte(testSecret), &fakeInbox{}, 1024)
+	invalidBody := []byte(`{"ref":"refs/heads/main"}`)
+	invalidRequest := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(string(invalidBody)))
+	invalidRequest.Header = signedHeaders(invalidBody, "push", testDeliveryID)
+	invalidRequest.Header.Set("Content-Type", "application/json")
+	invalidResponse := httptest.NewRecorder()
+	invalidEvent.ServeHTTP(invalidResponse, invalidRequest)
+	if invalidResponse.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("incomplete event status = %d, want 422", invalidResponse.Code)
 	}
 	oversized, _ := NewHTTPHandler([]byte(testSecret), &fakeInbox{}, 2)
 	request := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(`{}`+" "))

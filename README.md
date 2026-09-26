@@ -1616,8 +1616,8 @@ Hakoは最初は **Lambda MicroVMを使ったRemote Development Environment** �
 
 - [ ] GitHub Appを登録し、Secrets Manager保管、最小権限、Installation tokenの短期利用・失効方針を実装する。
 - [ ] TenantとGitHub App Installation/Repositoryを対応付け、Repository Registry APIとRBACを追加する。
-- [ ] Webhook ingressでraw bodyのHMAC-SHA256検証、Delivery ID冪等化、サイズ制限、監査、再送を実装する（raw body検証、サイズ制限、event/action allowlist、任意の未認証API Gateway route、Secrets Manager ARN参照、durable inboxとDelivery ID冪等化まで実装。イベント正規化/処理、監査、再送運用は未実装）。[Hako Software Factory](docs/software-factory.md)。
-- [ ] GitHub webhookをversion付きHako Repository Eventへ正規化し、durable inbox/outbox経由で処理する。
+- [ ] Webhook ingressでraw bodyのHMAC-SHA256検証、Delivery ID冪等化、サイズ制限、監査、再送を実装する（raw body検証、サイズ制限、event/action allowlist、任意の未認証API Gateway route、Secrets Manager ARN参照、durable inboxとDelivery ID冪等化まで実装。監査と再送運用は未実装）。[Hako Software Factory](docs/software-factory.md)。
+- [ ] GitHub webhookをversion付きHako Repository Eventへ正規化し、durable inbox/outbox経由で処理する（push/PR/workflow job/Installation変更をschema v1 eventへ正規化し、raw deliveryと同じInbox行へ保存。outbox dispatcher/installation・repository ownership確認は未実装）。
 - [ ] Job/Agent/Preview Runの共通状態・Operation・timeout/cancel/log/artifact metadataを設計する。Workspaceとのlifecycle分離を維持する。
 - [ ] Fake Runtime上でRepository commitに対する`go test ./...` Jobを実行し、結果とredacted logsを保存する。
 - [ ] GitHub Checks APIでqueued/in-progress/completed check、commit SHA照合、summary/annotationを返す。
