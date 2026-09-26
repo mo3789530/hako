@@ -20,7 +20,8 @@ import (
 )
 
 var ErrDeliveryIDConflict = githubwebhook.ErrDeliveryIDConflict
-var ErrUnsupportedRepositoryEvent = errors.New("unsupported GitHub event for Repository registry processing")
+var ErrUnsupportedWebhookEvent = errors.New("unsupported GitHub webhook event for processing")
+var ErrUnsupportedRepositoryEvent = ErrUnsupportedWebhookEvent
 
 type Inbox struct {
 	Pool   transaction.Beginner
@@ -50,19 +51,19 @@ func ProcessInstallationRepositoryDelivery(ctx context.Context, tx pgx.Tx, deliv
 		return false, nil
 	}
 	if status != "received" || schemaVersion != githubwebhook.RepositoryEventSchemaVersion {
-		return false, ErrUnsupportedRepositoryEvent
+		return false, ErrUnsupportedWebhookEvent
 	}
 	var event githubwebhook.RepositoryEvent
 	if err := json.Unmarshal([]byte(eventJSON), &event); err != nil {
 		return false, fmt.Errorf("decode normalized GitHub event: %w", err)
 	}
 	if event.DeliveryID != deliveryID || event.GitHubEvent != "installation_repositories" {
-		return false, ErrUnsupportedRepositoryEvent
+		return false, ErrUnsupportedWebhookEvent
 	}
 	var tenantID string
 	if err := tx.QueryRow(ctx, `SELECT b.tenant_id FROM github_app_installation_bindings b
 		JOIN tenant_github_installations i ON i.tenant_id = b.tenant_id AND i.installation_id = b.installation_id
-		WHERE b.installation_id = $1 AND i.status = 'active'`, event.InstallationID).Scan(&tenantID); err != nil {
+		WHERE b.installation_id = $1 AND i.status = 'active' AND i.suspended_at IS NULL`, event.InstallationID).Scan(&tenantID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, githubregistry.ErrInstallationNotActive
 		}
@@ -81,6 +82,88 @@ func ProcessInstallationRepositoryDelivery(ctx context.Context, tx pgx.Tx, deliv
 	}
 	if tag.RowsAffected() != 1 {
 		return false, errors.New("GitHub webhook delivery processing state changed concurrently")
+	}
+	return true, nil
+}
+
+// ProcessInstallationLifecycleDelivery applies a verified Installation
+// lifecycle event only to an Installation that already has a Hako binding.
+// Webhooks never create or restore Tenant authorization: setup verification
+// remains the only path to an active binding.
+func ProcessInstallationLifecycleDelivery(ctx context.Context, tx pgx.Tx, deliveryID string, processedAt time.Time) (bool, error) {
+	if tx == nil || !coreValidDeliveryID(deliveryID) {
+		return false, errors.New("transaction and valid GitHub Delivery ID are required")
+	}
+	var status, eventType, action, eventJSON string
+	var schemaVersion int
+	err := tx.QueryRow(ctx, `SELECT processing_status, event_type, action, event_schema_version, normalized_event_json
+		FROM github_webhook_deliveries WHERE delivery_id = $1`, deliveryID).
+		Scan(&status, &eventType, &action, &schemaVersion, &eventJSON)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, pgx.ErrNoRows
+	}
+	if err != nil {
+		return false, fmt.Errorf("read GitHub Installation lifecycle event: %w", err)
+	}
+	if status == "processed" {
+		return false, nil
+	}
+	if status != "received" || eventType != "installation" || schemaVersion != githubwebhook.RepositoryEventSchemaVersion {
+		return false, ErrUnsupportedWebhookEvent
+	}
+	var event githubwebhook.RepositoryEvent
+	if err := json.Unmarshal([]byte(eventJSON), &event); err != nil {
+		return false, fmt.Errorf("decode normalized GitHub Installation event: %w", err)
+	}
+	if event.DeliveryID != deliveryID || event.GitHubEvent != "installation" || event.InstallationID <= 0 || event.Action != action || event.Type != "github.installation."+action {
+		return false, ErrUnsupportedWebhookEvent
+	}
+	switch action {
+	case "created", "deleted", "suspend", "unsuspend":
+	default:
+		return false, ErrUnsupportedWebhookEvent
+	}
+	if processedAt.IsZero() {
+		processedAt = time.Now().UTC()
+	}
+	if action != "created" {
+		var tenantID string
+		err := tx.QueryRow(ctx, `SELECT b.tenant_id FROM github_app_installation_bindings b
+			JOIN tenant_github_installations i ON i.tenant_id = b.tenant_id AND i.installation_id = b.installation_id
+			WHERE b.installation_id = $1`, event.InstallationID).Scan(&tenantID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return false, fmt.Errorf("resolve Tenant for GitHub Installation %d: %w", event.InstallationID, err)
+		}
+		if err == nil {
+			switch action {
+			case "deleted":
+				if _, err := tx.Exec(ctx, `UPDATE tenant_github_installations SET status = 'revoked', suspended_at = NULL, updated_at = $3
+					WHERE tenant_id = $1 AND installation_id = $2`, tenantID, event.InstallationID, processedAt); err != nil {
+					return false, fmt.Errorf("revoke deleted GitHub Installation: %w", err)
+				}
+				if _, err := tx.Exec(ctx, `DELETE FROM tenant_github_repositories WHERE tenant_id = $1 AND installation_id = $2`, tenantID, event.InstallationID); err != nil {
+					return false, fmt.Errorf("remove repositories for deleted GitHub Installation: %w", err)
+				}
+			case "suspend":
+				if _, err := tx.Exec(ctx, `UPDATE tenant_github_installations SET suspended_at = COALESCE(suspended_at, $3), updated_at = $3
+					WHERE tenant_id = $1 AND installation_id = $2 AND status = 'active'`, tenantID, event.InstallationID, processedAt); err != nil {
+					return false, fmt.Errorf("suspend GitHub Installation: %w", err)
+				}
+			case "unsuspend":
+				if _, err := tx.Exec(ctx, `UPDATE tenant_github_installations SET suspended_at = NULL, updated_at = $3
+					WHERE tenant_id = $1 AND installation_id = $2 AND status = 'active'`, tenantID, event.InstallationID, processedAt); err != nil {
+					return false, fmt.Errorf("unsuspend GitHub Installation: %w", err)
+				}
+			}
+		}
+	}
+	tag, err := tx.Exec(ctx, `UPDATE github_webhook_deliveries SET processing_status = 'processed'
+		WHERE delivery_id = $1 AND processing_status = 'received' AND event_schema_version = $2`, deliveryID, schemaVersion)
+	if err != nil {
+		return false, fmt.Errorf("mark GitHub Installation event processed: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return false, errors.New("GitHub Installation event processing state changed concurrently")
 	}
 	return true, nil
 }

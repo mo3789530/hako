@@ -2,36 +2,49 @@
 
 The webhook API authenticates and durably records a delivery; it does not run
 event side effects on the request path. `cmd/hako-webhook-processor-lambda`
-drains the supported repository-membership subset from that inbox.
+drains supported Installation lifecycle and repository-membership events from
+that inbox.
 
 ## Processing contract
 
 - A batch is bounded to 10 deliveries by the scheduled Lambda (the store
   supports an explicit maximum of 100).
-- Only schema-v1 `installation_repositories` events with an active
-  Installation-to-Tenant binding are selected. Push, pull request, workflow
-  job, inactive/unclaimed Installation, and older schema deliveries stay in
+- Schema-v1 `installation_repositories` events are selected only for active,
+  non-suspended Installation-to-Tenant bindings. Installation `created`,
+  `deleted`, `suspend`, and `unsuspend` events are processed by installation
+  ID. Push, pull request, workflow job, and older schema deliveries stay in
   `received` state for their appropriate future consumer.
 - Each delivery's repository sync and `received` → `processed` update share a
   transaction. A retry therefore cannot partially sync a repository or apply
   the same event twice. Concurrent invocations may observe the same candidate;
   the transaction/state checks make processing idempotent.
+- Installation events never establish Tenant ownership. `created` is an
+  authorization-neutral no-op; `suspend` blocks active Repository access,
+  `unsuspend` restores access only for an already-active claim, and `deleted`
+  revokes the claim and deletes its synchronized Repository rows. An unbound
+  Installation lifecycle event is acknowledged as processed without creating
+  a claim or binding. The global Installation binding is retained after
+  revocation to prevent automatic reassignment to a different Tenant; operator
+  reassignment tooling is not implemented.
 - A database error fails the Lambda invocation so EventBridge retries. The
-  durable inbox remains the source of truth. Unbound events are not selected,
-  so they do not cause a hot retry loop.
+  durable inbox remains the source of truth. Unbound repository-membership
+  events are not selected; unbound lifecycle events are processed as no-ops,
+  so neither causes a hot retry loop.
 
 ## Local verification
 
-The ordinary integration suite uses a disposable PostgreSQL database and
-exercises active-binding selection, idempotency, and pending events:
+The integration suite uses isolated PostgreSQL schemas and exercises
+active-binding selection, lifecycle transitions, idempotency, and pending
+events:
 
 ```sh
-HAKO_TEST_DATABASE_URL='postgres://…' go test -tags=integration ./internal/store/githubwebhook -count=1
+HAKO_TEST_DATABASE_URL='postgres://…' go test -tags=integration ./internal/store/githubwebhook ./internal/store/githubregistry -count=1
 make build-webhook-processor-lambda
 ```
 
-The always-on local development database is not needed by this test; use the
-project's disposable test database configuration. The scheduled Lambda reads
+The integration test helper creates isolated temporary schemas in the
+configured local PostgreSQL database and leaves the database server running.
+The scheduled Lambda reads
 `HAKO_DSQL_HOST`, `HAKO_DSQL_USER`, and `HAKO_DSQL_DATABASE`; locally it also
 accepts `HAKO_DATABASE_URL`.
 
@@ -40,7 +53,8 @@ accepts `HAKO_DATABASE_URL`.
 The Terraform integration is opt-in and defaults off. Before enabling it:
 
 1. Apply the Control Plane Terraform to create the stable processor IAM role.
-2. Run DSQL migrations, including migration `000041`.
+2. Run DSQL migrations, including `000044` (Installation suspension state) and
+   `000045` (lifecycle pending-event index).
 3. Replace `REPLACE_WITH_GITHUB_WEBHOOK_PROCESSOR_ROLE_ARN` in
    `infra/terraform/modules/control-plane/bootstrap-api-role.sql.tmpl` with
    output `github_webhook_processor_role_arn`; create/map the custom DSQL role
@@ -53,7 +67,8 @@ The Terraform integration is opt-in and defaults off. Before enabling it:
 The runtime IAM role has only CloudWatch log-write and `dsql:DbConnect` access
 to the Control Plane cluster. It has no Secrets Manager, GitHub API, SQS, or
 schema-admin permission. SQL table grants are limited to delivery status,
-Installation binding lookup, and Tenant repository registry synchronization.
+Installation lifecycle fields, binding lookup, and Tenant repository registry
+synchronization/deletion.
 Never enable the schedule before applying the migration and custom DSQL role
 mapping. No Terraform apply is performed by local development or CI.
 

@@ -38,7 +38,7 @@ func SyncInstallationRepositories(ctx context.Context, tx pgx.Tx, tenantID domai
 	if err := tx.QueryRow(ctx, `SELECT EXISTS (
 		SELECT 1 FROM github_app_installation_bindings b
 		JOIN tenant_github_installations i ON i.tenant_id = b.tenant_id AND i.installation_id = b.installation_id
-		WHERE b.tenant_id = $1 AND b.installation_id = $2 AND i.status = 'active'
+		WHERE b.tenant_id = $1 AND b.installation_id = $2 AND i.status = 'active' AND i.suspended_at IS NULL
 	)`, tenantID, event.InstallationID).Scan(&active); err != nil {
 		return fmt.Errorf("verify active GitHub Installation binding: %w", err)
 	}
@@ -90,7 +90,7 @@ func ListRepositories(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, 
 	if err := tx.QueryRow(ctx, `SELECT EXISTS (
 		SELECT 1 FROM github_app_installation_bindings b
 		JOIN tenant_github_installations i ON i.tenant_id = b.tenant_id AND i.installation_id = b.installation_id
-		WHERE b.tenant_id = $1 AND b.installation_id = $2 AND i.status = 'active'
+		WHERE b.tenant_id = $1 AND b.installation_id = $2 AND i.status = 'active' AND i.suspended_at IS NULL
 	)`, tenantID, installationID).Scan(&active); err != nil {
 		return nil, fmt.Errorf("verify active GitHub Installation binding: %w", err)
 	}

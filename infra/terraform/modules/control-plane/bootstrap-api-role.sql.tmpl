@@ -22,4 +22,5 @@ AWS IAM GRANT hako_webhook_processor TO 'REPLACE_WITH_GITHUB_WEBHOOK_PROCESSOR_R
 GRANT USAGE ON SCHEMA public TO hako_webhook_processor;
 GRANT SELECT ON TABLE github_webhook_deliveries, github_app_installation_bindings, tenant_github_installations TO hako_webhook_processor;
 GRANT UPDATE (processing_status) ON TABLE github_webhook_deliveries TO hako_webhook_processor;
+GRANT UPDATE (status, suspended_at, updated_at) ON TABLE tenant_github_installations TO hako_webhook_processor;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE tenant_github_repositories TO hako_webhook_processor;

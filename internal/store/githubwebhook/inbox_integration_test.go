@@ -174,3 +174,90 @@ func TestProcessBatchDrainsOnlyActiveInstallationRepositoryEvents(t *testing.T) 
 		t.Fatalf("statuses active=%s inactive=%s other=%s", activeStatus, inactiveStatus, otherStatus)
 	}
 }
+
+func TestProcessBatchAppliesInstallationSuspendUnsuspendAndDeleteLifecycle(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	now := time.Now().UTC()
+	if _, err := pool.Exec(ctx, `INSERT INTO tenants (id, name, created_at) VALUES ('tenant_hook_lifecycle', 'Webhook lifecycle', $1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO users (id, cognito_subject, email, created_at) VALUES ('usr_hook_lifecycle', 'hook-lifecycle-sub', '', $1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO tenant_github_installations (tenant_id, installation_id, account_login, status, requested_by, requested_at, updated_at)
+		VALUES ('tenant_hook_lifecycle', 901, 'acme', 'active', 'usr_hook_lifecycle', $1, $1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO github_app_installation_bindings (installation_id, tenant_id, bound_at) VALUES (901, 'tenant_hook_lifecycle', $1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO tenant_github_repositories (tenant_id, installation_id, github_repository_id, owner_login, repository_name, default_branch, synchronized_at)
+		VALUES ('tenant_hook_lifecycle', 901, 902, 'acme', 'api', 'main', $1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	inbox := Inbox{Pool: pool, Policy: transaction.DefaultPolicy()}
+	makeDelivery := func(id, action string) githubwebhook.VerifiedDelivery {
+		return githubwebhook.VerifiedDelivery{DeliveryID: id, Event: "installation", Action: action, Payload: []byte(`{"action":"` + action + `","installation":{"id":901}}`)}
+	}
+	suspended := makeDelivery("f1b2c3d4-e5f6-4789-8abc-def012345678", "suspend")
+	unsuspended := makeDelivery("f2b2c3d4-e5f6-4789-8abc-def012345678", "unsuspend")
+	deleted := makeDelivery("f3b2c3d4-e5f6-4789-8abc-def012345678", "deleted")
+	process := func(delivery githubwebhook.VerifiedDelivery, timestamp time.Time) {
+		t.Helper()
+		if inserted, err := inbox.Record(ctx, delivery, timestamp); err != nil || !inserted {
+			t.Fatalf("record %s event: inserted=%v err=%v", delivery.Action, inserted, err)
+		}
+		stats, err := ProcessBatch(ctx, pool, transaction.DefaultPolicy(), 10, timestamp.Add(time.Second))
+		if err != nil || stats != (BatchStats{Claimed: 1, Processed: 1}) {
+			t.Fatalf("process %s event = %+v, err=%v", delivery.Action, stats, err)
+		}
+	}
+	process(suspended, now)
+	installations, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) ([]githubregistry.Installation, error) {
+		return githubregistry.List(ctx, tx, "tenant_hook_lifecycle")
+	})
+	if err != nil || len(installations) != 1 || installations[0].Status != "active" || !installations[0].Suspended {
+		t.Fatalf("suspended Tenant Installation = %+v, err=%v", installations, err)
+	}
+	if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) ([]githubregistry.Repository, error) {
+		return githubregistry.ListRepositories(ctx, tx, "tenant_hook_lifecycle", 901)
+	}); !errors.Is(err, githubregistry.ErrInstallationNotActive) {
+		t.Fatalf("suspended Installation Repository access error = %v, want inactive", err)
+	}
+	process(unsuspended, now.Add(2*time.Second))
+	repositories, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) ([]githubregistry.Repository, error) {
+		return githubregistry.ListRepositories(ctx, tx, "tenant_hook_lifecycle", 901)
+	})
+	if err != nil || len(repositories) != 1 {
+		t.Fatalf("unsuspended Installation repositories = %+v, err=%v", repositories, err)
+	}
+	process(deleted, now.Add(4*time.Second))
+	var status string
+	var suspendedAt *time.Time
+	if err := pool.QueryRow(ctx, `SELECT status, suspended_at FROM tenant_github_installations WHERE tenant_id = 'tenant_hook_lifecycle' AND installation_id = 901`).Scan(&status, &suspendedAt); err != nil {
+		t.Fatal(err)
+	}
+	if status != "revoked" || suspendedAt != nil {
+		t.Fatalf("deleted Installation state = status %q suspended_at %v", status, suspendedAt)
+	}
+	var repositoryCount int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM tenant_github_repositories WHERE tenant_id = 'tenant_hook_lifecycle' AND installation_id = 901`).Scan(&repositoryCount); err != nil || repositoryCount != 0 {
+		t.Fatalf("deleted Installation repositories = %d, err=%v", repositoryCount, err)
+	}
+	installations, err = transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) ([]githubregistry.Installation, error) {
+		return githubregistry.List(ctx, tx, "tenant_hook_lifecycle")
+	})
+	if err != nil || len(installations) != 1 || installations[0].Status != "revoked" || installations[0].Suspended {
+		t.Fatalf("Tenant Installation record = %+v, err=%v", installations, err)
+	}
+	if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) ([]githubregistry.Repository, error) {
+		return githubregistry.ListRepositories(ctx, tx, "tenant_hook_lifecycle", 901)
+	}); !errors.Is(err, githubregistry.ErrInstallationNotActive) {
+		t.Fatalf("deleted Installation Repository access error = %v, want inactive", err)
+	}
+}

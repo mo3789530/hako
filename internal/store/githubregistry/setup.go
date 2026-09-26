@@ -129,7 +129,7 @@ func CompleteSetupState(ctx context.Context, tx pgx.Tx, stateHash string, instal
 	if _, err := tx.Exec(ctx, `INSERT INTO tenant_github_installations
 		(tenant_id, installation_id, account_login, status, requested_by, requested_at, updated_at)
 		VALUES ($1, $2, $3, 'active', $4, $5, $5)
-		ON CONFLICT (tenant_id, installation_id) DO UPDATE SET account_login = $3, status = 'active', updated_at = $5`,
+		ON CONFLICT (tenant_id, installation_id) DO UPDATE SET account_login = $3, status = 'active', suspended_at = NULL, updated_at = $5`,
 		state.TenantID, installationID, accountLogin, state.UserID, now); err != nil {
 		return Installation{}, fmt.Errorf("activate Tenant GitHub Installation claim: %w", err)
 	}

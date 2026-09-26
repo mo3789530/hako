@@ -50,12 +50,14 @@ not persisted. The repository list endpoint only serves an active tenant
 binding. A storage operation can apply normalized repository-added/removed
 events, and a transactional Inbox processor resolves the active Tenant binding
 and marks those deliveries processed atomically. An opt-in one-minute
-EventBridge Lambda drains batches
-of at most 10 eligible schema-v1 `installation_repositories` deliveries using
-the dedicated `hako_webhook_processor` DSQL role. It deliberately leaves
-unbound Installations and all other event types pending. App private-key and
-Installation-token management, additional event processors, and operational
-replay/retention tooling remain outstanding. See
+EventBridge Lambda drains batches of at most 10 eligible schema-v1
+`installation_repositories` and Installation lifecycle deliveries using the
+dedicated `hako_webhook_processor` DSQL role. Installation `suspend` blocks
+Repository access; `unsuspend` restores it only for an already-active claim;
+`deleted` revokes the claim and removes synchronized Repository rows. Webhooks
+cannot create or reactivate a Tenant binding. Other event types remain pending.
+App private-key and Installation-token management, additional event
+processors, and operational replay/retention tooling remain outstanding. See
 `docs/github-installation-setup.md`, `docs/github-webhook-processor.md`, and
 the relevant integration tests.
 
