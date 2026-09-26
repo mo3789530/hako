@@ -43,8 +43,10 @@ ownership checks must be added before creating work. Tenant owners/admins can
 currently submit and list inert installation claims through the tenant API;
 claims remain `pending` and cannot authorize GitHub API access. The repository
 list endpoint only serves an active tenant binding. A storage operation can
-apply normalized repository-added/removed events, but webhook dispatch into
-that operation is not wired yet. See `internal/githubwebhook`,
+apply normalized repository-added/removed events, and a transactional Inbox
+processor resolves the active Tenant binding and marks those deliveries
+processed atomically. There is not yet a scheduled/queue consumer, and other
+event types are not dispatched. See `internal/githubwebhook`,
 `internal/store/githubwebhook`, and `internal/store/githubregistry` tests.
 
 ## Integration model
