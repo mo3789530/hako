@@ -138,7 +138,7 @@ func TestTenantMembershipRouteResolvesUserAndRejectsNonMembers(t *testing.T) {
 		t.Fatalf("oversized request should use the common HTTP 413 error envelope: %d %s", oversized.Code, oversized.Body.String())
 	}
 	policyToken := signTenantAPIToken(t, privateKey, issuer, "owner-subject", "openid hako/api")
-	policySet := requestTenantPlacementPolicy(t, handler, http.MethodPut, policyToken, "tenant_member", `{"resource_plane_ids":["rp_not_allowed"],"allowed_regions":[],"required_capabilities":[]}`)
+	policySet := requestTenantPlacementPolicy(t, handler, http.MethodPut, policyToken, "tenant_member", `{"resource_plane_ids":["rp_not_allowed"],"allowed_regions":[],"required_capabilities":[],"max_cost_tier":"standard","minimum_isolation_tier":"dedicated"}`)
 	if policySet.Code != http.StatusOK {
 		t.Fatalf("Tenant Owner should set placement policy: %d %s", policySet.Code, policySet.Body.String())
 	}
@@ -151,7 +151,7 @@ func TestTenantMembershipRouteResolvesUserAndRejectsNonMembers(t *testing.T) {
 	}
 	policyGet := requestTenantPlacementPolicy(t, handler, http.MethodGet, policyToken, "tenant_member", "")
 	var storedPolicy map[string]any
-	if policyGet.Code != http.StatusOK || json.Unmarshal(policyGet.Body.Bytes(), &storedPolicy) != nil {
+	if policyGet.Code != http.StatusOK || json.Unmarshal(policyGet.Body.Bytes(), &storedPolicy) != nil || storedPolicy["max_cost_tier"] != "standard" || storedPolicy["minimum_isolation_tier"] != "dedicated" {
 		t.Fatalf("Tenant Owner should read placement policy: %d %s", policyGet.Code, policyGet.Body.String())
 	}
 	blockedByTenantPolicy := requestCreateWorkspace(t, handler, createToken, "tenant_member", `{"name":"tenant-policy-blocked"}`, "tenant-policy-blocked")
@@ -161,6 +161,10 @@ func TestTenantMembershipRouteResolvesUserAndRejectsNonMembers(t *testing.T) {
 	invalidPolicy := requestTenantPlacementPolicy(t, handler, http.MethodPut, policyToken, "tenant_member", `{"allowed_regions":["us-east-1","US-EAST-1"],"resource_plane_ids":[],"required_capabilities":[]}`)
 	if invalidPolicy.Code != http.StatusBadRequest {
 		t.Fatalf("duplicate normalized policy selectors must be rejected: %d %s", invalidPolicy.Code, invalidPolicy.Body.String())
+	}
+	invalidTier := requestTenantPlacementPolicy(t, handler, http.MethodPut, policyToken, "tenant_member", `{"allowed_regions":[],"resource_plane_ids":[],"required_capabilities":[],"max_cost_tier":"free"}`)
+	if invalidTier.Code != http.StatusBadRequest {
+		t.Fatalf("unsupported Cost tier must be rejected: %d %s", invalidTier.Code, invalidTier.Body.String())
 	}
 	if _, err := pool.Exec(ctx, `DELETE FROM tenant_placement_policies WHERE tenant_id = $1`, "tenant_member"); err != nil {
 		t.Fatalf("clear test placement policy: %v", err)
@@ -320,6 +324,90 @@ func TestTenantMembershipRouteResolvesUserAndRejectsNonMembers(t *testing.T) {
 	}
 }
 
+func TestResourcePlaneHealthRequiresPlatformAdminAndAuditsUpdates(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	now := time.Now().UTC()
+	if _, err := pool.Exec(ctx, `INSERT INTO users (id, cognito_subject, email, created_at) VALUES ('usr_platform_admin', 'platform-admin-sub', '', $1), ('usr_regular', 'regular-sub', '', $1)`, now); err != nil {
+		t.Fatalf("seed platform users: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO resource_planes (id, provider, region, capabilities_json) VALUES ('rp-health-api', 'aws', 'ap-northeast-1', '["microvm"]')`); err != nil {
+		t.Fatalf("seed Resource Plane: %v", err)
+	}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"keys": []any{map[string]string{
+			"kty": "RSA", "use": "sig", "alg": "RS256", "kid": "tenant-api-key",
+			"n": base64.RawURLEncoding.EncodeToString(privateKey.N.Bytes()),
+			"e": base64.RawURLEncoding.EncodeToString([]byte{1, 0, 1}),
+		}}})
+	}))
+	defer keys.Close()
+	issuer := keys.URL + "/pool"
+	verifier, err := auth.NewCognitoVerifier(auth.CognitoVerifierConfig{Issuer: issuer, ClientID: "hako-cli"})
+	if err != nil {
+		t.Fatalf("create Cognito verifier: %v", err)
+	}
+	handler := NewHandler(verifier, pool)
+	regular := signAPITokenWithGroups(t, privateKey, issuer, "regular-sub", "openid hako/api", nil)
+	for _, method := range []string{http.MethodGet, http.MethodPut} {
+		response := requestResourcePlaneHealth(t, handler, method, regular, `{"status":"unhealthy","reason":"test"}`)
+		var apiError errorResponse
+		if response.Code != http.StatusForbidden || json.Unmarshal(response.Body.Bytes(), &apiError) != nil || apiError.Error.Code != "insufficient_platform_role" {
+			t.Fatalf("non-admin %s health request = %d %s", method, response.Code, response.Body.String())
+		}
+	}
+	admin := signAPITokenWithGroups(t, privateKey, issuer, "platform-admin-sub", "openid hako/api", []string{"hako-admin"})
+	initial := requestResourcePlaneHealth(t, handler, http.MethodGet, admin, "")
+	var health struct {
+		Status          string `json:"status"`
+		EffectiveStatus string `json:"effective_status"`
+	}
+	if initial.Code != http.StatusOK || json.Unmarshal(initial.Body.Bytes(), &health) != nil || health.Status != "unknown" || health.EffectiveStatus != "healthy" {
+		t.Fatalf("unreported health response = %d %s", initial.Code, initial.Body.String())
+	}
+	updated := requestResourcePlaneHealth(t, handler, http.MethodPut, admin, `{"status":"degraded","reason":"queue latency elevated"}`)
+	if updated.Code != http.StatusOK || json.Unmarshal(updated.Body.Bytes(), &health) != nil || health.Status != "degraded" || health.EffectiveStatus != "degraded" {
+		t.Fatalf("admin health update = %d %s", updated.Code, updated.Body.String())
+	}
+	var audits int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM platform_audit_events WHERE actor_user_id = 'usr_platform_admin' AND target_id = 'rp-health-api'`).Scan(&audits); err != nil || audits != 1 {
+		t.Fatalf("platform audit count = %d, error=%v", audits, err)
+	}
+	bad := requestResourcePlaneHealth(t, handler, http.MethodPut, admin, `{"status":"unknown","reason":"invalid"}`)
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("invalid health update returned HTTP %d: %s", bad.Code, bad.Body.String())
+	}
+	missing := requestForResourcePlane(t, handler, http.MethodGet, admin, "rp-missing", "")
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("missing Resource Plane returned HTTP %d: %s", missing.Code, missing.Body.String())
+	}
+}
+
+func requestResourcePlaneHealth(t *testing.T, handler http.Handler, method, token, body string) *httptest.ResponseRecorder {
+	return requestForResourcePlane(t, handler, method, token, "rp-health-api", body)
+}
+
+func requestForResourcePlane(t *testing.T, handler http.Handler, method, token, resourcePlaneID, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(method, "/v1/admin/resource-planes/"+resourcePlaneID+"/health", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+token)
+	if method == http.MethodPut {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	return recorder
+}
+
 func requestTenantPlacementPolicy(t *testing.T, handler http.Handler, method, token, tenantID, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	request := httptest.NewRequest(method, "/v1/tenants/"+tenantID+"/placement-policy", bytes.NewBufferString(body))
@@ -444,9 +532,13 @@ func (q *fakeOperationResultsQueue) Delete(_ context.Context, receipt string) er
 }
 
 func signTenantAPIToken(t *testing.T, privateKey *rsa.PrivateKey, issuer, subject, scope string) string {
+	return signAPITokenWithGroups(t, privateKey, issuer, subject, scope, nil)
+}
+
+func signAPITokenWithGroups(t *testing.T, privateKey *rsa.PrivateKey, issuer, subject, scope string, groups []string) string {
 	t.Helper()
 	claims := auth.CognitoAccessClaims{
-		ClientID: "hako-cli", TokenUse: "access", Scope: scope,
+		ClientID: "hako-cli", TokenUse: "access", Scope: scope, Groups: groups,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer: issuer, Subject: subject, IssuedAt: jwt.NewNumericDate(time.Now()),
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),

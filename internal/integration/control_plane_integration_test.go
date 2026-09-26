@@ -63,6 +63,17 @@ func TestWorkspaceCreateOutboxAndOperationLifecycle(t *testing.T) {
 	if outboxCount != 1 || eventCount != 1 {
 		t.Fatalf("create should atomically persist one outbox row and one event; got outbox=%d events=%d", outboxCount, eventCount)
 	}
+	var commandPayload string
+	if err := pool.QueryRow(ctx, `SELECT payload_json FROM outbox_events WHERE aggregate_id = $1`, created.Operation.ID).Scan(&commandPayload); err != nil {
+		t.Fatalf("load initial fenced command: %v", err)
+	}
+	var commandFence struct {
+		SchemaVersion     int   `json:"schema_version"`
+		WorkspaceRevision int64 `json:"workspace_revision"`
+	}
+	if err := json.Unmarshal([]byte(commandPayload), &commandFence); err != nil || commandFence.SchemaVersion != 2 || commandFence.WorkspaceRevision != 1 {
+		t.Fatalf("initial command should carry Workspace revision 1: %+v error=%v", commandFence, err)
+	}
 
 	replayed, err := workspaces.Create(ctx, pool, input, policy)
 	if err != nil {
@@ -148,6 +159,42 @@ func TestWorkspaceCreateOutboxAndOperationLifecycle(t *testing.T) {
 	}
 }
 
+func TestStaleWorkspaceRevisionResultCannotChangeObservedState(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatalf("apply embedded schema migrations: %v", err)
+	}
+	seedPostgres(ctx, t, pool)
+	created, err := workspaces.Create(ctx, pool, workspaces.CreateInput{
+		TenantID: "tenant_test", OwnerID: "user_test", Name: "fenced-workspace",
+		RuntimeClass: "standard", Image: "hako/go:latest", IdempotencyKey: "fenced-workspace",
+	}, transaction.DefaultPolicy())
+	if err != nil {
+		t.Fatalf("create fenced Workspace: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE workspace_status SET reconcile_revision = 2 WHERE workspace_id = $1`, created.Workspace.ID); err != nil {
+		t.Fatalf("advance Workspace generation: %v", err)
+	}
+	applied, err := operations.ApplyResult(ctx, pool, transaction.DefaultPolicy(), operations.ResultInput{
+		OperationID: created.Operation.ID, WorkspaceRevision: 1, TenantID: created.Workspace.TenantID,
+		WorkspaceID: created.Workspace.ID, ResourcePlaneID: created.Placement.ResourcePlaneID,
+		Type: domain.OperationEnsureRunning, Status: domain.OperationSucceeded,
+		ObservedState: domain.ObservedWorkspaceRunning, CompletedAt: time.Now().UTC(),
+	})
+	if err != nil || applied {
+		t.Fatalf("stale result should be acknowledged without applying: applied=%v error=%v", applied, err)
+	}
+	var operationStatus, observedState string
+	if err := pool.QueryRow(ctx, `SELECT o.status, s.observed_state FROM operations o JOIN workspace_status s ON s.workspace_id = o.workspace_id WHERE o.id = $1`, created.Operation.ID).Scan(&operationStatus, &observedState); err != nil {
+		t.Fatal(err)
+	}
+	if operationStatus != string(domain.OperationPending) || observedState != string(domain.ObservedWorkspacePending) {
+		t.Fatalf("stale result mutated current Control Plane state: operation=%s observed=%s", operationStatus, observedState)
+	}
+}
+
 func TestTenantWorkspaceQuotaIsConcurrentAndReleasedOnDelete(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
@@ -229,7 +276,10 @@ func TestResourcePlaneCapacityIsReservedAndReleasedAtomically(t *testing.T) {
 		t.Fatalf("apply embedded schema migrations: %v", err)
 	}
 	seedPostgres(ctx, t, pool)
-	if _, err := pool.Exec(ctx, `INSERT INTO resource_plane_capacities (resource_plane_id, max_workspaces, reserved_workspaces, updated_at) VALUES ($1, $2, $3, $4)`, "rp_test", 1, 0, time.Now().UTC()); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO runtime_class_resources (runtime_class, cpu_millicores, memory_mib, updated_at) VALUES ('standard', 1000, 2048, $1)`, time.Now().UTC()); err != nil {
+		t.Fatalf("configure Runtime Class resource demand: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO resource_plane_capacities (resource_plane_id, max_workspaces, reserved_workspaces, max_cpu_millicores, reserved_cpu_millicores, max_memory_mib, reserved_memory_mib, updated_at) VALUES ($1, $2, $3, $4, 0, $5, 0, $6)`, "rp_test", 2, 0, 1000, 4096, time.Now().UTC()); err != nil {
 		t.Fatalf("configure Resource Plane capacity: %v", err)
 	}
 	create := func(name, key string) (workspaces.CreateResult, error) {
@@ -249,6 +299,10 @@ func TestResourcePlaneCapacityIsReservedAndReleasedAtomically(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT reserved_workspaces FROM resource_plane_capacities WHERE resource_plane_id = $1`, "rp_test").Scan(&reserved); err != nil || reserved != 1 {
 		t.Fatalf("capacity reservation count after overflow: reserved=%d error=%v", reserved, err)
 	}
+	var reservedCPU, reservedMemory int64
+	if err := pool.QueryRow(ctx, `SELECT reserved_cpu_millicores, reserved_memory_mib FROM resource_plane_capacities WHERE resource_plane_id = $1`, "rp_test").Scan(&reservedCPU, &reservedMemory); err != nil || reservedCPU != 1000 || reservedMemory != 2048 {
+		t.Fatalf("compute reservation after admission: cpu=%d mCPU memory=%d MiB error=%v", reservedCPU, reservedMemory, err)
+	}
 	deleting := domain.ObservedWorkspaceDeleting
 	if _, err := operations.Transition(ctx, pool, transaction.DefaultPolicy(), operations.TransitionInput{
 		OperationID: first.Operation.ID, ExpectedStatus: domain.OperationPending,
@@ -263,6 +317,9 @@ func TestResourcePlaneCapacityIsReservedAndReleasedAtomically(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("finish Workspace deletion and release capacity: %v", err)
 	}
+	if err := pool.QueryRow(ctx, `SELECT reserved_cpu_millicores, reserved_memory_mib FROM resource_plane_capacities WHERE resource_plane_id = $1`, "rp_test").Scan(&reservedCPU, &reservedMemory); err != nil || reservedCPU != 0 || reservedMemory != 0 {
+		t.Fatalf("compute reservation after deletion: cpu=%d mCPU memory=%d MiB error=%v", reservedCPU, reservedMemory, err)
+	}
 	second, err := create("capacity-after-delete", "capacity-after-delete")
 	if err != nil {
 		t.Fatalf("create Workspace after capacity release: %v", err)
@@ -270,7 +327,7 @@ func TestResourcePlaneCapacityIsReservedAndReleasedAtomically(t *testing.T) {
 	if second.Placement.ResourcePlaneID != "rp_test" {
 		t.Fatalf("expected released capacity on rp_test, got %s", second.Placement.ResourcePlaneID)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE resource_plane_capacities SET max_workspaces = 2 WHERE resource_plane_id = $1`, "rp_test"); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE resource_plane_capacities SET max_workspaces = 2, max_cpu_millicores = 2000 WHERE resource_plane_id = $1`, "rp_test"); err != nil {
 		t.Fatalf("raise Resource Plane capacity for concurrent admission test: %v", err)
 	}
 	type createResult struct {
@@ -302,6 +359,121 @@ func TestResourcePlaneCapacityIsReservedAndReleasedAtomically(t *testing.T) {
 	}
 	if err := pool.QueryRow(ctx, `SELECT reserved_workspaces FROM resource_plane_capacities WHERE resource_plane_id = $1`, "rp_test").Scan(&reserved); err != nil || reserved != 2 {
 		t.Fatalf("concurrent reservations exceeded or missed configured capacity: reserved=%d error=%v", reserved, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT reserved_cpu_millicores, reserved_memory_mib FROM resource_plane_capacities WHERE resource_plane_id = $1`, "rp_test").Scan(&reservedCPU, &reservedMemory); err != nil || reservedCPU != 2000 || reservedMemory != 4096 {
+		t.Fatalf("concurrent compute reservations exceeded or missed configured capacity: cpu=%d mCPU memory=%d MiB error=%v", reservedCPU, reservedMemory, err)
+	}
+}
+
+func TestResourcePlaneComputeCapacityRejectsCPUOrMemoryOverflow(t *testing.T) {
+	tests := []struct {
+		name      string
+		maxCPU    any
+		maxMemory any
+	}{
+		{name: "cpu", maxCPU: int64(999)},
+		{name: "memory", maxMemory: int64(2047)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			pool := testutil.NewIsolatedPostgres(t)
+			if err := dsql.Migrate(ctx, pool); err != nil {
+				t.Fatalf("apply embedded schema migrations: %v", err)
+			}
+			seedPostgres(ctx, t, pool)
+			if _, err := pool.Exec(ctx, `INSERT INTO runtime_class_resources (runtime_class, cpu_millicores, memory_mib, updated_at) VALUES ('standard', 1000, 2048, $1)`, time.Now().UTC()); err != nil {
+				t.Fatalf("configure Runtime Class resource demand: %v", err)
+			}
+			if _, err := pool.Exec(ctx, `INSERT INTO resource_plane_capacities (resource_plane_id, max_workspaces, reserved_workspaces, max_cpu_millicores, max_memory_mib, updated_at) VALUES ('rp_test', 5, 0, $1, $2, $3)`, test.maxCPU, test.maxMemory, time.Now().UTC()); err != nil {
+				t.Fatalf("configure Resource Plane compute capacity: %v", err)
+			}
+			_, err := workspaces.Create(ctx, pool, workspaces.CreateInput{
+				TenantID: "tenant_test", OwnerID: "user_test", Name: "over-capacity",
+				RuntimeClass: "standard", Image: "hako/go:latest", IdempotencyKey: "compute-over-capacity",
+			}, transaction.DefaultPolicy())
+			if !errors.Is(err, scheduler.ErrNoEligibleResourcePlane) {
+				t.Fatalf("Workspace exceeding %s capacity should be rejected, got %v", test.name, err)
+			}
+			var workspacesCreated, reservations int
+			if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM workspaces`).Scan(&workspacesCreated); err != nil || workspacesCreated != 0 {
+				t.Fatalf("compute overflow left Workspace rows: count=%d error=%v", workspacesCreated, err)
+			}
+			if err := pool.QueryRow(ctx, `SELECT reserved_workspaces FROM resource_plane_capacities WHERE resource_plane_id = 'rp_test'`).Scan(&reservations); err != nil || reservations != 0 {
+				t.Fatalf("compute overflow left a capacity reservation: count=%d error=%v", reservations, err)
+			}
+		})
+	}
+}
+
+func TestResourcePlaneComputeCapacityAccountsForRuntimeClassDemand(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatalf("apply embedded schema migrations: %v", err)
+	}
+	seedPostgres(ctx, t, pool)
+	now := time.Now().UTC()
+	if _, err := pool.Exec(ctx, `INSERT INTO runtime_class_resources (runtime_class, cpu_millicores, memory_mib, updated_at) VALUES ('standard', 1000, 2048, $1)`, now); err != nil {
+		t.Fatalf("configure standard Runtime Class demand: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO resource_plane_capacities (resource_plane_id, max_workspaces, reserved_workspaces, max_cpu_millicores, reserved_cpu_millicores, max_memory_mib, reserved_memory_mib, updated_at) VALUES ('rp_test', 5, 0, 1000, 0, 4096, 0, $1)`, now); err != nil {
+		t.Fatalf("configure CPU-constrained Resource Plane: %v", err)
+	}
+	create := func(name, class, key string) (workspaces.CreateResult, error) {
+		return workspaces.Create(ctx, pool, workspaces.CreateInput{
+			TenantID: "tenant_test", OwnerID: "user_test", Name: name,
+			RuntimeClass: class, Image: "hako/go:latest", IdempotencyKey: key,
+		}, transaction.DefaultPolicy())
+	}
+	first, err := create("cpu-first", "standard", "cpu-first")
+	if err != nil {
+		t.Fatalf("create Workspace within CPU capacity: %v", err)
+	}
+	if _, err := create("cpu-overflow", "standard", "cpu-overflow"); !errors.Is(err, scheduler.ErrNoEligibleResourcePlane) {
+		t.Fatalf("CPU capacity should reject a second Workspace: %v", err)
+	}
+	var reservedCPU, reservedMemory int64
+	if err := pool.QueryRow(ctx, `SELECT reserved_cpu_millicores, reserved_memory_mib FROM resource_plane_capacities WHERE resource_plane_id = 'rp_test'`).Scan(&reservedCPU, &reservedMemory); err != nil || reservedCPU != 1000 || reservedMemory != 2048 {
+		t.Fatalf("compute reservation was not recorded: cpu=%d memory=%d error=%v", reservedCPU, reservedMemory, err)
+	}
+	releaseCreatedWorkspace(t, ctx, pool, first.Operation.ID)
+	if err := pool.QueryRow(ctx, `SELECT reserved_cpu_millicores, reserved_memory_mib FROM resource_plane_capacities WHERE resource_plane_id = 'rp_test'`).Scan(&reservedCPU, &reservedMemory); err != nil || reservedCPU != 0 || reservedMemory != 0 {
+		t.Fatalf("compute reservation was not released: cpu=%d memory=%d error=%v", reservedCPU, reservedMemory, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE resource_plane_capacities SET max_cpu_millicores = 4096, max_memory_mib = 2048 WHERE resource_plane_id = 'rp_test'`); err != nil {
+		t.Fatalf("configure memory-constrained Resource Plane: %v", err)
+	}
+	second, err := create("memory-first", "standard", "memory-first")
+	if err != nil {
+		t.Fatalf("create Workspace within memory capacity: %v", err)
+	}
+	if _, err := create("memory-overflow", "standard", "memory-overflow"); !errors.Is(err, scheduler.ErrNoEligibleResourcePlane) {
+		t.Fatalf("memory capacity should reject a second Workspace: %v", err)
+	}
+	releaseCreatedWorkspace(t, ctx, pool, second.Operation.ID)
+	if _, err := create("missing-class-profile", "unconfigured", "missing-class-profile"); err == nil {
+		t.Fatal("weighted capacity must fail closed for an unconfigured Runtime Class")
+	}
+}
+
+func releaseCreatedWorkspace(t *testing.T, ctx context.Context, pool *pgxpool.Pool, operationID domain.OperationID) {
+	t.Helper()
+	deleting := domain.ObservedWorkspaceDeleting
+	if _, err := operations.Transition(ctx, pool, transaction.DefaultPolicy(), operations.TransitionInput{
+		OperationID: operationID, ExpectedStatus: domain.OperationPending,
+		NextStatus: domain.OperationRunning, EventType: "operation.started", ObservedState: &deleting,
+	}); err != nil {
+		t.Fatalf("start Workspace deletion: %v", err)
+	}
+	deleted := domain.ObservedWorkspaceDeleted
+	if _, err := operations.Transition(ctx, pool, transaction.DefaultPolicy(), operations.TransitionInput{
+		OperationID: operationID, ExpectedStatus: domain.OperationRunning,
+		NextStatus: domain.OperationSucceeded, EventType: "operation.succeeded", ObservedState: &deleted,
+	}); err != nil {
+		t.Fatalf("finish Workspace deletion: %v", err)
 	}
 }
 

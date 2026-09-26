@@ -59,13 +59,14 @@ type createRequest struct {
 }
 
 type operationCommand struct {
-	SchemaVersion   int                    `json:"schema_version"`
-	OperationID     domain.OperationID     `json:"operation_id"`
-	TenantID        domain.TenantID        `json:"tenant_id"`
-	WorkspaceID     domain.WorkspaceID     `json:"workspace_id"`
-	ResourcePlaneID domain.ResourcePlaneID `json:"resource_plane_id"`
-	Type            domain.OperationType   `json:"type"`
-	CreatedAt       time.Time              `json:"created_at"`
+	SchemaVersion     int                    `json:"schema_version"`
+	WorkspaceRevision int64                  `json:"workspace_revision,omitempty"`
+	OperationID       domain.OperationID     `json:"operation_id"`
+	TenantID          domain.TenantID        `json:"tenant_id"`
+	WorkspaceID       domain.WorkspaceID     `json:"workspace_id"`
+	ResourcePlaneID   domain.ResourcePlaneID `json:"resource_plane_id"`
+	Type              domain.OperationType   `json:"type"`
+	CreatedAt         time.Time              `json:"created_at"`
 }
 
 // Create inserts a Workspace, desired/observed state, placement, initial
@@ -146,6 +147,7 @@ func Create(ctx context.Context, pool transaction.Beginner, input CreateInput, p
 			placementPolicy := scheduler.Policy{
 				TenantID:        input.TenantID,
 				ResourcePlaneID: input.ResourcePlaneID,
+				RuntimeClass:    input.RuntimeClass,
 				Region:          input.Region, RequiredCapabilities: input.RequiredCapabilities,
 			}
 			selectedResourcePlaneID, err := scheduler.Select(ctx, tx, placementPolicy)
@@ -157,7 +159,7 @@ func Create(ctx context.Context, pool transaction.Beginner, input CreateInput, p
 			selectedOperation := operation
 			selectedOperation.ResourcePlaneID = selectedResourcePlaneID
 			command, err := json.Marshal(operationCommand{
-				SchemaVersion: 1, OperationID: selectedOperation.ID, TenantID: selectedOperation.TenantID,
+				SchemaVersion: 2, WorkspaceRevision: 1, OperationID: selectedOperation.ID, TenantID: selectedOperation.TenantID,
 				WorkspaceID: selectedOperation.WorkspaceID, ResourcePlaneID: selectedOperation.ResourcePlaneID,
 				Type: selectedOperation.Type, CreatedAt: selectedOperation.CreatedAt,
 			})
@@ -202,7 +204,7 @@ func Create(ctx context.Context, pool transaction.Beginner, input CreateInput, p
 			if err := reserveQuotaSlot(ctx, tx, input.TenantID, workspace.ID); err != nil {
 				return CreateResult{}, err
 			}
-			if _, err := tx.Exec(ctx, `INSERT INTO workspace_status (workspace_id, desired_state, observed_state, updated_at) VALUES ($1, $2, $3, $4)`,
+			if _, err := tx.Exec(ctx, `INSERT INTO workspace_status (workspace_id, desired_state, observed_state, updated_at, reconcile_revision) VALUES ($1, $2, $3, $4, 1)`,
 				status.WorkspaceID, status.DesiredState, status.ObservedState, status.UpdatedAt,
 			); err != nil {
 				return CreateResult{}, fmt.Errorf("insert workspace status: %w", err)
@@ -212,7 +214,7 @@ func Create(ctx context.Context, pool transaction.Beginner, input CreateInput, p
 			); err != nil {
 				return CreateResult{}, fmt.Errorf("insert workspace placement: %w", err)
 			}
-			if err := resourcecapacity.RecordWorkspace(ctx, tx, workspace.ID, selectedPlacement.ResourcePlaneID, createdAt); err != nil {
+			if err := resourcecapacity.RecordWorkspace(ctx, tx, workspace.ID, selectedPlacement.ResourcePlaneID, workspace.RuntimeClass, createdAt); err != nil {
 				return CreateResult{}, err
 			}
 

@@ -24,13 +24,14 @@ func (s StoreAdapter) FailStaleOperations(ctx context.Context, cutoff, now time.
 }
 
 type requestedCommand struct {
-	SchemaVersion   int                    `json:"schema_version"`
-	OperationID     domain.OperationID     `json:"operation_id"`
-	TenantID        domain.TenantID        `json:"tenant_id"`
-	WorkspaceID     domain.WorkspaceID     `json:"workspace_id"`
-	ResourcePlaneID domain.ResourcePlaneID `json:"resource_plane_id"`
-	Type            domain.OperationType   `json:"type"`
-	CreatedAt       time.Time              `json:"created_at"`
+	SchemaVersion     int                    `json:"schema_version"`
+	WorkspaceRevision int64                  `json:"workspace_revision,omitempty"`
+	OperationID       domain.OperationID     `json:"operation_id"`
+	TenantID          domain.TenantID        `json:"tenant_id"`
+	WorkspaceID       domain.WorkspaceID     `json:"workspace_id"`
+	ResourcePlaneID   domain.ResourcePlaneID `json:"resource_plane_id"`
+	Type              domain.OperationType   `json:"type"`
+	CreatedAt         time.Time              `json:"created_at"`
 }
 
 type reconcileRequest struct {
@@ -143,7 +144,7 @@ func (s StoreAdapter) EnsureOperation(ctx context.Context, candidate Candidate, 
 			return false, errors.New("unexpected Operation returned for Reconciler idempotency key")
 		}
 		command, err := json.Marshal(requestedCommand{
-			SchemaVersion: 1, OperationID: operation.ID, TenantID: tenantID,
+			SchemaVersion: 2, WorkspaceRevision: revision + 1, OperationID: operation.ID, TenantID: tenantID,
 			WorkspaceID: workspaceID, ResourcePlaneID: resourcePlaneID, Type: action, CreatedAt: now,
 		})
 		if err != nil {

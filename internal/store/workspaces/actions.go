@@ -39,13 +39,14 @@ type actionRequest struct {
 }
 
 type actionCommand struct {
-	SchemaVersion   int                    `json:"schema_version"`
-	OperationID     domain.OperationID     `json:"operation_id"`
-	TenantID        domain.TenantID        `json:"tenant_id"`
-	WorkspaceID     domain.WorkspaceID     `json:"workspace_id"`
-	ResourcePlaneID domain.ResourcePlaneID `json:"resource_plane_id"`
-	Type            domain.OperationType   `json:"type"`
-	CreatedAt       time.Time              `json:"created_at"`
+	SchemaVersion     int                    `json:"schema_version"`
+	WorkspaceRevision int64                  `json:"workspace_revision,omitempty"`
+	OperationID       domain.OperationID     `json:"operation_id"`
+	TenantID          domain.TenantID        `json:"tenant_id"`
+	WorkspaceID       domain.WorkspaceID     `json:"workspace_id"`
+	ResourcePlaneID   domain.ResourcePlaneID `json:"resource_plane_id"`
+	Type              domain.OperationType   `json:"type"`
+	CreatedAt         time.Time              `json:"created_at"`
 }
 
 // RequestAction changes Desired State and records its Operation, event, and
@@ -123,11 +124,12 @@ func RequestAction(ctx context.Context, pool transaction.Beginner, input ActionI
 		if err := tx.QueryRow(ctx, `SELECT resource_plane_id FROM placements WHERE workspace_id = $1`, input.WorkspaceID).Scan(&resourcePlaneID); err != nil {
 			return ActionResult{}, fmt.Errorf("load Workspace Placement: %w", err)
 		}
-		tag, err := tx.Exec(ctx, `UPDATE workspace_status SET desired_state = $1, updated_at = $2 WHERE workspace_id = $3 AND desired_state = $4`, target, createdAt, input.WorkspaceID, view.Status.DesiredState)
-		if err != nil {
+		var workspaceRevision int64
+		err = tx.QueryRow(ctx, `UPDATE workspace_status SET desired_state = $1, updated_at = $2, reconcile_revision = COALESCE(reconcile_revision, 0) + 1 WHERE workspace_id = $3 AND desired_state = $4 RETURNING reconcile_revision`, target, createdAt, input.WorkspaceID, view.Status.DesiredState).Scan(&workspaceRevision)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return ActionResult{}, fmt.Errorf("update Workspace Desired State: %w", err)
 		}
-		if tag.RowsAffected() != 1 {
+		if errors.Is(err, pgx.ErrNoRows) {
 			// A concurrent retry with the same key may have committed while this
 			// transaction waited for the Desired State row. Return its Operation
 			// instead of surfacing a spurious state conflict.
@@ -160,7 +162,7 @@ func RequestAction(ctx context.Context, pool transaction.Beginner, input ActionI
 			return ActionResult{}, operations.ErrIdempotencyConflict
 		}
 		command, err := json.Marshal(actionCommand{
-			SchemaVersion: 1, OperationID: operation.ID, TenantID: operation.TenantID,
+			SchemaVersion: 2, WorkspaceRevision: workspaceRevision, OperationID: operation.ID, TenantID: operation.TenantID,
 			WorkspaceID: operation.WorkspaceID, ResourcePlaneID: operation.ResourcePlaneID,
 			Type: operation.Type, CreatedAt: operation.CreatedAt,
 		})

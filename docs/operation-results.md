@@ -11,7 +11,7 @@ API -> DB transaction (Workspace + Operation + Outbox)
   -> Result Consumer -> DB transaction (Operation + event + Observed State)
 ```
 
-Result envelopeはschema version 1で、Operation/Tenant/Workspace/Resource Plane ID、Operation type、terminal status、Observed State、完了時刻を含みます。ConsumerはOperationに保存されたtenant、workspace、placement、typeと照合し、不一致を拒否します。
+新しいResult envelopeはschema version 2で、Operation/Tenant/Workspace/Resource Plane ID、Workspace revision、Operation type、terminal status、Observed State、完了時刻を含みます。ConsumerはOperation identityとWorkspaceの現在revisionを照合し、不一致・古いrevisionを適用しません。旧schema version 1のキュー内resultは移行互換として読み取りますがrevision fenceはありません。
 
 ## 状態反映と重複
 
@@ -23,11 +23,12 @@ DB transactionでは、pending Operationをrunningへ進めて`operation.started
 
 ## 起動
 
-Control Plane側で次を設定します。
+Control Plane側では、複数のResource Planeを使う場合、Dispatcherと同じ登録manifestをResult Consumerへ渡します。
 
 ```sh
-export HAKO_OPERATION_RESULT_QUEUE_URL=https://sqs.<region>.amazonaws.com/<account>/hako-operation-results
-export AWS_REGION=<region>
+export HAKO_RESOURCE_PLANE_MANIFEST=./config/resource-planes.json
+# manifest内の各result queueをRegionごとのpoll workerが並行処理する。
+export AWS_REGION=<control-plane-default-region>
 # local PostgreSQL:
 export HAKO_DATABASE_URL='postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable'
 # または本番Aurora DSQL:
@@ -35,8 +36,8 @@ export HAKO_DATABASE_URL='postgres://hako:local-dev-only@127.0.0.1:5432/hako?ssl
 go run ./cmd/hako-result-consumer
 ```
 
-Consumer roleには結果Queueへの`sqs:ReceiveMessage`と`sqs:DeleteMessage`、Control Plane DBへの接続権限が必要です。Resource Plane側には結果Queueへの`sqs:SendMessage`を付与します。Queue、cross-account resource policy、redrive/DLQのTerraformはまだありません。
+単一Queueまたは移行時は`HAKO_OPERATION_RESULT_QUEUE_URL`、複数Queueの手動設定は`HAKO_OPERATION_RESULT_QUEUE_URLS`（Plane IDからQueue URLへのJSON map）も利用できます。manifest、単一Queue、Queue mapは同時指定できません。manifest利用時はQueueごとにRegion-specific SQS clientを作成し、各queueを独立long pollします。Consumer roleには各結果Queueへの`sqs:ReceiveMessage`と`sqs:DeleteMessage`、Control Plane DBへの接続権限が必要です。Resource Plane側には結果Queueへの`sqs:SendMessage`を付与します。Queue、cross-account resource policy、redrive/DLQはTerraformに定義済みですが、AWSには適用していません。
 
 ## 現在の安全境界
 
-このConsumerはOperation IDの結果をCAS/terminal-state guard付きで反映しますが、Workspace generationを含むfencing tokenはまだありません。AWS実リソース作成の部分成功補償やCleanup、DLQの再処理runbookも未実装です。Fake RuntimeとのAPI lifecycle integration testはPostgreSQL上でOutboxにcommitしたcommandを直接Fake Controllerへ渡し、result transportはin-memory queueで模擬します。署名済みsynthetic Cognito tokenを使い、AWS SQS/Cognito実環境なしで実行できます。実SQSプロセス間を通すAWS E2Eは別タスクです。
+Version 2のresultにはmonotonicなWorkspace revisionを含めます。現在revisionと一致しない古いresultはno-opとしてackします。Schema version 1は既存Queue drain期間のために引き続き受け付けます。AWS実リソース作成の部分成功補償やCleanup、DLQの再処理runbookも未実装です。Fake RuntimeとのAPI lifecycle integration testはPostgreSQL上でOutboxにcommitしたcommandを直接Fake Controllerへ渡し、result transportはin-memory queueで模擬します。実SQSプロセス間を通すAWS E2Eは別タスクです。

@@ -29,6 +29,8 @@ type TenantPlacementPolicy struct {
 	AllowedRegions       []string   `json:"allowed_regions"`
 	ResourcePlaneIDs     []string   `json:"resource_plane_ids"`
 	RequiredCapabilities []string   `json:"required_capabilities"`
+	MaxCostTier          string     `json:"max_cost_tier,omitempty"`
+	MinimumIsolationTier string     `json:"minimum_isolation_tier,omitempty"`
 	UpdatedAt            *time.Time `json:"updated_at,omitempty"`
 }
 
@@ -180,7 +182,9 @@ func PutTenantPlacementPolicy(ctx context.Context, baseURL, accessToken string, 
 		AllowedRegions       []string `json:"allowed_regions"`
 		ResourcePlaneIDs     []string `json:"resource_plane_ids"`
 		RequiredCapabilities []string `json:"required_capabilities"`
-	}{policy.AllowedRegions, policy.ResourcePlaneIDs, policy.RequiredCapabilities})
+		MaxCostTier          string   `json:"max_cost_tier,omitempty"`
+		MinimumIsolationTier string   `json:"minimum_isolation_tier,omitempty"`
+	}{policy.AllowedRegions, policy.ResourcePlaneIDs, policy.RequiredCapabilities, policy.MaxCostTier, policy.MinimumIsolationTier})
 	if err != nil {
 		return result, fmt.Errorf("encode Tenant placement policy: %w", err)
 	}

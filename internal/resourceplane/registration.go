@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 )
@@ -73,6 +74,42 @@ func Parse(data []byte) (Manifest, error) {
 	return manifest, nil
 }
 
+// LoadFile reads and validates a manifest from disk.
+func LoadFile(path string) (Manifest, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return Manifest{}, errors.New("Resource Plane manifest path is required")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return Manifest{}, fmt.Errorf("open Resource Plane manifest: %w", err)
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, MaxManifestBytes+1))
+	if err != nil {
+		return Manifest{}, fmt.Errorf("read Resource Plane manifest: %w", err)
+	}
+	return Parse(data)
+}
+
+// CommandQueueURLs returns a copy of the Dispatcher routing table.
+func (manifest Manifest) CommandQueueURLs() map[string]string {
+	queueURLs := make(map[string]string, len(manifest.ResourcePlanes))
+	for _, registration := range manifest.ResourcePlanes {
+		queueURLs[registration.ID] = registration.CommandQueueURL
+	}
+	return queueURLs
+}
+
+// ResultQueueURLs returns a copy of the Result Consumer queue table.
+func (manifest Manifest) ResultQueueURLs() map[string]string {
+	queueURLs := make(map[string]string, len(manifest.ResourcePlanes))
+	for _, registration := range manifest.ResourcePlanes {
+		queueURLs[registration.ID] = registration.ResultQueueURL
+	}
+	return queueURLs
+}
+
 // Validate checks stable IDs, AWS placement metadata, endpoints, and the
 // version-1 capability vocabulary. Capabilities are normalized in place.
 func (manifest *Manifest) Validate() error {
@@ -86,6 +123,7 @@ func (manifest *Manifest) Validate() error {
 		return errors.New("at least one Resource Plane registration is required")
 	}
 	seenIDs := make(map[string]struct{}, len(manifest.ResourcePlanes))
+	seenQueueURLs := make(map[string]string, len(manifest.ResourcePlanes)*2)
 	for i := range manifest.ResourcePlanes {
 		registration := &manifest.ResourcePlanes[i]
 		if !resourcePlaneIDPattern.MatchString(registration.ID) {
@@ -130,6 +168,15 @@ func (manifest *Manifest) Validate() error {
 		}
 		if registration.CommandQueueURL == registration.ResultQueueURL {
 			return fmt.Errorf("resource_planes[%d] command and result queues must be different", i)
+		}
+		for _, queue := range []struct{ role, url string }{
+			{role: "command", url: registration.CommandQueueURL},
+			{role: "result", url: registration.ResultQueueURL},
+		} {
+			if prior, exists := seenQueueURLs[queue.url]; exists {
+				return fmt.Errorf("resource_planes[%d] %s queue URL is already assigned to %s", i, queue.role, prior)
+			}
+			seenQueueURLs[queue.url] = registration.ID + " " + queue.role
 		}
 	}
 	return nil

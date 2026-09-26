@@ -36,6 +36,6 @@ Resource Planeのterminal resultは[`operations.ApplyResult`](operation-results.
 
 Operationの状態とWorkspaceの観測状態は別概念です。Transition呼び出しでは、Resource Plane等から確認した観測状態だけを任意に渡します。Desired Stateはこの処理では変更しません。Operation状態、event履歴、observed stateは同一transactionで確定します。
 
-`workspace_status.reconcile_revision`は複数Reconciler間の同一状態claimを防ぐために使いますが、Resource Plane結果をfenceするWorkspace generationではありません。古いOperation結果が新しいDesired Stateを上書きしないためのgeneration/fencing token、およびResource ControllerでのOperation順序制御は未実装です。
+`workspace_status.reconcile_revision`はWorkspace generationとして、初回create、明示的なDesired State action、Reconciler claimで単調増加します。新しいschema v2 command/resultにrevisionを含め、Control Planeは現在revisionと異なる結果をno-opにします。Fake Runtimeもprocess-local watermarkで古いcommandを拒否します。実Runtimeのdurable watermark / delete tombstoneと副作用前のatomic fencingは未実装であり、schema v1 legacy messageにはgeneration fenceがありません。
 
 Event payloadは省略可能なJSONで、`event_type`は非空の文字列です。イベントは追記専用として扱い、状態変更の監査履歴と再構築可能な進捗記録に使います。

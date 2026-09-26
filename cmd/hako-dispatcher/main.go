@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -15,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/mo3789530/hako/internal/dispatcher"
+	"github.com/mo3789530/hako/internal/resourceplane"
 	"github.com/mo3789530/hako/internal/store/dsql"
 	"github.com/mo3789530/hako/internal/store/transaction"
 )
@@ -28,7 +30,7 @@ func main() {
 	}
 	defer pool.Close()
 
-	queueURLs, err := configuredQueueURLs()
+	queues, err := configuredQueues()
 	if err != nil {
 		log.Fatalf("configure Resource Plane queues: %v", err)
 	}
@@ -36,7 +38,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("load AWS SDK configuration: %v", err)
 	}
-	publisher, err := dispatcher.NewSQSPublisher(sqs.NewFromConfig(awsCfg))
+	queueURLs := make(map[string]string, len(queues))
+	regionalClients := make(map[string]dispatcher.SQSAPI, len(queues))
+	for resourcePlaneID, queue := range queues {
+		queueURLs[resourcePlaneID] = queue.URL
+		if queue.Region != "" {
+			regionalConfig := awsCfg
+			regionalConfig.Region = queue.Region
+			regionalClients[queue.URL] = sqs.NewFromConfig(regionalConfig)
+		}
+	}
+	publisher, err := dispatcher.NewRegionalSQSPublisher(sqs.NewFromConfig(awsCfg), regionalClients)
 	if err != nil {
 		log.Fatalf("configure SQS publisher: %v", err)
 	}
@@ -65,17 +77,62 @@ func main() {
 	}
 }
 
+type queueConfiguration struct {
+	URL    string
+	Region string
+}
+
 func configuredQueueURLs() (map[string]string, error) {
+	queues, err := configuredQueues()
+	if err != nil {
+		return nil, err
+	}
+	queueURLs := make(map[string]string, len(queues))
+	for resourcePlaneID, queue := range queues {
+		queueURLs[resourcePlaneID] = queue.URL
+	}
+	return queueURLs, nil
+}
+
+func configuredQueues() (map[string]queueConfiguration, error) {
+	manifestPath := strings.TrimSpace(os.Getenv("HAKO_RESOURCE_PLANE_MANIFEST"))
+	manifestJSON := strings.TrimSpace(os.Getenv("HAKO_RESOURCE_PLANE_MANIFEST_JSON"))
 	raw := strings.TrimSpace(os.Getenv("HAKO_RESOURCE_PLANE_QUEUE_URLS"))
+	configured := 0
+	for _, value := range []string{manifestPath, manifestJSON, raw} {
+		if value != "" {
+			configured++
+		}
+	}
+	if configured > 1 {
+		return nil, errors.New("set only one of HAKO_RESOURCE_PLANE_MANIFEST, HAKO_RESOURCE_PLANE_MANIFEST_JSON, or HAKO_RESOURCE_PLANE_QUEUE_URLS")
+	}
+	if manifestPath != "" || manifestJSON != "" {
+		var manifest resourceplane.Manifest
+		var err error
+		if manifestPath != "" {
+			manifest, err = resourceplane.LoadFile(manifestPath)
+		} else {
+			manifest, err = resourceplane.Parse([]byte(manifestJSON))
+		}
+		if err != nil {
+			return nil, fmt.Errorf("load Resource Plane manifest: %w", err)
+		}
+		queues := make(map[string]queueConfiguration, len(manifest.ResourcePlanes))
+		for _, registration := range manifest.ResourcePlanes {
+			queues[registration.ID] = queueConfiguration{URL: registration.CommandQueueURL, Region: registration.Region}
+		}
+		return queues, nil
+	}
 	if raw == "" {
 		return nil, errors.New("HAKO_RESOURCE_PLANE_QUEUE_URLS is required")
 	}
-	var queueURLs map[string]string
-	if err := json.Unmarshal([]byte(raw), &queueURLs); err != nil || len(queueURLs) == 0 {
+	var rawQueueURLs map[string]string
+	if err := json.Unmarshal([]byte(raw), &rawQueueURLs); err != nil || len(rawQueueURLs) == 0 {
 		return nil, errors.New("HAKO_RESOURCE_PLANE_QUEUE_URLS must be a non-empty JSON object of Resource Plane IDs to SQS queue URLs")
 	}
-	normalized := make(map[string]string, len(queueURLs))
-	for resourcePlaneID, queueURL := range queueURLs {
+	normalized := make(map[string]queueConfiguration, len(rawQueueURLs))
+	for resourcePlaneID, queueURL := range rawQueueURLs {
 		resourcePlaneID = strings.TrimSpace(resourcePlaneID)
 		queueURL = strings.TrimSpace(queueURL)
 		if resourcePlaneID == "" || queueURL == "" {
@@ -84,7 +141,7 @@ func configuredQueueURLs() (map[string]string, error) {
 		if _, exists := normalized[resourcePlaneID]; exists {
 			return nil, errors.New("HAKO_RESOURCE_PLANE_QUEUE_URLS contains duplicate normalized Resource Plane IDs")
 		}
-		normalized[resourcePlaneID] = queueURL
+		normalized[resourcePlaneID] = queueConfiguration{URL: queueURL}
 	}
 	return normalized, nil
 }

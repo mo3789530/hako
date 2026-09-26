@@ -45,7 +45,9 @@ func main() {
 		Image:                strings.TrimSpace(os.Getenv("HAKO_DEFAULT_WORKSPACE_IMAGE")),
 	}
 	handler := api.NewHandler(verifier, databasePool, createConfig)
-	if strings.TrimSpace(os.Getenv("AWS_LAMBDA_RUNTIME_API")) != "" {
+	// The ZIP deployment uses the Go Lambda runtime directly. The OCI image
+	// includes Lambda Web Adapter and must run this same app as an HTTP server.
+	if shouldStartLambdaRuntime(os.Getenv("AWS_LAMBDA_RUNTIME_API"), os.Getenv("HAKO_API_HTTP_MODE")) {
 		lambda.Start(apigwlambda.New(handler).Handle)
 		return
 	}
@@ -77,6 +79,10 @@ func main() {
 			log.Printf("shutdown Hako API: %v", err)
 		}
 	}
+}
+
+func shouldStartLambdaRuntime(runtimeAPI, httpMode string) bool {
+	return strings.TrimSpace(runtimeAPI) != "" && strings.TrimSpace(httpMode) != "true"
 }
 
 func openDatabase(ctx context.Context) (*pgxpool.Pool, error) {

@@ -17,19 +17,21 @@ Control Plane Outbox -> command SQS -> Fake Resource Controller
 
 ## Command / Result
 
-ControllerはJSON envelope `schema_version: 1`を受け付けます。必須情報はOperation、Tenant、Workspace、Resource Plane ID、Operation type、作成時刻です。未知フィールド、未対応version/type、別Resource Plane宛のcommandは拒否します。結果もschema version 1で、Operation/Tenant/Workspace/Resource Plane ID、type、terminal status、Observed State、完了時刻を含みます。
+Controllerは旧キュー互換のschema version 1と、新規writerが使うschema version 2を受け付けます。Version 2は正の`workspace_revision`を必須とし、結果も同じschema version/revisionをechoします。未知フィールド、未対応version/type、別Resource Plane宛のcommand、不正なrevisionは拒否します。
 
 対応Operationは`ensure_running`、`resume`、`suspend`、`delete`です。Fake RuntimeはそれぞれObserved Stateを`running`、`running`、`suspended`、`deleted`へ設定します。Operation IDを冪等キーとして結果をキャッシュし、同じOperationの再配送では状態変更を繰り返さず同じ結果を返します。同じOperation IDを異なるWorkspace/typeで再利用するとエラーになります。
 
-実行成功時は`status: succeeded`とObserved State、実行失敗時は`status: failed`、`observed_state: failed`、`error_code: runtime_error`を含む結果を送信します。Result Consumerは保存済みOperation identityと照合して状態を反映し、重複・遅延したterminal結果をno-opとしてackします。Workspace generation/fencingは未実装です。
+Fake RuntimeはOperation IDの結果を冪等に返し、Workspace revision watermarkより古いrevisionや、同じrevisionで異なるOperationを拒否します。Controllerは成功時にObserved State、失敗時に`observed_state: failed`と`error_code`を含むresultを送信します。Result Consumerも現在revisionと照合して古いresultを適用しません。Fake watermarkはプロセス内のみです。実Runtimeはresource bindingと削除tombstoneを含む耐久メタデータでrevisionを比較・更新してからAWS side effectを行う必要があり、その実装は未完了です。
 
 ## 再配送とSQS
 
-Workerは最大10件のbatchをlong pollし、batch内のmessageを並行処理します。各処理中messageのvisibilityをtimeoutの半分ごとに延長し、実行timeout（既定15分）を超えたRuntime呼び出しは`operation_timeout`結果として報告します。timeout値は`HAKO_OPERATION_TIMEOUT`（Go duration、例`15m`）、初回visibilityは`HAKO_SQS_VISIBILITY_TIMEOUT`（秒、1〜43200）で設定できます。
+Workerは最大10件のbatchをlong pollし、batch内のmessageを並行処理します。各処理中messageのvisibilityをtimeoutの半分ごとに延長し、実行timeout（既定15分）を超えたRuntime呼び出しは`operation_timeout`結果として報告します。timeout値は`HAKO_OPERATION_TIMEOUT`（Go duration、例`15m`）、未実行commandの最大ageは`HAKO_COMMAND_MAX_AGE`（既定`30m`）、初回visibilityは`HAKO_SQS_VISIBILITY_TIMEOUT`（秒、1〜43200）で設定できます。
 
-結果Queueへの送信が成功してからcommand messageを削除します。処理または結果送信に失敗したmessageは削除せず、`ApproximateReceiveCount`に基づく指数backoff（既定1秒から最大1分）をSQS visibilityへ設定します。したがってcommand deliveryと結果通知はat-least-onceであり、Runtimeの冪等性とresult consumerのCASが必要です。
+Controllerは`created_at`が現在時刻より5分を超えて未来ならcommandを拒否し、Queue retry/DLQ対象にします。最大ageを超えているcommandはRuntimeを呼ばず、`operation_expired` failed resultを報告します。結果送信に成功すればWorkerはそのcommandをackし、pending Operationは通常のFailure cooldown後にReconcilerが現在のDesired Stateへ収束させます。結果送信に失敗した場合はcommandを残して再試行します。`HAKO_COMMAND_MAX_AGE`はControl Planeの`HAKO_RECONCILER_OPERATION_TIMEOUT`以下に設定してください（両方の既定値は30分）。
 
-不正commandも現在は削除せず再配送対象になります。Resource Plane queue/DLQのTerraform定義は実装済みで、command/resultごとのDLQ、redrive policy、DLQ redrive allow policyを設定し、既定の`maxReceiveCount`は5です。ただしLambdaやevent source mappingへの接続・AWS apply・DLQ監視/redrive手順は未実装です。詳細は[Resource Plane queues and DLQ](resource-plane-queues-and-dlq.md)を参照してください。Control PlaneのReconcilerは30分（`HAKO_RECONCILER_OPERATION_TIMEOUT`で変更可能）更新のないpending/running Operationをfailedにし、`operation.timed_out` eventを記録します。ただしこれはmessageやRuntime processをcancelせず、Observed Stateも変更しません。late command/resultや部分作成リソースの補償にはRuntime-side fencing/cleanupが別途必要です。仕様は[Workspace Reconciler](reconciler.md#stale-operation-timeout)を参照してください。
+結果Queueへの送信が成功してからcommand messageを削除します。処理または結果送信に失敗したmessageは削除せず、`ApproximateReceiveCount`に基づく指数backoff（既定1秒から最大1分）をSQS visibilityへ設定します。したがってcommand deliveryと結果通知はat-least-onceであり、Runtimeの冪等性とversion-2 Workspace revision fenceが必要です。
+
+不正commandも現在は削除せず再配送対象になります。Resource Plane queue/DLQのTerraform定義は実装済みで、command/resultごとのDLQ、redrive policy、DLQ redrive allow policy、DLQ/backlog/age alarmを設定し、既定の`maxReceiveCount`は5です。ただしAWS applyとDLQ確認/redrive手順は未実装です。詳細は[Resource Plane queues and DLQ](resource-plane-queues-and-dlq.md)を参照してください。Control PlaneのReconcilerは30分（`HAKO_RECONCILER_OPERATION_TIMEOUT`で変更可能）更新のないpending/running Operationをfailedにし、`operation.timed_out` eventを記録します。これはmessageや既に実行中のRuntime processをcancelしません。Version 2 fenceはsuperseded command/resultを拒否しますが、実Runtime側のdurable watermarkと部分作成リソースの補償cleanupは別途必要です。仕様は[Workspace Reconciler](reconciler.md#stale-operation-timeout)を参照してください。
 
 ## ローカル実行
 

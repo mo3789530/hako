@@ -22,6 +22,7 @@ const HealthFreshnessTTL = 5 * time.Minute
 type Policy struct {
 	TenantID             domain.TenantID
 	ResourcePlaneID      domain.ResourcePlaneID
+	RuntimeClass         string
 	Region               string
 	RequiredCapabilities []string
 }
@@ -29,6 +30,8 @@ type Policy struct {
 type candidate struct {
 	id                 domain.ResourcePlaneID
 	region             string
+	costTier           string
+	isolationTier      string
 	capabilities       []string
 	load               int64
 	capacityConfigured bool
@@ -65,7 +68,7 @@ func Select(ctx context.Context, tx pgx.Tx, policy Policy) (domain.ResourcePlane
 	}
 	healthCutoff := time.Now().UTC().Add(-HealthFreshnessTTL)
 	rows, err := tx.Query(ctx, `WITH candidate_planes AS (
-			SELECT rp.id, rp.region, rp.capabilities_json, COUNT(ws.workspace_id) AS load,
+			SELECT rp.id, rp.region, rp.cost_tier, rp.isolation_tier, rp.capabilities_json, COUNT(ws.workspace_id) AS load,
 				rpc.resource_plane_id IS NOT NULL AS capacity_configured,
 				CASE
 					WHEN rph.status = 'unhealthy' THEN 'unhealthy'
@@ -79,12 +82,14 @@ func Select(ctx context.Context, tx pgx.Tx, policy Policy) (domain.ResourcePlane
 			LEFT JOIN placements p ON p.resource_plane_id = rp.id
 			LEFT JOIN workspace_status ws ON ws.workspace_id = p.workspace_id AND ws.observed_state <> 'deleted'
 			WHERE ($1 = '' OR rp.id = $1) AND ($2 = '' OR rp.region = $2)
-			GROUP BY rp.id, rp.region, rp.capabilities_json, rpc.resource_plane_id, rph.status, rph.updated_at
+			GROUP BY rp.id, rp.region, rp.cost_tier, rp.isolation_tier, rp.capabilities_json, rpc.resource_plane_id, rph.status, rph.updated_at
 		)
-		SELECT id, region, capabilities_json, load, capacity_configured, effective_health
+		SELECT id, region, cost_tier, isolation_tier, capabilities_json, load, capacity_configured, effective_health
 		FROM candidate_planes
 		WHERE effective_health <> 'unhealthy'
-		ORDER BY CASE effective_health WHEN 'healthy' THEN 0 ELSE 1 END, load, region, id`, policy.ResourcePlaneID, policy.Region, healthCutoff)
+		ORDER BY CASE effective_health WHEN 'healthy' THEN 0 ELSE 1 END,
+			CASE WHEN $4::BOOLEAN THEN CASE cost_tier WHEN 'low' THEN 1 WHEN 'standard' THEN 2 WHEN 'high' THEN 3 ELSE 4 END ELSE 0 END,
+			load, region, id`, policy.ResourcePlaneID, policy.Region, healthCutoff, tenantPolicy.MaxCostTier != "")
 	if err != nil {
 		return "", fmt.Errorf("query active Resource Plane candidates: %w", err)
 	}
@@ -93,7 +98,7 @@ func Select(ctx context.Context, tx pgx.Tx, policy Policy) (domain.ResourcePlane
 	for rows.Next() {
 		var item candidate
 		var rawCapabilities string
-		if err := rows.Scan(&item.id, &item.region, &rawCapabilities, &item.load, &item.capacityConfigured, &item.healthStatus); err != nil {
+		if err := rows.Scan(&item.id, &item.region, &item.costTier, &item.isolationTier, &rawCapabilities, &item.load, &item.capacityConfigured, &item.healthStatus); err != nil {
 			return "", fmt.Errorf("scan Resource Plane candidate: %w", err)
 		}
 		if err := json.Unmarshal([]byte(rawCapabilities), &item.capabilities); err != nil {
@@ -106,11 +111,15 @@ func Select(ctx context.Context, tx pgx.Tx, policy Policy) (domain.ResourcePlane
 	}
 	rows.Close()
 	for _, item := range candidates {
-		if !matchesTenantPlane(item.id, tenantPolicy.ResourcePlaneIDs) || !matchesTenantRegion(item.region, tenantPolicy.AllowedRegions) || !containsCapabilities(item.capabilities, required) {
+		if !matchesTenantPlane(item.id, tenantPolicy.ResourcePlaneIDs) ||
+			!matchesTenantRegion(item.region, tenantPolicy.AllowedRegions) ||
+			!containsCapabilities(item.capabilities, required) ||
+			!matchesCostTier(item.costTier, tenantPolicy.MaxCostTier) ||
+			!matchesIsolationTier(item.isolationTier, tenantPolicy.MinimumIsolationTier) {
 			continue
 		}
 		if item.capacityConfigured {
-			available, err := resourcecapacity.Reserve(ctx, tx, item.id, time.Now().UTC())
+			available, err := resourcecapacity.Reserve(ctx, tx, item.id, policy.RuntimeClass, time.Now().UTC())
 			if err != nil {
 				return "", err
 			}
@@ -121,6 +130,24 @@ func Select(ctx context.Context, tx pgx.Tx, policy Policy) (domain.ResourcePlane
 		return item.id, nil
 	}
 	return "", ErrNoEligibleResourcePlane
+}
+
+func matchesCostTier(planeTier, maximum string) bool {
+	if maximum == "" {
+		return true
+	}
+	planeRank := placementpolicies.CostTierRank(planeTier)
+	maximumRank := placementpolicies.CostTierRank(maximum)
+	return planeRank > 0 && maximumRank > 0 && planeRank <= maximumRank
+}
+
+func matchesIsolationTier(planeTier, minimum string) bool {
+	if minimum == "" {
+		return true
+	}
+	planeRank := placementpolicies.IsolationTierRank(planeTier)
+	minimumRank := placementpolicies.IsolationTierRank(minimum)
+	return planeRank > 0 && minimumRank > 0 && planeRank >= minimumRank
 }
 
 func matchesTenantPlane(id domain.ResourcePlaneID, allowed []string) bool {

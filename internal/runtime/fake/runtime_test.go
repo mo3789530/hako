@@ -74,3 +74,35 @@ func TestRuntimeHonorsCancelledContext(t *testing.T) {
 		t.Fatalf("expected canceled context, got %v", err)
 	}
 }
+
+func TestRuntimeRejectsStaleAndReplayedWorkspaceRevisions(t *testing.T) {
+	runtime := New()
+	command := resourcecontroller.Command{
+		SchemaVersion: 2, WorkspaceRevision: 4, OperationID: "op_4", TenantID: "tenant_1",
+		WorkspaceID: "ws_fenced", ResourcePlaneID: "rp_1", Type: domain.OperationEnsureRunning,
+	}
+	if _, err := runtime.Execute(context.Background(), command); err != nil {
+		t.Fatalf("apply current Workspace revision: %v", err)
+	}
+	newer := command
+	newer.SchemaVersion = 2
+	newer.WorkspaceRevision = 5
+	newer.OperationID = "op_5"
+	newer.Type = domain.OperationSuspend
+	if _, err := runtime.Execute(context.Background(), newer); err != nil {
+		t.Fatalf("apply newer Workspace revision: %v", err)
+	}
+	stale := command
+	stale.OperationID = "op_stale"
+	if _, err := runtime.Execute(context.Background(), stale); !errors.Is(err, ErrStaleWorkspaceRevision) {
+		t.Fatalf("older Workspace revision should be fenced, got %v", err)
+	}
+	replayedGeneration := newer
+	replayedGeneration.OperationID = "op_same_generation"
+	if _, err := runtime.Execute(context.Background(), replayedGeneration); !errors.Is(err, ErrStaleWorkspaceRevision) {
+		t.Fatalf("different Operation at an already-applied revision should be fenced, got %v", err)
+	}
+	if state, ok := runtime.State("ws_fenced"); !ok || state != domain.ObservedWorkspaceSuspended {
+		t.Fatalf("stale command changed current Runtime state: %s, %t", state, ok)
+	}
+}

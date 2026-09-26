@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os"
 	"os/signal"
@@ -32,6 +33,10 @@ func main() {
 		}
 		executionTimeout = parsed
 	}
+	maxCommandAge, err := parseCommandMaxAge(os.Getenv("HAKO_COMMAND_MAX_AGE"))
+	if err != nil {
+		log.Fatal(err)
+	}
 	visibilityTimeout := 60 * time.Second
 	if raw := strings.TrimSpace(os.Getenv("HAKO_SQS_VISIBILITY_TIMEOUT")); raw != "" {
 		seconds, err := strconv.Atoi(raw)
@@ -55,7 +60,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("configure Operation result queue: %v", err)
 	}
-	controller, err := resourcecontroller.NewWithExecutionTimeout(resourcePlaneID, fakeruntime.New(), resultSink, nil, executionTimeout)
+	controller, err := resourcecontroller.NewWithExecutionTimeoutAndMaxCommandAge(resourcePlaneID, fakeruntime.New(), resultSink, nil, executionTimeout, maxCommandAge)
 	if err != nil {
 		log.Fatalf("configure fake Resource Controller: %v", err)
 	}
@@ -65,7 +70,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("configure Resource Plane SQS worker: %v", err)
 	}
-	log.Printf("Fake Resource Controller started for %s (operation timeout=%s, SQS visibility=%s)", resourcePlaneID, executionTimeout, visibilityTimeout)
+	log.Printf("Fake Resource Controller started for %s (operation timeout=%s, max command age=%s, SQS visibility=%s)", resourcePlaneID, executionTimeout, maxCommandAge, visibilityTimeout)
 	for {
 		stats, err := worker.RunOnce(ctx)
 		if err != nil {
@@ -77,4 +82,15 @@ func main() {
 			return
 		}
 	}
+}
+
+func parseCommandMaxAge(raw string) (time.Duration, error) {
+	if strings.TrimSpace(raw) == "" {
+		return 30 * time.Minute, nil
+	}
+	parsed, err := time.ParseDuration(strings.TrimSpace(raw))
+	if err != nil || parsed <= 0 {
+		return 0, errors.New("HAKO_COMMAND_MAX_AGE must be a positive Go duration, such as 30m")
+	}
+	return parsed, nil
 }

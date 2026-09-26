@@ -12,16 +12,40 @@
 
 ## Configuration and running locally
 
-Set `HAKO_DATABASE_URL` for local PostgreSQL or `HAKO_DSQL_HOST` for Aurora DSQL. Map Resource Plane IDs to SQS Queue URLs:
+Set `HAKO_DATABASE_URL` for local PostgreSQL or `HAKO_DSQL_HOST` for Aurora DSQL. For multiple Resource Planes, point the Dispatcher at the validated registration manifest:
 
 ```sh
 export HAKO_DATABASE_URL='postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable'
-export HAKO_RESOURCE_PLANE_QUEUE_URLS='{"rp-tokyo-01":"https://sqs.ap-northeast-1.amazonaws.com/123456789012/hako-rp-tokyo-01"}'
-export AWS_REGION=ap-northeast-1
+export HAKO_RESOURCE_PLANE_MANIFEST=./config/resource-planes.json
+# The manifest provides each plane's command queue URL and Region.
 go run ./cmd/hako-dispatcher
 ```
 
-`HAKO_DISPATCHER_INTERVAL` controls polling and defaults to `2s`. The AWS SDK default credential chain supplies credentials; no long-lived access key is configured. The dispatcher role requires `sqs:SendMessage` for each mapped queue. For queues in Resource Plane accounts, their SQS resource policy must also trust the Control Plane role. Queue creation, cross-account resource policies, and IAM deployment are deferred to Terraform work.
+For a single/migration deployment, `HAKO_RESOURCE_PLANE_QUEUE_URLS` still accepts a JSON map of Plane IDs to URLs. Do not set more than one of the manifest path, manifest JSON, or legacy URL map. `HAKO_DISPATCHER_INTERVAL` controls local process polling and defaults to `2s`. The AWS SDK default credential chain supplies credentials; no long-lived access key is configured. The dispatcher role requires `sqs:SendMessage` for each mapped queue. A Region-specific AWS SDK client is created for each manifest Queue; legacy URL maps use the default `AWS_REGION`. For queues in Resource Plane accounts, their SQS resource policy must also trust the Control Plane role. The queue/DLQ and cross-account queue policies are defined in [Resource Plane queues and DLQ](resource-plane-queues-and-dlq.md), but are not deployed until an operator applies the Resource Plane Terraform root.
+
+## Scheduled Lambda deployment
+
+`cmd/hako-dispatcher-lambda` runs one Outbox batch per EventBridge schedule
+invocation. Build the arm64 custom-runtime artifact with
+`make build-dispatcher-lambda`. The Control Plane Terraform creates a stable
+least-privilege execution role and log group by default. After the Resource
+Plane command queue policies trust the output `outbox_dispatcher_role_arn`,
+enable `enable_outbox_dispatcher` and provide the versioned manifest JSON. Its
+command queue ARNs are derived from that manifest; the role receives only
+`sqs:SendMessage` on those queues and `dsql:DbConnect` for the custom
+`hako_dispatcher` database role. The SQL bootstrap grants that DB role
+`SELECT`/`UPDATE` on `outbox_events` only.
+
+EventBridge triggers the Lambda once per minute, with bounded target retries;
+the Outbox remains the durable source of work if an invocation fails. Batch
+size is 10 and the lease is two minutes, longer than the Lambda's 60-second
+timeout, so a concurrent/retried invocation cannot immediately reclaim a live
+batch. Invocation errors raise a CloudWatch alarm. Dispatcher enablement is
+opt-in and must follow this order: create Control Plane roles → bootstrap DSQL
+custom roles and run migrations → apply Resource Plane queues/policies with the
+exact Dispatcher role ARN → provide the queue manifest and enable the Lambda.
+Never enable the schedule before the database role and all manifest queues are
+ready; otherwise periodic invocations will fail and raise the error alarm.
 
 ## Current boundary
 

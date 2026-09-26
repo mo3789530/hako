@@ -60,6 +60,35 @@ func TestSQSPublisherAddsStableEventAttributesAndFIFOKeys(t *testing.T) {
 	}
 }
 
+func TestRegionalSQSPublisherRoutesByQueueURL(t *testing.T) {
+	defaultClient := &captureSQS{}
+	regionalClient := &captureSQS{}
+	queueURL := "https://sqs.us-west-2.amazonaws.com/123456789012/commands"
+	publisher, err := NewRegionalSQSPublisher(defaultClient, map[string]SQSAPI{queueURL: regionalClient})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := outbox.Event{ID: "evt_region", AggregateID: "op_region", EventType: "operation.requested", Payload: []byte(`{}`)}
+	if err := publisher.Publish(context.Background(), queueURL, event); err != nil {
+		t.Fatal(err)
+	}
+	if regionalClient.input == nil || defaultClient.input != nil {
+		t.Fatalf("regional queue was not routed to its dedicated client: regional=%+v default=%+v", regionalClient.input, defaultClient.input)
+	}
+	if err := publisher.Publish(context.Background(), "https://sqs.example/legacy", event); err != nil {
+		t.Fatal(err)
+	}
+	if defaultClient.input == nil {
+		t.Fatal("unmapped legacy queue should use the default client")
+	}
+	if _, err := NewRegionalSQSPublisher(nil, nil); err == nil {
+		t.Fatal("regional publisher requires a default client")
+	}
+	if _, err := NewRegionalSQSPublisher(defaultClient, map[string]SQSAPI{" ": regionalClient}); err == nil {
+		t.Fatal("regional client must have a non-empty queue URL")
+	}
+}
+
 func awsString(value *string) string {
 	if value == nil {
 		return ""

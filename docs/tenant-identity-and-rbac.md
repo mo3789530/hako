@@ -4,7 +4,7 @@
 
 The API first validates the Cognito access token, then resolves its verified `sub` through `users.ResolveCognitoSubject` to a stable Hako `User.id`. Cognito `sub` is the external identity key; email is not an identity key and is deliberately not inferred from the access token. Profile/email synchronization requires a separately verified source and is not part of this step.
 
-The resolver uses `(cognito_subject)` uniqueness and an idempotent upsert. Its generated Hako User ID remains stable across OCC transaction retries. Cognito Groups are not mapped to Tenant roles; Tenant authorization is controlled only by `tenant_members`.
+The resolver uses `(cognito_subject)` uniqueness and an idempotent upsert. Its generated Hako User ID remains stable across OCC transaction retries. Cognito Groups are not mapped to Tenant roles; Tenant authorization is controlled only by `tenant_members`. A separate verified `hako-admin` Cognito group is reserved for explicitly platform-wide administrative routes and never grants Tenant or Workspace access.
 
 Resolving a Cognito identity does **not** automatically create Tenant membership. An authenticated user with no membership receives no Tenant access. Tenant invitations/creation and membership administration are separate operations.
 
@@ -27,6 +27,12 @@ Call membership authorization in the same transaction as the protected resource 
 Missing Tenants and non-members both return the same `404` error envelope, `{"error":{"code":"not_found","message":"Tenant not found"}}`. Database failures return a generic `503`; database details are not exposed. A valid user without the required OAuth scope is rejected before a Hako User is resolved/created.
 
 The CLI command `hako tenant membership <tenant-id>` calls this route with the access token from the OS credential store and prints the Tenant ID, Hako User ID, and role. It does not print token material. The API origin is configured via `HAKO_API_URL`.
+
+The platform-only Resource Plane health routes are separate from Tenant RBAC:
+they require a verified Cognito `hako-admin` group and still resolve the caller
+to a Hako User for audit attribution. Tenant Owner/Admin membership alone does
+not grant these platform permissions. Group provisioning is an operator-owned
+Cognito task because the dev Terraform module consumes an existing User Pool.
 
 Future Tenant-scoped handlers must apply the same authenticated Hako User and membership guard before reading or changing tenant-owned data. For mutations, membership checking should be in the same transaction as the protected operation where practical.
 

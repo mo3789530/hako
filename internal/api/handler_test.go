@@ -42,8 +42,19 @@ func TestHealthRequiresValidAccessTokenAndHakoScope(t *testing.T) {
 	}
 	handler := NewHandler(verifier, nil)
 
-	request := httptest.NewRequest(http.MethodGet, "/v1/health", nil)
+	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("public liveness endpoint returned HTTP %d, want 200 JSON: %s", recorder.Code, recorder.Body.String())
+	}
+	var healthBody healthResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &healthBody); err != nil || healthBody.Status != "ok" {
+		t.Fatalf("public liveness endpoint returned unexpected body %s (decode error=%v)", recorder.Body.String(), err)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/v1/health", nil)
+	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("missing token returned HTTP %d, want 401", recorder.Code)
@@ -112,6 +123,50 @@ func TestDecodeJSONRequestRejectsUnknownTrailingAndOversizedBodies(t *testing.T)
 				t.Fatalf("isRequestTooLarge = %t, want %t (err=%v)", got, test.wantTooLarge, err)
 			}
 		})
+	}
+}
+
+func TestRequireCognitoGroupUsesOnlyVerifiedPrincipalAndResourcePlaneIDsAreBounded(t *testing.T) {
+	tests := []struct {
+		name   string
+		groups []string
+		want   int
+	}{
+		{name: "admin", groups: []string{"hako-admin"}, want: http.StatusNoContent},
+		{name: "unrelated group", groups: []string{"hako-user"}, want: http.StatusForbidden},
+		{name: "no principal", want: http.StatusUnauthorized},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			e := echo.New()
+			handler := RequireCognitoGroup("hako-admin")(func(c *echo.Context) error {
+				return c.NoContent(http.StatusNoContent)
+			})
+			request := httptest.NewRequest(http.MethodGet, "/", nil)
+			recorder := httptest.NewRecorder()
+			ctx := e.NewContext(request, recorder)
+			if test.groups != nil {
+				ctx.Set(principalKey, auth.Principal{CognitoSubject: "verified-subject", Groups: test.groups})
+			}
+			if err := handler(ctx); err != nil {
+				t.Fatalf("middleware returned handler error: %v", err)
+			}
+			if recorder.Code != test.want {
+				t.Fatalf("group check returned HTTP %d, want %d", recorder.Code, test.want)
+			}
+		})
+	}
+	for _, test := range []struct {
+		id   string
+		want bool
+	}{
+		{id: "rp-1", want: true}, {id: "1rp", want: true}, {id: "rp-alpha-2", want: true},
+		{id: "", want: false}, {id: "-rp", want: false}, {id: "RP", want: false},
+		{id: "rp.one", want: false}, {id: strings.Repeat("a", 33), want: false},
+	} {
+		if got := validResourcePlaneID(test.id); got != test.want {
+			t.Errorf("validResourcePlaneID(%q) = %t, want %t", test.id, got, test.want)
+		}
 	}
 }
 

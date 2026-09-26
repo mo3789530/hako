@@ -22,6 +22,7 @@ import (
 	"github.com/mo3789530/hako/internal/store/audit"
 	"github.com/mo3789530/hako/internal/store/operations"
 	"github.com/mo3789530/hako/internal/store/placementpolicies"
+	"github.com/mo3789530/hako/internal/store/resourceplanehealth"
 	"github.com/mo3789530/hako/internal/store/transaction"
 	"github.com/mo3789530/hako/internal/store/users"
 	"github.com/mo3789530/hako/internal/store/workspaces"
@@ -69,6 +70,13 @@ type tenantPlacementPolicyRequest struct {
 	AllowedRegions       []string `json:"allowed_regions"`
 	ResourcePlaneIDs     []string `json:"resource_plane_ids"`
 	RequiredCapabilities []string `json:"required_capabilities"`
+	MaxCostTier          string   `json:"max_cost_tier"`
+	MinimumIsolationTier string   `json:"minimum_isolation_tier"`
+}
+
+type resourcePlaneHealthRequest struct {
+	Status string `json:"status"`
+	Reason string `json:"reason"`
 }
 
 type workspaceActionResponse struct {
@@ -89,8 +97,8 @@ type errorBody struct {
 
 const maxJSONRequestBytes = 16 << 10
 
-// NewHandler builds the Echo API, verifies Cognito access tokens globally, and
-// applies OAuth scopes at the protected route boundary.
+// NewHandler builds the Echo API with a minimal public liveness endpoint and
+// verifies Cognito access tokens on all application API routes.
 func NewHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, createConfig ...WorkspaceCreateConfig) *echo.Echo {
 	var workspaceConfig WorkspaceCreateConfig
 	if len(createConfig) > 0 {
@@ -101,40 +109,124 @@ func NewHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, creat
 	}
 	e := echo.New()
 	e.HTTPErrorHandler = apiErrorHandler
-	e.Use(CognitoMiddleware(verifier))
-	e.GET("/v1/health", health, RequireScopes(auth.HakoAPIScope))
-	e.GET("/v1/tenants/:tenant_id/membership", tenantMembership,
+	e.GET("/healthz", publicHealth)
+	protected := e.Group("", CognitoMiddleware(verifier))
+	protected.GET("/v1/health", health, RequireScopes(auth.HakoAPIScope))
+	protected.GET("/v1/tenants/:tenant_id/membership", tenantMembership,
 		RequireScopes(auth.HakoAPIScope),
 		HakoUserMiddleware(pool),
 		TenantMembershipMiddleware(pool),
 	)
-	e.GET("/v1/tenants/:tenant_id/placement-policy", getTenantPlacementPolicy(pool),
+	protected.GET("/v1/tenants/:tenant_id/placement-policy", getTenantPlacementPolicy(pool),
 		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool),
 	)
-	e.PUT("/v1/tenants/:tenant_id/placement-policy", putTenantPlacementPolicy(pool),
+	protected.PUT("/v1/tenants/:tenant_id/placement-policy", putTenantPlacementPolicy(pool),
 		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool),
 	)
-	e.POST("/v1/tenants/:tenant_id/workspaces", createWorkspace(pool, workspaceConfig),
+	protected.GET("/v1/admin/resource-planes/:resource_plane_id/health", getResourcePlaneHealth(pool),
+		RequireScopes(auth.HakoAPIScope), RequireCognitoGroup("hako-admin"), HakoUserMiddleware(pool),
+	)
+	protected.PUT("/v1/admin/resource-planes/:resource_plane_id/health", putResourcePlaneHealth(pool),
+		RequireScopes(auth.HakoAPIScope), RequireCognitoGroup("hako-admin"), HakoUserMiddleware(pool),
+	)
+	protected.POST("/v1/tenants/:tenant_id/workspaces", createWorkspace(pool, workspaceConfig),
 		RequireScopes(auth.HakoAPIScope),
 		HakoUserMiddleware(pool),
 		TenantMembershipMiddleware(pool),
 	)
-	e.GET("/v1/tenants/:tenant_id/workspaces", listWorkspaces(pool),
+	protected.GET("/v1/tenants/:tenant_id/workspaces", listWorkspaces(pool),
 		RequireScopes(auth.HakoAPIScope),
 		HakoUserMiddleware(pool),
 		TenantMembershipMiddleware(pool),
 	)
-	e.GET("/v1/tenants/:tenant_id/workspaces/:workspace_id", getWorkspace(pool),
+	protected.GET("/v1/tenants/:tenant_id/workspaces/:workspace_id", getWorkspace(pool),
 		RequireScopes(auth.HakoAPIScope),
 		HakoUserMiddleware(pool),
 		TenantMembershipMiddleware(pool),
 	)
-	e.POST("/v1/tenants/:tenant_id/workspaces/:workspace_id/actions", requestWorkspaceAction(pool),
+	protected.POST("/v1/tenants/:tenant_id/workspaces/:workspace_id/actions", requestWorkspaceAction(pool),
 		RequireScopes(auth.HakoAPIScope),
 		HakoUserMiddleware(pool),
 		TenantMembershipMiddleware(pool),
 	)
 	return e
+}
+
+func getResourcePlaneHealth(pool transaction.Beginner) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		_, ok := HakoUserFromContext(c)
+		if !ok || pool == nil {
+			return databaseUnavailable(c)
+		}
+		planeID := strings.TrimSpace(c.Param("resource_plane_id"))
+		if !validResourcePlaneID(planeID) {
+			return invalidResourcePlaneHealth(c)
+		}
+		health, err := transaction.Within(c.Request().Context(), pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (resourceplanehealth.Health, error) {
+			return resourceplanehealth.Get(ctx, tx, domain.ResourcePlaneID(planeID), time.Now().UTC())
+		})
+		if errors.Is(err, resourceplanehealth.ErrNotFound) {
+			return c.JSON(http.StatusNotFound, errorResponse{Error: errorBody{Code: "not_found", Message: "Resource Plane not found"}})
+		}
+		if err != nil {
+			return databaseUnavailable(c)
+		}
+		return c.JSON(http.StatusOK, health)
+	}
+}
+
+func putResourcePlaneHealth(pool transaction.Beginner) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		user, ok := HakoUserFromContext(c)
+		if !ok || pool == nil {
+			return databaseUnavailable(c)
+		}
+		planeID := strings.TrimSpace(c.Param("resource_plane_id"))
+		if !validResourcePlaneID(planeID) {
+			return invalidResourcePlaneHealth(c)
+		}
+		var request resourcePlaneHealthRequest
+		if err := decodeJSONRequest(c, &request); err != nil {
+			if isRequestTooLarge(err) {
+				return requestTooLarge(c)
+			}
+			return invalidResourcePlaneHealth(c)
+		}
+		status := resourceplanehealth.Status(strings.TrimSpace(request.Status))
+		if _, err := resourceplanehealth.Validate(status, request.Reason); err != nil {
+			return invalidResourcePlaneHealth(c)
+		}
+		health, err := transaction.Within(c.Request().Context(), pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (resourceplanehealth.Health, error) {
+			return resourceplanehealth.Put(ctx, tx, domain.ResourcePlaneID(planeID), status, request.Reason, user.ID, time.Now().UTC())
+		})
+		if errors.Is(err, resourceplanehealth.ErrNotFound) {
+			return c.JSON(http.StatusNotFound, errorResponse{Error: errorBody{Code: "not_found", Message: "Resource Plane not found"}})
+		}
+		if err != nil {
+			return databaseUnavailable(c)
+		}
+		return c.JSON(http.StatusOK, health)
+	}
+}
+
+func validResourcePlaneID(value string) bool {
+	if len(value) == 0 || len(value) > 32 {
+		return false
+	}
+	first := value[0]
+	if (first < 'a' || first > 'z') && (first < '0' || first > '9') {
+		return false
+	}
+	for _, r := range value {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func invalidResourcePlaneHealth(c *echo.Context) error {
+	return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_request", Message: "resource plane health requires a valid ID, status, and bounded reason"}})
 }
 
 func getTenantPlacementPolicy(pool transaction.Beginner) echo.HandlerFunc {
@@ -177,6 +269,7 @@ func putTenantPlacementPolicy(pool transaction.Beginner) echo.HandlerFunc {
 		policy := placementpolicies.Policy{
 			TenantID: tenantID, AllowedRegions: request.AllowedRegions,
 			ResourcePlaneIDs: request.ResourcePlaneIDs, RequiredCapabilities: request.RequiredCapabilities,
+			MaxCostTier: request.MaxCostTier, MinimumIsolationTier: request.MinimumIsolationTier,
 		}
 		if _, err := placementpolicies.Normalize(policy); err != nil {
 			return invalidPlacementPolicyRequest(c)
@@ -189,9 +282,10 @@ func putTenantPlacementPolicy(pool transaction.Beginner) echo.HandlerFunc {
 			if err != nil {
 				return placementpolicies.Policy{}, err
 			}
-			details, err := json.Marshal(map[string]int{
+			details, err := json.Marshal(map[string]any{
 				"allowed_region_count": len(updated.AllowedRegions), "resource_plane_count": len(updated.ResourcePlaneIDs),
 				"required_capability_count": len(updated.RequiredCapabilities),
+				"max_cost_tier":             updated.MaxCostTier, "minimum_isolation_tier": updated.MinimumIsolationTier,
 			})
 			if err != nil {
 				return placementpolicies.Policy{}, fmt.Errorf("encode placement policy audit details: %w", err)
@@ -215,7 +309,7 @@ func putTenantPlacementPolicy(pool transaction.Beginner) echo.HandlerFunc {
 }
 
 func invalidPlacementPolicyRequest(c *echo.Context) error {
-	return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_request", Message: "placement policy must contain valid selector lists with at most 50 unique non-empty entries each"}})
+	return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_request", Message: "placement policy selectors and Cost/Isolation tiers are invalid"}})
 }
 
 func requestWorkspaceAction(pool transaction.Beginner) echo.HandlerFunc {
@@ -452,6 +546,10 @@ func health(c *echo.Context) error {
 	return c.JSON(http.StatusOK, healthResponse{Status: "ok"})
 }
 
+func publicHealth(c *echo.Context) error {
+	return c.JSON(http.StatusOK, healthResponse{Status: "ok"})
+}
+
 func tenantMembership(c *echo.Context) error {
 	membership, ok := c.Get(membershipKey).(domain.TenantMembership)
 	if !ok {
@@ -504,6 +602,26 @@ func RequireScopes(required ...string) echo.MiddlewareFunc {
 				}
 			}
 			return next(c)
+		}
+	}
+}
+
+// RequireCognitoGroup checks a group claim from the already verified Cognito
+// access token. It is intended only for platform-level roles, not Tenant RBAC.
+func RequireCognitoGroup(required string) echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error {
+			principal, ok := c.Get(principalKey).(auth.Principal)
+			if !ok {
+				c.Response().Header().Set("WWW-Authenticate", `Bearer realm="hako"`)
+				return c.JSON(http.StatusUnauthorized, errorResponse{Error: errorBody{Code: "unauthorized", Message: "Valid bearer access token required"}})
+			}
+			for _, group := range principal.Groups {
+				if group == required {
+					return next(c)
+				}
+			}
+			return c.JSON(http.StatusForbidden, errorResponse{Error: errorBody{Code: "insufficient_platform_role", Message: "Platform administrator role is required"}})
 		}
 	}
 }

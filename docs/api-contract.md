@@ -4,6 +4,15 @@ The public Control Plane API is versioned under `/v1`. This document records the
 implemented request, error, pagination, and audit conventions so the CLI and API
 can evolve independently.
 
+## Health endpoints
+
+`GET /healthz` is an unauthenticated, minimal liveness endpoint for load
+balancers and Lambda Web Adapter readiness checks. It returns only
+`{"status":"ok"}` and does not disclose database, Tenant, or Workspace
+details. `GET /v1/health` remains part of the protected API and requires a
+valid Cognito access token with the `hako/api` scope. API Gateway explicitly
+exempts only `GET /healthz`; its `$default` route protects all other paths.
+
 ## Request validation
 
 JSON mutation endpoints accept one JSON object, reject unknown fields, reject
@@ -38,9 +47,18 @@ and `offset`; cursor pagination is not implemented yet.
 Workspace create, suspend, resume, and delete requests, plus Tenant placement
 policy updates, append an immutable actor-oriented row to `audit_events` in the
 same database transaction as the desired-state/policy mutation and outbox
-command. Idempotent replays do not create duplicate audit rows. Each row records
-the Tenant, actor User, action, target, safe summary details, and UTC occurrence
-time. Workspace lifecycle Operation history remains separate: it records
+command. Platform administrator updates to Resource Plane Health append a row
+to `platform_audit_events` in the same transaction as the health report. The
+platform audit stream has no Tenant owner because these operations target
+platform resources. Its current writer stores the actor, action, target,
+timestamp, and safe status summary; it omits free-form Health reason text. There
+is not yet a public audit read/export API. Health responses identify whether
+the latest report came from an `operator` or `automated` source. Automated
+reports are recorded in `resource_plane_health_events`, without creating a
+synthetic human actor; their authenticated ingress and audit export remain
+future work. Idempotent replays do not create
+duplicate audit rows. Tenant audit rows record the Tenant, actor User, action,
+target, safe summary details, and UTC occurrence time. Workspace lifecycle Operation history remains separate: it records
 asynchronous execution and system/reconciler transitions, while `audit_events`
 records who requested an API mutation.
 

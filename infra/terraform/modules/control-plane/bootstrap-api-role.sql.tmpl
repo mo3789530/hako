@@ -1,0 +1,13 @@
+-- Run once as the Aurora DSQL admin role after applying Control Plane Terraform.
+-- Replace the placeholder with module output api_lambda_role_arn.
+CREATE ROLE hako_api WITH LOGIN;
+AWS IAM GRANT hako_api TO 'REPLACE_WITH_API_LAMBDA_ROLE_ARN';
+GRANT USAGE ON SCHEMA public TO hako_api;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO hako_api;
+
+-- The Dispatcher role can claim/publish Outbox rows but cannot alter schema or
+-- access Workspace, Tenant, User, Session, or Operation tables.
+CREATE ROLE hako_dispatcher WITH LOGIN;
+AWS IAM GRANT hako_dispatcher TO 'REPLACE_WITH_OUTBOX_DISPATCHER_ROLE_ARN';
+GRANT USAGE ON SCHEMA public TO hako_dispatcher;
+GRANT SELECT, UPDATE ON TABLE outbox_events TO hako_dispatcher;

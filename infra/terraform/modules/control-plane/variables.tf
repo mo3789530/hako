@@ -4,6 +4,128 @@ variable "api_name" {
   default     = "hako-control-plane"
 }
 
+variable "aws_region" {
+  description = "Region used to construct the Aurora DSQL IAM-authenticated endpoint."
+  type        = string
+}
+
+variable "api_lambda_zip_path" {
+  description = "Path to the arm64 custom-runtime ZIP produced by make build-api-lambda."
+  type        = string
+}
+
+variable "api_lambda_image_uri" {
+  description = "Optional immutable same-Region ECR image URI (including @sha256 digest) used to create a blue/green API Lambda candidate. Empty omits the candidate."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.api_lambda_image_uri == "" || can(regex("^[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com\\/.+@sha256:[0-9a-f]{64}$", var.api_lambda_image_uri))
+    error_message = "api_lambda_image_uri must be empty or a same-account ECR image URI pinned by sha256 digest."
+  }
+}
+
+variable "api_lambda_image_active" {
+  description = "Route API Gateway traffic to the prepared image Lambda candidate. Requires api_lambda_image_uri; defaults false so candidates can be tested before promotion."
+  type        = bool
+  default     = false
+
+  validation {
+    condition     = !var.api_lambda_image_active || trimspace(var.api_lambda_image_uri) != ""
+    error_message = "api_lambda_image_active requires api_lambda_image_uri to identify a prepared image candidate."
+  }
+}
+
+variable "dsql_deletion_protection_enabled" {
+  description = "Protect the Control Plane DSQL cluster from accidental deletion."
+  type        = bool
+  default     = true
+}
+
+variable "default_workspace_image" {
+  description = "Image identifier passed to newly created Workspaces."
+  type        = string
+  default     = "hako-dev:latest"
+}
+
+variable "default_workspace_runtime_class" {
+  description = "Default Hako Runtime Class passed to the API Lambda."
+  type        = string
+  default     = "standard"
+}
+
+variable "api_lambda_memory_size" {
+  description = "Memory allocated to the Control Plane API Lambda in MiB."
+  type        = number
+  default     = 1024
+
+  validation {
+    condition     = var.api_lambda_memory_size >= 128 && var.api_lambda_memory_size <= 10240
+    error_message = "api_lambda_memory_size must be between 128 and 10240 MiB."
+  }
+}
+
+variable "api_lambda_timeout_seconds" {
+  description = "API Lambda timeout; must fit within the HTTP API integration timeout."
+  type        = number
+  default     = 25
+
+  validation {
+    condition     = var.api_lambda_timeout_seconds >= 1 && var.api_lambda_timeout_seconds <= 29 && floor(var.api_lambda_timeout_seconds) == var.api_lambda_timeout_seconds
+    error_message = "api_lambda_timeout_seconds must be between 1 and 29 seconds."
+  }
+}
+
+variable "lambda_log_retention_days" {
+  description = "Retention period for API Lambda logs."
+  type        = number
+  default     = 30
+
+  validation {
+    condition     = contains([1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1827, 3653], var.lambda_log_retention_days)
+    error_message = "lambda_log_retention_days must be a supported CloudWatch Logs retention value."
+  }
+}
+
+variable "tags" {
+  description = "Additional tags applied to taggable Control Plane resources; Hako ownership tags are reserved."
+  type        = map(string)
+  default     = {}
+}
+
+variable "enable_outbox_dispatcher" {
+  description = "Opt in to the scheduled Outbox Dispatcher Lambda after Resource Plane queue setup is ready."
+  type        = bool
+  default     = false
+}
+
+variable "dispatcher_lambda_zip_path" {
+  description = "Path to the arm64 custom-runtime ZIP produced by make build-dispatcher-lambda."
+  type        = string
+  default     = "../../../../../build/hako-dispatcher.zip"
+
+  validation {
+    condition     = !var.enable_outbox_dispatcher || fileexists(var.dispatcher_lambda_zip_path)
+    error_message = "Build the Outbox Dispatcher Lambda zip before enabling it."
+  }
+}
+
+variable "resource_plane_manifest_json" {
+  description = "Versioned Resource Plane manifest JSON embedded in the optional Dispatcher Lambda environment."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = !var.enable_outbox_dispatcher || (
+      length(var.resource_plane_manifest_json) > 0 &&
+      length(var.resource_plane_manifest_json) <= 2500 &&
+      can(jsondecode(var.resource_plane_manifest_json).schema_version == 1) &&
+      can(length(jsondecode(var.resource_plane_manifest_json).resource_planes) > 0)
+    )
+    error_message = "When enabled, the Dispatcher needs a valid non-empty version-1 manifest no larger than 2500 bytes."
+  }
+}
+
 variable "cognito_issuer_url" {
   description = "Exact Cognito User Pool issuer URL, including the user pool ID path."
   type        = string
@@ -11,16 +133,6 @@ variable "cognito_issuer_url" {
   validation {
     condition     = can(regex("^https://[^/]+/.+", var.cognito_issuer_url))
     error_message = "cognito_issuer_url must be the HTTPS Cognito issuer URL including the user pool path."
-  }
-}
-
-variable "api_lambda_arn" {
-  description = "ARN of the Lambda function that runs cmd/hako-api in API Gateway Lambda mode."
-  type        = string
-
-  validation {
-    condition     = can(regex("^arn:[^:]+:lambda:[^:]+:[0-9]{12}:function:.+", var.api_lambda_arn))
-    error_message = "api_lambda_arn must be a Lambda function ARN."
   }
 }
 

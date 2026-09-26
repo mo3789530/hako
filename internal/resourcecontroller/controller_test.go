@@ -67,10 +67,14 @@ func (s *testSink) Report(_ context.Context, result Result) error {
 }
 
 func encodedCommand(t *testing.T, resourcePlaneID domain.ResourcePlaneID) []byte {
+	return encodedCommandAt(t, resourcePlaneID, time.Now().UTC())
+}
+
+func encodedCommandAt(t *testing.T, resourcePlaneID domain.ResourcePlaneID, createdAt time.Time) []byte {
 	t.Helper()
 	command := Command{
-		SchemaVersion: 1, OperationID: "op_1", TenantID: "tenant_1", WorkspaceID: "ws_1",
-		ResourcePlaneID: resourcePlaneID, Type: domain.OperationEnsureRunning, CreatedAt: time.Now().UTC(),
+		SchemaVersion: 2, WorkspaceRevision: 1, OperationID: "op_1", TenantID: "tenant_1", WorkspaceID: "ws_1",
+		ResourcePlaneID: resourcePlaneID, Type: domain.OperationEnsureRunning, CreatedAt: createdAt,
 	}
 	encoded, err := json.Marshal(command)
 	if err != nil {
@@ -82,11 +86,12 @@ func encodedCommand(t *testing.T, resourcePlaneID domain.ResourcePlaneID) []byte
 func TestControllerHandlesDuplicateAndReportsResultAtLeastOnce(t *testing.T) {
 	runtime := &testRuntime{}
 	sink := &testSink{}
-	controller, err := New("rp_1", runtime, sink, func() time.Time { return time.Unix(100, 0).UTC() })
+	now := time.Now().UTC()
+	controller, err := New("rp_1", runtime, sink, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
-	command := encodedCommand(t, "rp_1")
+	command := encodedCommandAt(t, "rp_1", now)
 	if err := controller.Handle(context.Background(), command); err != nil {
 		t.Fatalf("handle command: %v", err)
 	}
@@ -96,8 +101,44 @@ func TestControllerHandlesDuplicateAndReportsResultAtLeastOnce(t *testing.T) {
 	if runtime.calls != 1 || len(sink.results) != 2 {
 		t.Fatalf("duplicate delivery should be applied once but report may be repeated: calls=%d results=%d", runtime.calls, len(sink.results))
 	}
-	if sink.results[0].OperationID != sink.results[1].OperationID || sink.results[0].ObservedState != domain.ObservedWorkspaceRunning || sink.results[0].Status != domain.OperationSucceeded {
+	if sink.results[0].OperationID != sink.results[1].OperationID || sink.results[0].WorkspaceRevision != 1 || sink.results[0].ObservedState != domain.ObservedWorkspaceRunning || sink.results[0].Status != domain.OperationSucceeded {
 		t.Fatalf("unexpected reported result: %+v %+v", sink.results[0], sink.results[1])
+	}
+}
+
+func TestControllerRejectsExpiredCommandsWithoutExecutingRuntime(t *testing.T) {
+	now := time.Date(2026, 9, 25, 0, 0, 0, 0, time.UTC)
+	runtime := &testRuntime{}
+	sink := &testSink{}
+	controller, err := NewWithExecutionTimeoutAndMaxCommandAge("rp_1", runtime, sink, func() time.Time { return now }, time.Minute, 10*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := encodedCommandAt(t, "rp_1", now.Add(-10*time.Minute-time.Second))
+	if err := controller.Handle(context.Background(), command); err != nil {
+		t.Fatalf("expired command should be reported and acknowledged: %v", err)
+	}
+	if runtime.calls != 0 {
+		t.Fatalf("expired command reached Runtime %d times", runtime.calls)
+	}
+	if len(sink.results) != 1 || sink.results[0].Status != domain.OperationFailed || sink.results[0].ErrorCode != "operation_expired" || sink.results[0].ObservedState != domain.ObservedWorkspaceFailed {
+		t.Fatalf("expired command result = %+v", sink.results)
+	}
+}
+
+func TestControllerRejectsFarFutureCommands(t *testing.T) {
+	now := time.Date(2026, 9, 25, 0, 0, 0, 0, time.UTC)
+	runtime := &testRuntime{}
+	sink := &testSink{}
+	controller, err := New("rp_1", runtime, sink, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Handle(context.Background(), encodedCommandAt(t, "rp_1", now.Add(5*time.Minute+time.Second))); err == nil {
+		t.Fatal("far-future command should be rejected for queue redrive/DLQ")
+	}
+	if runtime.calls != 0 || len(sink.results) != 0 {
+		t.Fatalf("far-future command was applied: runtime=%d results=%d", runtime.calls, len(sink.results))
 	}
 }
 
@@ -116,6 +157,39 @@ func TestControllerRejectsWrongResourcePlaneAndInvalidEnvelope(t *testing.T) {
 	}
 	if runtime.calls != 0 || len(sink.results) != 0 {
 		t.Fatalf("invalid commands must not reach Runtime or result sink: runtime=%d results=%d", runtime.calls, len(sink.results))
+	}
+}
+
+func TestControllerRequiresRevisionForVersionTwoCommandsAndPreservesLegacyVersionOne(t *testing.T) {
+	now := time.Now().UTC()
+	runtime := &testRuntime{}
+	sink := &testSink{}
+	controller, err := New("rp_1", runtime, sink, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingRevision, err := json.Marshal(Command{
+		SchemaVersion: 2, OperationID: "op_missing_revision", TenantID: "tenant_1", WorkspaceID: "ws_1",
+		ResourcePlaneID: "rp_1", Type: domain.OperationEnsureRunning, CreatedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Handle(context.Background(), missingRevision); err == nil {
+		t.Fatal("schema version 2 command without a revision should be rejected")
+	}
+	legacy, err := json.Marshal(Command{
+		SchemaVersion: 1, OperationID: "op_legacy", TenantID: "tenant_1", WorkspaceID: "ws_legacy",
+		ResourcePlaneID: "rp_1", Type: domain.OperationEnsureRunning, CreatedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Handle(context.Background(), legacy); err != nil {
+		t.Fatalf("legacy schema version 1 command should remain readable during rollout: %v", err)
+	}
+	if len(sink.results) != 1 || sink.results[0].SchemaVersion != 1 || sink.results[0].WorkspaceRevision != 0 {
+		t.Fatalf("legacy result should preserve version and unversioned semantics: %+v", sink.results)
 	}
 }
 

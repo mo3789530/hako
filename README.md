@@ -34,6 +34,8 @@ Control Plane != Data Plane
 Hako User Identity != AWS IAM Identity
 ```
 
+将来拡張として、GitHubを開発の入口、Hakoを実行・環境・自動化の中核とする **Hako Software Factory** を計画しています。GitHub App/Webhook、Repository Registry、Pipeline/Job、ephemeral self-hosted runner、Checks API、Agent Workloadを段階導入する構想です。これは未実装のロードマップであり、詳細な権限・信頼境界・実装順は[Hako Software Factory](docs/software-factory.md)を参照してください。
+
 ## 2. 全体アーキテクチャ
 
 ```text
@@ -1531,10 +1533,10 @@ Hakoは最初は **Lambda MicroVMを使ったRemote Development Environment** �
 - [x] TerraformでControl Plane API Gateway HTTP APIとCognito JWT authorizerを定義する。
 - [x] Cognito User Poolに`hako/api` custom scopeを定義し、CLI loginで要求する。
 - [x] Terraformで`hako/api`を許可するpublic Cognito CLI app clientを作成する。
-- [x] Go APIにaccess-token認証と`hako/api` scope必須の`GET /v1/health` routeを実装する。
+- [x] Go APIに認証不要の最小`GET /healthz`とaccess-token/`hako/api` scope必須の`GET /v1/health`を実装し、API Gatewayでも`/healthz`だけJWT認証から除外する。
 - [x] CLIからkeyring内access tokenで保護APIを呼ぶ`hako api health`を追加する。
 - [x] API handlerを標準`net/http`からEcho v5へ移行し、認証・scope middleware、route、JSONエラー応答、テストをEcho上で統一する。
-- [x] API Gateway route/Lambda integrationを実装し、Gateway側でも`hako/api` scopeを強制する。Go Lambda adapterとpackage手順は[API Gateway Lambda](docs/api-gateway-lambda.md)を参照（Function/Role/DSQL接続のTerraformとAWS applyは後続項目）。
+- [x] API Gateway route/Lambda integrationを実装し、Gateway側でも`hako/api` scopeを強制する。Go Lambda adapterとpackage手順は[API Gateway Lambda](docs/api-gateway-lambda.md)を参照（Function/Role/DSQL接続のTerraformも実装済み。AWS applyとDB bootstrapは運用作業）。
 - [x] 検証済みCognito `sub`を安定したHako Userへ対応付けるstore primitiveを実装する。
 - [x] Tenant Membershipのrole lookup/require primitiveを実装し、非所属Tenantを拒否する。
 - [x] Tenant membership routeで検証済みCognito `sub`をHako Userへ解決し、Tenant membershipを照合する。非所属・存在しないTenantの同一404、scope順序、DB障害応答をテストする。
@@ -1548,29 +1550,30 @@ Hakoは最初は **Lambda MicroVMを使ったRemote Development Environment** �
 
 ### Phase 3: 非同期制御とFake Runtime
 
-- [x] Outbox DispatcherからResource Plane別SQSへOperation commandをat-least-once配送する。Lease回収、指数backoff、実行設定は[Outbox Dispatcher](docs/outbox-dispatcher.md)を参照。
+- [x] Outbox DispatcherからResource Plane別SQSへOperation commandをat-least-once配送し、opt-inのEventBridge Scheduled Lambda、最小IAM、失敗alarmを追加する。Lease回収、指数backoff、AWS設定・有効化順序は[Outbox Dispatcher](docs/outbox-dispatcher.md)を参照。
 - [x] Schedulerでactive状態・capability・任意region制約を確認してPlacementを選択し、既存Workspace数でtie-breakする。[Scheduler Placement](docs/scheduler-placement.md)。
-- [ ] Tenant別Placement policy、容量reservation、health/cost/isolation条件をSchedulerに追加する（Tenant policy、Resource Plane別Workspace枠、Health優先・unhealthy除外・5分freshness TTLを実装済み。Health自動収集/API、Cost/Isolation条件、CPU/RAM単位の容量判定は未実装）。[Tenant Placement Policy](docs/tenant-placement-policy.md)、[Resource Plane Capacity](docs/resource-plane-capacity.md)、[Resource Plane Health](docs/resource-plane-health.md)。
+- [ ] Tenant別Placement policy、容量reservation、health/cost/isolation条件をSchedulerに追加する（Tenant policy、Resource Plane別Workspace/CPU/RAM予約とRuntime Class別需要設定、Health優先・unhealthy除外・5分freshness TTL、TenantのCost ceiling/Isolation floorを実装済み。Health report source/historyの保存基盤を追加。Resource Plane reporter、AWS probe、安全なingress/queue、scheduleは未実装）。[Tenant Placement Policy](docs/tenant-placement-policy.md)、[Resource Plane Capacity](docs/resource-plane-capacity.md)、[Resource Plane Health](docs/resource-plane-health.md)。
 - [x] ReconcilerでDesired/Observed State差分からcorrective Operation、event、Outbox commandを原子的に生成する。競合claim、state mapping、failure cooldownは[Workspace Reconciler](docs/reconciler.md)を参照。
 - [x] Operationを重複受信しても安全なFake Resource ControllerとFake Runtimeを実装する。[Fake Resource Controller](docs/fake-resource-controller.md)。
-- [ ] リトライ、可視性タイムアウト、DLQ、Operation timeout、Cleanupを実装する（Worker retry/backoff・visibility延長・Runtime実行timeout・Control Plane stale Operation回収に加え、Resource Plane command/result queueとDLQのTerraform定義を実装済み。AWS適用・DLQ監視/redrive、late command fencing、実リソースCleanupは未完了）。[Fake Resource Controller](docs/fake-resource-controller.md)、[Resource Plane queues and DLQ](docs/resource-plane-queues-and-dlq.md)、[Workspace Reconciler](docs/reconciler.md)。
+- [ ] リトライ、可視性タイムアウト、DLQ、Operation timeout、Cleanupを実装する（Worker retry/backoff・visibility延長・Runtime実行timeout・Control Plane stale Operation回収、queue/DLQ監視alarm、schema v2 Workspace revisionによるControl Plane/Fake Runtime fencing、既定30分を超えた未実行commandの拒否を実装済み。実Runtimeのdurable fencing、部分成功の補償Cleanup、AWS適用・DLQ確認/redriveは未完了）。[Fake Resource Controller](docs/fake-resource-controller.md)、[Resource Plane command/result protocol](docs/resource-plane-command-protocol.md)、[Resource Plane queues and DLQ](docs/resource-plane-queues-and-dlq.md)、[Workspace Reconciler](docs/reconciler.md)。
 - [x] APIからWorkspace作成、起動、停止、削除までをFake Runtimeで通す。結果Queue ConsumerがOperationとObserved Stateを反映する（PostgreSQL integration test、in-memory queue）。[Operation Result Consumer](docs/operation-results.md)。
 - [x] Fake Runtimeを使い、ログイン後のWorkspace作成から起動・状態確認・停止・削除までを通すintegration E2Eを追加する。[Authenticated CLI Lifecycle E2E](docs/cli-lifecycle-e2e.md)。
 - [x] E2Eで重複Operation、結果ack失敗後の再試行、非同期状態遷移、他ユーザーWorkspaceへの認可拒否を検証する。[Authenticated CLI Lifecycle E2E](docs/cli-lifecycle-e2e.md)。
 
 ### Phase 4: Resource Plane AWS統合
 
-- [x] Resource Plane登録・構成形式と必要Capabilityを定義する（version付きJSON manifestとstrict validatorを用意。DSQLへの登録自動化および複数result queue接続は未実装）。[Resource Plane registration manifest](docs/resource-plane-registration.md)。
-- [ ] TerraformでResource Controller Lambda、Queue、IAM Role、結果通知経路を構築する（command/result Queue・DLQ・redrive policy・queue policy・最小IAM Role・Log Groupを定義済み。Lambda function/event source mappingとAWS applyは未実施）。[Resource Plane queues and DLQ](docs/resource-plane-queues-and-dlq.md)。
-- [ ] TerraformでControl Plane側のAPI Gateway、Lambda、Cognito、DSQL、Outbox配信基盤を構築する。
-- [ ] TerraformでResource Plane側のGateway、ネットワーク、ログ・監視基盤を構築する。
-- [ ] Terraform moduleの入力・出力、必須タグ、IAM最小権限、環境差分を文書化する（Resource Plane messaging moduleの範囲は記載済み。全moduleの網羅は未完了）。[Resource Plane queues and DLQ](docs/resource-plane-queues-and-dlq.md)。
+- [x] Resource Plane登録・構成形式と必要Capabilityを定義する（version付きJSON manifestとstrict validatorを用意し、Dispatcher/Result Consumerから複数QueueをRegion-awareに利用）。DSQLへの登録自動化は未実装。[Resource Plane registration manifest](docs/resource-plane-registration.md)。
+- [ ] TerraformでResource Controller Lambda、Queue、IAM Role、結果通知経路を構築する（command/result Queue・DLQ・redrive policy・queue policy・最小IAM Role・Log Groupに加え、明示opt-inのFake Runtime専用LambdaとSQS event source mappingを定義。実Runtime・本番Lambda・AWS applyは未完了）。[Resource Plane queues and DLQ](docs/resource-plane-queues-and-dlq.md)、[Resource Controller Lambda](docs/resource-controller-lambda.md)。
+- [ ] TerraformでControl Plane側のAPI Gateway、Lambda、Cognito、DSQL、Outbox配信基盤を構築する（HTTP API、API Lambda、DSQL、最小DB/IAMとopt-inのEventBridge Scheduled Outbox Dispatcher Lambdaを実装。Cognito User Pool、AWS apply、SQL role bootstrap・migrationの実環境適用は未完了。Dispatcherに専用Queueは作らず、各Resource Planeのcommand queueへ直接配信する）。[Control Plane Terraform](docs/control-plane-terraform.md)。
+- [ ] Hako API LambdaをZIP/custom runtimeからDocker/OCIコンテナイメージ方式へ移行する（Lambda Web Adapter、arm64 multi-stage build、同一Regionのimmutable ECR・scan/lifecycle、digest固定の別Lambda候補、API Gateway切替フラグ、ローカルHTTP smoke testを実装・検証済み。AWS candidateへのAPI Gateway v2 event直接invoke、ECR pushと実環境cutover/rollback検証は未完了）。[API Gateway and Lambda](docs/api-gateway-lambda.md)。
+- [ ] TerraformでResource Plane側のGateway、ネットワーク、ログ・監視基盤を構築する（QueueのDLQ/滞留/backlog監視とFake Controller errors alarm、保持期間を実装。Gateway、VPC/subnet、Flow Logs、production監視は未実装）。[Terraform module documentation](docs/terraform-modules.md)。
+- [x] 現在のTerraform moduleの入力・出力、必須タグ、IAM最小権限、dev環境差分を文書化する（Control Plane/Resource Planeの現行2 moduleを網羅。新module追加時は本書も更新）。[Terraform module documentation](docs/terraform-modules.md)。
 - [ ] Lambda MicroVMのEnsureRunning、Suspend、Resume、Delete実装を追加する。
-- [ ] 作成するAWSリソースにtenant/workspace/operationタグを付与し、タグによる再発見を実装する。
+- [ ] 作成するAWSリソースにtenant/workspace/operationタグを付与し、タグによる再発見を実装する（tag schemaとscope helper/test、Control/Resource shared infraの所有tagを実装。Workspace AWS resource tagging/discoveryはRuntime未実装）。[AWS resource ownership tags](docs/aws-resource-tags.md)。
 - [ ] リソース作成失敗・部分成功時の補償処理とCleanupを実装する。
-- [ ] Control PlaneとResource Plane間のメッセージ署名、認可、バージョニングを定義する。
-- [ ] AWS検証環境でWorkspace作成からGateway接続、削除までを確認するE2Eテストを追加する。
-- [ ] AWS E2Eテストの実行条件、専用アカウント・環境、作成リソースのcleanup手順を定義する。
+- [x] Control PlaneとResource Plane間の認可・version付きcommand/result envelopeを定義する（AWS IAM principal、SQS resource policy、schema v2のWorkspace revision fencingを追加。Control Planeのstale-result拒否とFake Runtimeのprocess-local fenceまで実装。payload HMAC、BYOC等の非AWS transport署名と実Runtimeのdurable fenceは未実装）。[Resource Plane command protocol](docs/resource-plane-command-protocol.md)。
+- [ ] AWS検証環境でWorkspace作成からGateway接続、削除までを確認するE2Eテストを追加する（Gateway/実Runtimeが未実装のため未実行）。[AWS E2E environment and cleanup](docs/aws-e2e.md)。
+- [x] AWS E2Eテストの実行条件、専用アカウント・環境、作成リソースのcleanup手順を定義する（本番/Management Accountを禁止し、account identity確認と手動レビューを要求。実行コード・cleanup自動化は別タスク）。[AWS E2E environment and cleanup](docs/aws-e2e.md)。
 
 ### Phase 5: Workspace永続化とAgent
 
@@ -1602,19 +1605,38 @@ Hakoは最初は **Lambda MicroVMを使ったRemote Development Environment** �
 - [ ] TerraformでControl Planeと各Resource Planeを別AWS Accountに分けた環境を整備する。
 - [ ] 最小権限IAM、Cognito設定、暗号化、監査ログ、メトリクス、アラームを整備する。
 - [ ] Tenant越境アクセス、期限切れTicket、リプレイ、重複Operation、障害復旧を検証する。
-- [ ] E2EテストをCIに組み込み、Fake Runtimeの必須実行とAWS環境の定期実行を設定する。
+- [ ] E2EテストをCIに組み込み、Fake Runtimeの必須実行とAWS環境の定期実行を設定する（Fake Runtime/PostgreSQL integration testはPR・main CIで毎回実行。AWS実環境の定期実行と専用OIDC role/environmentは未設定）。
 - [ ] E2E失敗時にログ、Operation履歴、関連AWS resource IDから原因を追跡できるようにする。
 - [ ] Backup/復旧、Workspace cleanup、孤立AWSリソース検出の運用手順を整備する。
 - [ ] BYOC、複数リージョン、Persistent DB、Billingの要件を個別ADRと後続タスクに分ける。
+
+### Phase 9: Hako Software Factory
+
+以下はWorkspace Runtime/Gatewayの基盤整備後に進める追加機能です。GitHub Appの権限・Webhookの検証を先行させ、ユーザー提供のWorkflow/Issue/PRデータはすべて信頼されない入力として扱います。詳細な設計と実装順は[Hako Software Factory](docs/software-factory.md)に記載します。
+
+- [ ] GitHub Appを登録し、Secrets Manager保管、最小権限、Installation tokenの短期利用・失効方針を実装する。
+- [ ] TenantとGitHub App Installation/Repositoryを対応付け、Repository Registry APIとRBACを追加する。
+- [ ] Webhook ingressでraw bodyのHMAC-SHA256検証、Delivery ID冪等化、サイズ制限、監査、再送を実装する（raw bodyのHMAC検証、UUID形式Delivery ID、初期event/action allowlist、body上限のライブラリとテストを追加。HTTP route、durable inbox/idempotency、Secrets Manager、監査・再送は未実装）。[Hako Software Factory](docs/software-factory.md)。
+- [ ] GitHub webhookをversion付きHako Repository Eventへ正規化し、durable inbox/outbox経由で処理する。
+- [ ] Job/Agent/Preview Runの共通状態・Operation・timeout/cancel/log/artifact metadataを設計する。Workspaceとのlifecycle分離を維持する。
+- [ ] Fake Runtime上でRepository commitに対する`go test ./...` Jobを実行し、結果とredacted logsを保存する。
+- [ ] GitHub Checks APIでqueued/in-progress/completed check、commit SHA照合、summary/annotationを返す。
+- [ ] GitHub Actions `workflow_job.queued`を受け、専用権限でephemeral runnerを登録し、1 Job実行後にderegister・Runtime cleanupする。
+- [ ] `.hako/factory.yaml`のversioned strict schema、allowlisted step、network/secret policyを実装し、既存GitHub Actionsと共存させる。
+- [ ] IssueからAgent Runを開始し、明示的な最小write permissionでbranch/PRを作成するworkflowを追加する。
+- [ ] PR Preview Workspace、artifact/SBOM storage、Software Catalog、OIDC deploy policyを分離タスクとして実装する。
+- [ ] GitHub App install→PR→Webhook→isolated `go test`→GitHub Check→logs保管→ephemeral Runtime破棄のSoftware Factory E2Eを追加する。
 
 ### MVP完了条件
 
 - [ ] ユーザーがログインし、Tenant内にWorkspaceを作成できる。
 - [ ] Workspace作成からOperation配信、Resource Controller実行、状態反映まで追跡できる。
 - [ ] Fake Runtimeで起動・停止・削除と再試行を確認できる。
-- [ ] Fake Runtimeを使う主要WorkspaceライフサイクルE2EがCIで実行される。
+- [x] Fake Runtimeを使う主要WorkspaceライフサイクルE2EがCIで実行される（PostgreSQL integration suiteをPR・main CIで実行）。
 - [ ] TerraformでControl PlaneとResource Planeの検証環境を再現できる。
 - [ ] AWS RuntimeでMicroVMを起動し、EFS上のWorkspaceデータを保持できる。
 - [ ] VS CodeまたはCLI shellからGateway経由で接続でき、公開SSH/DBポートを必要としない。
 - [ ] AWS統合E2EでWorkspace作成、接続、停止、削除を検証できる。
 - [ ] Tenant/Workspace単位の認可と監査が全操作に適用される。
+
+Software Factoryの将来MVPは、GitHub App installからPR Check表示までを1 repository/1 test jobで安全に通すことです。現行MVPとは別の後続マイルストーンです（[設計・前提](docs/software-factory.md)）。

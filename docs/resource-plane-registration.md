@@ -31,13 +31,24 @@ manifests, and trailing JSON values are rejected.
 The Scheduler persists Plane ID, provider, region, and capability JSON in the
 `resource_planes` table; operators currently bootstrap that row and its
 `resource_plane_status` row using the SQL procedure in
-[Scheduler Placement](scheduler-placement.md). The Dispatcher currently
-consumes a separate `HAKO_RESOURCE_PLANE_QUEUE_URLS` JSON map of Plane IDs to
-command queue URLs, and the Result Consumer accepts one result queue URL. The
-manifest parser does not yet load configuration into DSQL, generate that
-environment variable, or support polling result queues across multiple
-Resource Planes. Until that wiring is implemented, keep these representations
-consistent manually and treat the manifest as the reviewed source of truth.
+[Scheduler Placement](scheduler-placement.md). The Outbox Dispatcher and
+Result Consumer both load this file via `HAKO_RESOURCE_PLANE_MANIFEST`.
+Dispatcher routes commands to each registered queue with a Region-specific
+SQS client, and the Result Consumer concurrently polls each registered result
+queue, also using the corresponding Region. For a migration, the Dispatcher
+still accepts the older `HAKO_RESOURCE_PLANE_QUEUE_URLS` map; the Result
+Consumer accepts either `HAKO_OPERATION_RESULT_QUEUE_URLS` or the original
+single `HAKO_OPERATION_RESULT_QUEUE_URL`. These legacy queue settings cannot
+be combined with the manifest. Automatic DSQL registration/status management
+and config reload without process restart are not implemented; operators must
+keep manifest records and DSQL placement rows consistent manually.
+
+Placement metadata is configured on the DSQL `resource_planes` row, separately
+from this transport manifest. `cost_tier` is one of `low`, `standard`, or
+`high`; `isolation_tier` is one of `shared`, `dedicated`, or `isolated`.
+Existing rows default to `standard`/`shared`. Keep these classifications in
+sync with reviewed infrastructure controls: a tier only influences placement
+and does not provision resources or provide a technical isolation guarantee.
 
 The command/result queue URLs should come from the Terraform outputs described
 in [Resource Plane queues and DLQ](resource-plane-queues-and-dlq.md). Only the

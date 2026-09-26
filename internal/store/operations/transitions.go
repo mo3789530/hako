@@ -26,16 +26,17 @@ type TransitionInput struct {
 }
 
 type ResultInput struct {
-	OperationID     domain.OperationID
-	TenantID        domain.TenantID
-	WorkspaceID     domain.WorkspaceID
-	ResourcePlaneID domain.ResourcePlaneID
-	Type            domain.OperationType
-	Status          domain.OperationStatus
-	ObservedState   domain.ObservedWorkspaceState
-	ErrorCode       string
-	Payload         json.RawMessage
-	CompletedAt     time.Time
+	OperationID       domain.OperationID
+	WorkspaceRevision int64
+	TenantID          domain.TenantID
+	WorkspaceID       domain.WorkspaceID
+	ResourcePlaneID   domain.ResourcePlaneID
+	Type              domain.OperationType
+	Status            domain.OperationStatus
+	ObservedState     domain.ObservedWorkspaceState
+	ErrorCode         string
+	Payload           json.RawMessage
+	CompletedAt       time.Time
 }
 
 // ApplyResult atomically validates a Resource Plane result, transitions the
@@ -44,7 +45,7 @@ type ResultInput struct {
 // successful no-op (applied=false).
 func ApplyResult(ctx context.Context, pool transaction.Beginner, policy transaction.Policy, input ResultInput) (bool, error) {
 	input.ErrorCode = strings.TrimSpace(input.ErrorCode)
-	if input.OperationID == "" || input.TenantID == "" || input.WorkspaceID == "" || input.ResourcePlaneID == "" || input.Type == "" {
+	if input.OperationID == "" || input.TenantID == "" || input.WorkspaceID == "" || input.ResourcePlaneID == "" || input.Type == "" || input.WorkspaceRevision < 0 {
 		return false, errors.New("result operation, tenant, workspace, resource plane, and type are required")
 	}
 	if input.Status != domain.OperationSucceeded && input.Status != domain.OperationFailed {
@@ -76,6 +77,15 @@ func ApplyResult(ctx context.Context, pool transaction.Beginner, policy transact
 		}
 		if operation.Status != domain.OperationPending && operation.Status != domain.OperationRunning {
 			return false, fmt.Errorf("cannot apply result to Operation status %q", operation.Status)
+		}
+		if input.WorkspaceRevision > 0 {
+			var currentRevision int64
+			if err := tx.QueryRow(ctx, `SELECT COALESCE(reconcile_revision, 0) FROM workspace_status WHERE workspace_id = $1`, input.WorkspaceID).Scan(&currentRevision); err != nil {
+				return false, fmt.Errorf("read Workspace revision for Operation result: %w", err)
+			}
+			if input.WorkspaceRevision != currentRevision {
+				return false, nil
+			}
 		}
 		if operation.Status == domain.OperationPending {
 			tag, err := tx.Exec(ctx, `UPDATE operations SET status = 'running', attempt = attempt + 1, updated_at = $1 WHERE id = $2 AND status = 'pending'`, input.CompletedAt, input.OperationID)

@@ -13,6 +13,7 @@ import (
 )
 
 var ErrOperationIDConflict = errors.New("Operation ID was reused for a different Runtime request")
+var ErrStaleWorkspaceRevision = errors.New("Runtime rejected a stale Workspace revision")
 
 type cachedResult struct {
 	tenantID        domain.TenantID
@@ -26,11 +27,12 @@ type cachedResult struct {
 type Runtime struct {
 	mu         sync.Mutex
 	states     map[domain.WorkspaceID]domain.ObservedWorkspaceState
+	revisions  map[domain.WorkspaceID]int64
 	operations map[domain.OperationID]cachedResult
 }
 
 func New() *Runtime {
-	return &Runtime{states: make(map[domain.WorkspaceID]domain.ObservedWorkspaceState), operations: make(map[domain.OperationID]cachedResult)}
+	return &Runtime{states: make(map[domain.WorkspaceID]domain.ObservedWorkspaceState), revisions: make(map[domain.WorkspaceID]int64), operations: make(map[domain.OperationID]cachedResult)}
 }
 
 func (r *Runtime) Execute(ctx context.Context, command resourcecontroller.Command) (domain.ObservedWorkspaceState, error) {
@@ -48,6 +50,11 @@ func (r *Runtime) Execute(ctx context.Context, command resourcecontroller.Comman
 		}
 		return prior.observed, prior.err
 	}
+	currentRevision := r.revisions[command.WorkspaceID]
+	if command.WorkspaceRevision < currentRevision ||
+		(command.WorkspaceRevision == currentRevision && (command.WorkspaceRevision > 0 || currentRevision > 0)) {
+		return "", ErrStaleWorkspaceRevision
+	}
 	var observed domain.ObservedWorkspaceState
 	switch command.Type {
 	case domain.OperationEnsureRunning, domain.OperationResume:
@@ -63,6 +70,9 @@ func (r *Runtime) Execute(ctx context.Context, command resourcecontroller.Comman
 		return "", err
 	}
 	r.states[command.WorkspaceID] = observed
+	if command.WorkspaceRevision > currentRevision {
+		r.revisions[command.WorkspaceID] = command.WorkspaceRevision
+	}
 	r.operations[command.OperationID] = cachedResult{
 		tenantID: command.TenantID, workspaceID: command.WorkspaceID,
 		resourcePlaneID: command.ResourcePlaneID, typeOf: command.Type, observed: observed,

@@ -23,6 +23,8 @@ func TestConfiguredQueueURLs(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HAKO_RESOURCE_PLANE_MANIFEST", "")
+			t.Setenv("HAKO_RESOURCE_PLANE_MANIFEST_JSON", "")
 			t.Setenv("HAKO_RESOURCE_PLANE_QUEUE_URLS", test.value)
 			got, err := configuredQueueURLs()
 			if (err != nil) != test.wantErr {
@@ -32,6 +34,40 @@ func TestConfiguredQueueURLs(t *testing.T) {
 				t.Fatalf("unexpected queue URL mapping: %#v", got)
 			}
 		})
+	}
+}
+
+func TestConfiguredQueueURLsReadsManifest(t *testing.T) {
+	t.Setenv("HAKO_RESOURCE_PLANE_QUEUE_URLS", "")
+	t.Setenv("HAKO_RESOURCE_PLANE_MANIFEST_JSON", "")
+	t.Setenv("HAKO_RESOURCE_PLANE_MANIFEST", "../../config/resource-planes.example.json")
+	got, err := configuredQueueURLs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["rp-tokyo-01"] != "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-commands" {
+		t.Fatalf("manifest command queue mapping = %#v", got)
+	}
+	queues, err := configuredQueues()
+	if err != nil || queues["rp-tokyo-01"].Region != "ap-northeast-1" {
+		t.Fatalf("manifest queue region = %+v, %v", queues, err)
+	}
+	t.Setenv("HAKO_RESOURCE_PLANE_QUEUE_URLS", `{"rp-other":"https://sqs.example/commands"}`)
+	if _, err := configuredQueueURLs(); err == nil {
+		t.Fatal("manifest and legacy queue map should not be used together")
+	}
+}
+
+func TestConfiguredQueueURLsReadsManifestJSON(t *testing.T) {
+	t.Setenv("HAKO_RESOURCE_PLANE_MANIFEST", "")
+	t.Setenv("HAKO_RESOURCE_PLANE_QUEUE_URLS", "")
+	t.Setenv("HAKO_RESOURCE_PLANE_MANIFEST_JSON", `{"schema_version":1,"resource_planes":[{"id":"rp-tokyo-01","provider":"aws","account_id":"123456789012","region":"ap-northeast-1","capabilities":["microvm"],"command_queue_url":"https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-commands","result_queue_url":"https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-results"}]}`)
+	queues, err := configuredQueues()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := queues["rp-tokyo-01"]; got.Region != "ap-northeast-1" || got.URL != "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-commands" {
+		t.Fatalf("manifest JSON queue configuration = %+v", got)
 	}
 }
 

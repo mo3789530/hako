@@ -72,3 +72,16 @@ func TestParseBoundsManifestSize(t *testing.T) {
 		t.Fatal("oversized manifest should be rejected")
 	}
 }
+
+func TestManifestRejectsQueueURLReuseAcrossPlanes(t *testing.T) {
+	manifest, err := Parse([]byte(validManifest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := manifest.ResourcePlanes[0]
+	second.ID = "rp-tokyo-02"
+	manifest.ResourcePlanes = append(manifest.ResourcePlanes, second)
+	if err := manifest.Validate(); err == nil {
+		t.Fatal("a queue URL must not be shared by multiple Resource Planes")
+	}
+}

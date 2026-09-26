@@ -60,7 +60,7 @@ func TestTenantPlacementPolicyClientGetAndPut(t *testing.T) {
 		}
 		if r.Method == http.MethodPut {
 			var request TenantPlacementPolicy
-			if err := json.NewDecoder(r.Body).Decode(&request); err != nil || len(request.AllowedRegions) != 1 || request.AllowedRegions[0] != "ap-northeast-1" {
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil || len(request.AllowedRegions) != 1 || request.AllowedRegions[0] != "ap-northeast-1" || request.MaxCostTier != "standard" || request.MinimumIsolationTier != "dedicated" {
 				t.Errorf("unexpected policy update body: %+v error=%v", request, err)
 			}
 		}
@@ -68,6 +68,7 @@ func TestTenantPlacementPolicyClientGetAndPut(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(TenantPlacementPolicy{
 			TenantID: "tenant_123", AllowedRegions: []string{"ap-northeast-1"},
 			ResourcePlaneIDs: []string{}, RequiredCapabilities: []string{"microvm"},
+			MaxCostTier: "standard", MinimumIsolationTier: "dedicated",
 		})
 	}))
 	defer server.Close()
@@ -78,6 +79,7 @@ func TestTenantPlacementPolicyClientGetAndPut(t *testing.T) {
 	}
 	policy, err = PutTenantPlacementPolicy(context.Background(), server.URL, "test-access-token", TenantPlacementPolicy{
 		TenantID: "tenant_123", AllowedRegions: []string{"ap-northeast-1"},
+		MaxCostTier: "standard", MinimumIsolationTier: "dedicated",
 	}, server.Client())
 	if err != nil || policy.TenantID != "tenant_123" {
 		t.Fatalf("unexpected policy update result: %+v error=%v", policy, err)

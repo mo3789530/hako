@@ -56,8 +56,56 @@ variable "log_retention_days" {
   default     = 30
 }
 
+variable "enable_fake_resource_controller" {
+  description = "Explicitly enable the dev-only Lambda backed by the process-local Fake Runtime."
+  type        = bool
+  default     = false
+}
+
+variable "fake_controller_lambda_zip_path" {
+  description = "Built artifact path from this Terraform root; make build-resource-controller-lambda creates the default."
+  type        = string
+  default     = "../../../../../build/resource-controller-lambda.zip"
+}
+
+variable "fake_controller_timeout_seconds" {
+  description = "Development fake controller Lambda timeout."
+  type        = number
+  default     = 60
+}
+
+variable "fake_controller_execution_timeout_seconds" {
+  description = "Development fake Runtime execution timeout."
+  type        = number
+  default     = 45
+}
+
+variable "fake_controller_memory_size" {
+  description = "Development fake controller Lambda memory."
+  type        = number
+  default     = 512
+}
+
 variable "tags" {
   description = "Additional resource tags."
   type        = map(string)
   default     = {}
+}
+
+variable "alarm_actions" {
+  description = "Optional SNS topic ARNs to notify for Resource Plane CloudWatch alarms."
+  type        = list(string)
+  default     = []
+}
+
+variable "oldest_message_age_alarm_seconds" {
+  description = "Primary queue oldest-message age alarm threshold in seconds."
+  type        = number
+  default     = 300
+}
+
+variable "queue_backlog_alarm_messages" {
+  description = "Primary queue visible-message count alarm threshold."
+  type        = number
+  default     = 100
 }

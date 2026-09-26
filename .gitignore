@@ -37,3 +37,6 @@ go.work.sum
 *.tfstate.*
 crash.log
 crash.*.log
+
+# Local Go/Lambda build artifacts
+/build/

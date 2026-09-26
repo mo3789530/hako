@@ -22,7 +22,22 @@ Within a health class, the Scheduler continues least-loaded balancing. A full he
 
 ## Updating health
 
-Migration `000023` creates `resource_plane_health`. There is not yet an automated health reporter or public health-management API; authorized operators update this table through the Control Plane database's administrative access. Set `updated_at` to the time the observation was actually made, not a future timestamp. Example:
+Migration `000023` creates `resource_plane_health`. Authorized platform administrators can read/update a report through the Control Plane API:
+
+```http
+GET /v1/admin/resource-planes/{resource_plane_id}/health
+PUT /v1/admin/resource-planes/{resource_plane_id}/health
+Authorization: Bearer <Cognito access token with hako/api scope and hako-admin group>
+Content-Type: application/json
+
+{"status":"degraded","reason":"elevated startup failures"}
+```
+
+Only a verified Cognito `hako-admin` group claim can access these routes; Tenant Owner/Admin membership does not grant platform administration. The handler resolves the verified Cognito subject to a Hako User. `status` must be `healthy`, `degraded`, or `unhealthy`; `reason` is trimmed, limited to 500 UTF-8 bytes, and rejects control characters. The server assigns observation time, so clients cannot backdate or future-date a report. Updating health and appending `platform_audit_events` commit atomically; audit failure returns an error and rolls back the health change. Audit details record the status but intentionally omit free-form reason text. Create/manage the Cognito group and group membership outside the dev Terraform module, which only consumes a pre-existing User Pool.
+
+An unreported Resource Plane returns `status: unknown` and `effective_status: healthy` to preserve the existing placement default. A stale healthy report returns `effective_status: degraded`; stale unhealthy remains excluded. The GET response includes the stored `reported_at` timestamp and reason when present.
+
+Migrations `000033` and `000034` distinguish operator and automated report sources and add application-append-only `resource_plane_health_events` history. `PutAutomated` updates the same scheduler signal transactionally without inventing a human actor. This is only the persistence seam: there is not yet a Resource Plane reporter, AWS health probe, authenticated report-ingress route/queue, or schedule. The existing admin API remains an operator signal, not proof that AWS resources are currently reachable. Direct DB changes remain possible for recovery, but bypass both source history and API audit and should be reserved for controlled repair. A legacy SQL example is:
 
 ```sql
 INSERT INTO resource_plane_health (resource_plane_id, status, reason, updated_at)
@@ -35,4 +50,4 @@ SET status = EXCLUDED.status,
 
 Use `healthy`, `degraded`, or `unhealthy`. `reason` is an operator/monitor note, not user-visible data. The database row does not expire automatically, but the Scheduler applies the effective-health TTL above. Monitoring should explicitly set `unhealthy` when it can no longer vouch for a Plane. Deleting a row restores the compatibility default of healthy, so do not delete an unhealthy row as a recovery action without confirming the Plane is healthy.
 
-The health signal does not change lifecycle status, reconcile existing Workspace state, or represent an AWS API health probe by itself. Automated health collection, a public health-management API, audit export, and recovery policy are future work.
+The health signal does not change lifecycle status or reconcile existing Workspace state. Automated health collection, audit export, and recovery policy are future work.

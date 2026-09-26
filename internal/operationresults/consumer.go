@@ -121,14 +121,43 @@ func decode(payload []byte) (resourcecontroller.Result, error) {
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return resourcecontroller.Result{}, errors.New("result must contain exactly one JSON object")
 	}
-	if result.SchemaVersion != 1 || result.OperationID == "" || result.TenantID == "" || result.WorkspaceID == "" || result.ResourcePlaneID == "" || result.Type == "" || result.CompletedAt.IsZero() {
+	if result.OperationID == "" || result.TenantID == "" || result.WorkspaceID == "" || result.ResourcePlaneID == "" || result.Type == "" || result.CompletedAt.IsZero() {
+		return resourcecontroller.Result{}, errors.New("result envelope is incomplete or unsupported")
+	}
+	switch result.SchemaVersion {
+	case 1:
+		if result.WorkspaceRevision != 0 {
+			return resourcecontroller.Result{}, errors.New("schema version 1 result must not set a Workspace revision")
+		}
+	case 2:
+		if result.WorkspaceRevision < 1 {
+			return resourcecontroller.Result{}, errors.New("schema version 2 result requires a positive Workspace revision")
+		}
+	default:
 		return resourcecontroller.Result{}, errors.New("result envelope is incomplete or unsupported")
 	}
 	if result.Status != domain.OperationSucceeded && result.Status != domain.OperationFailed {
 		return resourcecontroller.Result{}, errors.New("result status must be succeeded or failed")
 	}
-	if result.Status == domain.OperationFailed && result.ErrorCode == "" {
-		return resourcecontroller.Result{}, errors.New("failed result requires an error code")
+	if result.Status == domain.OperationFailed {
+		if result.ErrorCode == "" || result.ObservedState != domain.ObservedWorkspaceFailed {
+			return resourcecontroller.Result{}, errors.New("failed result requires an error code and failed observed state")
+		}
+		return result, nil
+	}
+	wantState := domain.ObservedWorkspaceState("")
+	switch result.Type {
+	case domain.OperationEnsureRunning, domain.OperationResume:
+		wantState = domain.ObservedWorkspaceRunning
+	case domain.OperationSuspend:
+		wantState = domain.ObservedWorkspaceSuspended
+	case domain.OperationDelete:
+		wantState = domain.ObservedWorkspaceDeleted
+	default:
+		return resourcecontroller.Result{}, fmt.Errorf("unsupported result Operation type %q", result.Type)
+	}
+	if result.ObservedState != wantState {
+		return resourcecontroller.Result{}, fmt.Errorf("successful %s result must report observed state %s", result.Type, wantState)
 	}
 	return result, nil
 }
@@ -144,7 +173,7 @@ func (s StoreAdapter) Apply(ctx context.Context, result resourcecontroller.Resul
 		return false, fmt.Errorf("encode Operation result audit payload: %w", err)
 	}
 	return operations.ApplyResult(ctx, s.Pool, s.Policy, operations.ResultInput{
-		OperationID: result.OperationID, TenantID: result.TenantID, WorkspaceID: result.WorkspaceID,
+		OperationID: result.OperationID, WorkspaceRevision: result.WorkspaceRevision, TenantID: result.TenantID, WorkspaceID: result.WorkspaceID,
 		ResourcePlaneID: result.ResourcePlaneID, Type: result.Type, Status: result.Status,
 		ObservedState: result.ObservedState, ErrorCode: result.ErrorCode, CompletedAt: result.CompletedAt,
 		Payload: payload,

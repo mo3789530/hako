@@ -10,19 +10,37 @@ import (
 	"github.com/mo3789530/hako/internal/store/outbox"
 )
 
-type sqsAPI interface {
+type SQSAPI interface {
 	SendMessage(context.Context, *sqs.SendMessageInput, ...func(*sqs.Options)) (*sqs.SendMessageOutput, error)
 }
 
 type SQSPublisher struct {
-	client sqsAPI
+	client            SQSAPI
+	clientsByQueueURL map[string]SQSAPI
 }
 
-func NewSQSPublisher(client sqsAPI) (*SQSPublisher, error) {
+func NewSQSPublisher(client SQSAPI) (*SQSPublisher, error) {
 	if client == nil {
 		return nil, fmt.Errorf("SQS client is required")
 	}
 	return &SQSPublisher{client: client}, nil
+}
+
+// NewRegionalSQSPublisher uses a queue-specific SQS client when supplied,
+// allowing one Control Plane Dispatcher to sign requests for multiple AWS
+// Regions while retaining a default client for legacy URL-map configuration.
+func NewRegionalSQSPublisher(defaultClient SQSAPI, clientsByQueueURL map[string]SQSAPI) (*SQSPublisher, error) {
+	if defaultClient == nil {
+		return nil, fmt.Errorf("default SQS client is required")
+	}
+	clients := make(map[string]SQSAPI, len(clientsByQueueURL))
+	for queueURL, client := range clientsByQueueURL {
+		if strings.TrimSpace(queueURL) == "" || client == nil {
+			return nil, fmt.Errorf("queue-specific SQS clients require non-empty queue URLs and clients")
+		}
+		clients[queueURL] = client
+	}
+	return &SQSPublisher{client: defaultClient, clientsByQueueURL: clients}, nil
 }
 
 func (p *SQSPublisher) Publish(ctx context.Context, queueURL string, event outbox.Event) error {
@@ -40,7 +58,11 @@ func (p *SQSPublisher) Publish(ctx context.Context, queueURL string, event outbo
 		input.MessageGroupId = stringPointer(event.AggregateID)
 		input.MessageDeduplicationId = stringPointer(event.ID)
 	}
-	if _, err := p.client.SendMessage(ctx, input); err != nil {
+	client := p.client
+	if regional, ok := p.clientsByQueueURL[queueURL]; ok {
+		client = regional
+	}
+	if _, err := client.SendMessage(ctx, input); err != nil {
 		return fmt.Errorf("send SQS message: %w", err)
 	}
 	return nil
