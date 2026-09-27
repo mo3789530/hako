@@ -92,6 +92,16 @@ reports acceptance, not that the executor has already stopped.
 ## Current scope and follow-up
 
 The persistence/domain foundation and state/artifact store are implemented.
+`internal/workloadjobs.SchedulerConsumer` now consumes the versioned SQS
+schedule envelope, extends message visibility while a handler runs, and only
+deletes a message after the handler reports a durable outcome. Malformed or
+failed deliveries remain on the queue for retry and configured DLQ redrive.
+Delivery is at-least-once, so the eventual handler must be idempotent by
+Tenant/Run ID; a database commit followed by a failed SQS delete will be
+redelivered.
+The SQS worker role will require receive/delete/change-visibility permissions
+scoped to the scheduler queue. This is consumer infrastructure, not yet a
+deployed worker or a handler wired to repository checkout and execution.
 The local Fake Runtime also has an explicit Go test Job entry point for an
 already-checked-out repository and immutable commit. It verifies `HEAD` before
 execution and invokes `go test ./...` only inside a one-shot Podman container
@@ -122,7 +132,7 @@ should receive only a scoped IAM role (`s3:PutObject` on the configured prefix,
 plus KMS permissions when enabled). No credentials, ACLs, or presigned URLs
 are embedded in artifact metadata.
 
-A deployed Workload queue consumer/worker is not implemented. The standalone local
+A deployed Workload worker/handler is not implemented. The standalone local
 `JobRuntime` also keeps a process-local cache, so it is not a durable queue or
 production executor. Before repository-triggered Jobs are enabled, deployable
 workers still need image digest verification, bucket/IAM provisioning,
