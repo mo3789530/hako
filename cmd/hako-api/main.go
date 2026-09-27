@@ -51,6 +51,7 @@ func main() {
 		RequiredCapabilities: []string{"microvm"},
 		RuntimeClass:         runtimeClass,
 		Image:                strings.TrimSpace(os.Getenv("HAKO_DEFAULT_WORKSPACE_IMAGE")),
+		WorkloadRunsEnabled:  strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_WORKLOAD_RUNS_ENABLED")), "true"),
 	}
 	var webhookHandler http.Handler
 	secretARN := strings.TrimSpace(os.Getenv("HAKO_GITHUB_WEBHOOK_SECRET_ARN"))

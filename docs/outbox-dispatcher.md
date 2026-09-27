@@ -41,8 +41,9 @@ queue, plus `dsql:DbConnect` for the custom
 When enabled, Terraform also provisions the encrypted
 `workload_scheduler_queue_url` and a dead-letter queue, and passes the scheduler
 queue URL to the Dispatcher Lambda. This is durable routing infrastructure
-only: a Workload scheduler consumer/runtime executor is not deployed yet, so
-Workload Run creation must remain disabled until that consumer exists.
+only: the Workload Run creation API is separately opt-in (`enable_workload_run_creation`,
+default false), and a Workload scheduler consumer/runtime executor is not
+deployed yet. Keep API creation disabled until that consumer exists.
 
 EventBridge triggers the Lambda once per minute, with bounded target retries;
 the Outbox remains the durable source of work if an invocation fails. Batch

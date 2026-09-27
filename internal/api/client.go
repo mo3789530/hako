@@ -86,6 +86,14 @@ type WorkloadRunListResult struct {
 	Offset int                  `json:"offset"`
 }
 
+type WorkloadRunCreateRequest struct {
+	GitHubInstallationID int64  `json:"github_installation_id"`
+	GitHubRepositoryID   int64  `json:"github_repository_id"`
+	CommitSHA            string `json:"commit_sha"`
+	Ref                  string `json:"ref,omitempty"`
+	TimeoutSeconds       int64  `json:"timeout_seconds,omitempty"`
+}
+
 type APIError struct {
 	StatusCode int
 	Code       string
@@ -409,6 +417,60 @@ func RequestWorkspaceAction(ctx context.Context, baseURL, accessToken, tenantID,
 		return WorkspaceActionResult{}, errors.New("Hako API returned an invalid Workspace action response")
 	}
 	return result, nil
+}
+
+// CreateWorkloadRun requests an immutable Job Run and its transactional schedule event.
+func CreateWorkloadRun(ctx context.Context, baseURL, accessToken, tenantID, idempotencyKey string, create WorkloadRunCreateRequest, client *http.Client) (domain.WorkloadRun, error) {
+	var result domain.WorkloadRun
+	if !validTenantID(tenantID) || create.GitHubInstallationID <= 0 || create.GitHubRepositoryID <= 0 ||
+		!validCommitSHA(create.CommitSHA) || create.TimeoutSeconds < 0 || create.TimeoutSeconds > 24*60*60 {
+		return result, errors.New("Tenant, active GitHub Installation/Repository, immutable commit SHA, and timeout are invalid")
+	}
+	if err := idempotency.ValidateKey(idempotencyKey); err != nil {
+		return result, err
+	}
+	endpoint, err := apiEndpoint(baseURL, "/v1/tenants/"+url.PathEscape(tenantID)+"/workload-runs")
+	if err != nil {
+		return result, err
+	}
+	body, err := json.Marshal(create)
+	if err != nil {
+		return result, fmt.Errorf("encode Workload Run request: %w", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return result, fmt.Errorf("create Hako API request: %w", err)
+	}
+	if strings.TrimSpace(accessToken) == "" {
+		return result, errors.New("access token is required")
+	}
+	request.Header.Set("Authorization", "Bearer "+accessToken)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", idempotencyKey)
+	response, err := safeAPIClient(client).Do(request)
+	if err != nil {
+		return result, fmt.Errorf("call Hako API: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		return result, readAPIError(response)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil || result.ID == "" || string(result.TenantID) != tenantID {
+		return domain.WorkloadRun{}, errors.New("Hako API returned an invalid Workload Run creation response")
+	}
+	return result, nil
+}
+
+func validCommitSHA(value string) bool {
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	for _, char := range value {
+		if !(char >= '0' && char <= '9') && !(char >= 'a' && char <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // ListWorkloadRuns retrieves one bounded page of Runs visible to the caller.

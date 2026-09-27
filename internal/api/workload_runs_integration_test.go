@@ -43,6 +43,9 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 		{`INSERT INTO tenant_members (tenant_id, user_id, role, joined_at) VALUES ($1, $2, $3, $4)`, []any{"tenant_runs_a", "usr_runs_member", "member", now}},
 		{`INSERT INTO tenant_members (tenant_id, user_id, role, joined_at) VALUES ($1, $2, $3, $4)`, []any{"tenant_runs_a", "usr_runs_owner", "owner", now}},
 		{`INSERT INTO tenant_members (tenant_id, user_id, role, joined_at) VALUES ($1, $2, $3, $4)`, []any{"tenant_runs_b", "usr_runs_other", "owner", now}},
+		{`INSERT INTO tenant_github_installations (tenant_id, installation_id, account_login, status, requested_by, requested_at, updated_at) VALUES ($1, $2, $3, 'active', $4, $5, $5)`, []any{"tenant_runs_a", 9301, "acme", "usr_runs_member", now}},
+		{`INSERT INTO github_app_installation_bindings (installation_id, tenant_id, bound_at) VALUES ($1, $2, $3)`, []any{9301, "tenant_runs_a", now}},
+		{`INSERT INTO tenant_github_repositories (tenant_id, installation_id, github_repository_id, owner_login, repository_name, default_branch, synchronized_at) VALUES ($1, $2, $3, $4, $5, $6, $7)`, []any{"tenant_runs_a", 9301, 9302, "acme", "api", "main", now}},
 	}
 	for _, seed := range seeds {
 		if _, err := pool.Exec(ctx, seed.query, seed.args...); err != nil {
@@ -82,7 +85,7 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := NewHandler(verifier, pool)
+	handler := NewHandler(verifier, pool, WorkspaceCreateConfig{WorkloadRunsEnabled: true})
 	request := func(subject, method, path string) *httptest.ResponseRecorder {
 		t.Helper()
 		token := signTenantAPIToken(t, privateKey, issuer, subject, "openid hako/api")
@@ -92,13 +95,55 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 		handler.ServeHTTP(recorder, req)
 		return recorder
 	}
+	createRequest := func(subject, key, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		token := signTenantAPIToken(t, privateKey, issuer, subject, "openid hako/api")
+		req := httptest.NewRequest(http.MethodPost, "/v1/tenants/tenant_runs_a/workload-runs", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Idempotency-Key", key)
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, req)
+		return recorder
+	}
+
+	createBody := `{"github_installation_id":9301,"github_repository_id":9302,"commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","ref":"refs/heads/main","timeout_seconds":600}`
+	created := createRequest("runs-member", "create-run-key", createBody)
+	if created.Code != http.StatusAccepted || !strings.Contains(created.Body.String(), `"state":"pending"`) {
+		t.Fatalf("create Workload Run = HTTP %d %s", created.Code, created.Body.String())
+	}
+	var createdRun domain.WorkloadRun
+	if err := json.Unmarshal(created.Body.Bytes(), &createdRun); err != nil || createdRun.ID == "" || createdRun.TenantID != "tenant_runs_a" {
+		t.Fatalf("decode created Workload Run: run=%+v error=%v", createdRun, err)
+	}
+	replayedCreate := createRequest("runs-member", "create-run-key", createBody)
+	if replayedCreate.Code != http.StatusAccepted || !strings.Contains(replayedCreate.Body.String(), `"id":"`+string(createdRun.ID)+`"`) {
+		t.Fatalf("idempotent create did not return existing run: HTTP %d %s", replayedCreate.Code, replayedCreate.Body.String())
+	}
+	if conflict := createRequest("runs-member", "create-run-key", strings.Replace(createBody, "refs/heads/main", "refs/heads/other", 1)); conflict.Code != http.StatusConflict {
+		t.Fatalf("create idempotency conflict returned HTTP %d %s", conflict.Code, conflict.Body.String())
+	}
+	if inactive := createRequest("runs-member", "inactive-run-key", strings.Replace(createBody, "9302", "9399", 1)); inactive.Code != http.StatusNotFound {
+		t.Fatalf("unregistered repository returned HTTP %d %s", inactive.Code, inactive.Body.String())
+	}
+	var scheduledEvents, createAudits int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM outbox_events WHERE aggregate_id = $1 AND event_type = 'workload_run.schedule_requested'`, createdRun.ID).Scan(&scheduledEvents); err != nil || scheduledEvents != 1 {
+		t.Fatalf("scheduled outbox events=%d error=%v", scheduledEvents, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM audit_events WHERE tenant_id = $1 AND actor_user_id = $2 AND action = 'workload_run.create' AND target_id = $3`, "tenant_runs_a", "usr_runs_member", createdRun.ID).Scan(&createAudits); err != nil || createAudits != 1 {
+		t.Fatalf("create audit count=%d error=%v", createAudits, err)
+	}
+	handler = NewHandler(verifier, pool)
+	if disabled := createRequest("runs-member", "disabled-create-key", createBody); disabled.Code != http.StatusServiceUnavailable {
+		t.Fatalf("Workload Run creation should be disabled by default: HTTP %d %s", disabled.Code, disabled.Body.String())
+	}
 
 	list := request("runs-member", http.MethodGet, "/v1/tenants/tenant_runs_a/workload-runs")
 	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), "run_owned_member") || strings.Contains(list.Body.String(), "run_owned_owner") {
 		t.Fatalf("Tenant member should see only own runs: HTTP %d %s", list.Code, list.Body.String())
 	}
 	ownerList := request("runs-owner", http.MethodGet, "/v1/tenants/tenant_runs_a/workload-runs?limit=1&offset=0")
-	if ownerList.Code != http.StatusOK || !strings.Contains(ownerList.Body.String(), `"total":2`) {
+	if ownerList.Code != http.StatusOK || !strings.Contains(ownerList.Body.String(), `"total":3`) {
 		t.Fatalf("Tenant owner should see all tenant runs with pagination: HTTP %d %s", ownerList.Code, ownerList.Body.String())
 	}
 	if badPage := request("runs-owner", http.MethodGet, "/v1/tenants/tenant_runs_a/workload-runs?limit=101"); badPage.Code != http.StatusBadRequest {

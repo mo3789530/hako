@@ -101,7 +101,7 @@ func TestRunOnceRoutesWorkloadScheduleRequestToDedicatedQueue(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	store := &fakeStore{events: []outbox.Event{{
 		ID: "evt_workload", AggregateType: "workload_run", AggregateID: "run_1", EventType: "workload_run.schedule_requested", Attempt: 1,
-		Payload: []byte(`{"schema_version":1,"workload_run_id":"run_1"}`),
+		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_1"}`),
 	}}}
 	publisher := &fakePublisher{}
 	dispatcher, err := New(store, publisher, map[string]string{"rp_tokyo": "rp-queue"}, Config{
@@ -122,7 +122,7 @@ func TestRunOnceRoutesWorkloadScheduleRequestToDedicatedQueue(t *testing.T) {
 func TestRunOnceDefersWorkloadRequestWithoutSchedulerQueue(t *testing.T) {
 	store := &fakeStore{events: []outbox.Event{{
 		ID: "evt_workload", AggregateType: "workload_run", AggregateID: "run_1", EventType: "workload_run.schedule_requested", Attempt: 1,
-		Payload: []byte(`{"schema_version":1,"workload_run_id":"run_1"}`),
+		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_1"}`),
 	}}}
 	publisher := &fakePublisher{}
 	dispatcher, err := New(store, publisher, map[string]string{"rp_tokyo": "rp-queue"}, Config{})
@@ -141,7 +141,7 @@ func TestRunOnceDefersWorkloadRequestWithoutSchedulerQueue(t *testing.T) {
 func TestRunOnceRejectsInconsistentWorkloadScheduleEnvelope(t *testing.T) {
 	store := &fakeStore{events: []outbox.Event{{
 		ID: "evt_workload", AggregateType: "workload_run", AggregateID: "run_1", EventType: "workload_run.schedule_requested", Attempt: 1,
-		Payload: []byte(`{"schema_version":1,"workload_run_id":"run_other"}`),
+		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_other"}`),
 	}}}
 	publisher := &fakePublisher{}
 	dispatcher, err := New(store, publisher, map[string]string{"rp_tokyo": "rp-queue"}, Config{WorkloadSchedulerQueueURL: "workload-scheduler-queue"})

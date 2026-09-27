@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/githubapp"
 	"github.com/mo3789530/hako/internal/idempotency"
+	"github.com/mo3789530/hako/internal/idgen"
 	"github.com/mo3789530/hako/internal/scheduler"
 	"github.com/mo3789530/hako/internal/store/audit"
 	"github.com/mo3789530/hako/internal/store/githubregistry"
@@ -52,6 +54,7 @@ type WorkspaceCreateConfig struct {
 	RequiredCapabilities []string
 	RuntimeClass         string
 	Image                string
+	WorkloadRunsEnabled  bool
 }
 
 type workspaceCreateRequest struct {
@@ -68,6 +71,16 @@ type workspaceCreateResponse struct {
 type workspaceActionRequest struct {
 	Action domain.OperationType `json:"action"`
 }
+
+type workloadRunCreateRequest struct {
+	GitHubInstallationID int64  `json:"github_installation_id"`
+	GitHubRepositoryID   int64  `json:"github_repository_id"`
+	CommitSHA            string `json:"commit_sha"`
+	Ref                  string `json:"ref"`
+	TimeoutSeconds       int64  `json:"timeout_seconds,omitempty"`
+}
+
+var workloadCommitSHA = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 
 type tenantPlacementPolicyRequest struct {
 	AllowedRegions       []string `json:"allowed_regions"`
@@ -192,6 +205,8 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 	)
 	protected.GET("/v1/tenants/:tenant_id/workload-runs", listWorkloadRuns(pool),
 		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+	protected.POST("/v1/tenants/:tenant_id/workload-runs", createWorkloadRun(pool, workspaceConfig),
+		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
 	protected.GET("/v1/tenants/:tenant_id/workload-runs/:run_id", getWorkloadRun(pool),
 		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
 	protected.POST("/v1/tenants/:tenant_id/workload-runs/:run_id/cancel", cancelWorkloadRun(pool),
@@ -204,6 +219,95 @@ type workloadRunListResponse struct {
 	Total  int64                `json:"total"`
 	Limit  int                  `json:"limit"`
 	Offset int                  `json:"offset"`
+}
+
+func createWorkloadRun(pool transaction.Beginner, config WorkspaceCreateConfig) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		user, ok := HakoUserFromContext(c)
+		if !ok || pool == nil {
+			return databaseUnavailable(c)
+		}
+		if !config.WorkloadRunsEnabled {
+			return c.JSON(http.StatusServiceUnavailable, errorResponse{Error: errorBody{Code: "workload_runs_unavailable", Message: "Workload Run scheduling is not enabled"}})
+		}
+		var request workloadRunCreateRequest
+		if err := decodeJSONRequest(c, &request); err != nil {
+			if isRequestTooLarge(err) {
+				return requestTooLarge(c)
+			}
+			return invalidWorkloadRunRequest(c)
+		}
+		request.CommitSHA = strings.TrimSpace(request.CommitSHA)
+		request.Ref = strings.TrimSpace(request.Ref)
+		if request.GitHubInstallationID <= 0 || request.GitHubRepositoryID <= 0 ||
+			!workloadCommitSHA.MatchString(request.CommitSHA) || len(request.Ref) > 1024 || strings.ContainsAny(request.Ref, "\r\n\x00") ||
+			request.TimeoutSeconds < 0 || request.TimeoutSeconds > int64(workloads.MaxTimeout/time.Second) {
+			return invalidWorkloadRunRequest(c)
+		}
+		idempotencyKey := strings.TrimSpace(c.Request().Header.Get("Idempotency-Key"))
+		if idempotency.ValidateKey(idempotencyKey) != nil {
+			return invalidWorkloadRunRequest(c)
+		}
+		tenantID := domain.TenantID(strings.TrimSpace(c.Param("tenant_id")))
+		now := time.Now().UTC()
+		runID, err := idgen.New("run_")
+		if err != nil {
+			return databaseUnavailable(c)
+		}
+		eventID, err := idgen.New("evt_")
+		if err != nil {
+			return databaseUnavailable(c)
+		}
+		run := domain.WorkloadRun{ID: domain.WorkloadRunID(runID), TenantID: tenantID, Kind: domain.WorkloadJob,
+			RequestedBy: user.ID, GitHubInstallation: request.GitHubInstallationID, GitHubRepository: request.GitHubRepositoryID,
+			CommitSHA: request.CommitSHA, Ref: request.Ref, RuntimeClass: "standard", TrustLevel: domain.WorkloadUntrusted,
+			IdempotencyKey: idempotencyKey, TimeoutSeconds: request.TimeoutSeconds, CreatedAt: now}
+		stored, err := transaction.Within(c.Request().Context(), pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (domain.WorkloadRun, error) {
+			if _, err := authz.RequireTenantMembership(ctx, tx, user.ID, tenantID); err != nil {
+				return domain.WorkloadRun{}, err
+			}
+			stored, created, err := workloads.CreateOrGet(ctx, tx, run)
+			if err != nil || !created {
+				return stored, err
+			}
+			payload, err := json.Marshal(map[string]any{"schema_version": 1, "tenant_id": tenantID, "workload_run_id": stored.ID})
+			if err != nil {
+				return domain.WorkloadRun{}, err
+			}
+			if _, err := tx.Exec(ctx, `INSERT INTO outbox_events
+				(id, aggregate_type, aggregate_id, event_type, payload_json, created_at, published_at, attempt)
+				VALUES ($1, 'workload_run', $2, 'workload_run.schedule_requested', $3, $4, NULL, 0)`,
+				eventID, stored.ID, string(payload), now); err != nil {
+				return domain.WorkloadRun{}, fmt.Errorf("enqueue Workload Run: %w", err)
+			}
+			details, err := json.Marshal(map[string]any{"kind": stored.Kind, "github_repository_id": stored.GitHubRepository})
+			if err != nil {
+				return domain.WorkloadRun{}, err
+			}
+			if err := audit.Append(ctx, tx, audit.Event{TenantID: tenantID, ActorID: user.ID, Action: "workload_run.create",
+				TargetType: "workload_run", TargetID: string(stored.ID), Details: details, OccurredAt: now}); err != nil {
+				return domain.WorkloadRun{}, err
+			}
+			return stored, nil
+		})
+		if errors.Is(err, authz.ErrTenantAccessDenied) {
+			return tenantNotFound(c)
+		}
+		if errors.Is(err, workloads.ErrRepositoryInactive) {
+			return c.JSON(http.StatusNotFound, errorResponse{Error: errorBody{Code: "repository_not_found", Message: "GitHub Repository is not active for this Tenant"}})
+		}
+		if errors.Is(err, workloads.ErrIdempotencyConflict) {
+			return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "idempotency_conflict", Message: "Idempotency-Key was already used for a different request"}})
+		}
+		if err != nil {
+			return databaseUnavailable(c)
+		}
+		return c.JSON(http.StatusAccepted, stored)
+	}
+}
+
+func invalidWorkloadRunRequest(c *echo.Context) error {
+	return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_request", Message: "active GitHub Installation/Repository, immutable commit SHA, and a valid Idempotency-Key are required"}})
 }
 
 func listWorkloadRuns(pool transaction.Beginner) echo.HandlerFunc {

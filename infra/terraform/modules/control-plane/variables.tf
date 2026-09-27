@@ -157,6 +157,17 @@ variable "enable_outbox_dispatcher" {
   default     = false
 }
 
+variable "enable_workload_run_creation" {
+  description = "Expose Workload Run creation. Enable only after the Workload scheduler consumer and runtime are deployed."
+  type        = bool
+  default     = false
+
+  validation {
+    condition     = !var.enable_workload_run_creation || var.enable_outbox_dispatcher
+    error_message = "Workload Run creation requires the Outbox Dispatcher and scheduler queue to be enabled."
+  }
+}
+
 variable "dispatcher_lambda_zip_path" {
   description = "Path to the arm64 custom-runtime ZIP produced by make build-dispatcher-lambda."
   type        = string

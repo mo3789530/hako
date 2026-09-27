@@ -33,3 +33,12 @@ func TestParseCLIPage(t *testing.T) {
 		})
 	}
 }
+
+func TestCreateWorkloadCLIRequiresImmutableRepositoryInputs(t *testing.T) {
+	if _, _, err := createWorkloadCLI([]string{"--tenant", "tenant_1", "--installation", "1", "--repository", "2"}); err == nil {
+		t.Fatal("createWorkloadCLI accepted a request without an immutable commit")
+	}
+	if _, _, err := createWorkloadCLI([]string{"--tenant", "tenant_1", "--installation", "1", "--repository", "2", "--commit", "abc", "extra"}); err == nil {
+		t.Fatal("createWorkloadCLI accepted positional arguments")
+	}
+}

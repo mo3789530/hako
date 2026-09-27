@@ -231,6 +231,7 @@ resource "aws_lambda_function" "api" {
       HAKO_DSQL_DATABASE                   = "postgres"
       HAKO_DEFAULT_WORKSPACE_IMAGE         = var.default_workspace_image
       HAKO_DEFAULT_WORKSPACE_RUNTIME_CLASS = var.default_workspace_runtime_class
+      HAKO_WORKLOAD_RUNS_ENABLED           = tostring(var.enable_workload_run_creation)
       HAKO_GITHUB_WEBHOOK_SECRET_ARN       = var.github_webhook_secret_arn
       HAKO_GITHUB_APP_SLUG                 = var.github_app_setup_enabled ? var.github_app_slug : ""
       HAKO_GITHUB_APP_ID                   = var.github_app_setup_enabled ? tostring(var.github_app_id) : ""
@@ -269,6 +270,7 @@ resource "aws_lambda_function" "api_image" {
       HAKO_DSQL_DATABASE                   = "postgres"
       HAKO_DEFAULT_WORKSPACE_IMAGE         = var.default_workspace_image
       HAKO_DEFAULT_WORKSPACE_RUNTIME_CLASS = var.default_workspace_runtime_class
+      HAKO_WORKLOAD_RUNS_ENABLED           = tostring(var.enable_workload_run_creation)
       HAKO_API_HTTP_MODE                   = "true"
       HAKO_GITHUB_WEBHOOK_SECRET_ARN       = var.github_webhook_secret_arn
       HAKO_GITHUB_APP_SLUG                 = var.github_app_setup_enabled ? var.github_app_slug : ""

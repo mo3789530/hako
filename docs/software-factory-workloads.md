@@ -58,21 +58,36 @@ names are metadata only and do not select the source revision.
 
 ## Workload Run API visibility
 
-Authenticated routes currently expose paginated list, detail, and cancellation
-under `/v1/tenants/{tenant_id}/workload-runs`. Tenant Owner/Admin roles can
+Authenticated routes expose paginated list, detail, cancellation, and an
+opt-in create endpoint under `/v1/tenants/{tenant_id}/workload-runs`. Tenant Owner/Admin roles can
 read all Runs in that Tenant; other members can read only Runs whose
 `requested_by` is their Hako User ID. Missing Tenant membership is returned as
 404, as are Runs outside the caller's visibility. Cancellation sets the
 desired state and appends an immutable Run event; it does not synchronously
 stop an already-running executor until a worker cancellation channel is wired.
-Run creation is intentionally not exposed yet because there is no durable
-Workload dispatcher/outbox path to guarantee accepted Runs are executed.
+Run creation accepts only a registered active Tenant GitHub Installation and
+Repository plus an immutable lowercase commit SHA. Kind (`job`), trust
+(`untrusted`), and runtime class (`standard`) are server-selected. The API
+atomically writes the pending Run, a `workload_run.schedule_requested` Outbox
+event, and an audit record; the event carries only schema version, Tenant ID,
+and Run ID. Idempotent retries return the existing Run without adding another
+event. `HAKO_WORKLOAD_RUNS_ENABLED` defaults to false. Terraform's
+`enable_workload_run_creation` also defaults to false and requires the Outbox
+Dispatcher/Workload queue, but this alone is not sufficient to enable it:
+there is not yet a deployed consumer/runtime executor, so Runs would remain
+pending in the scheduler queue. Keep the setting disabled until that consumer
+is deployed and monitored.
 
-The CLI mirrors these read/cancel routes as `hako workload list <tenant-id>
-[limit] [offset]`, `hako workload show <tenant-id> <run-id>`, and
-`hako workload cancel <tenant-id> <run-id>`. List output is a tab-separated
-summary; `show` returns the full JSON Run. CLI cancellation reports acceptance,
-not that the executor has already stopped.
+The CLI mirrors these routes as `hako workload create --tenant <id>
+--installation <id> --repository <id> --commit <sha> [--ref <ref>]
+[--timeout-seconds <seconds>] [--idempotency-key <key>]`,
+`hako workload list <tenant-id> [limit] [offset]`,
+`hako workload show <tenant-id> <run-id>`, and
+`hako workload cancel <tenant-id> <run-id>`. Create defaults to an untrusted
+Job with a 30-minute timeout and a generated idempotency key; if the command
+fails after submission, retry with the printed key. List output is a
+tab-separated summary; `show` returns the full JSON Run. CLI cancellation
+reports acceptance, not that the executor has already stopped.
 
 ## Current scope and follow-up
 
@@ -107,7 +122,7 @@ should receive only a scoped IAM role (`s3:PutObject` on the configured prefix,
 plus KMS permissions when enabled). No credentials, ACLs, or presigned URLs
 are embedded in artifact metadata.
 
-A deployed worker/dispatcher is not implemented. The standalone local
+A deployed Workload queue consumer/worker is not implemented. The standalone local
 `JobRuntime` also keeps a process-local cache, so it is not a durable queue or
 production executor. Before repository-triggered Jobs are enabled, deployable
 workers still need image digest verification, bucket/IAM provisioning,

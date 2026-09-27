@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -62,6 +63,16 @@ func main() {
 			os.Exit(1)
 		}
 		_ = json.NewEncoder(os.Stdout).Encode(updated)
+	case len(os.Args) >= 3 && os.Args[1] == "workload" && os.Args[2] == "create":
+		run, key, err := createWorkloadCLI(os.Args[3:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hako workload create: %v\n", err)
+			if key != "" {
+				fmt.Fprintf(os.Stderr, "Retry the same request with --idempotency-key %s\n", key)
+			}
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stdout, "Workload Run %s accepted (state=%s, request-key=%s)\n", run.ID, run.State, key)
 	case len(os.Args) >= 4 && len(os.Args) <= 6 && os.Args[1] == "workload" && os.Args[2] == "list":
 		limit, offset, err := parseCLIPage(os.Args[4:])
 		if err != nil {
@@ -159,7 +170,7 @@ func main() {
 		}
 		fmt.Fprintf(os.Stdout, "Workspace %s accepted: desired=%s observed=%s (operation=%s state=%s, request-key=%s)\n", result.Workspace.Workspace.ID, result.Workspace.Status.DesiredState, result.Workspace.Status.ObservedState, result.OperationID, result.OperationState, idempotencyKey)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: hako login | hako api health | hako tenant membership <tenant-id> | hako tenant placement-policy get <tenant-id> | hako tenant placement-policy set <tenant-id> '<policy-json>' | hako create <tenant-id> <workspace-name> [--idempotency-key <key>] | hako list <tenant-id> [limit] [offset] | hako get <tenant-id> <workspace-id> | hako suspend|resume|delete <tenant-id> <workspace-id> [--idempotency-key <key>] | hako workload list <tenant-id> [limit] [offset] | hako workload show <tenant-id> <run-id> | hako workload cancel <tenant-id> <run-id>")
+		fmt.Fprintln(os.Stderr, "usage: hako login | hako api health | hako tenant membership <tenant-id> | hako tenant placement-policy get <tenant-id> | hako tenant placement-policy set <tenant-id> '<policy-json>' | hako create <tenant-id> <workspace-name> [--idempotency-key <key>] | hako list <tenant-id> [limit] [offset] | hako get <tenant-id> <workspace-id> | hako suspend|resume|delete <tenant-id> <workspace-id> [--idempotency-key <key>] | hako workload create --tenant <id> --installation <id> --repository <id> --commit <sha> [--ref <ref>] [--timeout-seconds <seconds>] [--idempotency-key <key>] | hako workload list <tenant-id> [limit] [offset] | hako workload show <tenant-id> <run-id> | hako workload cancel <tenant-id> <run-id>")
 		os.Exit(2)
 	}
 }
@@ -302,6 +313,44 @@ func cancelWorkloadRun(tenantID, runID string) (domain.WorkloadRun, error) {
 		return domain.WorkloadRun{}, errors.New("HAKO_API_URL is required")
 	}
 	return api.CancelWorkloadRun(context.Background(), apiURL, accessToken, tenantID, runID, nil)
+}
+
+func createWorkloadCLI(args []string) (domain.WorkloadRun, string, error) {
+	var run domain.WorkloadRun
+	flags := flag.NewFlagSet("hako workload create", flag.ContinueOnError)
+	tenantID := flags.String("tenant", "", "Hako Tenant ID")
+	installationID := flags.Int64("installation", 0, "Tenant GitHub App Installation ID")
+	repositoryID := flags.Int64("repository", 0, "GitHub Repository ID registered to the Tenant")
+	commitSHA := flags.String("commit", "", "Immutable lowercase Git commit SHA")
+	ref := flags.String("ref", "", "Git ref metadata (does not select the commit)")
+	timeoutSeconds := flags.Int64("timeout-seconds", 0, "Job timeout in seconds (default 1800, maximum 86400)")
+	idempotencyKey := flags.String("idempotency-key", "", "Stable request key to safely retry this create")
+	if err := flags.Parse(args); err != nil {
+		return run, "", err
+	}
+	if flags.NArg() != 0 || *tenantID == "" || *installationID <= 0 || *repositoryID <= 0 || *commitSHA == "" {
+		return run, "", errors.New("required flags: --tenant, --installation, --repository, and --commit")
+	}
+	key := *idempotencyKey
+	if key == "" {
+		generatedKey, err := idgen.New("req_")
+		if err != nil {
+			return run, "", fmt.Errorf("generate idempotency key: %w", err)
+		}
+		key = generatedKey
+	}
+	accessToken, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
+	if err != nil {
+		return run, key, err
+	}
+	apiURL := os.Getenv("HAKO_API_URL")
+	if apiURL == "" {
+		return run, key, errors.New("HAKO_API_URL is required")
+	}
+	request := api.WorkloadRunCreateRequest{GitHubInstallationID: *installationID, GitHubRepositoryID: *repositoryID,
+		CommitSHA: *commitSHA, Ref: *ref, TimeoutSeconds: *timeoutSeconds}
+	run, err = api.CreateWorkloadRun(context.Background(), apiURL, accessToken, *tenantID, key, request, nil)
+	return run, key, err
 }
 
 func parseCLIPage(args []string) (int, int, error) {

@@ -244,6 +244,32 @@ func TestWorkloadRunClientListGetAndCancel(t *testing.T) {
 	}
 }
 
+func TestCreateWorkloadRunSendsIdempotentRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/tenants/tenant_123/workload-runs" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer test-access-token" || r.Header.Get("Idempotency-Key") != "create-request-1" {
+			t.Errorf("unexpected auth/idempotency headers: %q %q", r.Header.Get("Authorization"), r.Header.Get("Idempotency-Key"))
+		}
+		var request WorkloadRunCreateRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.GitHubInstallationID != 123 || request.GitHubRepositoryID != 456 || request.CommitSHA != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+			t.Errorf("unexpected create request: %+v error=%v", request, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"id":"run_1","tenant_id":"tenant_123","kind":"job","state":"pending"}`))
+	}))
+	defer server.Close()
+
+	run, err := CreateWorkloadRun(context.Background(), server.URL, "test-access-token", "tenant_123", "create-request-1", WorkloadRunCreateRequest{
+		GitHubInstallationID: 123, GitHubRepositoryID: 456, CommitSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Ref: "refs/heads/main", TimeoutSeconds: 900,
+	}, server.Client())
+	if err != nil || run.ID != "run_1" || run.State != "pending" {
+		t.Fatalf("unexpected Workload Run create response: %+v error=%v", run, err)
+	}
+}
+
 func TestWorkloadRunClientRejectsInvalidArguments(t *testing.T) {
 	if _, err := ListWorkloadRuns(context.Background(), "https://api.example.test", "token", "bad/tenant", 10, 0, nil); err == nil {
 		t.Fatal("ListWorkloadRuns accepted an unsafe Tenant ID")
@@ -256,6 +282,11 @@ func TestWorkloadRunClientRejectsInvalidArguments(t *testing.T) {
 	}
 	if _, err := CancelWorkloadRun(context.Background(), "https://api.example.test", "token", "tenant_1", "run_1", nil); err == nil {
 		t.Fatal("CancelWorkloadRun accepted non-loopback HTTP URL")
+	}
+	if _, err := CreateWorkloadRun(context.Background(), "https://api.example.test", "token", "tenant_1", "key", WorkloadRunCreateRequest{
+		GitHubInstallationID: 1, GitHubRepositoryID: 1, CommitSHA: "not-a-commit",
+	}, nil); err == nil {
+		t.Fatal("CreateWorkloadRun accepted a mutable/invalid commit revision")
 	}
 }
 

@@ -55,6 +55,7 @@ type commandEnvelope struct {
 
 type workloadScheduleEnvelope struct {
 	SchemaVersion int    `json:"schema_version"`
+	TenantID      string `json:"tenant_id"`
 	WorkloadRunID string `json:"workload_run_id"`
 }
 
@@ -143,7 +144,7 @@ func (d *Dispatcher) route(event outbox.Event) (string, error) {
 		if err := json.Unmarshal(event.Payload, &message); err != nil {
 			return "", fmt.Errorf("decode Workload schedule request: %w", err)
 		}
-		if message.SchemaVersion != 1 || message.WorkloadRunID == "" || message.WorkloadRunID != event.AggregateID {
+		if message.SchemaVersion != 1 || message.TenantID == "" || message.WorkloadRunID == "" || message.WorkloadRunID != event.AggregateID {
 			return "", errors.New("Workload schedule request has an unsupported or inconsistent envelope")
 		}
 		if d.config.WorkloadSchedulerQueueURL == "" {
