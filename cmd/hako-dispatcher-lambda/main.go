@@ -74,6 +74,7 @@ func buildHandler(ctx context.Context) (func(context.Context, events.CloudWatchE
 	}
 	engine, err := dispatcher.New(dispatcher.StoreAdapter{Pool: pool, Policy: transaction.DefaultPolicy()}, publisher, queueURLs, dispatcher.Config{
 		BatchSize: 10, LeaseDuration: 2 * time.Minute, BaseBackoff: time.Second, MaxBackoff: time.Minute,
+		WorkloadSchedulerQueueURL: strings.TrimSpace(os.Getenv("HAKO_WORKLOAD_SCHEDULER_QUEUE_URL")),
 	})
 	if err != nil {
 		pool.Close()

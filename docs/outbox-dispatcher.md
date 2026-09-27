@@ -1,6 +1,6 @@
 # Outbox Dispatcher
 
-`cmd/hako-dispatcher` polls the Control Plane's Transactional Outbox and sends each Operation command to the configured Resource Plane SQS queue. API handlers never send to SQS directly, so Workspace/Operation commits are not coupled to a network call.
+`cmd/hako-dispatcher` polls the Control Plane's Transactional Outbox and sends each Operation command to the configured Resource Plane SQS queue. It can also route versioned `workload_run.schedule_requested` events to the dedicated Workload scheduler queue. API handlers never send to SQS directly, so commits are not coupled to a network call.
 
 ## Delivery semantics
 
@@ -9,6 +9,7 @@
 - Resource Plane consumers must deduplicate by Outbox event ID and/or Operation ID. The Fake Controller's Runtime deduplicates by Operation ID. FIFO queues also receive Operation ID as message group and event ID as deduplication ID; FIFO's dedupe window is not the correctness boundary.
 - Send failures and missing queue mappings leave the event unpublished and apply exponential backoff. Expired leases are reclaimable after process crashes.
 - Successfully published rows are retained. An Outbox retention/cleanup policy is not defined yet.
+- Workload schedule events require `HAKO_WORKLOAD_SCHEDULER_QUEUE_URL`. If unset, the event remains unpublished and is retried with backoff; it is never sent to a Resource Plane's Workspace Operation queue.
 
 ## Configuration and running locally
 
@@ -32,9 +33,16 @@ least-privilege execution role and log group by default. After the Resource
 Plane command queue policies trust the output `outbox_dispatcher_role_arn`,
 enable `enable_outbox_dispatcher` and provide the versioned manifest JSON. Its
 command queue ARNs are derived from that manifest; the role receives only
-`sqs:SendMessage` on those queues and `dsql:DbConnect` for the custom
+`sqs:SendMessage` on those queues and the Control Plane Workload scheduler
+queue, plus `dsql:DbConnect` for the custom
 `hako_dispatcher` database role. The SQL bootstrap grants that DB role
 `SELECT`/`UPDATE` on `outbox_events` only.
+
+When enabled, Terraform also provisions the encrypted
+`workload_scheduler_queue_url` and a dead-letter queue, and passes the scheduler
+queue URL to the Dispatcher Lambda. This is durable routing infrastructure
+only: a Workload scheduler consumer/runtime executor is not deployed yet, so
+Workload Run creation must remain disabled until that consumer exists.
 
 EventBridge triggers the Lambda once per minute, with bounded target retries;
 the Outbox remains the durable source of work if an invocation fails. Batch
@@ -49,4 +57,4 @@ ready; otherwise periodic invocations will fail and raise the error alarm.
 
 ## Current boundary
 
-This component delivers SQS commands only. A Fake Resource Plane consumer and in-memory Runtime are available via [`cmd/hako-fake-resource-controller`](fake-resource-controller.md). The Control Plane result consumer now persists terminal results from a separate queue; see [Operation Result Consumer](operation-results.md). No real MicroVM state is changed. An unmapped Resource Plane or unsupported event remains unpublished and is retried with backoff; logs currently provide the primary operational signal.
+This component delivers SQS commands only. A Fake Resource Plane consumer and in-memory Runtime are available via [`cmd/hako-fake-resource-controller`](fake-resource-controller.md). The Control Plane result consumer now persists terminal results from a separate queue; see [Operation Result Consumer](operation-results.md). No real MicroVM or Workload job is executed by this dispatcher. An unmapped Resource Plane, unsupported event, or missing Workload queue remains unpublished and is retried with backoff; logs currently provide the primary operational signal.

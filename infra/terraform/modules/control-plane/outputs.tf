@@ -58,6 +58,16 @@ output "outbox_dispatcher_error_alarm_name" {
   value       = try(aws_cloudwatch_metric_alarm.outbox_dispatcher_errors[0].alarm_name, null)
 }
 
+output "workload_scheduler_queue_url" {
+  description = "URL of the durable Workload scheduler queue. A consumer is not included yet."
+  value       = try(aws_sqs_queue.workload_scheduler[0].url, null)
+}
+
+output "workload_scheduler_dlq_url" {
+  description = "URL of the Workload scheduler dead-letter queue."
+  value       = try(aws_sqs_queue.workload_scheduler_dlq[0].url, null)
+}
+
 output "github_webhook_processor_role_arn" {
   description = "IAM role ARN to map to the least-privilege hako_webhook_processor DSQL user."
   value       = aws_iam_role.github_webhook_processor.arn

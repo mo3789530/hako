@@ -25,6 +25,7 @@ locals {
       element(split("/", plane.command_queue_url), length(split("/", plane.command_queue_url)) - 1)
     )
   ]
+  dispatcher_workload_queue_arns = var.enable_outbox_dispatcher ? [aws_sqs_queue.workload_scheduler[0].arn] : []
 
   dispatcher_iam_statements = concat(
     [
@@ -48,6 +49,14 @@ locals {
         Action   = ["sqs:SendMessage"]
         Resource = local.dispatcher_command_queue_arns
       }
+    ] : [],
+    length(local.dispatcher_workload_queue_arns) > 0 ? [
+      {
+        Sid      = "PublishWorkloadsToSchedulerQueue"
+        Effect   = "Allow"
+        Action   = ["sqs:SendMessage"]
+        Resource = local.dispatcher_workload_queue_arns
+      }
     ] : []
   )
 }
@@ -63,6 +72,29 @@ locals {
 resource "aws_dsql_cluster" "control_plane" {
   deletion_protection_enabled = var.dsql_deletion_protection_enabled
 
+  tags = local.common_tags
+}
+
+resource "aws_sqs_queue" "workload_scheduler_dlq" {
+  count = var.enable_outbox_dispatcher ? 1 : 0
+
+  name                      = "${var.api_name}-workload-scheduler-dlq"
+  message_retention_seconds = 1209600
+  sqs_managed_sse_enabled   = true
+  tags                      = local.common_tags
+}
+
+resource "aws_sqs_queue" "workload_scheduler" {
+  count = var.enable_outbox_dispatcher ? 1 : 0
+
+  name                       = "${var.api_name}-workload-scheduler"
+  visibility_timeout_seconds = 120
+  message_retention_seconds  = 345600
+  sqs_managed_sse_enabled    = true
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.workload_scheduler_dlq[0].arn
+    maxReceiveCount     = 5
+  })
   tags = local.common_tags
 }
 
@@ -324,6 +356,7 @@ resource "aws_lambda_function" "outbox_dispatcher" {
       HAKO_DSQL_USER                    = "hako_dispatcher"
       HAKO_DSQL_DATABASE                = "postgres"
       HAKO_RESOURCE_PLANE_MANIFEST_JSON = var.resource_plane_manifest_json
+      HAKO_WORKLOAD_SCHEDULER_QUEUE_URL = aws_sqs_queue.workload_scheduler[0].url
     }
   }
 

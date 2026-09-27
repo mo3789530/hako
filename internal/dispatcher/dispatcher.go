@@ -28,7 +28,10 @@ type Config struct {
 	LeaseDuration time.Duration
 	BaseBackoff   time.Duration
 	MaxBackoff    time.Duration
-	Now           func() time.Time
+	// WorkloadSchedulerQueueURL routes workload_run.schedule_requested events.
+	// It is optional until the Workload scheduler queue is provisioned.
+	WorkloadSchedulerQueueURL string
+	Now                       func() time.Time
 }
 
 type Dispatcher struct {
@@ -48,6 +51,11 @@ type commandEnvelope struct {
 	SchemaVersion   int    `json:"schema_version"`
 	OperationID     string `json:"operation_id"`
 	ResourcePlaneID string `json:"resource_plane_id"`
+}
+
+type workloadScheduleEnvelope struct {
+	SchemaVersion int    `json:"schema_version"`
+	WorkloadRunID string `json:"workload_run_id"`
 }
 
 func New(store Store, publisher Publisher, queueURLs map[string]string, config Config) (*Dispatcher, error) {
@@ -105,11 +113,7 @@ func (d *Dispatcher) RunOnce(ctx context.Context) (Stats, error) {
 	stats.Claimed = len(events)
 	var failures []error
 	for _, event := range events {
-		resourcePlaneID, err := validateCommand(event)
-		queueURL := d.queues[resourcePlaneID]
-		if err == nil && queueURL == "" {
-			err = fmt.Errorf("no Resource Plane queue configured for %q", resourcePlaneID)
-		}
+		queueURL, err := d.route(event)
 		if err == nil {
 			err = d.publish.Publish(ctx, queueURL, event)
 		}
@@ -131,6 +135,31 @@ func (d *Dispatcher) RunOnce(ctx context.Context) (Stats, error) {
 		stats.Published++
 	}
 	return stats, errors.Join(failures...)
+}
+
+func (d *Dispatcher) route(event outbox.Event) (string, error) {
+	if event.AggregateType == "workload_run" && event.EventType == "workload_run.schedule_requested" {
+		var message workloadScheduleEnvelope
+		if err := json.Unmarshal(event.Payload, &message); err != nil {
+			return "", fmt.Errorf("decode Workload schedule request: %w", err)
+		}
+		if message.SchemaVersion != 1 || message.WorkloadRunID == "" || message.WorkloadRunID != event.AggregateID {
+			return "", errors.New("Workload schedule request has an unsupported or inconsistent envelope")
+		}
+		if d.config.WorkloadSchedulerQueueURL == "" {
+			return "", errors.New("Workload scheduler queue is not configured")
+		}
+		return d.config.WorkloadSchedulerQueueURL, nil
+	}
+	resourcePlaneID, err := validateCommand(event)
+	if err != nil {
+		return "", err
+	}
+	queueURL := d.queues[resourcePlaneID]
+	if queueURL == "" {
+		return "", fmt.Errorf("no Resource Plane queue configured for %q", resourcePlaneID)
+	}
+	return queueURL, nil
 }
 
 func validateCommand(event outbox.Event) (string, error) {

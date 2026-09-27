@@ -54,6 +54,7 @@ func main() {
 	}
 	engine, err := dispatcher.New(dispatcher.StoreAdapter{Pool: pool, Policy: transaction.DefaultPolicy()}, publisher, queueURLs, dispatcher.Config{
 		BatchSize: 10, LeaseDuration: 30 * time.Second, BaseBackoff: time.Second, MaxBackoff: time.Minute,
+		WorkloadSchedulerQueueURL: strings.TrimSpace(os.Getenv("HAKO_WORKLOAD_SCHEDULER_QUEUE_URL")),
 	})
 	if err != nil {
 		log.Fatalf("configure Outbox dispatcher: %v", err)
