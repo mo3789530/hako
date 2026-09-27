@@ -59,11 +59,13 @@ cannot create or reactivate a Tenant binding. Other event types remain pending.
 App private-key and Installation-token management, additional event
 processors, and operational replay/retention tooling remain outstanding. See
 `docs/github-installation-setup.md`, `docs/github-webhook-processor.md`, and
-the relevant integration tests. A separate Workload Run domain/store now
-models Job/Agent/Preview lifecycle, Tenant-scoped idempotency, revision-guarded
-transitions, timeout/cancellation, and redacted artifact references; it is not
-yet connected to webhook dispatch or a Runtime. See
-`docs/software-factory-workloads.md`.
+the relevant integration tests. A separate Workload Run domain/store models
+Job/Agent/Preview lifecycle, Tenant-scoped idempotency, revision-guarded
+transitions, timeout/cancellation, and redacted artifact references. A local
+Fake Runtime can run an immutable Go test commit in isolated Podman, persist
+terminal state/artifact metadata, and write logs through an S3 backend using
+SSE-S3 or optional SSE-KMS. No worker/dispatcher connects webhook events to
+this path yet. See `docs/software-factory-workloads.md`.
 
 ## Integration model
 

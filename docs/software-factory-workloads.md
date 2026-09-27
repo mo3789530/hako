@@ -80,9 +80,18 @@ integration tests cover successful/failed completion, metadata, commit
 mismatch, and cancellation-before-start.
 
 The artifact byte store is still an injected interface; a concrete S3 writer
-and deployed worker/dispatcher are not implemented. The standalone local
+is available as `S3ArtifactWriter`. It stores content-addressed objects under
+`<prefix>/<tenant>/<run>/logs/<sha256>.txt`, uses S3 checksum validation, and
+defaults to SSE-S3; an optional KMS key enables SSE-KMS. The bucket must remain
+private and its lifecycle/retention policy must be configured by the operator.
+The writer uses the AWS SDK default credential chain, so deployed workers
+should receive only a scoped IAM role (`s3:PutObject` on the configured prefix,
+plus KMS permissions when enabled). No credentials, ACLs, or presigned URLs
+are embedded in artifact metadata.
+
+A deployed worker/dispatcher is not implemented. The standalone local
 `JobRuntime` also keeps a process-local cache, so it is not a durable queue or
 production executor. Before repository-triggered Jobs are enabled, deployable
-workers still need image digest verification, a production artifact writer,
+workers still need image digest verification, bucket/IAM provisioning,
 in-flight cancellation cleanup, trust-level/network policy, and end-to-end
 authorization.
