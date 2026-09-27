@@ -27,6 +27,7 @@ import (
 	"github.com/mo3789530/hako/internal/store/resourceplanehealth"
 	"github.com/mo3789530/hako/internal/store/transaction"
 	"github.com/mo3789530/hako/internal/store/users"
+	"github.com/mo3789530/hako/internal/store/workloads"
 	"github.com/mo3789530/hako/internal/store/workspaces"
 )
 
@@ -189,7 +190,141 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 		HakoUserMiddleware(pool),
 		TenantMembershipMiddleware(pool),
 	)
+	protected.GET("/v1/tenants/:tenant_id/workload-runs", listWorkloadRuns(pool),
+		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+	protected.GET("/v1/tenants/:tenant_id/workload-runs/:run_id", getWorkloadRun(pool),
+		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+	protected.POST("/v1/tenants/:tenant_id/workload-runs/:run_id/cancel", cancelWorkloadRun(pool),
+		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
 	return e
+}
+
+type workloadRunListResponse struct {
+	Items  []domain.WorkloadRun `json:"items"`
+	Total  int64                `json:"total"`
+	Limit  int                  `json:"limit"`
+	Offset int                  `json:"offset"`
+}
+
+func listWorkloadRuns(pool transaction.Beginner) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		user, ok := HakoUserFromContext(c)
+		if !ok || pool == nil {
+			return databaseUnavailable(c)
+		}
+		limit, offset, err := parseWorkspacePage(c)
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_pagination", Message: "limit must be 1-100 and offset must be 0-1000000"}})
+		}
+		tenantID := domain.TenantID(strings.TrimSpace(c.Param("tenant_id")))
+		result, err := transaction.Within(c.Request().Context(), pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (workloadRunListResponse, error) {
+			membership, err := authz.RequireTenantMembership(ctx, tx, user.ID, tenantID)
+			if err != nil {
+				return workloadRunListResponse{}, err
+			}
+			var requestedBy domain.UserID
+			if membership.Role != domain.TenantRoleOwner && membership.Role != domain.TenantRoleAdmin {
+				requestedBy = user.ID
+			}
+			items, total, err := workloads.List(ctx, tx, tenantID, requestedBy, limit, offset)
+			return workloadRunListResponse{Items: items, Total: total, Limit: limit, Offset: offset}, err
+		})
+		if errors.Is(err, authz.ErrTenantAccessDenied) {
+			return tenantNotFound(c)
+		}
+		if err != nil {
+			return databaseUnavailable(c)
+		}
+		return c.JSON(http.StatusOK, result)
+	}
+}
+
+func getWorkloadRun(pool transaction.Beginner) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		user, ok := HakoUserFromContext(c)
+		if !ok || pool == nil {
+			return databaseUnavailable(c)
+		}
+		tenantID := domain.TenantID(strings.TrimSpace(c.Param("tenant_id")))
+		runID := domain.WorkloadRunID(strings.TrimSpace(c.Param("run_id")))
+		run, err := transaction.Within(c.Request().Context(), pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (domain.WorkloadRun, error) {
+			membership, err := authz.RequireTenantMembership(ctx, tx, user.ID, tenantID)
+			if err != nil {
+				return domain.WorkloadRun{}, err
+			}
+			stored, err := workloads.Get(ctx, tx, tenantID, runID)
+			if err != nil {
+				return domain.WorkloadRun{}, err
+			}
+			if membership.Role != domain.TenantRoleOwner && membership.Role != domain.TenantRoleAdmin && stored.RequestedBy != user.ID {
+				return domain.WorkloadRun{}, workloads.ErrNotFound
+			}
+			return stored, nil
+		})
+		if errors.Is(err, authz.ErrTenantAccessDenied) {
+			return tenantNotFound(c)
+		}
+		if errors.Is(err, workloads.ErrNotFound) {
+			return c.JSON(http.StatusNotFound, errorResponse{Error: errorBody{Code: "not_found", Message: "Workload Run not found"}})
+		}
+		if err != nil {
+			return databaseUnavailable(c)
+		}
+		return c.JSON(http.StatusOK, run)
+	}
+}
+
+func cancelWorkloadRun(pool transaction.Beginner) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		user, ok := HakoUserFromContext(c)
+		if !ok || pool == nil {
+			return databaseUnavailable(c)
+		}
+		tenantID := domain.TenantID(strings.TrimSpace(c.Param("tenant_id")))
+		runID := domain.WorkloadRunID(strings.TrimSpace(c.Param("run_id")))
+		now := time.Now().UTC()
+		run, err := transaction.Within(c.Request().Context(), pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (domain.WorkloadRun, error) {
+			membership, err := authz.RequireTenantMembership(ctx, tx, user.ID, tenantID)
+			if err != nil {
+				return domain.WorkloadRun{}, err
+			}
+			before, err := workloads.Get(ctx, tx, tenantID, runID)
+			if err != nil {
+				return domain.WorkloadRun{}, err
+			}
+			if membership.Role != domain.TenantRoleOwner && membership.Role != domain.TenantRoleAdmin && before.RequestedBy != user.ID {
+				return domain.WorkloadRun{}, workloads.ErrNotFound
+			}
+			after, err := workloads.RequestCancel(ctx, tx, tenantID, runID, now)
+			if err != nil {
+				return domain.WorkloadRun{}, err
+			}
+			if before.DesiredState != domain.WorkloadDesiredCancelled && after.DesiredState == domain.WorkloadDesiredCancelled && after.State != domain.WorkloadTimedOut {
+				details, err := json.Marshal(map[string]string{"state": string(after.State)})
+				if err != nil {
+					return domain.WorkloadRun{}, err
+				}
+				if err := audit.Append(ctx, tx, audit.Event{TenantID: tenantID, ActorID: user.ID,
+					Action: "workload_run.cancel", TargetType: "workload_run", TargetID: string(runID), Details: details, OccurredAt: now}); err != nil {
+					return domain.WorkloadRun{}, err
+				}
+			}
+			return after, nil
+		})
+		if errors.Is(err, authz.ErrTenantAccessDenied) {
+			return tenantNotFound(c)
+		}
+		if errors.Is(err, workloads.ErrNotFound) {
+			return c.JSON(http.StatusNotFound, errorResponse{Error: errorBody{Code: "not_found", Message: "Workload Run not found"}})
+		}
+		if errors.Is(err, workloads.ErrTransitionConflict) {
+			return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "state_conflict", Message: "Workload Run changed while cancellation was requested"}})
+		}
+		if err != nil {
+			return databaseUnavailable(c)
+		}
+		return c.JSON(http.StatusAccepted, run)
+	}
 }
 
 func listGitHubInstallations(pool transaction.Beginner) echo.HandlerFunc {

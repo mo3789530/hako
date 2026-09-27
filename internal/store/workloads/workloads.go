@@ -204,6 +204,39 @@ func Get(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, runID domain.
 	return run, nil
 }
 
+// List returns Tenant-scoped Workload Runs. A non-empty requestedBy restricts
+// the result to one requester; callers must authorize Tenant membership and
+// decide whether to pass that filter.
+func List(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, requestedBy domain.UserID, limit, offset int) ([]domain.WorkloadRun, int64, error) {
+	if tx == nil || tenantID == "" || limit < 1 || limit > 100 || offset < 0 || offset > 1_000_000 {
+		return nil, 0, errors.New("transaction, Tenant ID, and valid Workload Run pagination are required")
+	}
+	var total int64
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM workload_runs
+		WHERE tenant_id = $1 AND ($2 = '' OR requested_by = $2)`, tenantID, requestedBy).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count Workload Runs: %w", err)
+	}
+	rows, err := tx.Query(ctx, `SELECT `+runColumns+` FROM workload_runs
+		WHERE tenant_id = $1 AND ($2 = '' OR requested_by = $2)
+		ORDER BY created_at DESC, id DESC LIMIT $3 OFFSET $4`, tenantID, requestedBy, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list Workload Runs: %w", err)
+	}
+	defer rows.Close()
+	runs := make([]domain.WorkloadRun, 0)
+	for rows.Next() {
+		run, err := scanRun(rows)
+		if err != nil {
+			return nil, 0, fmt.Errorf("scan Workload Run: %w", err)
+		}
+		runs = append(runs, run)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate Workload Runs: %w", err)
+	}
+	return runs, total, nil
+}
+
 func GetByIdempotencyKey(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, key string) (domain.WorkloadRun, error) {
 	if tx == nil || tenantID == "" || key == "" {
 		return domain.WorkloadRun{}, errors.New("transaction, Tenant ID, and idempotency key are required")

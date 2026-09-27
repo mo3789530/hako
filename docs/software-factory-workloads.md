@@ -56,6 +56,18 @@ fingerprint. Reusing a key for a different request is a conflict. Repository
 runs require an exact lowercase 40- or 64-character commit SHA; mutable branch
 names are metadata only and do not select the source revision.
 
+## Workload Run API visibility
+
+Authenticated routes currently expose paginated list, detail, and cancellation
+under `/v1/tenants/{tenant_id}/workload-runs`. Tenant Owner/Admin roles can
+read all Runs in that Tenant; other members can read only Runs whose
+`requested_by` is their Hako User ID. Missing Tenant membership is returned as
+404, as are Runs outside the caller's visibility. Cancellation sets the
+desired state and appends an immutable Run event; it does not synchronously
+stop an already-running executor until a worker cancellation channel is wired.
+Run creation is intentionally not exposed yet because there is no durable
+Workload dispatcher/outbox path to guarantee accepted Runs are executed.
+
 ## Current scope and follow-up
 
 The persistence/domain foundation and state/artifact store are implemented.
