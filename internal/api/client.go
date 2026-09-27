@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/idempotency"
 )
 
@@ -76,6 +77,13 @@ type WorkspaceActionResult struct {
 	OperationID    string        `json:"operation_id"`
 	OperationType  string        `json:"operation_type"`
 	OperationState string        `json:"operation_state"`
+}
+
+type WorkloadRunListResult struct {
+	Items  []domain.WorkloadRun `json:"items"`
+	Total  int64                `json:"total"`
+	Limit  int                  `json:"limit"`
+	Offset int                  `json:"offset"`
 }
 
 type APIError struct {
@@ -403,6 +411,99 @@ func RequestWorkspaceAction(ctx context.Context, baseURL, accessToken, tenantID,
 	return result, nil
 }
 
+// ListWorkloadRuns retrieves one bounded page of Runs visible to the caller.
+func ListWorkloadRuns(ctx context.Context, baseURL, accessToken, tenantID string, limit, offset int, client *http.Client) (WorkloadRunListResult, error) {
+	var result WorkloadRunListResult
+	if !validTenantID(tenantID) {
+		return result, errors.New("tenant ID must contain only letters, numbers, underscores, or hyphens")
+	}
+	if limit < 1 || limit > 100 || offset < 0 || offset > 1000000 {
+		return result, errors.New("limit must be 1-100 and offset must be 0-1000000")
+	}
+	endpoint, err := apiEndpoint(baseURL, "/v1/tenants/"+url.PathEscape(tenantID)+"/workload-runs")
+	if err != nil {
+		return result, err
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return result, errors.New("invalid Hako API endpoint")
+	}
+	query := parsed.Query()
+	query.Set("limit", strconv.Itoa(limit))
+	query.Set("offset", strconv.Itoa(offset))
+	parsed.RawQuery = query.Encode()
+	response, err := doAPIRequest(ctx, parsed.String(), accessToken, client)
+	if err != nil {
+		return result, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return result, readAPIError(response)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil {
+		return WorkloadRunListResult{}, errors.New("Hako API returned an invalid Workload Run list response")
+	}
+	return result, nil
+}
+
+// GetWorkloadRun retrieves a Tenant-scoped Run if the caller's role/requester
+// visibility permits access.
+func GetWorkloadRun(ctx context.Context, baseURL, accessToken, tenantID, runID string, client *http.Client) (domain.WorkloadRun, error) {
+	var result domain.WorkloadRun
+	if !validTenantID(tenantID) || !validOpaqueID(runID) {
+		return result, errors.New("Tenant and Workload Run IDs must contain only letters, numbers, underscores, or hyphens")
+	}
+	endpoint, err := apiEndpoint(baseURL, "/v1/tenants/"+url.PathEscape(tenantID)+"/workload-runs/"+url.PathEscape(runID))
+	if err != nil {
+		return result, err
+	}
+	response, err := doAPIRequest(ctx, endpoint, accessToken, client)
+	if err != nil {
+		return result, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return result, readAPIError(response)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil {
+		return domain.WorkloadRun{}, errors.New("Hako API returned an invalid Workload Run response")
+	}
+	return result, nil
+}
+
+// CancelWorkloadRun requests idempotent asynchronous cancellation.
+func CancelWorkloadRun(ctx context.Context, baseURL, accessToken, tenantID, runID string, client *http.Client) (domain.WorkloadRun, error) {
+	var result domain.WorkloadRun
+	if !validTenantID(tenantID) || !validOpaqueID(runID) {
+		return result, errors.New("Tenant and Workload Run IDs must contain only letters, numbers, underscores, or hyphens")
+	}
+	endpoint, err := apiEndpoint(baseURL, "/v1/tenants/"+url.PathEscape(tenantID)+"/workload-runs/"+url.PathEscape(runID)+"/cancel")
+	if err != nil {
+		return result, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+	if err != nil {
+		return result, fmt.Errorf("create Hako API request: %w", err)
+	}
+	if strings.TrimSpace(accessToken) == "" {
+		return result, errors.New("access token is required")
+	}
+	request.Header.Set("Authorization", "Bearer "+accessToken)
+	client = safeAPIClient(client)
+	response, err := client.Do(request)
+	if err != nil {
+		return result, fmt.Errorf("call Hako API: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		return result, readAPIError(response)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil {
+		return domain.WorkloadRun{}, errors.New("Hako API returned an invalid Workload Run cancellation response")
+	}
+	return result, nil
+}
+
 func readAPIError(response *http.Response) error {
 	var wire struct {
 		Error struct {
@@ -430,15 +531,7 @@ func doAPIRequest(ctx context.Context, endpoint, accessToken string, client *htt
 	if strings.TrimSpace(accessToken) == "" {
 		return nil, errors.New("access token is required")
 	}
-	if client == nil {
-		client = &http.Client{
-			Timeout: 10 * time.Second,
-		}
-	} else {
-		clientCopy := *client
-		client = &clientCopy
-	}
-	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	client = safeAPIClient(client)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create Hako API request: %w", err)
@@ -449,6 +542,17 @@ func doAPIRequest(ctx context.Context, endpoint, accessToken string, client *htt
 		return nil, fmt.Errorf("call Hako API: %w", err)
 	}
 	return response, nil
+}
+
+func safeAPIClient(client *http.Client) *http.Client {
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	} else {
+		clientCopy := *client
+		client = &clientCopy
+	}
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return client
 }
 
 func validTenantID(tenantID string) bool {

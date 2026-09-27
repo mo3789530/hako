@@ -13,6 +13,7 @@ import (
 
 	"github.com/mo3789530/hako/internal/api"
 	"github.com/mo3789530/hako/internal/auth"
+	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/idgen"
 )
 
@@ -61,6 +62,35 @@ func main() {
 			os.Exit(1)
 		}
 		_ = json.NewEncoder(os.Stdout).Encode(updated)
+	case len(os.Args) >= 4 && len(os.Args) <= 6 && os.Args[1] == "workload" && os.Args[2] == "list":
+		limit, offset, err := parseCLIPage(os.Args[4:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hako workload list: %v\n", err)
+			os.Exit(2)
+		}
+		page, err := listWorkloadRuns(os.Args[3], limit, offset)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hako workload list: %v\n", err)
+			os.Exit(1)
+		}
+		for _, run := range page.Items {
+			fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%s\n", run.ID, run.Kind, run.DesiredState, run.State)
+		}
+		fmt.Fprintf(os.Stdout, "Showing %d of %d workload runs (limit=%d offset=%d)\n", len(page.Items), page.Total, page.Limit, page.Offset)
+	case len(os.Args) == 5 && os.Args[1] == "workload" && os.Args[2] == "show":
+		run, err := getWorkloadRun(os.Args[3], os.Args[4])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hako workload show: %v\n", err)
+			os.Exit(1)
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(run)
+	case len(os.Args) == 5 && os.Args[1] == "workload" && os.Args[2] == "cancel":
+		run, err := cancelWorkloadRun(os.Args[3], os.Args[4])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hako workload cancel: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stdout, "Workload Run %s cancellation accepted (desired=%s observed=%s)\n", run.ID, run.DesiredState, run.State)
 	case len(os.Args) >= 3 && len(os.Args) <= 5 && os.Args[1] == "list":
 		limit, offset, err := parseCLIPage(os.Args[3:])
 		if err != nil {
@@ -129,7 +159,7 @@ func main() {
 		}
 		fmt.Fprintf(os.Stdout, "Workspace %s accepted: desired=%s observed=%s (operation=%s state=%s, request-key=%s)\n", result.Workspace.Workspace.ID, result.Workspace.Status.DesiredState, result.Workspace.Status.ObservedState, result.OperationID, result.OperationState, idempotencyKey)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: hako login | hako api health | hako tenant membership <tenant-id> | hako tenant placement-policy get <tenant-id> | hako tenant placement-policy set <tenant-id> '<policy-json>' | hako create <tenant-id> <workspace-name> [--idempotency-key <key>] | hako list <tenant-id> [limit] [offset] | hako get <tenant-id> <workspace-id> | hako suspend|resume|delete <tenant-id> <workspace-id> [--idempotency-key <key>]")
+		fmt.Fprintln(os.Stderr, "usage: hako login | hako api health | hako tenant membership <tenant-id> | hako tenant placement-policy get <tenant-id> | hako tenant placement-policy set <tenant-id> '<policy-json>' | hako create <tenant-id> <workspace-name> [--idempotency-key <key>] | hako list <tenant-id> [limit] [offset] | hako get <tenant-id> <workspace-id> | hako suspend|resume|delete <tenant-id> <workspace-id> [--idempotency-key <key>] | hako workload list <tenant-id> [limit] [offset] | hako workload show <tenant-id> <run-id> | hako workload cancel <tenant-id> <run-id>")
 		os.Exit(2)
 	}
 }
@@ -236,6 +266,42 @@ func workspaceAction(action, tenantID, workspaceID, idempotencyKey string) (api.
 		return api.WorkspaceActionResult{}, errors.New("HAKO_API_URL is required")
 	}
 	return api.RequestWorkspaceAction(context.Background(), apiURL, accessToken, tenantID, workspaceID, action, idempotencyKey, nil)
+}
+
+func listWorkloadRuns(tenantID string, limit, offset int) (api.WorkloadRunListResult, error) {
+	accessToken, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
+	if err != nil {
+		return api.WorkloadRunListResult{}, err
+	}
+	apiURL := os.Getenv("HAKO_API_URL")
+	if apiURL == "" {
+		return api.WorkloadRunListResult{}, errors.New("HAKO_API_URL is required")
+	}
+	return api.ListWorkloadRuns(context.Background(), apiURL, accessToken, tenantID, limit, offset, nil)
+}
+
+func getWorkloadRun(tenantID, runID string) (domain.WorkloadRun, error) {
+	accessToken, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
+	if err != nil {
+		return domain.WorkloadRun{}, err
+	}
+	apiURL := os.Getenv("HAKO_API_URL")
+	if apiURL == "" {
+		return domain.WorkloadRun{}, errors.New("HAKO_API_URL is required")
+	}
+	return api.GetWorkloadRun(context.Background(), apiURL, accessToken, tenantID, runID, nil)
+}
+
+func cancelWorkloadRun(tenantID, runID string) (domain.WorkloadRun, error) {
+	accessToken, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
+	if err != nil {
+		return domain.WorkloadRun{}, err
+	}
+	apiURL := os.Getenv("HAKO_API_URL")
+	if apiURL == "" {
+		return domain.WorkloadRun{}, errors.New("HAKO_API_URL is required")
+	}
+	return api.CancelWorkloadRun(context.Background(), apiURL, accessToken, tenantID, runID, nil)
 }
 
 func parseCLIPage(args []string) (int, int, error) {

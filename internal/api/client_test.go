@@ -206,6 +206,59 @@ func TestRequestWorkspaceActionRejectsInvalidAction(t *testing.T) {
 	}
 }
 
+func TestWorkloadRunClientListGetAndCancel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-access-token" {
+			t.Errorf("unexpected Authorization header %q", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/tenants/tenant_123/workload-runs":
+			if r.URL.Query().Get("limit") != "2" || r.URL.Query().Get("offset") != "4" {
+				t.Errorf("unexpected list pagination %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"items":[{"id":"run_1","tenant_id":"tenant_123","kind":"job","state":"running"}],"total":5,"limit":2,"offset":4}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/tenants/tenant_123/workload-runs/run_1":
+			_, _ = w.Write([]byte(`{"id":"run_1","tenant_id":"tenant_123","kind":"job","state":"running"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/tenants/tenant_123/workload-runs/run_1/cancel":
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"id":"run_1","tenant_id":"tenant_123","kind":"job","desired_state":"cancelled","state":"running"}`))
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	page, err := ListWorkloadRuns(context.Background(), server.URL, "test-access-token", "tenant_123", 2, 4, server.Client())
+	if err != nil || page.Total != 5 || len(page.Items) != 1 || page.Items[0].ID != "run_1" || page.Items[0].State != "running" {
+		t.Fatalf("unexpected Workload Run page: %+v error=%v", page, err)
+	}
+	run, err := GetWorkloadRun(context.Background(), server.URL, "test-access-token", "tenant_123", "run_1", server.Client())
+	if err != nil || run.ID != "run_1" || run.State != "running" {
+		t.Fatalf("unexpected Workload Run: %+v error=%v", run, err)
+	}
+	run, err = CancelWorkloadRun(context.Background(), server.URL, "test-access-token", "tenant_123", "run_1", server.Client())
+	if err != nil || run.DesiredState != "cancelled" || run.State != "running" {
+		t.Fatalf("unexpected cancellation response: %+v error=%v", run, err)
+	}
+}
+
+func TestWorkloadRunClientRejectsInvalidArguments(t *testing.T) {
+	if _, err := ListWorkloadRuns(context.Background(), "https://api.example.test", "token", "bad/tenant", 10, 0, nil); err == nil {
+		t.Fatal("ListWorkloadRuns accepted an unsafe Tenant ID")
+	}
+	if _, err := ListWorkloadRuns(context.Background(), "https://api.example.test", "token", "tenant_1", 101, 0, nil); err == nil {
+		t.Fatal("ListWorkloadRuns accepted an excessive page size")
+	}
+	if _, err := GetWorkloadRun(context.Background(), "https://api.example.test", "token", "tenant_1", "../run", nil); err == nil {
+		t.Fatal("GetWorkloadRun accepted an unsafe Run ID")
+	}
+	if _, err := CancelWorkloadRun(context.Background(), "https://api.example.test", "token", "tenant_1", "run_1", nil); err == nil {
+		t.Fatal("CancelWorkloadRun accepted non-loopback HTTP URL")
+	}
+}
+
 func TestHealthRejectsNonLoopbackHTTP(t *testing.T) {
 	if err := Health(context.Background(), "http://api.example.test", "token", nil); err == nil {
 		t.Fatal("expected non-loopback HTTP URL to be rejected")

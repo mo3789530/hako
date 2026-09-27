@@ -68,6 +68,12 @@ stop an already-running executor until a worker cancellation channel is wired.
 Run creation is intentionally not exposed yet because there is no durable
 Workload dispatcher/outbox path to guarantee accepted Runs are executed.
 
+The CLI mirrors these read/cancel routes as `hako workload list <tenant-id>
+[limit] [offset]`, `hako workload show <tenant-id> <run-id>`, and
+`hako workload cancel <tenant-id> <run-id>`. List output is a tab-separated
+summary; `show` returns the full JSON Run. CLI cancellation reports acceptance,
+not that the executor has already stopped.
+
 ## Current scope and follow-up
 
 The persistence/domain foundation and state/artifact store are implemented.
