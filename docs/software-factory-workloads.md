@@ -132,6 +132,13 @@ should receive only a scoped IAM role (`s3:PutObject` on the configured prefix,
 plus KMS permissions when enabled). No credentials, ACLs, or presigned URLs
 are embedded in artifact metadata.
 
+A production design is recorded in [ADR 0006](adr/0006-workload-worker-substrate.md):
+short-lived scheduler handoff in the Control Plane, disposable per-attempt EC2
+and rootless Podman in the Resource Plane, and separate result/cleanup processing.
+SQS visibility renewal cannot hold a receipt for the API's full 24-hour deadline.
+The Resource Plane executor must not connect directly to Control Plane DSQL.
+This is a design decision, not a deployed runtime or a reason to enable creation.
+
 A deployed Workload worker/handler is not implemented. The standalone local
 `JobRuntime` also keeps a process-local cache, so it is not a durable queue or
 production executor. Before repository-triggered Jobs are enabled, deployable

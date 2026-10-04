@@ -1507,6 +1507,8 @@ Hakoは最初は **Lambda MicroVMを使ったRemote Development Environment** �
 
 以下は、この設計を実装可能な順序に分解したMVPタスクです。まずはAWSリソースを操作しない`fake` runtimeでControl PlaneからWorkspaceのライフサイクルまでを通し、その後にAWS統合を進めます。
 
+未完了項目を依存関係・受入条件付きで実装担当へ渡す場合は、[Task Board](tasks/README.md)と個別task specを参照してください。READMEのチェックリストは全体ロードマップ、Task Boardは次の実装単位と着手順を示します。
+
 ### Phase 0: プロジェクト基盤
 
 - [x] リポジトリ構成、Go module、共通設定・ログ・エラー処理を決める。
@@ -1564,7 +1566,7 @@ Hakoは最初は **Lambda MicroVMを使ったRemote Development Environment** �
 
 - [x] Resource Plane登録・構成形式と必要Capabilityを定義する（version付きJSON manifestとstrict validatorを用意し、Dispatcher/Result Consumerから複数QueueをRegion-awareに利用）。DSQLへの登録自動化は未実装。[Resource Plane registration manifest](docs/resource-plane-registration.md)。
 - [ ] TerraformでResource Controller Lambda、Queue、IAM Role、結果通知経路を構築する（command/result Queue・DLQ・redrive policy・queue policy・最小IAM Role・Log Groupに加え、明示opt-inのFake Runtime専用LambdaとSQS event source mappingを定義。実Runtime・本番Lambda・AWS applyは未完了）。[Resource Plane queues and DLQ](docs/resource-plane-queues-and-dlq.md)、[Resource Controller Lambda](docs/resource-controller-lambda.md)。
-- [ ] TerraformでControl Plane側のAPI Gateway、Lambda、Cognito、DSQL、Outbox配信基盤を構築する（HTTP API、API Lambda、DSQL、最小DB/IAMとopt-inのEventBridge Scheduled Outbox Dispatcher Lambdaを実装。Cognito User Pool、AWS apply、SQL role bootstrap・migrationの実環境適用は未完了。Dispatcherに専用Queueは作らず、各Resource Planeのcommand queueへ直接配信する）。[Control Plane Terraform](docs/control-plane-terraform.md)。
+- [ ] TerraformでControl Plane側のAPI Gateway、Lambda、Cognito、DSQL、Outbox配信基盤を構築する（HTTP API、API Lambda、DSQL、最小DB/IAMとopt-inのEventBridge Scheduled Outbox Dispatcher Lambdaを実装。Workload scheduler queue/DLQはDispatcher opt-in時に作成。Cognito User Pool、Workload consumer/worker、AWS apply、SQL role bootstrap・migrationの実環境適用は未完了）。[Control Plane Terraform](docs/control-plane-terraform.md)。
 - [ ] Hako API LambdaをZIP/custom runtimeからDocker/OCIコンテナイメージ方式へ移行する（Lambda Web Adapter、arm64 multi-stage build、同一Regionのimmutable ECR・scan/lifecycle、digest固定の別Lambda候補、API Gateway切替フラグ、ローカルHTTP smoke testを実装・検証済み。AWS candidateへのAPI Gateway v2 event直接invoke、ECR pushと実環境cutover/rollback検証は未完了）。[API Gateway and Lambda](docs/api-gateway-lambda.md)。
 - [ ] TerraformでResource Plane側のGateway、ネットワーク、ログ・監視基盤を構築する（QueueのDLQ/滞留/backlog監視とFake Controller errors alarm、保持期間を実装。Gateway、VPC/subnet、Flow Logs、production監視は未実装）。[Terraform module documentation](docs/terraform-modules.md)。
 - [x] 現在のTerraform moduleの入力・出力、必須タグ、IAM最小権限、dev環境差分を文書化する（Control Plane/Resource Planeの現行2 moduleを網羅。新module追加時は本書も更新）。[Terraform module documentation](docs/terraform-modules.md)。
