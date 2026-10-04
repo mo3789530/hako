@@ -1,6 +1,10 @@
 # Task 37: GitHub App Credentials and Installation Tokens
 
-Status: Ready. Priority: P0. Depends on: none; parallel with Task 36.
+Status: Done (internal library, 2026-10-04). Priority: P0. Depends on: none.
+
+Implementation: `internal/githubapp.TokenClient`, trusted CP `githubregistry.CredentialAuthorizer`, and [credential configuration/rotation/IAM contract](../docs/github-app-credentials.md). Dedicated service/role deployment remains Task 40; no permission was added to the API or Resource Plane role.
+
+Verification: full Go unit suite passed; related fake-GitHub and PostgreSQL integration suites passed with the race detector. `internal/githubapp` statement coverage is 86.5% (includes the pre-existing OAuth setup client). Tests used generated keys, fake HTTP endpoints and an isolated schema on the running local Postgres; no public GitHub/AWS credentials were used.
 
 ## Goal
 

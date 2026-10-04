@@ -32,7 +32,10 @@ rechecks Hako Tenant authorization before binding it.
 
 The user access token is used only for the GitHub verification request and is
 never returned to the browser, logged, or persisted. App installation tokens
-and App private-key management are separate, not yet implemented features.
+and App private-key management are provided by a separate internal library;
+the worker integration/deployment is not yet implemented. See
+[GitHub App credentials](github-app-credentials.md) for the read-only token
+boundary, IAM contract, rotation and emergency revocation procedures.
 The PKCE verifier is stored in the Control Plane database only for the short
 setup window; successful completion erases it, and expired/consumed setup rows
 are reaped when a new setup starts. Configure API Gateway/application access

@@ -1,5 +1,5 @@
-// Package githubapp contains the small OAuth/user-installation verification
-// boundary used by the tenant Installation setup callback.
+// Package githubapp contains OAuth Installation verification and the trusted
+// read-only Installation credential boundary. Tokens never belong in Jobs.
 package githubapp
 
 import (

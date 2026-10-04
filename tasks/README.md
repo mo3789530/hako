@@ -17,8 +17,8 @@
 | 順序 | Task | 内容 | Depends on |
 |---|---|---|---|
 | 1 | [36 — Worker実行基盤ADR](task-36-workload-worker-adr.md) | 完了（設計のみ）：使い捨てEC2、短時間handoff、fencing。実装は39/40 | なし |
-| 2 | [37 — GitHub App資格情報](task-37-github-app-credentials.md) | App private key保管と短命Installation token | なし（36と並行可） |
-| 3 | [38 — 固定commit checkout](task-38-workload-source-checkout.md) | Tenant/repository認可後に固定SHAを安全にcheckout | 37 |
+| 2 | [37 — GitHub App資格情報](task-37-github-app-credentials.md) | 完了（library）：AWSCURRENT、JWT、Repository限定read-only token。配備は40 | なし |
+| 3 | [38 — 固定commit checkout](task-38-workload-source-checkout.md) | 着手可能：Tenant/repository認可後に固定SHAを安全にcheckout | 37（完了） |
 | 4 | [39 — Workload実行handler](task-39-workload-execution-handler.md) | SQS consumerをDB、checkout、既存Go test Serviceへ接続 | 36, 38 |
 | 5 | [40 — Worker/IAM/Artifact配備](task-40-workload-worker-deployment.md) | 選定基盤へworker、Queue、S3/IAM/監視を配備 | 36, 39 |
 | 6 | [41 — GitHub Checks](task-41-github-checks.md) | queued/in-progress/completed結果とcommit照合 | 37, 39 |
@@ -57,6 +57,7 @@
 - Workload RunのDB/domain、Tenant visibility、create/list/detail/cancel APIとCLI、transactional Outbox、専用scheduler SQSへのDispatcher、厳格decode・visibility延長・成功後ackするconsumer coreは実装済み。
 - Go testを隔離Podman containerで実行するFake Runtime、commit照合、redacted logs、S3 writer、state/artifact Serviceは実装済み。ただしServiceはSQS workerに未接続で、checkout/worker deploymentもない。
 - `enable_workload_run_creation`はdefault-off。worker/handlerの運用可能性を確認せず有効化しない。
+- Task 37の資格情報libraryは実装・検証済み。App private keyはAWSCURRENTから取得し、Tenant/Repository認可とlive Installation検証後にread-only tokenを発行する。専用service/IAM配備とcheckout接続は未実装。
 - Resource PlaneのWorkspace Lambdaは明示opt-inのFake Runtime用。実AWS MicroVM Runtime、durable fencing、EFS、Gatewayは未実装。
 - Placement policy/capacity/healthのDB・Schedulerロジックはあるが、Resource Planeからの自動health報告と本番AWS検証は未実装。
 - README Phase 0–9には残項目が他にもある。上記Task 36–55がその実行順と受入条件を具体化する。完了判定時はREADMEの該当チェックとこのboardを両方更新する。

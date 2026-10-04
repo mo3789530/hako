@@ -1,0 +1,648 @@
+package githubapp
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/mo3789530/hako/internal/domain"
+)
+
+const testKeyARN = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:github-app-key-test"
+const testTokenValue = "synthetic-token-never-log"
+
+type secretAPIFunc func(context.Context, *secretsmanager.GetSecretValueInput, ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error)
+
+func (f secretAPIFunc) GetSecretValue(ctx context.Context, in *secretsmanager.GetSecretValueInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+	return f(ctx, in, opts...)
+}
+
+type repositoryAuthorizerFunc func(context.Context, domain.TenantID, int64, int64) (RepositoryAccess, error)
+
+func (f repositoryAuthorizerFunc) AuthorizeRepository(ctx context.Context, tenant domain.TenantID, installation, repository int64) (RepositoryAccess, error) {
+	return f(ctx, tenant, installation, repository)
+}
+
+type credentialTransportFunc func(*http.Request) (*http.Response, error)
+
+func (f credentialTransportFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func newSigningKey(t *testing.T) (*rsa.PrivateKey, string) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal("generate test signing key failed")
+	}
+	return key, string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+}
+
+func newTestTokenClient(t *testing.T, handler http.Handler) (*TokenClient, *rsa.PrivateKey) {
+	t.Helper()
+	key, privatePEM := newSigningKey(t)
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	secrets := secretAPIFunc(func(ctx context.Context, in *secretsmanager.GetSecretValueInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+		if in.SecretId == nil || *in.SecretId != testKeyARN || in.VersionStage == nil || *in.VersionStage != "AWSCURRENT" {
+			t.Error("incorrect secret ARN or version stage")
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			t.Error("secret request lacks deadline")
+		}
+		return &secretsmanager.GetSecretValueOutput{SecretString: &privatePEM}, nil
+	})
+	authorizer := repositoryAuthorizerFunc(func(_ context.Context, tenant domain.TenantID, installation, repository int64) (RepositoryAccess, error) {
+		if tenant != "tenant_one" || installation != 77 || repository != 88 {
+			return RepositoryAccess{}, errors.New("denied")
+		}
+		return RepositoryAccess{Owner: "acme", Name: "api"}, nil
+	})
+	client, err := NewTokenClient(TokenConfig{AppID: 12, PrivateKeySecretARN: testKeyARN}, secrets, authorizer, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.apiURL = server.URL
+	client.now = func() time.Time { return time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC) }
+	client.wait = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	return client, key
+}
+
+func respondCredentials(w http.ResponseWriter, r *http.Request, now time.Time) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == http.MethodGet {
+		_, _ = io.WriteString(w, `{"id":77,"app_id":12,"suspended_at":null}`)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"token": testTokenValue, "expires_at": now.Add(time.Hour), "permissions": map[string]string{"contents": "read", "metadata": "read"}, "repositories": []map[string]any{{"id": 88}}})
+}
+
+func requireCredentialCode(t *testing.T, err error, code string) {
+	t.Helper()
+	var safe *CredentialError
+	if !errors.As(err, &safe) || safe.Code != code {
+		t.Fatalf("unexpected credential error classification; want %s", code)
+	}
+	if strings.Contains(err.Error(), testTokenValue) || strings.Contains(err.Error(), "PRIVATE KEY") {
+		t.Fatal("credential error leaked secret")
+	}
+}
+
+func TestCheckoutTokenSignsScopesCachesAndRefreshes(t *testing.T) {
+	var mintCount atomic.Int32
+	var jwtValue string
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	client, key := newTestTokenClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		jwtValue = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if r.Header.Get("Accept") != "application/vnd.github+json" || r.Header.Get("X-GitHub-Api-Version") == "" {
+			t.Error("missing GitHub headers")
+		}
+		switch r.URL.Path {
+		case "/app/installations/77", "/repos/acme/api/installation":
+			if r.Method != http.MethodGet {
+				t.Error("unexpected validation method")
+			}
+		case "/app/installations/77/access_tokens":
+			mintCount.Add(1)
+			var body struct {
+				RepositoryIDs []int64           `json:"repository_ids"`
+				Permissions   map[string]string `json:"permissions"`
+			}
+			if json.NewDecoder(r.Body).Decode(&body) != nil || len(body.RepositoryIDs) != 1 || body.RepositoryIDs[0] != 88 || len(body.Permissions) != 1 || body.Permissions["contents"] != "read" {
+				t.Error("token request was not scoped to one repository/read-only contents")
+			}
+		default:
+			t.Error("unexpected GitHub endpoint")
+		}
+		respondCredentials(w, r, now)
+	}))
+	ctx := context.Background()
+	token, err := client.CheckoutToken(ctx, "tenant_one", 77, 88)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token.Value() != testTokenValue || !token.ExpiresAt().Equal(now.Add(time.Hour)) {
+		t.Fatal("unexpected token or expiry")
+	}
+	claims := &jwt.RegisteredClaims{}
+	_, err = jwt.ParseWithClaims(jwtValue, claims, func(token *jwt.Token) (any, error) { return &key.PublicKey, nil }, jwt.WithValidMethods([]string{"RS256"}), jwt.WithTimeFunc(func() time.Time { return now }), jwt.WithIssuer("12"), jwt.WithExpirationRequired())
+	if err != nil || !claims.IssuedAt.Time.Equal(now.Add(-time.Minute)) || !claims.ExpiresAt.Time.Equal(now.Add(9*time.Minute)) {
+		t.Fatal("invalid App JWT claims or signature")
+	}
+	if _, err = client.CheckoutToken(ctx, "tenant_one", 77, 88); err != nil || mintCount.Load() != 1 {
+		t.Fatal("token cache did not reuse token")
+	}
+	now = now.Add(59 * time.Minute)
+	client.now = func() time.Time { return now }
+	if _, err = client.CheckoutToken(ctx, "tenant_one", 77, 88); err != nil || mintCount.Load() != 2 {
+		t.Fatal("token did not refresh before expiry")
+	}
+	if err = client.ClearCache(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = client.CheckoutToken(ctx, "tenant_one", 77, 88); err != nil || mintCount.Load() != 3 {
+		t.Fatal("cache clearing did not force mint")
+	}
+}
+
+func TestCheckoutTokenConcurrentRequestsMintOnce(t *testing.T) {
+	var mints atomic.Int32
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	client, _ := newTestTokenClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			mints.Add(1)
+		}
+		respondCredentials(w, r, now)
+	}))
+	var wg sync.WaitGroup
+	for i := 0; i < 12; i++ {
+		wg.Go(func() {
+			if _, err := client.CheckoutToken(context.Background(), "tenant_one", 77, 88); err != nil {
+				t.Error("concurrent checkout token failed")
+			}
+		})
+	}
+	wg.Wait()
+	if mints.Load() != 1 {
+		t.Fatal("concurrent requests minted duplicate tokens")
+	}
+}
+
+func TestCheckoutTokenRejectsUnauthorizedTenantBeforeSecretOrGitHub(t *testing.T) {
+	var calls atomic.Int32
+	client, _ := newTestTokenClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1) }))
+	client.secrets = secretAPIFunc(func(context.Context, *secretsmanager.GetSecretValueInput, ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+		t.Error("unauthorized request read key")
+		return nil, nil
+	})
+	for _, tenant := range []domain.TenantID{"tenant_other", ""} {
+		_, err := client.CheckoutToken(context.Background(), tenant, 77, 88)
+		code := "repository_not_authorized"
+		if tenant == "" {
+			code = "invalid_request"
+		}
+		requireCredentialCode(t, err, code)
+	}
+	if calls.Load() != 0 {
+		t.Fatal("unauthorized request reached GitHub")
+	}
+}
+
+func TestCheckoutTokenClassifiesTemporaryAuthorizationFailure(t *testing.T) {
+	client, _ := newTestTokenClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Error("failed authorization reached GitHub") }))
+	client.authorizer = repositoryAuthorizerFunc(func(context.Context, domain.TenantID, int64, int64) (RepositoryAccess, error) {
+		return RepositoryAccess{}, ErrRepositoryAuthorizationUnavailable
+	})
+	_, err := client.CheckoutToken(context.Background(), "tenant_one", 77, 88)
+	requireCredentialCode(t, err, "authorization_unavailable")
+	var safe *CredentialError
+	_ = errors.As(err, &safe)
+	if !safe.Retryable {
+		t.Fatal("temporary authorization failure was not retryable")
+	}
+}
+
+func TestCheckoutTokenRechecksAuthorizationAndInvalidatesCachedToken(t *testing.T) {
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	client, _ := newTestTokenClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { respondCredentials(w, r, now) }))
+	if _, err := client.CheckoutToken(context.Background(), "tenant_one", 77, 88); err != nil {
+		t.Fatal(err)
+	}
+	var authorizations int
+	client.authorizer = repositoryAuthorizerFunc(func(context.Context, domain.TenantID, int64, int64) (RepositoryAccess, error) {
+		authorizations++
+		if authorizations == 2 {
+			return RepositoryAccess{}, errors.New(testTokenValue)
+		}
+		return RepositoryAccess{Owner: "acme", Name: "api"}, nil
+	})
+	_, err := client.CheckoutToken(context.Background(), "tenant_one", 77, 88)
+	requireCredentialCode(t, err, "repository_not_authorized")
+	if len(client.cache) != 0 {
+		t.Fatal("denied token remained cached")
+	}
+}
+
+func TestCheckoutTokenRejectsInstallationStatesIncludingCache(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		status     int
+		body, code string
+	}{
+		{"revoked", 404, `{"message":"` + testTokenValue + `"}`, "github_rejected"},
+		{"suspended", 200, `{"id":77,"app_id":12,"suspended_at":"2026-10-04T00:00:00Z"}`, "installation_unavailable"},
+		{"wrong-app", 200, `{"id":77,"app_id":99}`, "installation_unavailable"},
+		{"wrong-installation", 200, `{"id":99,"app_id":12}`, "installation_unavailable"},
+		{"invalid-json", 200, `{"id":"` + testTokenValue + `"}`, "invalid_github_response"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bad := false
+			now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+			client, _ := newTestTokenClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if bad {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(test.status)
+					_, _ = io.WriteString(w, test.body)
+					return
+				}
+				respondCredentials(w, r, now)
+			}))
+			if _, err := client.CheckoutToken(context.Background(), "tenant_one", 77, 88); err != nil {
+				t.Fatal(err)
+			}
+			bad = true
+			_, err := client.CheckoutToken(context.Background(), "tenant_one", 77, 88)
+			requireCredentialCode(t, err, test.code)
+			if len(client.cache) != 0 {
+				t.Fatal("unavailable Installation token remained cached")
+			}
+		})
+	}
+}
+
+func TestCheckoutTokenRejectsRepositoryInstallationMismatch(t *testing.T) {
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	client, _ := newTestTokenClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/repos/") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"id":99,"app_id":12}`)
+			return
+		}
+		if r.Method == http.MethodPost {
+			t.Error("minted token for mismatched repository")
+		}
+		respondCredentials(w, r, now)
+	}))
+	_, err := client.CheckoutToken(context.Background(), "tenant_one", 77, 88)
+	requireCredentialCode(t, err, "repository_unavailable")
+}
+
+func TestCheckoutTokenRejectsInvalidTokenResponses(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(map[string]any)
+		code   string
+	}{
+		{"empty", func(b map[string]any) { b["token"] = "" }, "invalid_token_response"},
+		{"header-injection", func(b map[string]any) { b["token"] = "synthetic\r\nvalue" }, "invalid_token_response"},
+		{"expired", func(b map[string]any) { b["expires_at"] = "2026-10-03T00:00:00Z" }, "invalid_token_response"},
+		{"too-long", func(b map[string]any) { b["expires_at"] = "2026-10-05T00:00:00Z" }, "invalid_token_response"},
+		{"wrong-repo", func(b map[string]any) { b["repositories"] = []any{map[string]any{"id": 99}} }, "invalid_token_response"},
+		{"wide-repo-scope", func(b map[string]any) { b["repositories"] = []any{map[string]any{"id": 88}, map[string]any{"id": 99}} }, "invalid_token_response"},
+		{"contents-write", func(b map[string]any) { b["permissions"] = map[string]string{"contents": "write"} }, "invalid_token_response"},
+		{"extra-permission", func(b map[string]any) { b["permissions"] = map[string]string{"contents": "read", "issues": "write"} }, "invalid_token_scope"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+			client, _ := newTestTokenClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					respondCredentials(w, r, now)
+					return
+				}
+				body := map[string]any{"token": testTokenValue, "expires_at": now.Add(time.Hour), "permissions": map[string]string{"contents": "read"}, "repositories": []map[string]any{{"id": 88}}}
+				test.mutate(body)
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(body)
+			}))
+			_, err := client.CheckoutToken(context.Background(), "tenant_one", 77, 88)
+			requireCredentialCode(t, err, test.code)
+		})
+	}
+}
+
+func TestCheckoutTokenRetryClassificationAndBounds(t *testing.T) {
+	for _, test := range []struct {
+		status                int
+		retryAfter, remaining string
+		attempts              int
+		retryable             bool
+	}{
+		{401, "", "", 1, false}, {403, "", "", 1, false}, {404, "", "", 1, false}, {422, "", "", 1, false},
+		{500, "", "", 3, true}, {502, "", "", 3, true}, {503, "", "", 3, true}, {504, "", "", 3, true}, {429, "", "", 1, true},
+		{403, "", "0", 1, true}, {429, "30", "", 1, true}, {503, "Wed, 21 Oct 2026 07:28:00 GMT", "", 1, true},
+	} {
+		t.Run(fmt.Sprintf("%d-%s-%s", test.status, test.retryAfter, test.remaining), func(t *testing.T) {
+			var calls atomic.Int32
+			client, _ := newTestTokenClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				w.Header().Set("Retry-After", test.retryAfter)
+				w.Header().Set("X-RateLimit-Remaining", test.remaining)
+				w.WriteHeader(test.status)
+				_, _ = io.WriteString(w, testTokenValue)
+			}))
+			_, err := client.CheckoutToken(context.Background(), "tenant_one", 77, 88)
+			requireCredentialCode(t, err, "github_rejected")
+			var safe *CredentialError
+			_ = errors.As(err, &safe)
+			if calls.Load() != int32(test.attempts) || safe.Retryable != test.retryable || safe.Status != test.status {
+				t.Fatal("incorrect retry classification or attempt bound")
+			}
+		})
+	}
+}
+
+func TestCheckoutTokenRetriesTransientFailureThenSucceeds(t *testing.T) {
+	var failures atomic.Int32
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	client, _ := newTestTokenClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/app/installations/77" && failures.Add(1) == 1 {
+			w.WriteHeader(503)
+			return
+		}
+		respondCredentials(w, r, now)
+	}))
+	if _, err := client.CheckoutToken(context.Background(), "tenant_one", 77, 88); err != nil || failures.Load() != 2 {
+		t.Fatal("transient failure was not retried successfully")
+	}
+}
+
+func TestCheckoutTokenDoesNotFollowRedirectOrLeakTransportError(t *testing.T) {
+	var reached atomic.Int32
+	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { reached.Add(1) }))
+	defer destination.Close()
+	client, _ := newTestTokenClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, destination.URL, http.StatusTemporaryRedirect)
+	}))
+	_, err := client.CheckoutToken(context.Background(), "tenant_one", 77, 88)
+	requireCredentialCode(t, err, "github_rejected")
+	if reached.Load() != 0 {
+		t.Fatal("followed credential redirect")
+	}
+	var attempts int
+	client.http.Transport = credentialTransportFunc(func(r *http.Request) (*http.Response, error) { attempts++; return nil, errors.New(testTokenValue) })
+	_, err = client.CheckoutToken(context.Background(), "tenant_one", 77, 88)
+	requireCredentialCode(t, err, "transport_failed")
+	if attempts != 3 {
+		t.Fatal("transport retry exceeded bounds")
+	}
+}
+
+func TestTokenClientCancellationAndTimeoutConfiguration(t *testing.T) {
+	client, _ := newTestTokenClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Error("cancelled request reached GitHub") }))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := client.CheckoutToken(ctx, "tenant_one", 77, 88)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatal("cancelled context not respected")
+	}
+	client.gate <- struct{}{}
+	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel()
+	_, err = client.CheckoutToken(ctx, "tenant_one", 77, 88)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal("cache gate wait was not bounded")
+	}
+	if err = client.ClearCache(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal("cache clearing did not respect cancellation")
+	}
+	<-client.gate
+	if client.http.Timeout != 10*time.Second {
+		t.Fatal("HTTP timeout not bounded")
+	}
+	ctx, cancel = context.WithCancel(context.Background())
+	cancel()
+	if !errors.Is(waitTokenRetry(ctx, time.Second), context.Canceled) {
+		t.Fatal("retry sleep ignored cancellation")
+	}
+}
+
+func TestPrivateKeyRotationAndSafeKeyFailures(t *testing.T) {
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	var seenJWT string
+	client, _ := newTestTokenClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenJWT = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		respondCredentials(w, r, now)
+	}))
+	if _, err := client.CheckoutToken(context.Background(), "tenant_one", 77, 88); err != nil {
+		t.Fatal(err)
+	}
+	key, pkcs1 := newSigningKey(t)
+	pkcs8, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal("encode PKCS8 failed")
+	}
+	privatePEM := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: pkcs8}))
+	client.secrets = secretAPIFunc(func(context.Context, *secretsmanager.GetSecretValueInput, ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+		return &secretsmanager.GetSecretValueOutput{SecretString: &privatePEM}, nil
+	})
+	if _, err := client.CheckoutToken(context.Background(), "tenant_one", 77, 88); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := jwt.Parse(seenJWT, func(*jwt.Token) (any, error) { return &key.PublicKey, nil }, jwt.WithTimeFunc(func() time.Time { return now }), jwt.WithValidMethods([]string{"RS256"})); err != nil {
+		t.Fatal("rotated PKCS8 key not used")
+	}
+	privatePEM = pkcs1
+	if _, err := client.CheckoutToken(context.Background(), "tenant_one", 77, 88); err != nil {
+		t.Fatal(err)
+	}
+	privatePEM = "invalid-private-key-" + testTokenValue
+	_, err = client.CheckoutToken(context.Background(), "tenant_one", 77, 88)
+	requireCredentialCode(t, err, "invalid_private_key")
+	client.secrets = secretAPIFunc(func(context.Context, *secretsmanager.GetSecretValueInput, ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+		return nil, errors.New(testTokenValue)
+	})
+	_, err = client.CheckoutToken(context.Background(), "tenant_one", 77, 88)
+	requireCredentialCode(t, err, "private_key_unavailable")
+}
+
+func TestInstallationTokenFormattingNeverExposesValue(t *testing.T) {
+	token := InstallationToken{value: testTokenValue, expiresAt: time.Now()}
+	for _, format := range []string{"%s", "%v", "%+v", "%#v", "%q", "%x", "%d"} {
+		if strings.Contains(fmt.Sprintf(format, token), testTokenValue) {
+			t.Fatal("token formatting leaked value")
+		}
+	}
+	encoded, err := json.Marshal(struct{ Token InstallationToken }{token})
+	if err != nil || strings.Contains(string(encoded), testTokenValue) {
+		t.Fatal("token JSON leaked value")
+	}
+}
+
+func TestTokenConfigRejectsMissingOrBroadSecrets(t *testing.T) {
+	for _, config := range []TokenConfig{{}, {AppID: 12}, {AppID: -1, PrivateKeySecretARN: testKeyARN}, {AppID: 12, PrivateKeySecretARN: "github-key"}, {AppID: 12, PrivateKeySecretARN: testKeyARN + "*"}, {AppID: 12, PrivateKeySecretARN: "arn:aws:s3:::bucket"}, {AppID: 12, PrivateKeySecretARN: "arn:aws:secretsmanager:ap-northeast-1:abcdefgh1234:secret:key"}} {
+		if config.valid() {
+			t.Fatal("accepted invalid or broad App configuration")
+		}
+	}
+	config, err := TokenConfigFromEnv(func(key string) string {
+		if key == "HAKO_GITHUB_APP_ID" {
+			return "12"
+		}
+		return testKeyARN
+	})
+	if err != nil || config.AppID != 12 || config.PrivateKeySecretARN != testKeyARN {
+		t.Fatal("valid env configuration rejected")
+	}
+	if _, err := TokenConfigFromEnv(nil); err == nil {
+		t.Fatal("nil environment reader accepted")
+	}
+	if _, err := TokenConfigFromEnv(func(string) string { return "" }); err == nil {
+		t.Fatal("missing env configuration accepted")
+	}
+}
+
+func TestAppJWTHeaderUsesRS256(t *testing.T) {
+	key, _ := newSigningKey(t)
+	value, err := signAppJWT(key, 12, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(value, ".")
+	header, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil || !strings.Contains(string(header), `"alg":"RS256"`) {
+		t.Fatal("incorrect JWT signing algorithm")
+	}
+}
+
+func TestTokenClientConstructorBoundsTimeoutAndRequiresDependencies(t *testing.T) {
+	secrets := secretAPIFunc(func(context.Context, *secretsmanager.GetSecretValueInput, ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+		return nil, nil
+	})
+	authorizer := repositoryAuthorizerFunc(func(context.Context, domain.TenantID, int64, int64) (RepositoryAccess, error) {
+		return RepositoryAccess{}, nil
+	})
+	config := TokenConfig{AppID: 12, PrivateKeySecretARN: testKeyARN}
+	for _, client := range []*http.Client{nil, {Timeout: time.Minute}, {Timeout: time.Second}} {
+		result, err := NewTokenClient(config, secrets, authorizer, client)
+		if err != nil || result.http.Timeout <= 0 || result.http.Timeout > 10*time.Second {
+			t.Fatal("constructor did not bound HTTP timeout")
+		}
+	}
+	if _, err := NewTokenClient(config, nil, authorizer, nil); err == nil {
+		t.Fatal("nil secret API accepted")
+	}
+	if _, err := NewTokenClient(config, secrets, nil, nil); err == nil {
+		t.Fatal("nil authorizer accepted")
+	}
+	if _, err := NewTokenClient(TokenConfig{}, secrets, authorizer, nil); err == nil {
+		t.Fatal("invalid config accepted")
+	}
+	for _, name := range []string{"", ".", "..", "a/b", "a?b", strings.Repeat("a", 101)} {
+		if validCredentialRepositoryName(name) {
+			t.Fatal("invalid repository name accepted")
+		}
+	}
+}
+
+func TestTokenClientRateLimitCooldownAndRecovery(t *testing.T) {
+	var calls atomic.Int32
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	client, _ := newTestTokenClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.Header().Set("X-RateLimit-Reset", fmt.Sprint(now.Add(2*time.Minute).Unix()))
+			w.Header().Set("Retry-After", "90")
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		respondCredentials(w, r, now)
+	}))
+	_, err := client.CheckoutToken(context.Background(), "tenant_one", 77, 88)
+	requireCredentialCode(t, err, "github_rejected")
+	var safe *CredentialError
+	_ = errors.As(err, &safe)
+	if !safe.RetryAt.Equal(now.Add(2 * time.Minute)) {
+		t.Fatal("primary rate limit reset not respected")
+	}
+	_, err = client.CheckoutToken(context.Background(), "tenant_one", 77, 88)
+	requireCredentialCode(t, err, "github_backoff")
+	if calls.Load() != 1 {
+		t.Fatal("cooldown request reached GitHub")
+	}
+	client.now = func() time.Time { return now.Add(3 * time.Minute) }
+	if _, err = client.CheckoutToken(context.Background(), "tenant_one", 77, 88); err != nil {
+		t.Fatal("client did not recover after rate limit reset")
+	}
+}
+
+func TestCheckoutTokenBoundsCacheAndRechecksMintAuthorization(t *testing.T) {
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	client, _ := newTestTokenClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { respondCredentials(w, r, now) }))
+	for i := 0; i < 128; i++ {
+		client.cache[tokenCacheKey{"tenant_one", 77, int64(1000 + i)}] = InstallationToken{value: testTokenValue, expiresAt: now.Add(time.Duration(i) * time.Second)}
+	}
+	if _, err := client.CheckoutToken(context.Background(), "tenant_one", 77, 88); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.cache) != 128 {
+		t.Fatal("cache size is not bounded")
+	}
+	if _, exists := client.cache[tokenCacheKey{"tenant_one", 77, 1000}]; exists {
+		t.Fatal("oldest cache entry not evicted")
+	}
+	if err := client.ClearCache(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var checks int
+	client.authorizer = repositoryAuthorizerFunc(func(context.Context, domain.TenantID, int64, int64) (RepositoryAccess, error) {
+		checks++
+		if checks == 2 {
+			return RepositoryAccess{}, errors.New(testTokenValue)
+		}
+		return RepositoryAccess{Owner: "acme", Name: "api"}, nil
+	})
+	_, err := client.CheckoutToken(context.Background(), "tenant_one", 77, 88)
+	requireCredentialCode(t, err, "repository_not_authorized")
+	if len(client.cache) != 0 {
+		t.Fatal("token minted during revocation remained cached")
+	}
+}
+
+func TestCheckoutTokenRejectsMalformedBoundedJSON(t *testing.T) {
+	for _, test := range []struct{ name, contentType, body string }{
+		{"wrong-content-type", "text/html", testTokenValue},
+		{"trailing-json", "application/json", `{"id":77,"app_id":12} {"secret":"` + testTokenValue + `"}`},
+		{"oversized", "application/json", strings.Repeat(" ", maxGitHubResponseBytes+1)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client, _ := newTestTokenClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", test.contentType)
+				_, _ = io.WriteString(w, test.body)
+			}))
+			_, err := client.CheckoutToken(context.Background(), "tenant_one", 77, 88)
+			requireCredentialCode(t, err, "invalid_github_response")
+		})
+	}
+}
+
+func TestCheckoutTokenRejectsNilBinaryOversizedAndWeakKeys(t *testing.T) {
+	weak, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatal("weak test key generation failed")
+	}
+	weakPEM := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(weak)}))
+	large := strings.Repeat(" ", 65537)
+	for _, test := range []struct {
+		name     string
+		response *secretsmanager.GetSecretValueOutput
+		code     string
+	}{
+		{"nil", nil, "private_key_unavailable"},
+		{"binary", &secretsmanager.GetSecretValueOutput{SecretBinary: []byte(testTokenValue)}, "private_key_unavailable"},
+		{"oversized", &secretsmanager.GetSecretValueOutput{SecretString: &large}, "private_key_unavailable"},
+		{"weak", &secretsmanager.GetSecretValueOutput{SecretString: &weakPEM}, "invalid_private_key"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client, _ := newTestTokenClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Error("invalid key request reached GitHub") }))
+			client.secrets = secretAPIFunc(func(context.Context, *secretsmanager.GetSecretValueInput, ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+				return test.response, nil
+			})
+			_, err := client.CheckoutToken(context.Background(), "tenant_one", 77, 88)
+			requireCredentialCode(t, err, test.code)
+		})
+	}
+}

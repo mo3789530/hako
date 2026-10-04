@@ -81,7 +81,7 @@ both API access and available webhook events.
 | Capability | Initial permission direction |
 | --- | --- |
 | Identify installed repository | Metadata: read |
-| Clone source for verification | Contents: read |
+| Clone source for verification | Contents: read; token限定は[GitHub App credentials](github-app-credentials.md) |
 | Report CI results | Checks: write |
 | Receive workflow job lifecycle | Actions: read, subject to exact webhook/API requirements |
 | Issue-driven agent | Issues and Pull requests: read first; write only for an enabled action |
