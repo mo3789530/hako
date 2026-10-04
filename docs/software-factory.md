@@ -106,7 +106,9 @@ an installation is removed or the repository is removed from the installation.
 The initial multi-tenant model uses one Hako-owned GitHub App installed by
 multiple customers: each GitHub Installation belongs to exactly one Hako
 Tenant, and each installed repository is registered under that Tenant. Do not
-create a new GitHub App per Tenant for the standard flow. A later BYO-App mode
+create a new GitHub App per Tenant for the standard flow. The separate
+[Tenant-owned App design](tenant-github-apps.md) and [ADR 0007](adr/0007-tenant-github-apps.md)
+define opt-in per-Tenant Apps (Tasks 56–60, not implemented). A later BYO-App mode
 can store each tenant's `app_id`, private-key Secret ARN, and webhook-secret
 reference separately; webhook ingress would then resolve an opaque
 integration ID before selecting that App's secret. Never select a tenant based

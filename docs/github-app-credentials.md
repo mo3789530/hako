@@ -13,7 +13,8 @@ Installations. It is not a separate private-key secret for every Tenant.
 Verified Installation bindings, repository authorization and token-cache keys
 are Tenant-scoped; one Tenant cannot request another Tenant's token. Registering
 a Tenant-owned GitHub App with its own App ID/private-key ARN, secret lifecycle
-and routing is not implemented. The existing OAuth client secret likewise
+and routing is not implemented; its [design and Tasks 56–60](tenant-github-apps.md)
+are now recorded separately. The existing OAuth client secret likewise
 belongs to the configured Hako App, not to an individual Tenant.
 
 The future trusted credential service reads these values through

@@ -25,6 +25,18 @@
 | 7 | [51 — Webhookイベント運用](task-51-webhook-events.md) | PR等のRepository Event正規化、Delivery監査、retention/replay | 37, 39 |
 | 8 | [42 — Factory end-to-end](task-42-software-factory-e2e.md) | Installからisolated test、Check、log、cleanupを検証 | 38–41, 51 |
 
+### P0追加 — Tenant別GitHub App（今回の要望で優先）
+
+設計は[ADR 0007](../docs/adr/0007-tenant-github-apps.md)と[Tenant App仕様](../docs/tenant-github-apps.md)。共通App経路のTasks 38–42と独立にTask 56から着手できる。Tenant-ownedのactivationは最後までdefault-off。
+
+| Task | 内容 | Depends on |
+|---|---|---|
+| [56 — Tenant App Registry/API](task-56-tenant-github-app-registry.md) | metadata、Owner/Admin API/CLI、承認binding、inert draft | 37（完了） |
+| [57 — Tenant資格情報resolver](task-57-tenant-github-credential-resolver.md) | App proof、Role/Secret/version解決、cache/generation分離 | 56 |
+| [58 — Tenant OAuth/Webhook](task-58-tenant-github-setup-webhooks.md) | state固定、opaque ingress、HMAC後のTenant routing | 56, 57 |
+| [59 — 移行/IAM](task-59-tenant-github-migration-iam.md) | shared backfill、Run固定、exact ARN Role、drain/rollback | 56–58 |
+| [60 — Tenant App E2E/運用](task-60-tenant-github-app-e2e.md) | 二Tenant越境拒否、rotation、migration、shared回帰 | 56–59 |
+
 ### P1 — Workspaceの実AWS Runtimeと永続データ
 
 | 順序 | Task | 内容 | Depends on |
@@ -60,7 +72,8 @@
 - Task 37の資格情報libraryは実装・検証済み。App private keyはAWSCURRENTから取得し、Tenant/Repository認可とlive Installation検証後にread-only tokenを発行する。専用service/IAM配備とcheckout接続は未実装。
 - Resource PlaneのWorkspace Lambdaは明示opt-inのFake Runtime用。実AWS MicroVM Runtime、durable fencing、EFS、Gatewayは未実装。
 - Placement policy/capacity/healthのDB・Schedulerロジックはあるが、Resource Planeからの自動health報告と本番AWS検証は未実装。
-- README Phase 0–9には残項目が他にもある。上記Task 36–55がその実行順と受入条件を具体化する。完了判定時はREADMEの該当チェックとこのboardを両方更新する。
+- Tenant別App/三種類のSecret/承認reader Roleの設計を追加（Tasks 56–60）。現行設定・IAM・bindingは未変更。
+- README Phase 0–9には残項目が他にもある。上記Task 36–60がその実行順と受入条件を具体化する。完了判定時はREADMEの該当チェックとこのboardを両方更新する。
 
 ## 実装の完了定義
 

@@ -1616,6 +1616,8 @@ Hakoは最初は **Lambda MicroVMを使ったRemote Development Environment** �
 
 以下はWorkspace Runtime/Gatewayの基盤整備後に進める追加機能です。GitHub Appの権限・Webhookの検証を先行させ、ユーザー提供のWorkflow/Issue/PRデータはすべて信頼されない入力として扱います。詳細な設計と実装順は[Hako Software Factory](docs/software-factory.md)に記載します。
 
+- [ ] Tenant専用GitHub Appを追加し、private key/OAuth/Webhook Secret、承認reader Role、cache/Installation/Run identityを分離する。共通App互換を維持し、任意Secret ARN・cross-Tenant binding・自動fallbackを禁止する（[設計](docs/tenant-github-apps.md)、[ADR 0007](docs/adr/0007-tenant-github-apps.md)、Tasks 56–60。設計のみ、未実装）。
+
 - [ ] GitHub Appを登録し、Secrets Manager保管、最小権限、Installation tokenの短期利用・失効方針を実装する（OAuth client secret取得に加え、App private keyのAWSCURRENT取得、RS256 JWT、Tenant/Repository認可、Repository一件・contents read限定Installation tokenの短命メモリcacheを実装。実App登録・専用role配備・worker接続は未完了。[資格情報と運用手順](docs/github-app-credentials.md)）。
 - [ ] TenantとGitHub App Installation/Repositoryを対応付け、Repository Registry APIとRBACを追加する（Owner/Admin向けclaim/list、Repository Registry、active binding限定同期、scheduled processorに加え、Setup URL→one-time state→OAuth user token→user-visible Installation照合→active bindingのcallbackを実装。Terraformは明示opt-in。詳細は[GitHub Installation Setup](docs/github-installation-setup.md)）。
 - [ ] Webhook ingressでraw bodyのHMAC-SHA256検証、Delivery ID冪等化、サイズ制限、監査、再送を実装する（raw body検証、サイズ制限、event/action allowlist、任意の未認証API Gateway route、Secrets Manager ARN参照、durable inboxとDelivery ID冪等化まで実装。監査と再送運用は未実装）。[Hako Software Factory](docs/software-factory.md)。
