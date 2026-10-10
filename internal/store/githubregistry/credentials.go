@@ -41,4 +41,33 @@ func (a CredentialAuthorizer) AuthorizeRepository(ctx context.Context, tenant do
 	return access, nil
 }
 
+// AuthorizeTenantApp checks the integration's live identity/generation before
+// any GitHub request or cached-token return. A stale in-memory client therefore
+// cannot use the new generation's credential material.
+func (a CredentialAuthorizer) AuthorizeTenantApp(ctx context.Context, identity githubapp.TenantAppIdentity) error {
+	if a.Pool == nil || identity.TenantID == "" || !validOpaqueMetadata(identity.IntegrationID, 128) || identity.GitHubAppID <= 0 || identity.ConfigRevision < 1 || identity.CredentialGeneration < 1 {
+		return ErrInstallationNotActive
+	}
+	active, err := transaction.Within(ctx, a.Pool, a.Policy, func(ctx context.Context, tx pgx.Tx) (bool, error) {
+		var active bool
+		err := tx.QueryRow(ctx, `SELECT EXISTS (
+			SELECT 1 FROM tenant_github_integrations i
+			JOIN github_app_registrations r ON r.id = i.app_registration_id AND r.github_app_id = i.github_app_id
+			JOIN github_credential_bindings b ON b.tenant_id = i.tenant_id AND b.id = i.credential_binding_id AND b.github_app_id = i.github_app_id
+			WHERE i.tenant_id = $1 AND i.id = $2 AND i.github_app_id = $3
+			AND i.status = 'active' AND i.config_revision = $4 AND i.credential_generation = $5
+			AND r.mode = 'tenant_owned' AND r.owner_tenant_id = i.tenant_id AND b.status = 'approved'
+		)`, identity.TenantID, identity.IntegrationID, identity.GitHubAppID, identity.ConfigRevision, identity.CredentialGeneration).Scan(&active)
+		return active, err
+	})
+	if err != nil {
+		return githubapp.ErrRepositoryAuthorizationUnavailable
+	}
+	if !active {
+		return ErrInstallationNotActive
+	}
+	return nil
+}
+
 var _ githubapp.RepositoryAuthorizer = CredentialAuthorizer{}
+var _ githubapp.TenantAppAuthorizer = CredentialAuthorizer{}

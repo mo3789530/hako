@@ -56,6 +56,7 @@ type WorkspaceCreateConfig struct {
 	Image                      string
 	WorkloadRunsEnabled        bool
 	GitHubAppManagementEnabled bool
+	GitHubAppProofVerifier     TenantGitHubAppProofVerifier
 }
 
 type workspaceCreateRequest struct {
@@ -155,11 +156,11 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 	protected := e.Group("", CognitoMiddleware(verifier))
 	if workspaceConfig.GitHubAppManagementEnabled {
 		apps := protected.Group("/v1/tenants/:tenant_id/github/apps", RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool), githubAppOwnerMiddleware)
-		apps.GET("", githubAppMetadata(pool, "list"))
-		apps.POST("", githubAppMetadata(pool, "add"))
-		apps.GET("/:integration_id", githubAppMetadata(pool, "show"))
+		apps.GET("", githubAppMetadata(pool, "list", workspaceConfig.GitHubAppProofVerifier))
+		apps.POST("", githubAppMetadata(pool, "add", workspaceConfig.GitHubAppProofVerifier))
+		apps.GET("/:integration_id", githubAppMetadata(pool, "show", workspaceConfig.GitHubAppProofVerifier))
 		for _, action := range []string{"disable", "verify", "select-default"} {
-			apps.POST("/:integration_id/"+action, githubAppMetadata(pool, action))
+			apps.POST("/:integration_id/"+action, githubAppMetadata(pool, action, workspaceConfig.GitHubAppProofVerifier))
 		}
 	}
 	if setupVerifier != nil {

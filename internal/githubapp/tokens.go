@@ -47,6 +47,20 @@ type RepositoryAuthorizer interface {
 	AuthorizeRepository(context.Context, domain.TenantID, int64, int64) (RepositoryAccess, error)
 }
 
+type TenantAppIdentity struct {
+	TenantID             domain.TenantID
+	IntegrationID        string
+	GitHubAppID          int64
+	ConfigRevision       int64
+	CredentialGeneration int64
+}
+
+// TenantAppAuthorizer rechecks the active integration revision/generation on
+// each credential use, including before returning a cached installation token.
+type TenantAppAuthorizer interface {
+	AuthorizeTenantApp(context.Context, TenantAppIdentity) error
+}
+
 // ErrRepositoryAuthorizationUnavailable distinguishes a transient CP store
 // failure from a denied binding without carrying database or secret details.
 var ErrRepositoryAuthorizationUnavailable = errors.New("GitHub repository authorization unavailable")
@@ -59,6 +73,10 @@ type TokenConfig struct {
 	AppID                     int64
 	PrivateKeySecretARN       string
 	PrivateKeySecretVersionID string
+	TenantID                  domain.TenantID
+	IntegrationID             string
+	ConfigRevision            int64
+	CredentialGeneration      int64
 }
 
 // TokenConfigFromEnv is for the trusted credential service, not API startup or
@@ -85,7 +103,14 @@ func (c TokenConfig) valid() bool {
 			return false
 		}
 	}
-	return !strings.ContainsAny(c.PrivateKeySecretARN, "*?\r\n") && (c.PrivateKeySecretVersionID == "" || validSecretVersionID(c.PrivateKeySecretVersionID))
+	if strings.ContainsAny(c.PrivateKeySecretARN, "*?\r\n") || (c.PrivateKeySecretVersionID != "" && !validSecretVersionID(c.PrivateKeySecretVersionID)) {
+		return false
+	}
+	scoped := c.TenantID != "" || c.IntegrationID != "" || c.ConfigRevision != 0 || c.CredentialGeneration != 0
+	if !scoped {
+		return true
+	}
+	return validInternalID(string(c.TenantID)) && validInternalID(c.IntegrationID) && c.ConfigRevision > 0 && c.CredentialGeneration > 0 && c.PrivateKeySecretVersionID != ""
 }
 
 // InstallationToken is intentionally opaque and redacts common formatting and
@@ -106,6 +131,9 @@ func (InstallationToken) MarshalJSON() ([]byte, error) {
 
 type tokenCacheKey struct {
 	tenant                   domain.TenantID
+	integration              string
+	appID, configRevision    int64
+	credentialGeneration     int64
 	installation, repository int64
 }
 
@@ -113,17 +141,18 @@ type tokenCacheKey struct {
 // public token API. Cache and minting are serialized with a context-aware gate;
 // queue waits and all retries share a bounded request deadline.
 type TokenClient struct {
-	config       TokenConfig
-	secrets      SecretValueAPI
-	authorizer   RepositoryAuthorizer
-	http         *http.Client
-	apiURL       string
-	now          func() time.Time
-	wait         func(context.Context, time.Duration) error
-	gate         chan struct{}
-	cache        map[tokenCacheKey]InstallationToken
-	backoffUntil time.Time
-	lastMutation time.Time
+	config        TokenConfig
+	secrets       SecretValueAPI
+	authorizer    RepositoryAuthorizer
+	tenantAppAuth TenantAppAuthorizer
+	http          *http.Client
+	apiURL        string
+	now           func() time.Time
+	wait          func(context.Context, time.Duration) error
+	gate          chan struct{}
+	cache         map[tokenCacheKey]InstallationToken
+	backoffUntil  time.Time
+	lastMutation  time.Time
 }
 
 // VerifyApp proves that the configured private key belongs to the configured
@@ -158,7 +187,26 @@ func (c *TokenClient) VerifyApp(ctx context.Context) error {
 }
 
 func NewTokenClient(config TokenConfig, secrets SecretValueAPI, authorizer RepositoryAuthorizer, httpClient *http.Client) (*TokenClient, error) {
-	if !config.valid() || secrets == nil || authorizer == nil {
+	if authorizer == nil {
+		return nil, credentialError("invalid_configuration")
+	}
+	tokenClient, err := newTokenClient(config, secrets, httpClient)
+	if err != nil {
+		return nil, err
+	}
+	tokenClient.authorizer = authorizer
+	if config.IntegrationID != "" {
+		tenantAppAuth, ok := authorizer.(TenantAppAuthorizer)
+		if !ok {
+			return nil, credentialError("invalid_configuration")
+		}
+		tokenClient.tenantAppAuth = tenantAppAuth
+	}
+	return tokenClient, nil
+}
+
+func newTokenClient(config TokenConfig, secrets SecretValueAPI, httpClient *http.Client) (*TokenClient, error) {
+	if !config.valid() || secrets == nil {
 		return nil, credentialError("invalid_configuration")
 	}
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -171,11 +219,65 @@ func NewTokenClient(config TokenConfig, secrets SecretValueAPI, authorizer Repos
 	// Even same-host redirects may redirect token minting to an unintended path.
 	// Never follow any redirect while sending credentials.
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &TokenClient{config: config, secrets: secrets, authorizer: authorizer, http: client, apiURL: "https://api.github.com", now: time.Now, wait: waitTokenRetry, gate: make(chan struct{}, 1), cache: make(map[tokenCacheKey]InstallationToken)}, nil
+	return &TokenClient{config: config, secrets: secrets, http: client, apiURL: "https://api.github.com", now: time.Now, wait: waitTokenRetry, gate: make(chan struct{}, 1), cache: make(map[tokenCacheKey]InstallationToken)}, nil
+}
+
+// NewTenantAppTokenClient composes the database-resolved Tenant identity and
+// the pinned Secret provider. access must come from the trusted active-App
+// resolver; it is never accepted as a user/API supplied value.
+func NewTenantAppTokenClient(access TenantPrivateKeyAccess, assumer STSAssumeRoleAPI, clients AssumedSecretClientFactory, authorizer RepositoryAuthorizer, httpClient *http.Client) (*TokenClient, error) {
+	secretAPI, err := NewTenantPrivateKeySecretAPI(access, assumer, clients)
+	if err != nil {
+		return nil, err
+	}
+	return newTenantAppTokenClient(access, secretAPI, authorizer, httpClient)
+}
+
+func NewTenantAppTokenClientFromConfig(access TenantPrivateKeyAccess, config aws.Config, authorizer RepositoryAuthorizer, httpClient *http.Client) (*TokenClient, error) {
+	secretAPI, err := NewTenantPrivateKeySecretAPIFromConfig(access, config)
+	if err != nil {
+		return nil, err
+	}
+	return newTenantAppTokenClient(access, secretAPI, authorizer, httpClient)
+}
+
+func newTenantAppTokenClient(access TenantPrivateKeyAccess, secrets SecretValueAPI, authorizer RepositoryAuthorizer, httpClient *http.Client) (*TokenClient, error) {
+	return NewTokenClient(TokenConfig{
+		AppID:                     access.GitHubAppID,
+		PrivateKeySecretARN:       access.SecretARN,
+		PrivateKeySecretVersionID: access.SecretVersionID,
+		TenantID:                  domain.TenantID(access.TenantID),
+		IntegrationID:             access.IntegrationID,
+		ConfigRevision:            access.ConfigRevision,
+		CredentialGeneration:      access.CredentialGeneration,
+	}, secrets, authorizer, httpClient)
+}
+
+// TenantAppProofClient exposes only the draft App identity proof operation.
+// It cannot mint Installation tokens and accepts only resolver-derived pins.
+type TenantAppProofClient struct{ client *TokenClient }
+
+func NewTenantAppProofClientFromConfig(access TenantPrivateKeyAccess, config aws.Config, httpClient *http.Client) (*TenantAppProofClient, error) {
+	secretAPI, err := NewTenantPrivateKeySecretAPIFromConfig(access, config)
+	if err != nil {
+		return nil, err
+	}
+	client, err := newTokenClient(TokenConfig{AppID: access.GitHubAppID, PrivateKeySecretARN: access.SecretARN, PrivateKeySecretVersionID: access.SecretVersionID}, secretAPI, httpClient)
+	if err != nil {
+		return nil, err
+	}
+	return &TenantAppProofClient{client: client}, nil
+}
+
+func (c *TenantAppProofClient) VerifyApp(ctx context.Context) error {
+	if c == nil || c.client == nil {
+		return credentialError("invalid_configuration")
+	}
+	return c.client.VerifyApp(ctx)
 }
 
 func (c *TokenClient) CheckoutToken(ctx context.Context, tenant domain.TenantID, installationID, repositoryID int64) (InstallationToken, error) {
-	if tenant == "" || installationID <= 0 || repositoryID <= 0 {
+	if c == nil || c.authorizer == nil || tenant == "" || installationID <= 0 || repositoryID <= 0 {
 		return InstallationToken{}, credentialError("invalid_request")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
@@ -189,7 +291,7 @@ func (c *TokenClient) CheckoutToken(ctx context.Context, tenant domain.TenantID,
 		return InstallationToken{}, ctx.Err()
 	}
 	defer func() { <-c.gate }()
-	key := tokenCacheKey{tenant, installationID, repositoryID}
+	key := tokenCacheKey{tenant: tenant, integration: c.config.IntegrationID, appID: c.config.AppID, configRevision: c.config.ConfigRevision, credentialGeneration: c.config.CredentialGeneration, installation: installationID, repository: repositoryID}
 	result, err := c.checkoutToken(ctx, key)
 	if err != nil {
 		delete(c.cache, key)
@@ -275,6 +377,21 @@ func (c *TokenClient) checkoutToken(ctx context.Context, key tokenCacheKey) (Ins
 }
 
 func (c *TokenClient) authorize(ctx context.Context, key tokenCacheKey) (RepositoryAccess, error) {
+	if c.config.IntegrationID != "" {
+		if key.tenant != c.config.TenantID {
+			return RepositoryAccess{}, credentialError("repository_not_authorized")
+		}
+		err := c.tenantAppAuth.AuthorizeTenantApp(ctx, TenantAppIdentity{TenantID: c.config.TenantID, IntegrationID: c.config.IntegrationID, GitHubAppID: c.config.AppID, ConfigRevision: c.config.ConfigRevision, CredentialGeneration: c.config.CredentialGeneration})
+		if ctx.Err() != nil {
+			return RepositoryAccess{}, ctx.Err()
+		}
+		if errors.Is(err, ErrRepositoryAuthorizationUnavailable) {
+			return RepositoryAccess{}, &CredentialError{Code: "authorization_unavailable", Retryable: true}
+		}
+		if err != nil {
+			return RepositoryAccess{}, credentialError("repository_not_authorized")
+		}
+	}
 	access, err := c.authorizer.AuthorizeRepository(ctx, key.tenant, key.installation, key.repository)
 	if ctx.Err() != nil {
 		return RepositoryAccess{}, ctx.Err()

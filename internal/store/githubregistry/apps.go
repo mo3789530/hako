@@ -68,6 +68,36 @@ func (c AppProofCredential) GoString() string { return c.String() }
 // at the exact expected revision/generation. It deliberately exposes only the
 // private-key reference needed to prove App ownership, never OAuth/webhook refs.
 func ResolveAppProofCredential(ctx context.Context, tx pgx.Tx, tenant domain.TenantID, integrationID string, expectedRevision, expectedGeneration int64) (AppProofCredential, error) {
+	return resolvePinnedAppCredential(ctx, tx, tenant, integrationID, "draft", expectedRevision, expectedGeneration)
+}
+
+// ResolveActiveAppCredential resolves the pinned credential bundle for a live
+// Tenant-owned App. Callers must recheck this identity before each use.
+func ResolveActiveAppCredential(ctx context.Context, tx pgx.Tx, tenant domain.TenantID, integrationID string, expectedRevision, expectedGeneration int64) (AppProofCredential, error) {
+	return resolvePinnedAppCredential(ctx, tx, tenant, integrationID, "active", expectedRevision, expectedGeneration)
+}
+
+// MarkAppVerified is a conditional metadata transition called only after the
+// remote App identity proof succeeded outside the transaction.
+func MarkAppVerified(ctx context.Context, tx pgx.Tx, tenant domain.TenantID, integrationID string, expectedRevision, expectedGeneration int64, now time.Time) (AppIntegration, error) {
+	if tx == nil || tenant == "" || !validOpaqueMetadata(integrationID, 128) || expectedRevision < 1 || expectedGeneration < 1 || now.IsZero() {
+		return AppIntegration{}, ErrAppConflict
+	}
+	tag, err := tx.Exec(ctx, `UPDATE tenant_github_integrations SET status = 'ready', updated_at = $5
+		WHERE tenant_id = $1 AND id = $2 AND status = 'draft' AND config_revision = $3 AND credential_generation = $4
+		AND EXISTS (SELECT 1 FROM github_credential_bindings b WHERE b.tenant_id = tenant_github_integrations.tenant_id
+			AND b.id = tenant_github_integrations.credential_binding_id AND b.github_app_id = tenant_github_integrations.github_app_id AND b.status = 'approved')`,
+		tenant, integrationID, expectedRevision, expectedGeneration, now)
+	if err != nil {
+		return AppIntegration{}, err
+	}
+	if tag.RowsAffected() != 1 {
+		return AppIntegration{}, ErrAppConflict
+	}
+	return GetApp(ctx, tx, tenant, integrationID)
+}
+
+func resolvePinnedAppCredential(ctx context.Context, tx pgx.Tx, tenant domain.TenantID, integrationID, status string, expectedRevision, expectedGeneration int64) (AppProofCredential, error) {
 	if tx == nil || tenant == "" || !validOpaqueMetadata(integrationID, 128) || expectedRevision < 1 || expectedGeneration < 1 {
 		return AppProofCredential{}, ErrAppBindingDenied
 	}
@@ -78,10 +108,10 @@ func ResolveAppProofCredential(ctx context.Context, tx pgx.Tx, tenant domain.Ten
 		FROM tenant_github_integrations i
 		JOIN github_app_registrations a ON a.id = i.app_registration_id AND a.github_app_id = i.github_app_id
 		JOIN github_credential_bindings b ON b.tenant_id = i.tenant_id AND b.id = i.credential_binding_id AND b.github_app_id = i.github_app_id
-		WHERE i.tenant_id = $1 AND i.id = $2 AND i.status = 'draft'
+		WHERE i.tenant_id = $1 AND i.id = $2 AND i.status = $5
 		AND a.mode = 'tenant_owned' AND a.owner_tenant_id = i.tenant_id
 		AND b.status = 'approved'
-		AND i.config_revision = $3 AND i.credential_generation = $4`, tenant, integrationID, expectedRevision, expectedGeneration).
+		AND i.config_revision = $3 AND i.credential_generation = $4`, tenant, integrationID, expectedRevision, expectedGeneration, status).
 		Scan(&result.TenantID, &result.IntegrationID, &result.GitHubAppID, &result.PrivateKeySecretARN,
 			&result.PrivateKeyReaderRoleARN, &result.PrivateKeyVersionID, &result.ConfigRevision, &result.CredentialGeneration)
 	if err != nil {

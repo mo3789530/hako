@@ -54,6 +54,13 @@ func main() {
 		WorkloadRunsEnabled:        strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_WORKLOAD_RUNS_ENABLED")), "true"),
 		GitHubAppManagementEnabled: strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_GITHUB_APP_MANAGEMENT_ENABLED")), "true"),
 	}
+	if createConfig.GitHubAppManagementEnabled {
+		awsConfig, err := config.LoadDefaultConfig(ctx)
+		if err != nil {
+			log.Fatal("configure Tenant GitHub App proof role assumption")
+		}
+		createConfig.GitHubAppProofVerifier = api.AWSGitHubAppProofVerifier{Config: awsConfig}
+	}
 	var webhookHandler http.Handler
 	secretARN := strings.TrimSpace(os.Getenv("HAKO_GITHUB_WEBHOOK_SECRET_ARN"))
 	if secretARN != "" {

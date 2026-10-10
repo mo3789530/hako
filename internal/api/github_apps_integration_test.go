@@ -8,6 +8,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/mo3789530/hako/internal/auth"
 	"github.com/mo3789530/hako/internal/store/dsql"
+	"github.com/mo3789530/hako/internal/store/githubregistry"
 	"github.com/mo3789530/hako/internal/testutil"
 )
 
@@ -134,5 +136,113 @@ func TestTenantAppMetadataAPIIsDraftOnlyOwnerScopedAndDefaultOff(t *testing.T) {
 	defaultHandler.ServeHTTP(res, req)
 	if res.Code != http.StatusNotFound {
 		t.Fatal("App management unexpectedly enabled by default")
+	}
+}
+
+func TestTenantAppVerifyRunsProofOutsideTransactionAndRechecksRevision(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	for _, query := range []string{
+		`INSERT INTO tenants (id,name,created_at) VALUES ('tenant_verify_apps','Verify',now())`,
+		`INSERT INTO users (id,cognito_subject,email,created_at) VALUES ('usr_verify_apps','verify-owner','',now())`,
+		`INSERT INTO tenant_members (tenant_id,user_id,role,joined_at) VALUES ('tenant_verify_apps','usr_verify_apps','owner',now())`,
+		`INSERT INTO github_credential_bindings (id,tenant_id,github_app_id,status,private_key_secret_ref,oauth_secret_ref,webhook_secret_ref,approved_at,private_key_reader_role_arn,private_key_secret_version_id) VALUES ('binding_verify_ok','tenant_verify_apps',123,'approved','arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:proof-ok','oauth-ref','webhook-ref',now(),'arn:aws:iam::123456789012:role/hako/proof-reader','0123456789abcdef0123456789abcdef'),('binding_verify_fail','tenant_verify_apps',456,'approved','arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:proof-fail','oauth-ref','webhook-ref',now(),'arn:aws:iam::123456789012:role/hako/proof-reader','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),('binding_verify_race','tenant_verify_apps',789,'approved','arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:proof-race','oauth-ref','webhook-ref',now(),'arn:aws:iam::123456789012:role/hako/proof-reader','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')`,
+	} {
+		if _, err := pool.Exec(ctx, query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal("generate fake Cognito key failed")
+	}
+	keys := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"keys": []any{map[string]string{"kty": "RSA", "use": "sig", "alg": "RS256", "kid": "tenant-api-key", "n": base64.RawURLEncoding.EncodeToString(key.N.Bytes()), "e": base64.RawURLEncoding.EncodeToString([]byte{1, 0, 1})}}})
+	}))
+	defer keys.Close()
+	issuer := keys.URL + "/pool"
+	verifier, err := auth.NewCognitoVerifier(auth.CognitoVerifierConfig{Issuer: issuer, ClientID: "hako-cli"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var proofCalls int
+	proof := TenantGitHubAppProofVerifierFunc(func(ctx context.Context, credential githubregistry.AppProofCredential) error {
+		proofCalls++
+		if _, ok := ctx.Deadline(); !ok {
+			t.Error("GitHub proof request has no caller deadline")
+		}
+		switch credential.GitHubAppID {
+		case 123:
+			if credential.PrivateKeyReaderRoleARN != "arn:aws:iam::123456789012:role/hako/proof-reader" || credential.PrivateKeyVersionID != "0123456789abcdef0123456789abcdef" {
+				t.Error("verification did not receive the exact approved reader/VersionId pin")
+			}
+			return nil
+		case 456:
+			return errors.New("sensitive GitHub/secret error must be hidden")
+		case 789:
+			_, err := pool.Exec(ctx, `UPDATE tenant_github_integrations SET credential_generation = credential_generation + 1 WHERE github_app_id = 789`)
+			return err
+		default:
+			return errors.New("unexpected App ID")
+		}
+	})
+	handler := NewHandler(verifier, pool, WorkspaceCreateConfig{GitHubAppManagementEnabled: true, GitHubAppProofVerifier: proof})
+	token := signTenantAPIToken(t, key, issuer, "verify-owner", "openid hako/api")
+	call := func(method, path, body, idempotency string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		if idempotency != "" {
+			req.Header.Set("Idempotency-Key", idempotency)
+		}
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		return res
+	}
+	base := "/v1/tenants/tenant_verify_apps/github/apps"
+	add := func(appID int, binding string) string {
+		body := fmt.Sprintf(`{"github_app_id":%d,"slug":"app-%d","client_id":"client-%d","credential_binding_id":"%s"}`, appID, appID, appID, binding)
+		res := call(http.MethodPost, base, body, fmt.Sprintf("verify-add-%d", appID))
+		if res.Code != http.StatusCreated {
+			t.Fatalf("App draft creation failed with HTTP %d: %s", res.Code, res.Body.String())
+		}
+		var wire GitHubAppMetadataResult
+		if err := json.Unmarshal(res.Body.Bytes(), &wire); err != nil || wire.Integration == nil {
+			t.Fatal("App create response missing integration")
+		}
+		return wire.Integration.ID
+	}
+	okID := add(123, "binding_verify_ok")
+	failID := add(456, "binding_verify_fail")
+	raceID := add(789, "binding_verify_race")
+	verify := func(id string, revision int) *httptest.ResponseRecorder {
+		return call(http.MethodPost, base+"/"+id+"/verify", fmt.Sprintf(`{"expected_revision":%d}`, revision), "")
+	}
+	ready := verify(okID, 1)
+	var readyWire GitHubAppMetadataResult
+	if ready.Code != http.StatusOK || json.Unmarshal(ready.Body.Bytes(), &readyWire) != nil || readyWire.Integration == nil || readyWire.Integration.Status != "ready" {
+		t.Fatalf("successful App proof did not transition draft to ready (HTTP %d)", ready.Code)
+	}
+	if replay := verify(okID, 1); replay.Code != http.StatusOK || proofCalls != 1 {
+		t.Fatal("retry of completed verification repeated external proof")
+	}
+	failure := verify(failID, 1)
+	if failure.Code != http.StatusBadGateway || strings.Contains(failure.Body.String(), "sensitive GitHub") {
+		t.Fatal("external verifier error was leaked or misclassified")
+	}
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM tenant_github_integrations WHERE id = $1`, failID).Scan(&status); err != nil || status != "draft" {
+		t.Fatal("failed App proof changed persistent status")
+	}
+	if raced := verify(raceID, 1); raced.Code != http.StatusConflict {
+		t.Fatal("configuration generation changed during external verification but stale result was accepted")
+	}
+	if got := verify(okID, 99); got.Code != http.StatusConflict {
+		t.Fatal("stale verification revision was accepted")
 	}
 }

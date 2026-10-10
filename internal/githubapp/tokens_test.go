@@ -40,6 +40,15 @@ func (f repositoryAuthorizerFunc) AuthorizeRepository(ctx context.Context, tenan
 	return f(ctx, tenant, installation, repository)
 }
 
+type scopedRepositoryAuthorizer struct {
+	repositoryAuthorizerFunc
+	check func(context.Context, TenantAppIdentity) error
+}
+
+func (a scopedRepositoryAuthorizer) AuthorizeTenantApp(ctx context.Context, identity TenantAppIdentity) error {
+	return a.check(ctx, identity)
+}
+
 type credentialTransportFunc func(*http.Request) (*http.Response, error)
 
 func (f credentialTransportFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
@@ -212,6 +221,96 @@ func TestTenantTokenClientRequestsPinnedSecretVersion(t *testing.T) {
 		return &secretsmanager.GetSecretValueOutput{SecretString: &privatePEM, VersionId: aws.String("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")}, nil
 	})
 	requireCredentialCode(t, client.VerifyApp(context.Background()), "private_key_unavailable")
+}
+
+func TestTenantTokenCacheIsScopedAndRevalidatesGeneration(t *testing.T) {
+	var tokenMints, githubRequests, identityChecks atomic.Int32
+	allowed := atomic.Bool{}
+	allowed.Store(true)
+	key, privatePEM := newSigningKey(t)
+	_ = key
+	secrets := secretAPIFunc(func(_ context.Context, input *secretsmanager.GetSecretValueInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+		if aws.ToString(input.VersionId) != "0123456789abcdef0123456789abcdef" || input.VersionStage != nil {
+			t.Fatal("Tenant cache client did not use its immutable key version")
+		}
+		return &secretsmanager.GetSecretValueOutput{SecretString: &privatePEM, VersionId: input.VersionId}, nil
+	})
+	authorizer := scopedRepositoryAuthorizer{
+		repositoryAuthorizerFunc: func(_ context.Context, tenant domain.TenantID, installation, repository int64) (RepositoryAccess, error) {
+			if tenant != "tenant_one" || installation != 77 || repository != 88 {
+				return RepositoryAccess{}, errors.New("denied")
+			}
+			return RepositoryAccess{Owner: "acme", Name: "api"}, nil
+		},
+		check: func(_ context.Context, identity TenantAppIdentity) error {
+			identityChecks.Add(1)
+			if identity.TenantID != "tenant_one" || identity.IntegrationID != "integration_one" || identity.GitHubAppID != 12 || identity.ConfigRevision != 4 || identity.CredentialGeneration != 7 || !allowed.Load() {
+				return errors.New("stale or unauthorized Tenant App identity")
+			}
+			return nil
+		},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		githubRequests.Add(1)
+		if r.Method == http.MethodPost {
+			tokenMints.Add(1)
+		}
+		respondCredentials(w, r, time.Now())
+	}))
+	defer server.Close()
+	client, err := NewTokenClient(TokenConfig{
+		AppID:                     12,
+		PrivateKeySecretARN:       testKeyARN,
+		PrivateKeySecretVersionID: "0123456789abcdef0123456789abcdef",
+		TenantID:                  "tenant_one",
+		IntegrationID:             "integration_one",
+		ConfigRevision:            4,
+		CredentialGeneration:      7,
+	}, secrets, authorizer, server.Client())
+	if err != nil {
+		t.Fatal("scoped Tenant App client rejected its live authorizer")
+	}
+	client.apiURL = server.URL
+	client.now = time.Now
+	client.wait = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	for i := 0; i < 2; i++ {
+		if _, err := client.CheckoutToken(context.Background(), "tenant_one", 77, 88); err != nil {
+			t.Fatalf("scoped token request failed: %v", err)
+		}
+	}
+	if tokenMints.Load() != 1 || identityChecks.Load() < 4 {
+		t.Fatal("cache either reminted unnecessarily or did not revalidate active generation on reuse")
+	}
+	githubRequestsBeforeDenial := githubRequests.Load()
+	allowed.Store(false)
+	requireCredentialCode(t, func() error {
+		_, err := client.CheckoutToken(context.Background(), "tenant_one", 77, 88)
+		return err
+	}(), "repository_not_authorized")
+	if githubRequests.Load() != githubRequestsBeforeDenial {
+		t.Fatal("stale generation reached GitHub before authorization was rechecked")
+	}
+	_, err = client.CheckoutToken(context.Background(), "tenant_other", 77, 88)
+	requireCredentialCode(t, err, "repository_not_authorized")
+	if githubRequests.Load() != githubRequestsBeforeDenial {
+		t.Fatal("another Tenant used a scoped App client")
+	}
+}
+
+func TestTenantScopedTokenConfigRequiresIntegrationIdentityAuthorizer(t *testing.T) {
+	secrets := secretAPIFunc(func(context.Context, *secretsmanager.GetSecretValueInput, ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+		return nil, nil
+	})
+	repositoryAuthorizer := repositoryAuthorizerFunc(func(context.Context, domain.TenantID, int64, int64) (RepositoryAccess, error) {
+		return RepositoryAccess{}, nil
+	})
+	config := TokenConfig{AppID: 12, PrivateKeySecretARN: testKeyARN, TenantID: "tenant_one", IntegrationID: "integration_one", ConfigRevision: 1, CredentialGeneration: 1, PrivateKeySecretVersionID: "0123456789abcdef0123456789abcdef"}
+	if _, err := NewTokenClient(config, secrets, repositoryAuthorizer, nil); err == nil {
+		t.Fatal("Tenant-scoped TokenClient accepted an authorizer that cannot revalidate App generation")
+	}
+	if _, err := NewTokenClient(TokenConfig{AppID: 12, PrivateKeySecretARN: testKeyARN, TenantID: "tenant_one"}, secrets, repositoryAuthorizer, nil); err == nil {
+		t.Fatal("partially scoped Tenant App identity was accepted")
+	}
 }
 
 func TestCheckoutTokenConcurrentRequestsMintOnce(t *testing.T) {
@@ -628,7 +727,7 @@ func TestCheckoutTokenBoundsCacheAndRechecksMintAuthorization(t *testing.T) {
 	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
 	client, _ := newTestTokenClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { respondCredentials(w, r, now) }))
 	for i := 0; i < 128; i++ {
-		client.cache[tokenCacheKey{"tenant_one", 77, int64(1000 + i)}] = InstallationToken{value: testTokenValue, expiresAt: now.Add(time.Duration(i) * time.Second)}
+		client.cache[tokenCacheKey{tenant: "tenant_one", appID: 12, installation: 77, repository: int64(1000 + i)}] = InstallationToken{value: testTokenValue, expiresAt: now.Add(time.Duration(i) * time.Second)}
 	}
 	if _, err := client.CheckoutToken(context.Background(), "tenant_one", 77, 88); err != nil {
 		t.Fatal(err)
@@ -636,7 +735,7 @@ func TestCheckoutTokenBoundsCacheAndRechecksMintAuthorization(t *testing.T) {
 	if len(client.cache) != 128 {
 		t.Fatal("cache size is not bounded")
 	}
-	if _, exists := client.cache[tokenCacheKey{"tenant_one", 77, 1000}]; exists {
+	if _, exists := client.cache[tokenCacheKey{tenant: "tenant_one", appID: 12, installation: 77, repository: 1000}]; exists {
 		t.Fatal("oldest cache entry not evicted")
 	}
 	if err := client.ClearCache(context.Background()); err != nil {

@@ -39,6 +39,14 @@ fixed safe errors and does not cache assumed credentials. Do not construct the
 binding from request fields; the provider itself does not replace database
 authorization or revision/generation revalidation.
 
+For runtime checkout use `NewTenantAppTokenClient` with the active integration
+resolver's result. Its cache key includes Tenant, integration, App ID, config
+revision and credential generation. A Tenant-scoped authorizer is mandatory;
+the `CredentialAuthorizer` checks that the integration remains active with the
+same owner/App/revision/generation before each use. The current installation
+and repository schema is not yet linked to the selected integration; Task 59
+must add that binding before Tenant-owned credentials can be activated.
+
 The future trusted credential service reads these values through
 `TokenConfigFromEnv`:
 
@@ -79,14 +87,17 @@ authorization. See [GitHub installation-token guidance](https://docs.github.com/
 - App JWT uses RS256, `iss` = numeric App ID, `iat` = now minus 60 seconds,
   `exp` = now plus 9 minutes. Keep the trusted host clock synchronized.
   [GitHub JWT guidance](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app)
-- Read `AWSCURRENT` for each authorized request; private keys are not cached
-  across requests. The AWS read has a 10-second deadline. SDK retry behavior is
+- Shared mode reads `AWSCURRENT`; Tenant-owned mode reads its approved immutable
+  `VersionId` through the exact reader Role. Private keys are not cached across
+  requests. The AWS read has a 10-second deadline. SDK retry behavior is
   bounded by that context and the service's configured SDK retry policy.
 - Installation tokens are opaque, not assumed to be 40 characters. Cache only
-  in process memory, keyed by Tenant + Installation + Repository, maximum 128
-  entries. Refresh at least two minutes before expiry; reject expired or
-  implausibly long-lived responses. Cache/HTTP calls are serialized per client,
-  with context-aware waits, so concurrent requests cannot mint duplicate tokens.
+  in process memory, keyed by Tenant + Installation + Repository and, for
+  Tenant-owned mode, App + integration + config revision + credential
+  generation; maximum 128 entries per client. Refresh at least two minutes
+  before expiry; reject expired or implausibly long-lived responses.
+  Cache/HTTP calls are serialized per client, with context-aware waits, so
+  concurrent requests cannot mint duplicate tokens.
 - A request, including gate wait and retries, has a 45-second maximum. Each HTTP
   attempt is capped at 10 seconds. Redirects are disabled. Response bodies are
   bounded by the existing 1 MiB JSON decoder and never included in errors.
@@ -118,8 +129,8 @@ must contain this secret-specific statement (substitute the configured ARN):
 ```
 
 No `ListSecrets`, `PutSecretValue`, wildcard secret resource, or AWS access-key
-management is needed. `VersionStage` is explicitly `AWSCURRENT`. A
-customer-managed KMS key may additionally need narrowly scoped `kms:Decrypt`
+management is needed. Shared-mode `VersionStage` is explicitly `AWSCURRENT`;
+Tenant-owned reads pin a `VersionId`. A customer-managed KMS key may additionally need narrowly scoped `kms:Decrypt`
 with Secrets Manager service/encryption-context conditions; do not grant
 general decrypt. Scope the CP DB role to required read-only registry tables and
 use the existing transaction interface. No IAM role deployment, secret creation,
@@ -131,7 +142,9 @@ Task 37.
 Routine rotation:
 
 1. An authorized operator generates a new GitHub App key and stores its raw PEM
-   as the secret's new `AWSCURRENT` version, without echoing it in tools/logs.
+   as a new secret version, without echoing it in tools/logs. Shared mode
+   promotes it to `AWSCURRENT`; Tenant-owned mode updates the approved version
+   pin and credential generation through the controlled provisioning flow.
 2. Verify with a controlled trusted-service request that the new key signs a
    valid App JWT and mints a read-only repository-scoped token. Local tests use
    generated keys and a fake GitHub server, not the real secret.

@@ -55,7 +55,7 @@ Webhookは`POST /v1/integrations/github/{opaque_route_id}/webhook`を別途追�
 
 POSTにはidempotency key、更新にはexpected revisionを用い、競合は409。未承認binding、別Tenant/App所有bindingはSecret取得前に拒否する。
 App verificationとdefault選択は別操作であり、GitHub疎通成功だけでRunを起動しない。
-Task 56では`hako github app list/add/show/verify/select-default/disable`からmetadataを操作する。API routeは`HAKO_GITHUB_APP_MANAGEMENT_ENABLED=true`で明示的に有効化し、未設定時はrouteを登録しない。Tenant Appはdraftのままで、`verify`と`select-default`は409 `github_app_not_ready`を返す。CLI/APIにSecret値を入力させない。
+Task 56では`hako github app list/add/show/verify/select-default/disable`からmetadataを操作する。API routeは`HAKO_GITHUB_APP_MANAGEMENT_ENABLED=true`で明示的に有効化し、未設定時はrouteを登録しない。Task 57ではproof verifierを構成したときにのみ`verify`がdraftからreadyへ進む。未構成なら409 `github_app_not_ready`、証明失敗なら秘匿された502 `github_app_verification_failed`を返す。`select-default`は未実装のため409を返す。CLI/APIにSecret値を入力させない。
 
 `add`は`Idempotency-Key`必須で、`disable`/`verify`/`select-default`は`expected_revision`を要求する。Owner/Admin以外と別Tenantのresourceはhidden 404。詳細なpath、body、response、error codeは[Control Plane API Contract](api-contract.md#tenant-github-app-metadata)を参照。
 
@@ -78,7 +78,7 @@ INSERT INTO github_credential_bindings (
 );
 ```
 
-Task 57ではTenant-owned private key用に`private_key_reader_role_arn`と`private_key_secret_version_id`を追加した。resolverは`role/`のexact IAM Role ARN（wildcard不可）、完全なSecrets Manager Secret ARN、32桁hexのimmutable Version IDを要求し、`AWSCURRENT`や欠落pinを拒否する。`TenantPrivateKeySecretAPI`はSTS AssumeRoleにSecret ARN限定のsession policyを付け、Assumed Roleの短期credentialで固定VersionIdだけを取得し、AWS/GitHubエラーを外へ漏らさない。共有Appや既存credential clientはこのmetadataを使わず、従来のAWSCURRENT方式を維持する。AWSアクセスはproviderを実際のtrusted serviceへ接続した時のみ発生し、テストはfake providerを使う。
+Task 57ではTenant-owned private key用に`private_key_reader_role_arn`と`private_key_secret_version_id`を追加した。resolverは`role/`のexact IAM Role ARN（wildcard不可）、完全なSecrets Manager Secret ARN、32桁hexのimmutable Version IDを要求し、`AWSCURRENT`や欠落pinを拒否する。`TenantPrivateKeySecretAPI`はSTS AssumeRoleにSecret ARN限定のsession policyを付け、Assumed Roleの短期credentialで固定VersionIdだけを取得し、AWS/GitHubエラーを外へ漏らさない。Tenant App token clientのcache identityにはTenant/integration/App/revision/generationを含め、active revision/generationとTenant/App ownerをDBで都度再検証するため、古いgenerationのclientはcached tokenも返せない。共有Appや既存credential clientはこのmetadataを使わず、従来のAWSCURRENT方式を維持する。AWSアクセスはproviderを実際のtrusted serviceへ接続した時のみ発生し、テストはfake providerを使う。
 
 Bindingの更新・停止とIAM/Secret provisioningの自動化はこのTaskの範囲外。APIにはbinding ID以外のARN/Role/URLを渡せず、承認bindingが見つからない場合はSecret accessより前に拒否する。
 3. CP brokerはauthoritative Tenant/integration/bindingからRoleを解決する。取得Roleはprivate-key、OAuth交換、Webhook検証の用途別に分け、それぞれexact ARNの`GetSecretValue`と必要時の限定KMS decryptのみを許可する。

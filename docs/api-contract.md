@@ -60,9 +60,13 @@ references.
 
 `POST /{integration_id}/disable`, `/verify`, and `/select-default` require
 `{"expected_revision": N}`. Draft disable advances the configuration and
-credential revisions. Verification and default selection currently return
-HTTP 409 `github_app_not_ready`; no Tenant App is verified, selected, or
-activated by these routes. Other stable errors are `invalid_request` (400),
+credential revisions. When the API has its trusted proof verifier configured,
+`/verify` resolves the exact approved key pin, calls GitHub `GET /app` outside
+the database transaction, then rechecks revision/generation before moving
+`draft` to `ready`. Without that verifier it returns HTTP 409
+`github_app_not_ready`; failed identity proof returns a sanitized 502
+`github_app_verification_failed`. `/select-default` remains unimplemented and
+returns 409; verification alone does not activate or select the App. Other stable errors are `invalid_request` (400),
 `idempotency_conflict` and `state_conflict` (409). Create and disable append a
 safe audit summary in the same transaction as metadata changes; idempotent
 create replay does not append another event.

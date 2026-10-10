@@ -1,6 +1,6 @@
 # Task 57: Tenant GitHub Credential Resolver and Cache Isolation
 
-Status: In Progress (App ID proof and revision/generation-bound draft resolver, plus exact reader Role/Secret Version provider implemented; integration-scoped cache, verify API and Run integration binding remain). Priority: P0.
+Status: In Progress (App proof API, active/draft revision/generation resolver, exact reader provider, and per-use active generation authorization/cache partition implemented; Run integration binding remains). Priority: P0.
 
 ## Goal
 
@@ -16,7 +16,7 @@ Extend Task 37's internal credential library using [Tenant App design sections 4
 
 ## Acceptance / tests / docs
 
-Progress: `TokenClient.VerifyApp` signs with the configured App key, calls GitHub `GET /app`, checks the returned App ID, and returns only fixed safe credential errors. `ResolveAppProofCredential` resolves only a draft Tenant-owned integration, exact approved binding, exact reader Role ARN, exact private-key Secret ARN and immutable 32-hex Version ID for the expected config revision and credential generation; it never returns OAuth/webhook refs. `TenantPrivateKeySecretAPI` assumes only that Role with a session policy restricted to `GetSecretValue` on that exact Secret, requests the pinned VersionId and rejects mismatched versions. Missing pins, wildcard Role ARNs and `AWSCURRENT` are rejected. Tests use fake STS/Secrets Manager/GitHub, with no real AWS calls. No public proof endpoint, cache pool or ready/active transition is enabled yet.
+Progress: `TokenClient.VerifyApp` signs with the configured App key, calls GitHub `GET /app`, checks the returned App ID, and returns only fixed safe credential errors. The API reads draft proof metadata transactionally, verifies against GitHub outside DB transactions, then conditionally rechecks revision/generation and transitions to `ready`; failed proof does not change state. Draft and active resolvers return the exact approved binding, reader Role ARN, private-key Secret ARN and immutable Version ID only for the expected Tenant/App/revision/generation. `TenantPrivateKeySecretAPI` assumes only that Role with a session policy restricted to `GetSecretValue` on that exact Secret, requests the pinned VersionId and rejects mismatched versions. Tenant-scoped `TokenClient` partitions cache identity by Tenant/integration/App/revision/generation and requires an authorizer that revalidates active integration state before cached-token reuse and after remote calls. Tests use fake STS/Secrets Manager/GitHub, with no real AWS calls. Run integration binding remains unimplemented.
 
 - Generated RSA keys, fake Secret/STS/GitHub providers test A/B isolation, correct Role/ARN/version, mismatched App proof, rotation, revoked/suspended configuration, concurrent requests and stale client/cache.
 - Tokens/keys cannot appear in DB/messages/errors/artifacts; no public token endpoint is added.
