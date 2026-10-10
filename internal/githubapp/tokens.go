@@ -124,6 +124,37 @@ type TokenClient struct {
 	lastMutation time.Time
 }
 
+// VerifyApp proves that the configured private key belongs to the configured
+// App ID. Tenant-owned setup must call this outside its database transaction,
+// then recheck the integration revision before persisting verification.
+func (c *TokenClient) VerifyApp(ctx context.Context) error {
+	if c == nil {
+		return credentialError("invalid_configuration")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	select {
+	case c.gate <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-c.gate }()
+	appJWT, err := c.appJWT(ctx)
+	if err != nil {
+		return err
+	}
+	var app struct {
+		ID int64 `json:"id"`
+	}
+	if err := c.request(ctx, http.MethodGet, "/app", appJWT, nil, &app); err != nil {
+		return err
+	}
+	if app.ID != c.config.AppID {
+		return credentialError("app_id_mismatch")
+	}
+	return nil
+}
+
 func NewTokenClient(config TokenConfig, secrets SecretValueAPI, authorizer RepositoryAuthorizer, httpClient *http.Client) (*TokenClient, error) {
 	if !config.valid() || secrets == nil || authorizer == nil {
 		return nil, credentialError("invalid_configuration")

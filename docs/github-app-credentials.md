@@ -18,6 +18,13 @@ and routing is not implemented; its [design and Tasks 56–60](tenant-github-app
 are now recorded separately. The existing OAuth client secret likewise
 belongs to the configured Hako App, not to an individual Tenant.
 
+`TokenClient.VerifyApp` is a trusted-library primitive for verifying a
+configured key/App ID pair through GitHub `GET /app`. It returns no App details
+or credential material and does not persist a `ready` status. Tenant-owned
+verification must still resolve the authoritative integration and pinned
+credentials, run this request outside a database transaction, then recheck the
+integration revision before recording the result.
+
 The future trusted credential service reads these values through
 `TokenConfigFromEnv`:
 

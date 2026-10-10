@@ -1,6 +1,6 @@
 # Task 57: Tenant GitHub Credential Resolver and Cache Isolation
 
-Status: Blocked on Task 56. Priority: P0.
+Status: In Progress (App ID proof added to trusted TokenClient; authoritative Tenant resolver, role/version-pinned Secret provider, integration-scoped cache and verify API remain). Priority: P0.
 
 ## Goal
 
@@ -15,6 +15,8 @@ Extend Task 37's internal credential library using [Tenant App design sections 4
 - Revalidate generation on every use, invalidate stale pools on changes and fail closed. No shared/legacy fallback after owned failure.
 
 ## Acceptance / tests / docs
+
+Progress: `TokenClient.VerifyApp` signs with the configured App key, calls GitHub `GET /app`, checks the returned App ID, and returns only fixed safe credential errors. Unit coverage exercises matching and mismatched App IDs. This is a library primitive only; no public proof endpoint or ready/active transition is enabled.
 
 - Generated RSA keys, fake Secret/STS/GitHub providers test A/B isolation, correct Role/ARN/version, mismatched App proof, rotation, revoked/suspended configuration, concurrent requests and stale client/cache.
 - Tokens/keys cannot appear in DB/messages/errors/artifacts; no public token endpoint is added.

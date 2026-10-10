@@ -159,6 +159,35 @@ func TestCheckoutTokenSignsScopesCachesAndRefreshes(t *testing.T) {
 	}
 }
 
+func TestVerifyAppProvesConfiguredIDWithSafeErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "matching app", body: `{"id":12}`},
+		{name: "different app", body: `{"id":99}`, want: "app_id_mismatch"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.body = strings.ReplaceAll(tc.body, `\`, "")
+			client, _ := newTestTokenClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/app" || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+					t.Errorf("unexpected App proof request: %s %s", r.Method, r.URL.Path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			err := client.VerifyApp(context.Background())
+			if tc.want == "" && err != nil {
+				t.Fatalf("matching App proof failed: %v", err)
+			}
+			if tc.want != "" {
+				requireCredentialCode(t, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestCheckoutTokenConcurrentRequestsMintOnce(t *testing.T) {
 	var mints atomic.Int32
 	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
