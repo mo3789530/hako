@@ -34,7 +34,7 @@ func (s *s3Stub) GetObject(_ context.Context, input *s3.GetObjectInput, _ ...fun
 func TestS3StoreUsesConditionalCreateAndCompareAndSwap(t *testing.T) {
 	now := time.Now().UTC()
 	journal, err := New(Command{TenantID: "tenant_1", WorkloadRunID: "run_1", AttemptID: "attempt_1",
-		Generation: 1, ResourcePlaneID: "rp_1", ClientToken: "client_1"}, now)
+		Generation: 1, ResourcePlaneID: "rp_1", IdempotencyToken: "attempt_token_1"}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestS3StoreUsesConditionalCreateAndCompareAndSwap(t *testing.T) {
 func TestS3StoreLoadsAndValidatesKeyAgainstJournal(t *testing.T) {
 	now := time.Now().UTC()
 	journal, err := New(Command{TenantID: "tenant_1", WorkloadRunID: "run_1", AttemptID: "attempt_1",
-		Generation: 1, ResourcePlaneID: "rp_1", ClientToken: "client_1"}, now)
+		Generation: 1, ResourcePlaneID: "rp_1", IdempotencyToken: "attempt_token_1"}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestS3StoreRejectsInvalidConfigurationAndMapsFailures(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	valid, err := New(Command{TenantID: "tenant_1", WorkloadRunID: "run_1", AttemptID: "attempt_1",
-		Generation: 1, ResourcePlaneID: "rp_1", ClientToken: "client_1"}, now)
+		Generation: 1, ResourcePlaneID: "rp_1", IdempotencyToken: "attempt_token_1"}, now)
 	if err != nil {
 		t.Fatal(err)
 	}

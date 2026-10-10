@@ -10,7 +10,7 @@ import (
 func TestJournalUpdateFencesExecutionAndCleanup(t *testing.T) {
 	now := time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC)
 	journal, err := New(Command{TenantID: "tenant_1", WorkloadRunID: "run_1", AttemptID: "attempt_1",
-		Generation: 1, ResourcePlaneID: "rp_1", ClientToken: "client_1"}, now)
+		Generation: 1, ResourcePlaneID: "rp_1", IdempotencyToken: "attempt_token_1"}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestJournalUpdateFencesExecutionAndCleanup(t *testing.T) {
 		t.Fatalf("cleanup confirmation rejected: %v", err)
 	}
 	mutated := confirmed
-	mutated.ClientToken = "attacker-token"
+	mutated.IdempotencyToken = "attacker-token"
 	mutated.Revision++
 	if err := ValidateUpdate(Snapshot{Journal: confirmed, ETag: `"etag-6"`}, mutated); !errors.Is(err, ErrConflict) {
 		t.Fatalf("immutable client token mutation accepted: %v", err)
@@ -70,7 +70,7 @@ func TestJournalUpdateFencesExecutionAndCleanup(t *testing.T) {
 func TestJournalEncodingValidatesIdentityAndPayloadLimit(t *testing.T) {
 	now := time.Now().UTC()
 	journal, err := New(Command{TenantID: "tenant_1", WorkloadRunID: "run_1", AttemptID: "attempt_1",
-		Generation: 2, ResourcePlaneID: "rp_1", ClientToken: "client_1"}, now)
+		Generation: 2, ResourcePlaneID: "rp_1", IdempotencyToken: "attempt_token_2"}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestJournalEncodingValidatesIdentityAndPayloadLimit(t *testing.T) {
 func TestJournalValidateRejectsInvalidIdentityAndLifecycle(t *testing.T) {
 	now := time.Now().UTC()
 	valid, err := New(Command{TenantID: "tenant_1", WorkloadRunID: "run_1", AttemptID: "attempt_1",
-		Generation: 1, ResourcePlaneID: "rp_1", ClientToken: "client_1"}, now)
+		Generation: 1, ResourcePlaneID: "rp_1", IdempotencyToken: "attempt_token_1"}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestJournalValidateRejectsInvalidIdentityAndLifecycle(t *testing.T) {
 		{"timestamp ordering", func(j *Journal) { j.UpdatedAt = now.Add(-time.Second) }},
 		{"execution state", func(j *Journal) { j.ExecutionState = "unknown" }},
 		{"cleanup state", func(j *Journal) { j.CleanupState = "unknown" }},
-		{"VM path", func(j *Journal) { j.VMInstanceID = "../vm" }},
+		{"runtime handle path", func(j *Journal) { j.RuntimeHandle = "../runtime" }},
 		{"terminal without cleanup", func(j *Journal) { j.ExecutionState = Succeeded }},
 		{"active with cleanup", func(j *Journal) { j.CleanupState = CleanupPending }},
 	}
@@ -128,7 +128,7 @@ func TestJournalValidateRejectsInvalidIdentityAndLifecycle(t *testing.T) {
 func TestValidateUpdateRejectsStaleOrIllegalChanges(t *testing.T) {
 	now := time.Now().UTC()
 	journal, err := New(Command{TenantID: "tenant_1", WorkloadRunID: "run_1", AttemptID: "attempt_1",
-		Generation: 1, ResourcePlaneID: "rp_1", ClientToken: "client_1"}, now)
+		Generation: 1, ResourcePlaneID: "rp_1", IdempotencyToken: "attempt_token_1"}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestValidateUpdateRejectsStaleOrIllegalChanges(t *testing.T) {
 		})
 	}
 	changedVM := validNext
-	changedVM.VMInstanceID = "i-123"
+	changedVM.RuntimeHandle = "runtime_123"
 	err = ValidateUpdate(current, changedVM)
 	if err != nil {
 		t.Fatalf("first VM binding should be allowed: %v", err)
@@ -173,7 +173,7 @@ func TestValidateUpdateRejectsStaleOrIllegalChanges(t *testing.T) {
 	mutatedVM := changedVM
 	mutatedVM.Revision++
 	mutatedVM.UpdatedAt = now.Add(2 * time.Second)
-	mutatedVM.VMInstanceID = "i-456"
+	mutatedVM.RuntimeHandle = "runtime_456"
 	if err := ValidateUpdate(Snapshot{Journal: changedVM, ETag: `"vm"`}, mutatedVM); !errors.Is(err, ErrConflict) {
 		t.Fatalf("VM binding changed after creation: %v", err)
 	}

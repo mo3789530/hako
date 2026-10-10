@@ -1,8 +1,8 @@
 # Task 36: Workload Worker Execution Substrate ADR
 
-Status: Done (design only, 2026-10-04). Priority: P0. Depends on: none.
+Status: Superseded (EC2 execution is out of scope; runtime selection reopened 2026-10-10). Priority: P0. Depends on: none.
 
-Result: [ADR 0006](../docs/adr/0006-workload-worker-substrate.md) selects disposable per-attempt EC2 + rootless Podman in the Resource Plane, short-lived SQS handoff, durable fencing/recovery, and a default-off staged validation path. Runtime/IAM deployment remains Tasks 39/40.
+Result: The historical [ADR 0006](../docs/adr/0006-workload-worker-substrate.md) selected disposable EC2, but that choice is superseded. EC2 provisioning, execution, and lifecycle permissions must not be implemented. Substrate-neutral dispatch/result fencing remains in Task 39; Task 61 selects an in-scope non-EC2 Workload runtime before runtime-specific worker work resumes.
 
 ## Goal
 
@@ -11,7 +11,7 @@ Select and record a production-capable execution substrate for Workload Runs bef
 ## Work
 
 - Inspect the runtime contract, SQS visibility/DLQ, Go test Podman restrictions, artifact writer, Control/Resource Plane account boundary, and timeout/cancel semantics.
-- Compare feasible options (for example ECS EC2 worker, AWS Batch, dedicated Resource Plane hosts, or another substrate). Explicitly assess nested-container/Podman support, tenant isolation, 24-hour execution, message visibility renewal, network restrictions, ephemeral disk, artifact upload, cold start, operational burden, and cost.
+- Historical comparison is retained in ADR 0006. Runtime selection is reopened by Task 61 with EC2 explicitly excluded; assess Lambda MicroVM compatibility, execution duration, nested-container needs, Tenant isolation, message visibility, network restrictions, storage, artifact upload, cold start, operational burden, and cost.
 - Decide where the Workload worker belongs relative to Control Plane and Resource Plane accounts. Do not silently broaden Control Plane permissions to provision compute.
 - Record runner image lifecycle, per-Run isolation boundary, secrets delivery, network egress, cancellation, worker crash recovery, and how durable fencing prevents duplicate execution.
 - Keep API creation default-off until the selected design has a working worker path.

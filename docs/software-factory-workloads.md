@@ -128,17 +128,17 @@ and SHA-256); artifact metadata and the terminal Run transition commit in one
 transaction. The consumer defaults to batch size one and deletes a receipt only
 after durable apply, duplicate, or stale classification; malformed and
 transiently failed deliveries remain for retry/DLQ. It is not yet wired into a
-deployed service or queue configuration, and physical VM cleanup remains a
-separate unfinished protocol.
+deployed service or queue configuration, and physical runtime cleanup remains
+a separate unfinished protocol.
 
 `internal/workloadjournal` provides a Resource Plane S3 journal primitive.
 Creation uses `If-None-Match: *`; updates require the previously observed ETag
 with `If-Match`, and S3 409/412 conflicts map to a retryable journal conflict.
 The journal keeps immutable attempt identity and independent execution and
 cleanup state, and rejects advancing to launch/run after cancellation. It is a
-storage/state-machine foundation only: no command queue consumer or EC2
-controller currently uses it, and a successful conditional write is not an
-atomic transaction with an AWS compute API.
+storage/state-machine foundation only: no command queue consumer or selected
+runtime controller currently uses it, and a successful conditional write is
+not an atomic transaction with a runtime API.
 The local Fake Runtime also has an explicit Go test Job entry point for an
 already-checked-out repository and immutable commit. It verifies `HEAD` before
 execution and invokes `go test ./...` only inside a one-shot Podman container
@@ -169,16 +169,17 @@ should receive only a scoped IAM role (`s3:PutObject` on the configured prefix,
 plus KMS permissions when enabled). No credentials, ACLs, or presigned URLs
 are embedded in artifact metadata.
 
-A production design is recorded in [ADR 0006](adr/0006-workload-worker-substrate.md):
-short-lived scheduler handoff in the Control Plane, disposable per-attempt EC2
-and rootless Podman in the Resource Plane, and separate result/cleanup processing.
-SQS visibility renewal cannot hold a receipt for the API's full 24-hour deadline.
-The Resource Plane executor must not connect directly to Control Plane DSQL.
-This is a design decision, not a deployed runtime or a reason to enable creation.
+A historical runtime design is recorded in [ADR 0006](adr/0006-workload-worker-substrate.md),
+but its EC2 choice has been superseded and EC2 is out of scope. Task 61 must
+select a supported non-EC2 runtime before any runtime-specific controller or
+deployment work. The Control Plane dispatch/result fencing, S3 journal, and
+short-lived queue handoff remain substrate-neutral. SQS visibility renewal
+cannot hold a receipt for the API's full 24-hour deadline, and the Resource
+Plane executor must not connect directly to Control Plane DSQL.
 
 A deployed Workload worker/handler is not implemented. The standalone local
 `JobRuntime` also keeps a process-local cache, so it is not a durable queue or
 production executor. Before repository-triggered Jobs are enabled, deployable
-workers still need image digest verification, bucket/IAM provisioning,
-in-flight cancellation cleanup, trust-level/network policy, and end-to-end
-authorization.
+runtime-specific workers still need image/artifact verification, bucket/IAM
+provisioning, in-flight cancellation cleanup, trust-level/network policy, and
+end-to-end authorization. Workload creation remains default-off.

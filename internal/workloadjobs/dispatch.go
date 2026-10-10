@@ -41,14 +41,14 @@ type DispatchHandler struct {
 }
 
 type DispatchCommand struct {
-	SchemaVersion int                    `json:"schema_version"`
-	TenantID      domain.TenantID        `json:"tenant_id"`
-	WorkloadRunID domain.WorkloadRunID   `json:"workload_run_id"`
-	AttemptID     string                 `json:"attempt_id"`
-	Generation    int64                  `json:"generation"`
-	ResourcePlane domain.ResourcePlaneID `json:"resource_plane_id"`
-	ClientToken   string                 `json:"client_token"`
-	TimeoutAt     time.Time              `json:"timeout_at"`
+	SchemaVersion    int                    `json:"schema_version"`
+	TenantID         domain.TenantID        `json:"tenant_id"`
+	WorkloadRunID    domain.WorkloadRunID   `json:"workload_run_id"`
+	AttemptID        string                 `json:"attempt_id"`
+	Generation       int64                  `json:"generation"`
+	ResourcePlane    domain.ResourcePlaneID `json:"resource_plane_id"`
+	IdempotencyToken string                 `json:"idempotency_token"`
+	TimeoutAt        time.Time              `json:"timeout_at"`
 }
 
 // Handle durably hands a scheduler delivery to the Resource Plane. It never
@@ -74,9 +74,9 @@ func (h *DispatchHandler) Handle(ctx context.Context, request ScheduleRequest) e
 	if err != nil {
 		return fmt.Errorf("generate Workload dispatch event ID: %w", err)
 	}
-	clientToken, err := idgen.New("hako-")
+	idempotencyToken, err := idgen.New("token_")
 	if err != nil {
-		return fmt.Errorf("generate Workload EC2 client token: %w", err)
+		return fmt.Errorf("generate Workload attempt idempotency token: %w", err)
 	}
 	_, err = transaction.Within(ctx, h.Pool, h.Policy, func(ctx context.Context, tx pgx.Tx) (struct{}, error) {
 		run, err := workloads.Get(ctx, tx, request.TenantID, request.WorkloadRunID)
@@ -130,13 +130,13 @@ func (h *DispatchHandler) Handle(ctx context.Context, request ScheduleRequest) e
 			return struct{}{}, err
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO workload_run_attempts
-			(id, tenant_id, workload_run_id, generation, attempt_number, resource_plane_id, client_token, state, created_at, updated_at)
+			(id, tenant_id, workload_run_id, generation, attempt_number, resource_plane_id, idempotency_token, state, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, 'dispatch_pending', $8, $8)`,
-			attemptID, run.TenantID, run.ID, generation, attemptNumber, planeID, clientToken, occurredAt); err != nil {
+			attemptID, run.TenantID, run.ID, generation, attemptNumber, planeID, idempotencyToken, occurredAt); err != nil {
 			return struct{}{}, fmt.Errorf("persist Workload attempt: %w", err)
 		}
 		command := DispatchCommand{SchemaVersion: 1, TenantID: run.TenantID, WorkloadRunID: run.ID,
-			AttemptID: attemptID, Generation: generation, ResourcePlane: planeID, ClientToken: clientToken, TimeoutAt: run.TimeoutAt}
+			AttemptID: attemptID, Generation: generation, ResourcePlane: planeID, IdempotencyToken: idempotencyToken, TimeoutAt: run.TimeoutAt}
 		payload, err := json.Marshal(command)
 		if err != nil {
 			return struct{}{}, fmt.Errorf("encode Workload dispatch command: %w", err)

@@ -40,7 +40,7 @@ func TestWorkloadResultFencesAttemptsAndPersistsTerminalMetadata(t *testing.T) {
 			runID, commit, desired, timeoutAt, now); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := pool.Exec(ctx, `INSERT INTO workload_run_attempts (id,tenant_id,workload_run_id,generation,attempt_number,resource_plane_id,client_token,state,created_at,updated_at)
+		if _, err := pool.Exec(ctx, `INSERT INTO workload_run_attempts (id,tenant_id,workload_run_id,generation,attempt_number,resource_plane_id,idempotency_token,state,created_at,updated_at)
 			VALUES ($1,'tenant_result',$2,1,1,'rp_result',$1,'running',$3,$3)`, attemptID, runID, now); err != nil {
 			t.Fatal(err)
 		}

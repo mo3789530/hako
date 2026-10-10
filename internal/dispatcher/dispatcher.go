@@ -60,13 +60,13 @@ type workloadScheduleEnvelope struct {
 }
 
 type workloadDispatchEnvelope struct {
-	SchemaVersion   int    `json:"schema_version"`
-	TenantID        string `json:"tenant_id"`
-	WorkloadRunID   string `json:"workload_run_id"`
-	AttemptID       string `json:"attempt_id"`
-	Generation      int64  `json:"generation"`
-	ResourcePlaneID string `json:"resource_plane_id"`
-	ClientToken     string `json:"client_token"`
+	SchemaVersion    int    `json:"schema_version"`
+	TenantID         string `json:"tenant_id"`
+	WorkloadRunID    string `json:"workload_run_id"`
+	AttemptID        string `json:"attempt_id"`
+	Generation       int64  `json:"generation"`
+	ResourcePlaneID  string `json:"resource_plane_id"`
+	IdempotencyToken string `json:"idempotency_token"`
 }
 
 func New(store Store, publisher Publisher, queueURLs map[string]string, config Config) (*Dispatcher, error) {
@@ -169,7 +169,7 @@ func (d *Dispatcher) route(event outbox.Event) (string, error) {
 		}
 		if command.SchemaVersion != 1 || command.TenantID == "" || command.WorkloadRunID == "" ||
 			command.AttemptID == "" || command.AttemptID != event.AggregateID || command.Generation < 1 ||
-			command.ResourcePlaneID == "" || command.ClientToken == "" {
+			command.ResourcePlaneID == "" || command.IdempotencyToken == "" {
 			return "", errors.New("Workload dispatch command has an unsupported or inconsistent envelope")
 		}
 		queueURL := d.queues[command.ResourcePlaneID]

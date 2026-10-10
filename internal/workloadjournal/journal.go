@@ -39,20 +39,20 @@ const (
 )
 
 type Journal struct {
-	SchemaVersion   int            `json:"schema_version"`
-	TenantID        string         `json:"tenant_id"`
-	WorkloadRunID   string         `json:"workload_run_id"`
-	AttemptID       string         `json:"attempt_id"`
-	Generation      int64          `json:"generation"`
-	ResourcePlaneID string         `json:"resource_plane_id"`
-	ClientToken     string         `json:"client_token"`
-	Revision        int64          `json:"revision"`
-	ExecutionState  ExecutionState `json:"execution_state"`
-	CancelRequested bool           `json:"cancel_requested"`
-	VMInstanceID    string         `json:"vm_instance_id,omitempty"`
-	CleanupState    CleanupState   `json:"cleanup_state"`
-	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
+	SchemaVersion    int            `json:"schema_version"`
+	TenantID         string         `json:"tenant_id"`
+	WorkloadRunID    string         `json:"workload_run_id"`
+	AttemptID        string         `json:"attempt_id"`
+	Generation       int64          `json:"generation"`
+	ResourcePlaneID  string         `json:"resource_plane_id"`
+	IdempotencyToken string         `json:"idempotency_token"`
+	Revision         int64          `json:"revision"`
+	ExecutionState   ExecutionState `json:"execution_state"`
+	CancelRequested  bool           `json:"cancel_requested"`
+	RuntimeHandle    string         `json:"runtime_handle,omitempty"`
+	CleanupState     CleanupState   `json:"cleanup_state"`
+	CreatedAt        time.Time      `json:"created_at"`
+	UpdatedAt        time.Time      `json:"updated_at"`
 }
 
 type Snapshot struct {
@@ -69,15 +69,15 @@ type Store interface {
 func (j Journal) Validate() error {
 	if j.SchemaVersion != 1 || !idPattern.MatchString(j.TenantID) || !idPattern.MatchString(j.WorkloadRunID) ||
 		!idPattern.MatchString(j.AttemptID) || !idPattern.MatchString(j.ResourcePlaneID) ||
-		!idPattern.MatchString(j.ClientToken) || j.Generation < 1 || j.Revision < 1 || j.CreatedAt.IsZero() ||
+		!idPattern.MatchString(j.IdempotencyToken) || j.Generation < 1 || j.Revision < 1 || j.CreatedAt.IsZero() ||
 		j.UpdatedAt.IsZero() || j.UpdatedAt.Before(j.CreatedAt) {
 		return errors.New("Workload attempt journal identity or revision is invalid")
 	}
 	if !validExecutionState(j.ExecutionState) || !validCleanupState(j.CleanupState) {
 		return errors.New("Workload attempt journal state is invalid")
 	}
-	if j.VMInstanceID != "" && !idPattern.MatchString(j.VMInstanceID) {
-		return errors.New("Workload attempt journal VM identity is invalid")
+	if j.RuntimeHandle != "" && !idPattern.MatchString(j.RuntimeHandle) {
+		return errors.New("Workload attempt journal runtime handle is invalid")
 	}
 	if terminal(j.ExecutionState) && j.CleanupState == CleanupNotStarted {
 		return errors.New("terminal Workload attempt must have a cleanup state")
@@ -91,7 +91,7 @@ func (j Journal) Validate() error {
 func New(command Command, now time.Time) (Journal, error) {
 	j := Journal{SchemaVersion: 1, TenantID: command.TenantID, WorkloadRunID: command.WorkloadRunID,
 		AttemptID: command.AttemptID, Generation: command.Generation, ResourcePlaneID: command.ResourcePlaneID,
-		ClientToken: command.ClientToken, Revision: 1, ExecutionState: Accepted,
+		IdempotencyToken: command.IdempotencyToken, Revision: 1, ExecutionState: Accepted,
 		CleanupState: CleanupNotStarted, CreatedAt: now.UTC(), UpdatedAt: now.UTC()}
 	if err := j.Validate(); err != nil {
 		return Journal{}, err
@@ -102,12 +102,12 @@ func New(command Command, now time.Time) (Journal, error) {
 // Command is intentionally limited to immutable dispatch identity. Runtime
 // configuration, source, and secrets must be resolved independently.
 type Command struct {
-	TenantID        string
-	WorkloadRunID   string
-	AttemptID       string
-	Generation      int64
-	ResourcePlaneID string
-	ClientToken     string
+	TenantID         string
+	WorkloadRunID    string
+	AttemptID        string
+	Generation       int64
+	ResourcePlaneID  string
+	IdempotencyToken string
 }
 
 func ValidateUpdate(current Snapshot, next Journal) error {
@@ -116,7 +116,7 @@ func ValidateUpdate(current Snapshot, next Journal) error {
 	}
 	old := current.Journal
 	if old.TenantID != next.TenantID || old.WorkloadRunID != next.WorkloadRunID || old.AttemptID != next.AttemptID ||
-		old.Generation != next.Generation || old.ResourcePlaneID != next.ResourcePlaneID || old.ClientToken != next.ClientToken ||
+		old.Generation != next.Generation || old.ResourcePlaneID != next.ResourcePlaneID || old.IdempotencyToken != next.IdempotencyToken ||
 		old.CreatedAt != next.CreatedAt || next.Revision != old.Revision+1 || next.UpdatedAt.Before(old.UpdatedAt) {
 		return ErrConflict
 	}
@@ -128,7 +128,7 @@ func ValidateUpdate(current Snapshot, next Journal) error {
 		(next.ExecutionState == Launching || next.ExecutionState == Running) {
 		return ErrConflict
 	}
-	if old.VMInstanceID != "" && old.VMInstanceID != next.VMInstanceID {
+	if old.RuntimeHandle != "" && old.RuntimeHandle != next.RuntimeHandle {
 		return ErrConflict
 	}
 	return nil

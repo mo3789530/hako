@@ -122,7 +122,7 @@ func TestRunOnceRoutesWorkloadScheduleRequestToDedicatedQueue(t *testing.T) {
 func TestRunOnceRoutesWorkloadDispatchToPinnedResourcePlane(t *testing.T) {
 	store := &fakeStore{events: []outbox.Event{{
 		ID: "evt_attempt", AggregateType: "workload_attempt", AggregateID: "attempt_1", EventType: "workload_attempt.dispatch", Attempt: 1,
-		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_1","attempt_id":"attempt_1","generation":1,"resource_plane_id":"rp_tokyo","client_token":"hako-fixed"}`),
+		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_1","attempt_id":"attempt_1","generation":1,"resource_plane_id":"rp_tokyo","idempotency_token":"attempt-fixed"}`),
 	}}}
 	publisher := &fakePublisher{}
 	dispatcher, err := New(store, publisher, map[string]string{"rp_tokyo": "rp-queue"}, Config{})
@@ -138,7 +138,7 @@ func TestRunOnceRoutesWorkloadDispatchToPinnedResourcePlane(t *testing.T) {
 func TestRunOnceRejectsInconsistentWorkloadDispatch(t *testing.T) {
 	store := &fakeStore{events: []outbox.Event{{
 		ID: "evt_attempt", AggregateType: "workload_attempt", AggregateID: "attempt_1", EventType: "workload_attempt.dispatch", Attempt: 1,
-		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_1","attempt_id":"attempt_other","generation":1,"resource_plane_id":"rp_tokyo","client_token":"hako-fixed"}`),
+		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_1","attempt_id":"attempt_other","generation":1,"resource_plane_id":"rp_tokyo","idempotency_token":"attempt-fixed"}`),
 	}}}
 	publisher := &fakePublisher{}
 	dispatcher, err := New(store, publisher, map[string]string{"rp_tokyo": "rp-queue"}, Config{})

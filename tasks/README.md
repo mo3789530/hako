@@ -16,11 +16,11 @@
 
 | 順序 | Task | 内容 | Depends on |
 |---|---|---|---|
-| 1 | [36 — Worker実行基盤ADR](task-36-workload-worker-adr.md) | 完了（設計のみ）：使い捨てEC2、短時間handoff、fencing。実装は39/40 | なし |
+| 1 | [36 — Worker実行基盤ADR](task-36-workload-worker-adr.md) | Superseded：旧EC2決定は撤回。EC2は対象外 | なし |
 | 2 | [37 — GitHub App資格情報](task-37-github-app-credentials.md) | 完了（library）：AWSCURRENT、JWT、Repository限定read-only token。配備は40 | なし |
 | 3 | [38 — 固定commit checkout](task-38-workload-source-checkout.md) | 完了：Tenant/repository認可後に固定SHAを安全にcheckout、coverage 83.6% | 37（完了） |
-| 4 | [39 — Workload実行handler](task-39-workload-execution-handler.md) | 進行中：DBからの実行情報解決とResource Planeへの耐久dispatch handoff | 36, 38 |
-| 5 | [40 — Worker/IAM/Artifact配備](task-40-workload-worker-deployment.md) | 選定基盤へworker、Queue、S3/IAM/監視を配備 | 36, 39 |
+| 4 | [39 — Workload実行handler](task-39-workload-execution-handler.md) | 進行中：substrate-neutral dispatch/result fencing、選定後にRP runtime接続 | 38 |
+| 5 | [40 — Worker/IAM/Artifact配備](task-40-workload-worker-deployment.md) | Task 61で選ぶ非EC2基盤へworker、Queue、S3/IAM/監視を配備 | 39, 61 |
 | 6 | [41 — GitHub Checks](task-41-github-checks.md) | queued/in-progress/completed結果とcommit照合 | 37, 39 |
 | 7 | [51 — Webhookイベント運用](task-51-webhook-events.md) | PR等のRepository Event正規化、Delivery監査、retention/replay | 37, 39 |
 | 8 | [42 — Factory end-to-end](task-42-software-factory-e2e.md) | Installからisolated test、Check、log、cleanupを検証 | 38–41, 51 |
@@ -36,6 +36,14 @@
 | [58 — Tenant OAuth/Webhook](task-58-tenant-github-setup-webhooks.md) | state固定、opaque ingress、HMAC後のTenant routing | 56, 57 |
 | [59 — 移行/IAM](task-59-tenant-github-migration-iam.md) | shared backfill、Run固定、exact ARN Role、drain/rollback | 56–58 |
 | [60 — Tenant App E2E/運用](task-60-tenant-github-app-e2e.md) | 二Tenant越境拒否、rotation、migration、shared回帰 | 56–59 |
+
+### P0追加 — Workload実行基盤の再選定（EC2対象外）
+
+旧ADR 0006のEC2選択は撤回。EC2リソースやEC2 lifecycle権限を追加しない。非EC2の実行基盤を選ぶまでruntime固有実装・配備は保留する。
+
+| Task | 内容 | Depends on |
+|---|---|---|
+| [61 — 非EC2 Workload Runtime選定](task-61-workload-runtime-selection.md) | Lambda MicroVM等を評価し、隔離・24h deadline・cancel・cleanupを満たす実行基盤を決定 | 39（substrate-neutral foundation） |
 
 ### P1 — Workspaceの実AWS Runtimeと永続データ
 
@@ -74,8 +82,8 @@
 - Placement policy/capacity/healthのDB・Schedulerロジックはあるが、Resource Planeからの自動health報告と本番AWS検証は未実装。
 - Tenant別App/三種類のSecret/承認reader Roleの設計を追加（Tasks 56–60）。Task 56でmetadata schemaとAPI-roleのDB grantを追加したが、現行GitHub App設定やAWS IAMのTenant分離は未変更。
 - Task 56のmetadata/API/CLI基盤とPostgreSQL integration validationが完了。Owner/Admin制御、inert draft、idempotency、revision付きdisable、監査、default-off flag、operator-only binding registration手順を追加。Tenant App機能は未有効化。Tasks 57–60は未完了。
-- Task 38の固定commit checkout providerを実装・検証済み。Tenant/Installation/Repository認可後にのみ資格情報を要求し、askpass FD経由でtokenを渡す。専用packageのstatement coverageは83.6%。Task 39はCP側のdurable dispatch handoff/result処理と、条件付き作成・ETag CAS・cancel fencingを備えるRP journal primitiveまで実装。journalを使うRP controller、deployed consumer、実VM cleanup/recoveryを継続中。
-- README Phase 0–9には残項目が他にもある。上記Task 36–60がその実行順と受入条件を具体化する。完了判定時はREADMEの該当チェックとこのboardを両方更新する。
+- Task 38の固定commit checkout providerを実装・検証済み。Tenant/Installation/Repository認可後にのみ資格情報を要求し、askpass FD経由でtokenを渡す。専用packageのstatement coverageは83.6%。Task 39はCP側のdurable dispatch handoff/result処理と、条件付き作成・ETag CAS・cancel fencingを備えるRP journal primitiveまで実装。EC2は対象外。Task 61で非EC2 runtimeを選ぶまでruntime固有controller/cleanupを保留する。
+- README Phase 0–9には残項目が他にもある。上記Task 36–61がその実行順と受入条件を具体化する。完了判定時はREADMEの該当チェックとこのboardを両方更新する。
 
 ## 実装の完了定義
 

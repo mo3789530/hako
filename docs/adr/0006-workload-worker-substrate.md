@@ -1,8 +1,14 @@
 # ADR 0006: Workload Worker実行基盤とdurable handoff
 
-- Status: Accepted (design only; deployment not implemented)
-- Date: 2026-10-04
+- Status: Superseded (2026-10-10; EC2 is out of scope)
+- Date: 2026-10-04; superseded 2026-10-10
 - Scope: Native `job` / `untrusted` / `standard`の最初のGo test実行経路。Workspace Runtimeの選定はTask 43で別に扱う。
+
+> Scope correction: EC2-based Workload execution is explicitly out of scope. The
+> decision and EC2-specific requirements below are historical and must not be
+> implemented. The replacement Workload runtime has not yet been selected;
+> Task 61 owns that decision. Control Plane dispatch/result fencing and the
+> conditional Resource Plane journal remain substrate-neutral foundations.
 
 ## Context
 
