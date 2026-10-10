@@ -32,7 +32,7 @@
 | Task | 内容 | Depends on |
 |---|---|---|
 | [56 — Tenant App Registry/API](task-56-tenant-github-app-registry.md) | 完了：metadata、Owner/Admin API/CLI、承認binding、inert draft | 37（完了） |
-| [57 — Tenant資格情報resolver](task-57-tenant-github-credential-resolver.md) | 進行中：App proof API、active/draft resolver、exact reader provider、revision/generation cache partition/per-use authorizationを実装。Run integration bindingが残る | 56 |
+| [57 — Tenant資格情報resolver](task-57-tenant-github-credential-resolver.md) | 進行中：App proof API、active/draft resolver、exact reader provider、revision/generation cache partition/per-use authorizationとRun identity pin contractを実装。production checkout broker wiringが残る | 56 |
 | [58 — Tenant OAuth/Webhook](task-58-tenant-github-setup-webhooks.md) | 進行中：opaque ingress/HMAC/route単位dedup実装。OAuth state/provider wiringとDB generation recheckが残る | 56, 57 |
 | [59 — 移行/IAM](task-59-tenant-github-migration-iam.md) | 進行中：Installation binding/Run immutable credential pin実装。backfill/drain/exact IAM/rollback検証が残る | 56–58 |
 | [60 — Tenant App E2E/運用](task-60-tenant-github-app-e2e.md) | 二Tenant越境拒否、rotation、migration、shared回帰 | 56–59 |
