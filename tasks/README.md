@@ -39,11 +39,11 @@
 
 ### P0追加 — Workload実行基盤の再選定（EC2対象外）
 
-旧ADR 0006のEC2選択は撤回。EC2リソースやEC2 lifecycle権限を追加しない。非EC2の実行基盤を選ぶまでruntime固有実装・配備は保留する。
+旧ADR 0006のEC2選択は撤回。ADR 0008でSoftware Factoryの初期Native JobはECS/Fargate（Run attemptごとにTask 1つ、OCIイメージ内で直接コマンド実行）を選定した。EC2リソースやEC2 lifecycle権限は追加しない。Nested Podman/Docker・privileged containerは対象外。Task 40で配備設計、PoC、IAM/network/cleanup検証を行うまでRun作成はdefault-off。
 
 | Task | 内容 | Depends on |
 |---|---|---|
-| [61 — 非EC2 Workload Runtime選定](task-61-workload-runtime-selection.md) | Lambda MicroVM等を評価し、隔離・24h deadline・cancel・cleanupを満たす実行基盤を決定 | 39（substrate-neutral foundation） |
+| [61 — 非EC2 Workload Runtime選定](task-61-workload-runtime-selection.md) | 完了（設計判断）：初期Native JobはFargate、nested container非対応。実AWS PoCは40 | 39（substrate-neutral foundation） |
 
 ### P1 — Workspaceの実AWS Runtimeと永続データ
 
@@ -82,7 +82,7 @@
 - Placement policy/capacity/healthのDB・Schedulerロジックはあるが、Resource Planeからの自動health報告と本番AWS検証は未実装。
 - Tenant別App/三種類のSecret/承認reader Roleの設計を追加（Tasks 56–60）。Task 56でmetadata schemaとAPI-roleのDB grantを追加したが、現行GitHub App設定やAWS IAMのTenant分離は未変更。
 - Task 56のmetadata/API/CLI基盤とPostgreSQL integration validationが完了。Owner/Admin制御、inert draft、idempotency、revision付きdisable、監査、default-off flag、operator-only binding registration手順を追加。Tenant App機能は未有効化。Tasks 57–60は未完了。
-- Task 38の固定commit checkout providerを実装・検証済み。Tenant/Installation/Repository認可後にのみ資格情報を要求し、askpass FD経由でtokenを渡す。専用packageのstatement coverageは83.6%。Task 39はCP側のdurable dispatch handoff/result処理と、条件付き作成・ETag CAS・cancel fencingを備えるRP journal primitiveまで実装。EC2は対象外。Task 61で非EC2 runtimeを選ぶまでruntime固有controller/cleanupを保留する。
+- Task 38の固定commit checkout providerを実装・検証済み。Tenant/Installation/Repository認可後にのみ資格情報を要求し、askpass FD経由でtokenを渡す。専用packageのstatement coverageは83.6%。Task 39はCP側のdurable dispatch handoff/result処理と、条件付き作成・ETag CAS・cancel fencingを備えるRP journal primitiveまで実装。EC2は対象外。Task 61/ADR 0008で初期JobはFargateに決定。Task 40でcontroller/cleanup/PoCを行うまで実行機能はdefault-off。
 - README Phase 0–9には残項目が他にもある。上記Task 36–61がその実行順と受入条件を具体化する。完了判定時はREADMEの該当チェックとこのboardを両方更新する。
 
 ## 実装の完了定義
