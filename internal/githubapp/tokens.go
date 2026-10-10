@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/golang-jwt/jwt/v5"
@@ -55,8 +56,9 @@ type SecretValueAPI interface {
 }
 
 type TokenConfig struct {
-	AppID               int64
-	PrivateKeySecretARN string
+	AppID                     int64
+	PrivateKeySecretARN       string
+	PrivateKeySecretVersionID string
 }
 
 // TokenConfigFromEnv is for the trusted credential service, not API startup or
@@ -83,7 +85,7 @@ func (c TokenConfig) valid() bool {
 			return false
 		}
 	}
-	return !strings.ContainsAny(c.PrivateKeySecretARN, "*?\r\n")
+	return !strings.ContainsAny(c.PrivateKeySecretARN, "*?\r\n") && (c.PrivateKeySecretVersionID == "" || validSecretVersionID(c.PrivateKeySecretVersionID))
 }
 
 // InstallationToken is intentionally opaque and redacts common formatting and
@@ -301,9 +303,15 @@ func validCredentialRepositoryName(name string) bool {
 func (c *TokenClient) appJWT(ctx context.Context) (string, error) {
 	secretCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	stage := "AWSCURRENT"
-	response, err := c.secrets.GetSecretValue(secretCtx, &secretsmanager.GetSecretValueInput{SecretId: &c.config.PrivateKeySecretARN, VersionStage: &stage})
-	if err != nil || response == nil || response.SecretString == nil || len(*response.SecretString) > 65536 {
+	input := &secretsmanager.GetSecretValueInput{SecretId: &c.config.PrivateKeySecretARN}
+	if c.config.PrivateKeySecretVersionID != "" {
+		input.VersionId = &c.config.PrivateKeySecretVersionID
+	} else {
+		stage := "AWSCURRENT"
+		input.VersionStage = &stage
+	}
+	response, err := c.secrets.GetSecretValue(secretCtx, input)
+	if err != nil || response == nil || response.SecretString == nil || len(*response.SecretString) > 65536 || (c.config.PrivateKeySecretVersionID != "" && aws.ToString(response.VersionId) != c.config.PrivateKeySecretVersionID) {
 		return "", &CredentialError{Code: "private_key_unavailable", Retryable: true}
 	}
 	key, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(*response.SecretString))

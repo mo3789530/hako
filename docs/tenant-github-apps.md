@@ -78,7 +78,7 @@ INSERT INTO github_credential_bindings (
 );
 ```
 
-Task 57ではTenant-owned private key用に`private_key_reader_role_arn`と`private_key_secret_version_id`を追加した。resolverは`role/`のexact IAM Role ARN（wildcard不可）、完全なSecrets Manager Secret ARN、32桁hexのimmutable Version IDを要求し、`AWSCURRENT`や欠落pinを拒否する。共有Appや既存credential clientはこのmetadataを使わず、従来のAWSCURRENT方式を維持する。STS AssumeRoleとVersionId指定のSecret取得はTask 57の残作業で、現時点ではmetadataを解決するだけで実AWSアクセスは行わない。
+Task 57ではTenant-owned private key用に`private_key_reader_role_arn`と`private_key_secret_version_id`を追加した。resolverは`role/`のexact IAM Role ARN（wildcard不可）、完全なSecrets Manager Secret ARN、32桁hexのimmutable Version IDを要求し、`AWSCURRENT`や欠落pinを拒否する。`TenantPrivateKeySecretAPI`はSTS AssumeRoleにSecret ARN限定のsession policyを付け、Assumed Roleの短期credentialで固定VersionIdだけを取得し、AWS/GitHubエラーを外へ漏らさない。共有Appや既存credential clientはこのmetadataを使わず、従来のAWSCURRENT方式を維持する。AWSアクセスはproviderを実際のtrusted serviceへ接続した時のみ発生し、テストはfake providerを使う。
 
 Bindingの更新・停止とIAM/Secret provisioningの自動化はこのTaskの範囲外。APIにはbinding ID以外のARN/Role/URLを渡せず、承認bindingが見つからない場合はSecret accessより前に拒否する。
 3. CP brokerはauthoritative Tenant/integration/bindingからRoleを解決する。取得Roleはprivate-key、OAuth交換、Webhook検証の用途別に分け、それぞれexact ARNの`GetSecretValue`と必要時の限定KMS decryptのみを許可する。

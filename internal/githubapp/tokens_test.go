@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/mo3789530/hako/internal/domain"
@@ -186,6 +187,31 @@ func TestVerifyAppProvesConfiguredIDWithSafeErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTenantTokenClientRequestsPinnedSecretVersion(t *testing.T) {
+	client, _ := newTestTokenClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/app" {
+			t.Errorf("unexpected pinned App proof request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":12}`)
+	}))
+	_, privatePEM := newSigningKey(t)
+	client.config.PrivateKeySecretVersionID = "0123456789abcdef0123456789abcdef"
+	client.secrets = secretAPIFunc(func(_ context.Context, input *secretsmanager.GetSecretValueInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+		if aws.ToString(input.SecretId) != testKeyARN || aws.ToString(input.VersionId) != client.config.PrivateKeySecretVersionID || input.VersionStage != nil {
+			t.Fatal("Tenant App private key was not fetched by immutable VersionId")
+		}
+		return &secretsmanager.GetSecretValueOutput{SecretString: &privatePEM, VersionId: aws.String(client.config.PrivateKeySecretVersionID)}, nil
+	})
+	if err := client.VerifyApp(context.Background()); err != nil {
+		t.Fatalf("pinned Tenant App proof failed: %v", err)
+	}
+	client.secrets = secretAPIFunc(func(context.Context, *secretsmanager.GetSecretValueInput, ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+		return &secretsmanager.GetSecretValueOutput{SecretString: &privatePEM, VersionId: aws.String("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")}, nil
+	})
+	requireCredentialCode(t, client.VerifyApp(context.Background()), "private_key_unavailable")
 }
 
 func TestCheckoutTokenConcurrentRequestsMintOnce(t *testing.T) {

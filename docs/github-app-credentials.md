@@ -14,9 +14,11 @@ Installations. It is not a separate private-key secret for every Tenant.
 Verified Installation bindings, repository authorization and token-cache keys
 are Tenant-scoped; one Tenant cannot request another Tenant's token. Registering
 a Tenant-owned GitHub App with its own App ID/private-key ARN, secret lifecycle
-and routing are not implemented; Task 57 now has only the draft App proof and
-credential-reference resolver primitives. Its [design and Tasks 56–60](tenant-github-apps.md)
-remain the source of truth for the unimplemented tenant credential lifecycle.
+and routing is not yet wired into the runtime; Task 57 now has draft App proof,
+a revision/generation-bound resolver and an internal STS/Secrets Manager
+provider pinned to the approved Role, exact Secret ARN and immutable VersionId.
+Its [design and Tasks 56–60](tenant-github-apps.md) remain the source of truth
+for the remaining tenant credential lifecycle.
 The existing OAuth client secret likewise belongs to the configured Hako App,
 not to an individual Tenant.
 
@@ -26,6 +28,16 @@ or credential material and does not persist a `ready` status. Tenant-owned
 verification must still resolve the authoritative integration and pinned
 credentials, run this request outside a database transaction, then recheck the
 integration revision before recording the result.
+
+For Tenant-owned keys, construct `TokenConfig` with `PrivateKeySecretVersionID`
+from the resolver and use `NewTenantPrivateKeySecretAPIFromConfig` (or the
+injected constructor in tests) as the `SecretValueAPI`. The provider assumes
+only the resolver-approved reader Role, supplies a session policy limited to
+`secretsmanager:GetSecretValue` for the exact Secret ARN, requests the
+immutable `VersionId`, and rejects a different returned version. It returns
+fixed safe errors and does not cache assumed credentials. Do not construct the
+binding from request fields; the provider itself does not replace database
+authorization or revision/generation revalidation.
 
 The future trusted credential service reads these values through
 `TokenConfigFromEnv`:
