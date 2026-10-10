@@ -237,29 +237,32 @@ const (
 )
 
 type WorkloadRun struct {
-	ID                 WorkloadRunID        `json:"id"`
-	TenantID           TenantID             `json:"tenant_id"`
-	Kind               WorkloadKind         `json:"kind"`
-	RequestedBy        UserID               `json:"requested_by,omitempty"`
-	GitHubInstallation int64                `json:"github_installation_id,omitempty"`
-	GitHubRepository   int64                `json:"github_repository_id,omitempty"`
-	CommitSHA          string               `json:"commit_sha,omitempty"`
-	Ref                string               `json:"ref,omitempty"`
-	RuntimeClass       string               `json:"runtime_class"`
-	TrustLevel         WorkloadTrustLevel   `json:"trust_level"`
-	DesiredState       WorkloadDesiredState `json:"desired_state"`
-	State              WorkloadRunState     `json:"state"`
-	ResourcePlaneID    ResourcePlaneID      `json:"resource_plane_id,omitempty"`
-	IdempotencyKey     string               `json:"-"`
-	RequestHash        string               `json:"-"`
-	TimeoutSeconds     int64                `json:"timeout_seconds"`
-	TimeoutAt          time.Time            `json:"timeout_at"`
-	StartedAt          *time.Time           `json:"started_at,omitempty"`
-	CompletedAt        *time.Time           `json:"completed_at,omitempty"`
-	ErrorCode          string               `json:"error_code,omitempty"`
-	Revision           int64                `json:"revision"`
-	CreatedAt          time.Time            `json:"created_at"`
-	UpdatedAt          time.Time            `json:"updated_at"`
+	ID                         WorkloadRunID        `json:"id"`
+	TenantID                   TenantID             `json:"tenant_id"`
+	Kind                       WorkloadKind         `json:"kind"`
+	RequestedBy                UserID               `json:"requested_by,omitempty"`
+	GitHubInstallation         int64                `json:"github_installation_id,omitempty"`
+	GitHubRepository           int64                `json:"github_repository_id,omitempty"`
+	GitHubIntegrationID        string               `json:"github_integration_id,omitempty"`
+	GitHubConfigRevision       int64                `json:"github_config_revision,omitempty"`
+	GitHubCredentialGeneration int64                `json:"github_credential_generation,omitempty"`
+	CommitSHA                  string               `json:"commit_sha,omitempty"`
+	Ref                        string               `json:"ref,omitempty"`
+	RuntimeClass               string               `json:"runtime_class"`
+	TrustLevel                 WorkloadTrustLevel   `json:"trust_level"`
+	DesiredState               WorkloadDesiredState `json:"desired_state"`
+	State                      WorkloadRunState     `json:"state"`
+	ResourcePlaneID            ResourcePlaneID      `json:"resource_plane_id,omitempty"`
+	IdempotencyKey             string               `json:"-"`
+	RequestHash                string               `json:"-"`
+	TimeoutSeconds             int64                `json:"timeout_seconds"`
+	TimeoutAt                  time.Time            `json:"timeout_at"`
+	StartedAt                  *time.Time           `json:"started_at,omitempty"`
+	CompletedAt                *time.Time           `json:"completed_at,omitempty"`
+	ErrorCode                  string               `json:"error_code,omitempty"`
+	Revision                   int64                `json:"revision"`
+	CreatedAt                  time.Time            `json:"created_at"`
+	UpdatedAt                  time.Time            `json:"updated_at"`
 }
 
 type WorkloadRunEvent struct {

@@ -299,6 +299,22 @@ func (c *TokenClient) CheckoutToken(ctx context.Context, tenant domain.TenantID,
 	return result, err
 }
 
+// CheckoutRunToken enforces the durable integration/revision/generation pin
+// captured when the Workload Run was created. Shared-mode Runs continue to
+// use CheckoutToken through the legacy provider contract.
+func (c *TokenClient) CheckoutRunToken(ctx context.Context, run domain.WorkloadRun) (string, error) {
+	if c == nil || run.GitHubIntegrationID == "" || c.config.IntegrationID != run.GitHubIntegrationID ||
+		c.config.TenantID != run.TenantID || c.config.ConfigRevision != run.GitHubConfigRevision ||
+		c.config.CredentialGeneration != run.GitHubCredentialGeneration {
+		return "", credentialError("run_credential_identity_mismatch")
+	}
+	token, err := c.CheckoutToken(ctx, run.TenantID, run.GitHubInstallation, run.GitHubRepository)
+	if err != nil {
+		return "", err
+	}
+	return token.Value(), nil
+}
+
 func (c *TokenClient) checkoutToken(ctx context.Context, key tokenCacheKey) (InstallationToken, error) {
 	access, err := c.authorize(ctx, key)
 	if err != nil {

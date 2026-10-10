@@ -30,13 +30,13 @@ Tenant
 | `tenant_github_integrations` | id、tenant_id、app_registration_id、status（draft/verifying/ready/active/disabled）、config_revision、credential_generation、opaque webhook_route_id、created_by/timestamps。`(tenant_id,id)` unique |
 | Tenant default selection | tenant_id一行、integration_id、revision。OCC transactionで一つのactive選択を保護し、同Tenant・ready integrationのみ選択可能 |
 | `github_credential_bindings` | 運用側承認済みid、tenant/app owner、用途別Secret ARNとapproved version、用途別reader_role_arn、必要なKMS ref、status。共有Appではplatform所有を明示 |
-| Installation/Repository | 既存列にintegration_id/App registration参照を追加。Tenant・Installation・integrationの複合整合性をDB制約/transactionで検証 |
+| Installation/Repository | Tenant-owned modeは`tenant_github_app_installation_bindings`でintegrationと既存Tenant Installationを結ぶ。Repositoryは従来どおりTenant/Installationに属する |
 | OAuth setup state | 既存Tenant/user/hash/PKCE/expiryにintegration_id、config_revision、credential_generationを追加。callbackで再検証し変更後のstateを拒否 |
 | Webhook Inbox | integration_id、検証したcredential generation、delivery_id、digest。dedupは`(integration_id, delivery_id)`。同IDで異なるdigestは競合として隔離 |
 | Workload Run/dispatch | サーバー解決したintegration_id、App registration、config_revision/credential_generationを固定。Run処理中に別Appへ差替えない。Secret ARNやcredentialはmessageに載せない |
 
 registration ID、integration ID、credential binding IDは別物。表示App IDとSecret解決用IDを混同しない。
-上記はmigration実装ではなく、DSQL/Postgres双方の対応DDL・既存FK・バックフィルを実装時に確認する。
+Installation bindingとWorkload Run pinのDDLはTasks 58/59のmigrationで追加済み。旧Installation/Runのbackfill、Webhook processor再検証と配備時のmigration runbookは未完了。
 
 ## 3. 設定APIとRBAC
 

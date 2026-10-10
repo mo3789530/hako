@@ -53,6 +53,13 @@ type CredentialProvider interface {
 	CheckoutToken(context.Context, domain.TenantID, int64, int64) (string, error)
 }
 
+// RunCredentialProvider is required for Runs pinned to a Tenant-owned App.
+// Passing the persisted Run prevents current-default configuration from
+// silently replacing the credentials selected when the Run was created.
+type RunCredentialProvider interface {
+	CheckoutRunToken(context.Context, domain.WorkloadRun) (string, error)
+}
+
 type CredentialProviderFunc func(context.Context, domain.TenantID, int64, int64) (string, error)
 
 func (f CredentialProviderFunc) CheckoutToken(ctx context.Context, tenant domain.TenantID, installationID, repositoryID int64) (string, error) {
@@ -101,7 +108,16 @@ func (s *GitRepositoryCheckout) Checkout(ctx context.Context, run domain.Workloa
 		}
 		return CheckedOutRepository{}, ErrCheckoutNotAuthorized
 	}
-	token, err := s.credentials.CheckoutToken(ctx, run.TenantID, run.GitHubInstallation, run.GitHubRepository)
+	var token string
+	if run.GitHubIntegrationID != "" {
+		provider, ok := s.credentials.(RunCredentialProvider)
+		if !ok {
+			return CheckedOutRepository{}, ErrCheckoutCredentialFailure
+		}
+		token, err = provider.CheckoutRunToken(ctx, run)
+	} else {
+		token, err = s.credentials.CheckoutToken(ctx, run.TenantID, run.GitHubInstallation, run.GitHubRepository)
+	}
 	if err != nil || !validCheckoutToken(token) {
 		if ctx.Err() != nil {
 			return CheckedOutRepository{}, ctx.Err()

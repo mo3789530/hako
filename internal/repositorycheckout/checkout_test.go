@@ -38,6 +38,22 @@ type testCredentials struct {
 	wait  bool
 }
 
+type pinnedTestCredentials struct {
+	token string
+	run   domain.WorkloadRun
+	calls int
+}
+
+func (c *pinnedTestCredentials) CheckoutToken(context.Context, domain.TenantID, int64, int64) (string, error) {
+	return "", errors.New("legacy provider must not handle Tenant-owned Run")
+}
+
+func (c *pinnedTestCredentials) CheckoutRunToken(_ context.Context, run domain.WorkloadRun) (string, error) {
+	c.calls++
+	c.run = run
+	return c.token, nil
+}
+
 func (c *testCredentials) CheckoutToken(ctx context.Context, _ domain.TenantID, _, _ int64) (string, error) {
 	c.calls++
 	if c.wait {
@@ -146,6 +162,41 @@ func TestCheckoutUsesPersistedCommitAndCleansPrivateDirectory(t *testing.T) {
 	}
 	if authorizer.calls != 1 || credentials.calls != 1 {
 		t.Fatal("checkout did not authorize and request credentials exactly once")
+	}
+}
+
+func TestTenantOwnedRunRequiresAndPassesPinnedCredentialIdentity(t *testing.T) {
+	remote, commit, _, _ := createTestRemote(t)
+	run := testRun(commit)
+	run.GitHubIntegrationID = "integration_checkout"
+	run.GitHubConfigRevision = 4
+	run.GitHubCredentialGeneration = 9
+	credentials := &pinnedTestCredentials{token: "tenant-app-token"}
+	checkout, err := NewGitRepositoryCheckout(&testAuthorizer{access: githubapp.RepositoryAccess{Owner: "acme", Name: "widget"}}, credentials)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkout.baseURL = remote
+	result, err := checkout.Checkout(context.Background(), run)
+	if err != nil {
+		t.Fatalf("checkout pinned Tenant Run: %v", err)
+	}
+	defer result.Cleanup()
+	if credentials.calls != 1 || credentials.run.GitHubIntegrationID != run.GitHubIntegrationID || credentials.run.GitHubConfigRevision != 4 || credentials.run.GitHubCredentialGeneration != 9 {
+		t.Fatalf("checkout did not pass immutable credential pin to provider: calls=%d run=%+v", credentials.calls, credentials.run)
+	}
+}
+
+func TestTenantOwnedRunRejectsLegacyCredentialProvider(t *testing.T) {
+	remote, commit, _, _ := createTestRemote(t)
+	run := testRun(commit)
+	run.GitHubIntegrationID = "integration_checkout"
+	run.GitHubConfigRevision = 4
+	run.GitHubCredentialGeneration = 9
+	credentials := &testCredentials{token: "shared-token"}
+	checkout := newCheckout(t, remote, &testAuthorizer{access: githubapp.RepositoryAccess{Owner: "acme", Name: "widget"}}, credentials)
+	if _, err := checkout.Checkout(context.Background(), run); !errors.Is(err, ErrCheckoutCredentialFailure) || credentials.calls != 0 {
+		t.Fatalf("Tenant-owned Run used legacy/shared credentials: err=%v legacy calls=%d", err, credentials.calls)
 	}
 }
 

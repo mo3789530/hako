@@ -33,7 +33,7 @@ var (
 )
 
 const runColumns = `id, tenant_id, kind, COALESCE(requested_by, ''), COALESCE(github_installation_id, 0),
-COALESCE(github_repository_id, 0), COALESCE(commit_sha, ''), ref, runtime_class, trust_level,
+COALESCE(github_repository_id, 0), COALESCE(github_integration_id, ''), COALESCE(github_config_revision, 0), COALESCE(github_credential_generation, 0), COALESCE(commit_sha, ''), ref, runtime_class, trust_level,
 desired_state, state, COALESCE(resource_plane_id, ''), idempotency_key, request_hash, timeout_seconds,
 timeout_at, started_at, completed_at, COALESCE(error_code, ''), revision, created_at, updated_at`
 
@@ -116,6 +116,9 @@ func CreateOrGet(ctx context.Context, tx pgx.Tx, run domain.WorkloadRun) (domain
 		if !available {
 			return domain.WorkloadRun{}, false, ErrRepositoryInactive
 		}
+		if err := resolveRunGitHubIntegration(ctx, tx, &run); err != nil {
+			return domain.WorkloadRun{}, false, err
+		}
 	}
 	var requestedBy, commitSHA, resourcePlaneID any
 	if run.RequestedBy != "" {
@@ -127,17 +130,21 @@ func CreateOrGet(ctx context.Context, tx pgx.Tx, run domain.WorkloadRun) (domain
 	if run.ResourcePlaneID != "" {
 		resourcePlaneID = run.ResourcePlaneID
 	}
+	var integrationID, configRevision, credentialGeneration any
+	if run.GitHubIntegrationID != "" {
+		integrationID, configRevision, credentialGeneration = run.GitHubIntegrationID, run.GitHubConfigRevision, run.GitHubCredentialGeneration
+	}
 	var installationID, repositoryID any
 	if run.GitHubInstallation != 0 {
 		installationID, repositoryID = run.GitHubInstallation, run.GitHubRepository
 	}
 	tag, err := tx.Exec(ctx, `INSERT INTO workload_runs
-		(id, tenant_id, kind, requested_by, github_installation_id, github_repository_id, commit_sha, ref,
+		(id, tenant_id, kind, requested_by, github_installation_id, github_repository_id, github_integration_id, github_config_revision, github_credential_generation, commit_sha, ref,
 		 runtime_class, trust_level, desired_state, state, resource_plane_id, idempotency_key, request_hash,
 		 timeout_seconds, timeout_at, revision, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'running', 'pending', $11, $12, $13, $14, $15, 1, $16, $16)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'running', 'pending', $14, $15, $16, $17, $18, 1, $19, $19)
 		ON CONFLICT (tenant_id, idempotency_key) DO NOTHING`,
-		run.ID, run.TenantID, run.Kind, requestedBy, installationID, repositoryID, commitSHA, run.Ref,
+		run.ID, run.TenantID, run.Kind, requestedBy, installationID, repositoryID, integrationID, configRevision, credentialGeneration, commitSHA, run.Ref,
 		run.RuntimeClass, run.TrustLevel, resourcePlaneID, run.IdempotencyKey, requestHash, run.TimeoutSeconds, run.TimeoutAt, run.CreatedAt)
 	if err != nil {
 		return domain.WorkloadRun{}, false, fmt.Errorf("create Workload Run: %w", err)
@@ -177,6 +184,9 @@ func validateRun(run domain.WorkloadRun) error {
 	if (run.GitHubInstallation == 0) != (run.GitHubRepository == 0) || run.GitHubInstallation < 0 || run.GitHubRepository < 0 {
 		return errors.New("GitHub Installation and Repository IDs must both be positive or both be absent")
 	}
+	if (run.GitHubIntegrationID == "") != (run.GitHubConfigRevision == 0) || (run.GitHubIntegrationID == "") != (run.GitHubCredentialGeneration == 0) || run.GitHubConfigRevision < 0 || run.GitHubCredentialGeneration < 0 {
+		return errors.New("GitHub integration identity requires a positive revision and credential generation")
+	}
 	if run.GitHubRepository > 0 && !commitSHAPattern.MatchString(run.CommitSHA) {
 		return errors.New("repository Workload Run requires a lowercase 40- or 64-character commit SHA")
 	}
@@ -186,6 +196,35 @@ func validateRun(run domain.WorkloadRun) error {
 	if run.TimeoutSeconds < 1 || run.TimeoutSeconds > int64(MaxTimeout/time.Second) ||
 		!run.TimeoutAt.Equal(run.CreatedAt.Add(time.Duration(run.TimeoutSeconds)*time.Second)) {
 		return fmt.Errorf("Workload Run timeout must be between 1 second and %s", MaxTimeout)
+	}
+	return nil
+}
+
+// resolveRunGitHubIntegration pins an active Tenant-owned App to a new Run
+// based on the persisted Installation binding. A Tenant with an active owned
+// integration never silently falls back to shared credentials when that
+// Installation is not explicitly bound.
+func resolveRunGitHubIntegration(ctx context.Context, tx pgx.Tx, run *domain.WorkloadRun) error {
+	if run == nil || tx == nil || run.GitHubInstallation <= 0 || run.TenantID == "" {
+		return ErrRepositoryInactive
+	}
+	err := tx.QueryRow(ctx, `SELECT i.id, i.config_revision, i.credential_generation
+		FROM tenant_github_app_installation_bindings b
+		JOIN tenant_github_integrations i ON i.tenant_id = b.tenant_id AND i.id = b.integration_id
+		WHERE b.tenant_id = $1 AND b.installation_id = $2 AND i.status = 'active'`, run.TenantID, run.GitHubInstallation).
+		Scan(&run.GitHubIntegrationID, &run.GitHubConfigRevision, &run.GitHubCredentialGeneration)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("resolve Workload Run GitHub App identity: %w", err)
+	}
+	var activeOwned bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM tenant_github_integrations WHERE tenant_id = $1 AND status = 'active')`, run.TenantID).Scan(&activeOwned); err != nil {
+		return fmt.Errorf("check active Tenant GitHub App state: %w", err)
+	}
+	if activeOwned {
+		return ErrRepositoryInactive
 	}
 	return nil
 }
@@ -473,7 +512,7 @@ func scanRun(row rowScanner) (domain.WorkloadRun, error) {
 	var run domain.WorkloadRun
 	var requestedBy, commitSHA, resourcePlaneID string
 	err := row.Scan(&run.ID, &run.TenantID, &run.Kind, &requestedBy, &run.GitHubInstallation,
-		&run.GitHubRepository, &commitSHA, &run.Ref, &run.RuntimeClass, &run.TrustLevel, &run.DesiredState,
+		&run.GitHubRepository, &run.GitHubIntegrationID, &run.GitHubConfigRevision, &run.GitHubCredentialGeneration, &commitSHA, &run.Ref, &run.RuntimeClass, &run.TrustLevel, &run.DesiredState,
 		&run.State, &resourcePlaneID, &run.IdempotencyKey, &run.RequestHash, &run.TimeoutSeconds, &run.TimeoutAt, &run.StartedAt,
 		&run.CompletedAt, &run.ErrorCode, &run.Revision, &run.CreatedAt, &run.UpdatedAt)
 	if err != nil {

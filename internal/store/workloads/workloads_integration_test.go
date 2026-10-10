@@ -185,3 +185,45 @@ func TestWorkloadRunIdempotencyTransitionsTimeoutAndArtifacts(t *testing.T) {
 		t.Fatalf("new run for suspended Repository error = %v", err)
 	}
 }
+
+func TestWorkloadRunPinsTenantAppRevisionAndNeverFallsBackForUnboundInstallation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	statements := []string{
+		`INSERT INTO tenants (id,name,created_at) VALUES ('tenant_run_pin','Run pin',now())`,
+		`INSERT INTO users (id,cognito_subject,email,created_at) VALUES ('usr_run_pin','run-pin-sub','',now())`,
+		`INSERT INTO tenant_github_installations (tenant_id,installation_id,account_login,status,requested_by,requested_at,updated_at) VALUES ('tenant_run_pin',9301,'acme','active','usr_run_pin',now(),now()),('tenant_run_pin',9302,'acme','active','usr_run_pin',now(),now())`,
+		`INSERT INTO github_app_installation_bindings (installation_id,tenant_id,bound_at) VALUES (9301,'tenant_run_pin',now()),(9302,'tenant_run_pin',now())`,
+		`INSERT INTO tenant_github_repositories (tenant_id,installation_id,github_repository_id,owner_login,repository_name,default_branch,synchronized_at) VALUES ('tenant_run_pin',9301,9303,'acme','owned','main',now()),('tenant_run_pin',9302,9304,'acme','unbound','main',now())`,
+		`INSERT INTO github_app_registrations (id,github_app_id,mode,owner_tenant_id,slug,client_id,created_at) VALUES ('registration_run_pin',9305,'tenant_owned','tenant_run_pin','run-pin','Iv1.client',now())`,
+		`INSERT INTO github_credential_bindings (id,tenant_id,github_app_id,status,private_key_secret_ref,oauth_secret_ref,webhook_secret_ref,approved_at,private_key_reader_role_arn,private_key_secret_version_id) VALUES ('binding_run_pin','tenant_run_pin',9305,'approved','arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:key','oauth-ref','webhook-ref',now(),'arn:aws:iam::123456789012:role/hako/key-reader','0123456789abcdef0123456789abcdef')`,
+		`INSERT INTO tenant_github_integrations (id,tenant_id,app_registration_id,github_app_id,credential_binding_id,status,config_revision,credential_generation,idempotency_key,request_sha256,created_by,created_at,updated_at) VALUES ('integration_run_pin','tenant_run_pin','registration_run_pin',9305,'binding_run_pin','active',4,9,'registration-key','` + strings.Repeat("a", 64) + `','usr_run_pin',now(),now())`,
+		`INSERT INTO tenant_github_app_installation_bindings (tenant_id,integration_id,installation_id,bound_at) VALUES ('tenant_run_pin','integration_run_pin',9301,now())`,
+	}
+	for _, statement := range statements {
+		if _, err := pool.Exec(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	newRun := func(id, key string, installation, repository int64) domain.WorkloadRun {
+		return domain.WorkloadRun{ID: domain.WorkloadRunID(id), TenantID: "tenant_run_pin", Kind: domain.WorkloadJob, RequestedBy: "usr_run_pin", IdempotencyKey: key, RuntimeClass: "standard", GitHubInstallation: installation, GitHubRepository: repository, CommitSHA: strings.Repeat("b", 40), TrustLevel: domain.WorkloadUntrusted, TimeoutSeconds: 120, TimeoutAt: now.Add(120 * time.Second), CreatedAt: now}
+	}
+	created, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (domain.WorkloadRun, error) {
+		run, _, err := CreateOrGet(ctx, tx, newRun("run_pinned_app", "pin-app-key", 9301, 9303))
+		return run, err
+	})
+	if err != nil || created.GitHubIntegrationID != "integration_run_pin" || created.GitHubConfigRevision != 4 || created.GitHubCredentialGeneration != 9 {
+		t.Fatalf("Run did not pin active App identity: %+v err=%v", created, err)
+	}
+	if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (struct{}, error) {
+		_, _, err := CreateOrGet(ctx, tx, newRun("run_unbound_app", "unbound-app-key", 9302, 9304))
+		return struct{}{}, err
+	}); !errors.Is(err, ErrRepositoryInactive) {
+		t.Fatalf("unbound Installation silently fell back to shared credentials: %v", err)
+	}
+}

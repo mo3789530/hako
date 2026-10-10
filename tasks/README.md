@@ -34,7 +34,7 @@
 | [56 — Tenant App Registry/API](task-56-tenant-github-app-registry.md) | 完了：metadata、Owner/Admin API/CLI、承認binding、inert draft | 37（完了） |
 | [57 — Tenant資格情報resolver](task-57-tenant-github-credential-resolver.md) | 進行中：App proof API、active/draft resolver、exact reader provider、revision/generation cache partition/per-use authorizationを実装。Run integration bindingが残る | 56 |
 | [58 — Tenant OAuth/Webhook](task-58-tenant-github-setup-webhooks.md) | 進行中：opaque ingress/HMAC/route単位dedup実装。OAuth state/provider wiringとDB generation recheckが残る | 56, 57 |
-| [59 — 移行/IAM](task-59-tenant-github-migration-iam.md) | shared backfill、Run固定、exact ARN Role、drain/rollback | 56–58 |
+| [59 — 移行/IAM](task-59-tenant-github-migration-iam.md) | 進行中：Installation binding/Run immutable credential pin実装。backfill/drain/exact IAM/rollback検証が残る | 56–58 |
 | [60 — Tenant App E2E/運用](task-60-tenant-github-app-e2e.md) | 二Tenant越境拒否、rotation、migration、shared回帰 | 56–59 |
 
 ### P0追加 — Workload実行基盤の再選定（EC2対象外）
@@ -96,6 +96,7 @@
 - Tenant別App/三種類のSecret/承認reader Roleの設計を追加（Tasks 56–60）。Task 56でmetadata schemaとAPI-roleのDB grant、Task 57でactive/draft resolver、STS/Secrets Managerのexact Role/Secret/Version provider、integration/revision/generation単位のcache identityとper-use active generation authorization、外部proofとDB OCC再検証を分けたverify APIを追加した。Run integration接続、現行GitHub App設定やAWS IAMのTenant分離は未変更。
 - Task 56のmetadata/API/CLI基盤とPostgreSQL integration validationが完了。Owner/Admin制御、inert draft、idempotency、revision付きdisable、監査、default-off flag、operator-only binding registration手順を追加。Tenant App機能は未有効化。Tasks 57–60は未完了。
 - Task 57でTenant credential proof/resolver/cache safetyを追加。Task 58ではopaque per-integration Webhook handlerとintegration-scoped inbox keyを追加したが、AWS-backed Webhook secret resolver、OAuth setup pinning、queue処理時のgeneration再検証は残る。Tenant App activationは引き続きdefault-off。
+- Task 59のschemaでTenant App/Installation bindingとWorkload Runのintegration/revision/generationを永続化。新規Runはserver-side bindingでpinされ、active Tenant AppがあるのにInstallation未bindingならshared credentialへfallbackしない。旧Runは明示的にshared/null identityのまま。AWS checkout brokerとpurpose-specific IAM、既存データbackfill/drainは未完了。
 - Task 38の固定commit checkout providerを実装・検証済み。Tenant/Installation/Repository認可後にのみ資格情報を要求し、askpass FD経由でtokenを渡す。専用packageのstatement coverageは83.6%。Task 39はCP側のdurable dispatch handoff/result処理、Tasks 62–65はRP journal・公式SDK controller・cancel/cleanup・復旧テストまで実装。基盤はLambda MicroVM、EC2は対象外。Task 61のimage/network PoC、Task 45の実agent連携、Task 40のworker/recovery配備まで実行機能はdefault-off。
 - Task 62のRP command受理libraryを追加。条件付きjournal作成、重複時のidentity照合、cancel/cleanup checkpoint保持を実装。Tasks 63–65でcontroller/公式SDK adapter、CP cancel Outbox、物理cleanup/retry、durable result replayとlocal/PostgreSQL統合テストを実装。実agent/queue/recovery scheduler配備とAWS PoCは未完了。
 - README Phase 0–9には残項目が他にもある。上記Task 36–65がその実行順と受入条件を具体化する。完了判定時はREADMEの該当チェックとこのboardを両方更新する。
