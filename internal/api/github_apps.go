@@ -8,12 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/jackc/pgx/v5"
 	"github.com/labstack/echo/v5"
 	"github.com/mo3789530/hako/internal/authz"
 	"github.com/mo3789530/hako/internal/domain"
-	"github.com/mo3789530/hako/internal/githubapp"
 	"github.com/mo3789530/hako/internal/idgen"
 	"github.com/mo3789530/hako/internal/store/audit"
 	"github.com/mo3789530/hako/internal/store/githubregistry"
@@ -24,6 +22,9 @@ var errGitHubAppNotReady = errors.New("Tenant GitHub App verification/activation
 var errGitHubAppVerificationFailed = errors.New("Tenant GitHub App identity verification failed")
 
 type TenantGitHubAppProofVerifier interface {
+	// Implementations used by the API must invoke the trusted credential
+	// broker. The API process must never assume a key-reader role or read a
+	// Tenant private-key Secret itself.
 	VerifyApp(context.Context, githubregistry.AppProofCredential) error
 }
 
@@ -31,31 +32,6 @@ type TenantGitHubAppProofVerifierFunc func(context.Context, githubregistry.AppPr
 
 func (f TenantGitHubAppProofVerifierFunc) VerifyApp(ctx context.Context, credential githubregistry.AppProofCredential) error {
 	return f(ctx, credential)
-}
-
-// AWSGitHubAppProofVerifier uses resolver-approved metadata to assume the
-// private-key reader role. It never accepts credentials or ARNs from a request.
-type AWSGitHubAppProofVerifier struct {
-	Config     aws.Config
-	HTTPClient *http.Client
-}
-
-func (v AWSGitHubAppProofVerifier) VerifyApp(ctx context.Context, credential githubregistry.AppProofCredential) error {
-	access := githubapp.TenantPrivateKeyAccess{
-		TenantID:             string(credential.TenantID),
-		IntegrationID:        credential.IntegrationID,
-		GitHubAppID:          credential.GitHubAppID,
-		ConfigRevision:       credential.ConfigRevision,
-		CredentialGeneration: credential.CredentialGeneration,
-		ReaderRoleARN:        credential.PrivateKeyReaderRoleARN,
-		SecretARN:            credential.PrivateKeySecretARN,
-		SecretVersionID:      credential.PrivateKeyVersionID,
-	}
-	proof, err := githubapp.NewTenantAppProofClientFromConfig(access, v.Config, v.HTTPClient)
-	if err != nil {
-		return err
-	}
-	return proof.VerifyApp(ctx)
 }
 
 type GitHubAppMetadataResult struct {

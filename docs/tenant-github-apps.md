@@ -1,6 +1,6 @@
 # Tenant別GitHub App設計
 
-Status: **Task 56のmetadata/API scaffoldを実装済み。Tenant Appの検証・有効化は未実装でdefault-off**。現行共通App方式は変更していない。
+Status: **Tasks 56–59を部分実装。Tenant Appの有効化/運用は未完了でdefault-off**。Draft proof APIとcredential libraries、opaque Webhook ingress boundary、Installation/Run identity schemaを追加。API binaryはprivate-key reader roleを直接assumeせず、trusted credential brokerがない場合はverifyを無効扱いにする。OAuth state、AWS-backed webhook resolver、purpose IAM、legacy backfill/drain、E2Eは残る。現行共通App方式は変更していない。
 決定事項は[ADR 0007](adr/0007-tenant-github-apps.md)、既存資格情報実装は
 [GitHub App credentials](github-app-credentials.md)を参照。
 
@@ -55,7 +55,7 @@ Webhookは`POST /v1/integrations/github/apps/{integration_id}/webhook`を別途�
 
 POSTにはidempotency key、更新にはexpected revisionを用い、競合は409。未承認binding、別Tenant/App所有bindingはSecret取得前に拒否する。
 App verificationとdefault選択は別操作であり、GitHub疎通成功だけでRunを起動しない。
-Task 56では`hako github app list/add/show/verify/select-default/disable`からmetadataを操作する。API routeは`HAKO_GITHUB_APP_MANAGEMENT_ENABLED=true`で明示的に有効化し、未設定時はrouteを登録しない。Task 57ではproof verifierを構成したときにのみ`verify`がdraftからreadyへ進む。未構成なら409 `github_app_not_ready`、証明失敗なら秘匿された502 `github_app_verification_failed`を返す。`select-default`は未実装のため409を返す。CLI/APIにSecret値を入力させない。
+Task 56では`hako github app list/add/show/verify/select-default/disable`からmetadataを操作する。API routeは`HAKO_GITHUB_APP_MANAGEMENT_ENABLED=true`で明示的に有効化し、未設定時はrouteを登録しない。Task 57ではtrusted broker proof adapterを構成したときにのみ`verify`がdraftからreadyへ進む。標準API binaryはprivate-key accessを持たず、adapter未構成なら409 `github_app_not_ready`、証明失敗なら秘匿された502 `github_app_verification_failed`を返す。`select-default`は未実装のため409を返す。CLI/APIにSecret値を入力させない。
 
 `add`は`Idempotency-Key`必須で、`disable`/`verify`/`select-default`は`expected_revision`を要求する。Owner/Admin以外と別Tenantのresourceはhidden 404。詳細なpath、body、response、error codeは[Control Plane API Contract](api-contract.md#tenant-github-app-metadata)を参照。
 
