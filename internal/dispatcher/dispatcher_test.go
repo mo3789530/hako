@@ -135,6 +135,20 @@ func TestRunOnceRoutesWorkloadDispatchToPinnedResourcePlane(t *testing.T) {
 	}
 }
 
+func TestRunOnceRoutesWorkloadCancellationToPinnedResourcePlane(t *testing.T) {
+	store := &fakeStore{events: []outbox.Event{{ID: "evt_cancel", AggregateType: "workload_attempt", AggregateID: "attempt_1", EventType: "workload_attempt.cancel", Attempt: 1,
+		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_1","attempt_id":"attempt_1","generation":1,"resource_plane_id":"rp_tokyo","idempotency_token":"attempt-fixed"}`)}}}
+	publisher := &fakePublisher{}
+	d, err := New(store, publisher, map[string]string{"rp_tokyo": "rp-queue"}, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := d.RunOnce(context.Background())
+	if err != nil || stats.Published != 1 || len(publisher.queueURLs) != 1 || publisher.queueURLs[0] != "rp-queue" {
+		t.Fatal("cancel command was not routed", stats, err)
+	}
+}
+
 func TestRunOnceRejectsInconsistentWorkloadDispatch(t *testing.T) {
 	store := &fakeStore{events: []outbox.Event{{
 		ID: "evt_attempt", AggregateType: "workload_attempt", AggregateID: "attempt_1", EventType: "workload_attempt.dispatch", Attempt: 1,

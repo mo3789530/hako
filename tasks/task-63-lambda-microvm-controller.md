@@ -1,8 +1,10 @@
 # Task 63: Lambda MicroVM Controller and Recovery
 
-Status: Blocked on Task 61 provider/API validation. Priority: P0. Depends on: 61, 62; coordinates with Task 43.
+Status: Implemented (controller and official AWS SDK adapter); authenticated agent/queue/recovery deployment remains pending Tasks 40/45. Priority: P0. Depends on: 61, 62; coordinates with Task 43.
 
 ## Work
+
+Result: `internal/workloadcontroller` now supplies Ensure/Poll, a frozen specification hash, durable MicroVM ID binding, official Lambda MicroVMs SDK mapping, replayable result metadata, and injected AgentRunner/ResultPublisher. Cancellation/cleanup is tracked in Task 64; local fault and PostgreSQL tests in Task 65. See [controller design](../docs/lambda-microvm-workloads.md). The real agent transport and deployed recovery scheduler are not implemented.
 
 - Map the verified provider API to EnsureRunning/Cancel/GetStatus/CollectResult/Cleanup. Resolve execution specifications from an authenticated trusted source, never from dispatch envelope fields or RP DSQL access.
 - Use attempt journal CAS and immutable idempotency token before provider effects. Recover launching/accepted checkpoints after process crash and unknown provider responses.

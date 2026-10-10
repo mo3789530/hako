@@ -1,6 +1,6 @@
 # Task 61: Validate Lambda MicroVM Runtime Contract
 
-Status: In progress (architecture fixed; provider API and PoC pending). Priority: P0. Depends on: Task 39 substrate-neutral foundations; coordinate with Task 43.
+Status: API contract identified (AWS Lambda MicroVMs); image/container/network PoC pending. Priority: P0. Depends on: Task 39 substrate-neutral foundations; coordinate with Task 43.
 
 ## Goal
 
@@ -9,9 +9,9 @@ Status: In progress (architecture fixed; provider API and PoC pending). Priority
 ## Work
 
 - [x] Lambda MicroVM前提にADR・README・Task 40を訂正する。EC2 workerとFargate Workload workerは追加しない。
-- [ ] 具体的な提供サービス/API、Region、作成/停止/再発見/cleanup、認証・IAMを特定する。通常のLambda invocationを永続MicroVM APIと仮定しない。
+- [x] AWS Lambda MicroVMs専用APIと公式SDKを確認。RunMicrovm ClientToken、GetMicrovm、TerminateMicrovm、lambda: IAM prefixを使用する。[具体的な実装契約](../docs/lambda-microvm-workloads.md)。通常のLambda invocationとは別API。
 - [ ] 1秒〜24時間のRun deadline、Docker/containerd/Podman、compose、Tenant隔離、untrusted code、network制限、source/artifact搬送を確認する。
-- [ ] `EnsureRunning`/`Cancel`/`GetStatus`/`CollectResult`/`Cleanup`のprovider mapping、冪等性、cancel競合、retryと障害復旧を定義する。
+- [x] provider mappingと復旧契約を定義・library実装（Tasks 63–65）。AWSは8時間上限、ARM64のみ、標準Internet egress。24時間Runとの不一致はadapterの起動前拒否で扱う。実AWSのidempotency保持期間・raceはPoCで確認する。
 - [ ] cold start、quota、費用、container実行、停止/cleanupのPoCを記録する。Workspace向け能力はTask 43と共有する。
 
 ## Acceptance criteria

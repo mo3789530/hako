@@ -171,6 +171,11 @@ func (h *ResultHandler) Handle(ctx context.Context, result WorkloadResult) (Resu
 	})
 }
 
+// ValidateResult checks metadata before a trusted RP publisher persists/sends it.
+func ValidateResult(result WorkloadResult) error {
+	return validateWorkloadResult(result)
+}
+
 func validateWorkloadResult(result WorkloadResult) error {
 	if result.SchemaVersion != 1 || result.TenantID == "" || result.WorkloadRunID == "" ||
 		result.AttemptID == "" || result.Generation < 1 || result.ResourcePlaneID == "" ||

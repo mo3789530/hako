@@ -1,12 +1,14 @@
 # Task 39: Idempotent Workload Execution Handler
 
-Status: In Progress (CP foundations implemented; RP integration split into Tasks 62–63). Priority: P0.
+Status: In Progress (CP/RP libraries implemented in Tasks 62–65; production agent/worker/recovery integration pending). Priority: P0.
 
 ## Goal
 
-Implement the short-lived dispatch, Resource Plane execution, and result/cleanup handlers specified by [ADR 0008](../docs/adr/0008-non-ec2-workload-runtime.md). Reuse checkout, redaction, and artifact interfaces, but split the current direct-DB Service into Control Plane orchestration and Resource Plane executor. Task 62 implements durable command acceptance; Task 63 owns Lambda MicroVM launch/recovery/cancel/cleanup and queue integration. A valid queue message must never be treated as success merely because it decoded.
+Implement the short-lived dispatch, Resource Plane execution, and result/cleanup handlers specified by [ADR 0008](../docs/adr/0008-non-ec2-workload-runtime.md). Reuse checkout, redaction, and artifact interfaces, but split the current direct-DB Service into Control Plane orchestration and Resource Plane executor. Tasks 62–65 implement durable command acceptance, Lambda MicroVM controller/SDK adapter, cancellation Outbox, cleanup/replay, and local fault/DB tests. Production authenticated agent, worker/recovery composition, and queue acknowledgement remain pending Task 40/45. A valid queue message must never be treated as success merely because it decoded.
 
 ## Work
+
+Current runtime update: Task 61 verified the dedicated AWS API. Tasks 63–65 implement the runtime controller and cleanup libraries; production execution still requires the authenticated agent and worker/recovery deployment in Tasks 45/40, plus the image/network PoC in Task 61.
 
 - Progress: added a transactional scheduler handoff that reloads the Run, recognizes terminal/duplicate deliveries, records a fixed placement and generation-scoped attempt, and writes a Resource Plane dispatch Outbox event. Scheduler defaults use batch size 1, 120-second visibility with 30-second renewal, and a five-minute processing cap; visibility renewal failure cancels handler work and leaves the receipt unacknowledged. Added a Control Plane result handler and injectable SQS consumer that fences Tenant/Run/attempt/generation/Resource Plane, ignores stale generations, handles duplicate/cancel/deadline races, and transactionally records terminal state plus redacted-log metadata before acknowledging. Result artifact metadata is capped at 100 MiB and SHA-256 validated. Added an isolated Resource Plane journal model and S3 store using conditional create (`If-None-Match`) and ETag compare-and-swap (`If-Match`), with immutable identity, separate execution/cleanup states, and cancellation fencing. Generic per-attempt idempotency tokens are substrate-neutral; EC2 is out of scope. Runtime-specific controller, deployed result consumer, and physical cleanup execution depend on Task 61 runtime selection.
 

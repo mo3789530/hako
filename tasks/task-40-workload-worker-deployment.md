@@ -1,10 +1,10 @@
 # Task 40: Workload Worker, Queue, and Artifact Deployment
 
-Status: Blocked on Task 61 provider/API validation and Task 63 controller/recovery. Priority: P0.
+Status: Production deployment pending Task 61 image/network PoC and Task 45 authenticated AgentRunner; controller library implemented in Tasks 63–65. Priority: P0.
 
 ## Goal
 
-Deploy the Resource Plane controller and per-attempt Lambda MicroVM runtime. Task 61 first identifies the concrete provider/API and verifies its capabilities. Current Terraform provisions the encrypted scheduler queue/DLQ and Dispatcher send-only access; the production MicroVM worker path is not deployed. See [ADR 0008](../docs/adr/0008-non-ec2-workload-runtime.md).
+Deploy the Resource Plane controller and per-attempt Lambda MicroVM runtime. Official SDK/controller library exists; compose the trusted resolver, authenticated AgentRunner, result publisher, and durable journal recovery scheduler before deploying a command consumer. Current Terraform provisions the encrypted scheduler queue/DLQ and Dispatcher send-only access; the production MicroVM worker path is not deployed. See [ADR 0008](../docs/adr/0008-non-ec2-workload-runtime.md).
 
 ## Work
 

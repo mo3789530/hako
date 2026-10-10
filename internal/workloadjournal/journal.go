@@ -3,7 +3,10 @@
 package workloadjournal
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +18,7 @@ var (
 	ErrNotFound = errors.New("Workload attempt journal not found")
 	ErrConflict = errors.New("Workload attempt journal revision conflict")
 	idPattern   = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+	hashPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 )
 
 type ExecutionState string
@@ -39,20 +43,24 @@ const (
 )
 
 type Journal struct {
-	SchemaVersion    int            `json:"schema_version"`
-	TenantID         string         `json:"tenant_id"`
-	WorkloadRunID    string         `json:"workload_run_id"`
-	AttemptID        string         `json:"attempt_id"`
-	Generation       int64          `json:"generation"`
-	ResourcePlaneID  string         `json:"resource_plane_id"`
-	IdempotencyToken string         `json:"idempotency_token"`
-	Revision         int64          `json:"revision"`
-	ExecutionState   ExecutionState `json:"execution_state"`
-	CancelRequested  bool           `json:"cancel_requested"`
-	RuntimeHandle    string         `json:"runtime_handle,omitempty"`
-	CleanupState     CleanupState   `json:"cleanup_state"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
+	SchemaVersion        int             `json:"schema_version"`
+	TenantID             string          `json:"tenant_id"`
+	WorkloadRunID        string          `json:"workload_run_id"`
+	AttemptID            string          `json:"attempt_id"`
+	Generation           int64           `json:"generation"`
+	ResourcePlaneID      string          `json:"resource_plane_id"`
+	IdempotencyToken     string          `json:"idempotency_token"`
+	Revision             int64           `json:"revision"`
+	ExecutionState       ExecutionState  `json:"execution_state"`
+	CancelRequested      bool            `json:"cancel_requested"`
+	RuntimeHandle        string          `json:"runtime_handle,omitempty"`
+	SpecificationHash    string          `json:"specification_hash,omitempty"`
+	SpecificationPayload json.RawMessage `json:"specification_payload,omitempty"`
+	ResultPayload        json.RawMessage `json:"result_payload,omitempty"`
+	ResultPublished      bool            `json:"result_published"`
+	CleanupState         CleanupState    `json:"cleanup_state"`
+	CreatedAt            time.Time       `json:"created_at"`
+	UpdatedAt            time.Time       `json:"updated_at"`
 }
 
 type Snapshot struct {
@@ -79,11 +87,39 @@ func (j Journal) Validate() error {
 	if j.RuntimeHandle != "" && !idPattern.MatchString(j.RuntimeHandle) {
 		return errors.New("Workload attempt journal runtime handle is invalid")
 	}
+	if j.SpecificationHash != "" && !hashPattern.MatchString(j.SpecificationHash) {
+		return errors.New("Workload attempt specification hash is invalid")
+	}
+	if len(j.SpecificationPayload) > 0 {
+		digest := sha256.Sum256(j.SpecificationPayload)
+		if len(j.SpecificationPayload) > 16<<10 || !json.Valid(j.SpecificationPayload) || hex.EncodeToString(digest[:]) != j.SpecificationHash {
+			return errors.New("Workload frozen specification does not match its hash")
+		}
+	}
 	if terminal(j.ExecutionState) && j.CleanupState == CleanupNotStarted {
 		return errors.New("terminal Workload attempt must have a cleanup state")
 	}
 	if !terminal(j.ExecutionState) && j.CleanupState != CleanupNotStarted {
 		return errors.New("nonterminal Workload attempt cannot have a cleanup state")
+	}
+	if j.ResultPublished && len(j.ResultPayload) == 0 {
+		return errors.New("published Workload result must be durable")
+	}
+	if len(j.ResultPayload) > 0 {
+		var result struct {
+			SchemaVersion   int            `json:"schema_version"`
+			TenantID        string         `json:"tenant_id"`
+			WorkloadRunID   string         `json:"workload_run_id"`
+			AttemptID       string         `json:"attempt_id"`
+			Generation      int64          `json:"generation"`
+			ResourcePlaneID string         `json:"resource_plane_id"`
+			Status          ExecutionState `json:"status"`
+		}
+		if len(j.ResultPayload) > 32<<10 || !terminal(j.ExecutionState) || json.Unmarshal(j.ResultPayload, &result) != nil ||
+			result.SchemaVersion != 1 || result.TenantID != j.TenantID || result.WorkloadRunID != j.WorkloadRunID ||
+			result.AttemptID != j.AttemptID || result.Generation != j.Generation || result.ResourcePlaneID != j.ResourcePlaneID || result.Status != j.ExecutionState {
+			return errors.New("Workload journal result does not match its attempt")
+		}
 	}
 	return nil
 }
@@ -129,6 +165,15 @@ func ValidateUpdate(current Snapshot, next Journal) error {
 		return ErrConflict
 	}
 	if old.RuntimeHandle != "" && old.RuntimeHandle != next.RuntimeHandle {
+		return ErrConflict
+	}
+	if old.SpecificationHash != "" && old.SpecificationHash != next.SpecificationHash {
+		return ErrConflict
+	}
+	if len(old.SpecificationPayload) > 0 && !bytes.Equal(old.SpecificationPayload, next.SpecificationPayload) {
+		return ErrConflict
+	}
+	if (old.ResultPublished && !next.ResultPublished) || (len(old.ResultPayload) > 0 && !bytes.Equal(old.ResultPayload, next.ResultPayload)) {
 		return ErrConflict
 	}
 	return nil

@@ -19,7 +19,7 @@
 | 1 | [36 — Worker実行基盤ADR](task-36-workload-worker-adr.md) | Superseded：旧EC2決定は撤回。EC2は対象外 | なし |
 | 2 | [37 — GitHub App資格情報](task-37-github-app-credentials.md) | 完了（library）：AWSCURRENT、JWT、Repository限定read-only token。配備は40 | なし |
 | 3 | [38 — 固定commit checkout](task-38-workload-source-checkout.md) | 完了：Tenant/repository認可後に固定SHAを安全にcheckout、coverage 83.6% | 37（完了） |
-| 4 | [39 — Workload実行handler](task-39-workload-execution-handler.md) | CP dispatch/result/journal実装済み。RP受理は62、MicroVM接続は63へ分割 | 38 |
+| 4 | [39 — Workload実行handler](task-39-workload-execution-handler.md) | CP/RP library実装済み。実agent・worker/recovery配備と接続は未完了 | 38 |
 | 5 | [40 — Worker/IAM/Artifact配備](task-40-workload-worker-deployment.md) | Lambda MicroVM worker、Queue、S3/IAM/監視を配備 | 61, 63 |
 | 6 | [41 — GitHub Checks](task-41-github-checks.md) | queued/in-progress/completed結果とcommit照合 | 37, 39 |
 | 7 | [51 — Webhookイベント運用](task-51-webhook-events.md) | PR等のRepository Event正規化、Delivery監査、retention/replay | 37, 39 |
@@ -39,20 +39,22 @@
 
 ### P0追加 — Workload実行基盤の再選定（EC2対象外）
 
-実行基盤はユーザー指定のLambda MicroVM。旧EC2決定と先のFargate選定は撤回済み。Task 61で具体的provider/API、実行時間、container対応、隔離、cancel/cleanupを確認する。Task 40の配備はその確認に依存し、Run作成はdefault-off。設計は[ADR 0008](../docs/adr/0008-non-ec2-workload-runtime.md)。
+実行基盤はユーザー指定のLambda MicroVM。旧EC2決定と先のFargate選定は撤回済み。公式専用APIとSDKを確認し、Tasks 63–65のcontroller/cancel/result recovery libraryを実装した。AWSは8時間上限で標準egressはInternet。adapterは8時間超を拒否し、承認済みVPC connectorを必須にする。image/container/network PoCは未実施。Task 40の配備はその確認に依存し、Run作成はdefault-off。設計は[ADR 0008](../docs/adr/0008-non-ec2-workload-runtime.md)。
 
 | Task | 内容 | Depends on |
 |---|---|---|
-| [61 — Lambda MicroVM実行契約の確認](task-61-workload-runtime-selection.md) | 進行中：provider/API、24h deadline、container対応、隔離、cancel/cleanupの確認 | 39（substrate-neutral foundation）、43と連携 |
+| [61 — Lambda MicroVM実行契約の確認](task-61-workload-runtime-selection.md) | API確認済み。8h/ARM64/network制約を記録。実image/container/network PoC待ち | 39（substrate-neutral foundation）、43と連携 |
 | [62 — RP commandのdurable受理](task-62-workload-command-acceptance.md) | 完了（library）：strict decode、RP固定、条件付きjournal作成、duplicate/identity検証 | 39 journal（実装済み） |
-| [63 — Lambda MicroVM controller/recovery](task-63-lambda-microvm-controller.md) | provider操作、crash recovery、cancel、物理cleanup、queue/result接続 | 61, 62 |
+| [63 — Lambda MicroVM controller/recovery](task-63-lambda-microvm-controller.md) | 実装（library）：公式SDK、仕様/ID binding、Ensure/Poll、結果のdurable再送。agent/worker配備待ち | 61, 62 |
+| [64 — cancel/物理cleanup](task-64-workload-cancellation-cleanup.md) | 実装（core）：CP cancel Outbox、RP tombstone、停止確認、retry、replacement gate | 63 |
+| [65 — 障害復旧/local E2E](task-65-workload-recovery-tests.md) | 実装：fake/SDK stub、race、PostgreSQL RP→CP結果とcancel統合 | 63, 64 |
 
 ### 再整理後の着手順
 
-1. provider非依存のTask 62を実装・検証（今回完了）。単独でqueueを配備してackしない。
-2. Task 61と43で具体的Lambda MicroVM APIと能力を確認。同時に着手可能なAPI/CLI側タスクは57（Tenant資格情報resolver）。
-3. provider契約確定後、Task 63をfake providerで実装し、39のRP統合受入条件を検証する。
-4. Task 41のChecksと51のイベント処理を接続し、Terraform配備40と実環境E2E42へ進む。
+1. Tasks 62–65のlibrary/local検証は実装済み。単独のjournal受理だけでqueueをackしない。
+2. 次はTask 45の認証付きAgentRunner・trusted source/result搬送と、Task 61/43のimage/container/network PoC。同時に着手可能なAPI/CLI側タスクは57。
+3. Task 40でtrusted resolver、SQS command/result publisher、durable recovery schedulerを配備し、39の実worker統合を完了する。
+4. Task 41のChecksと51のイベント処理を接続し、実環境Factory E2E42へ進む。
 
 実装済みlibrary、未接続のruntime、配備/実環境検証を別々に追跡する。TerraformよりAPI/CLIとcontrollerの実装・テストを先行する。
 
@@ -93,9 +95,9 @@
 - Placement policy/capacity/healthのDB・Schedulerロジックはあるが、Resource Planeからの自動health報告と本番AWS検証は未実装。
 - Tenant別App/三種類のSecret/承認reader Roleの設計を追加（Tasks 56–60）。Task 56でmetadata schemaとAPI-roleのDB grantを追加したが、現行GitHub App設定やAWS IAMのTenant分離は未変更。
 - Task 56のmetadata/API/CLI基盤とPostgreSQL integration validationが完了。Owner/Admin制御、inert draft、idempotency、revision付きdisable、監査、default-off flag、operator-only binding registration手順を追加。Tenant App機能は未有効化。Tasks 57–60は未完了。
-- Task 38の固定commit checkout providerを実装・検証済み。Tenant/Installation/Repository認可後にのみ資格情報を要求し、askpass FD経由でtokenを渡す。専用packageのstatement coverageは83.6%。Task 39はCP側のdurable dispatch handoff/result処理と、条件付き作成・ETag CAS・cancel fencingを備えるRP journal primitiveまで実装。基盤はLambda MicroVM、EC2は対象外。Task 61のprovider/API確認とTask 40のcontroller/cleanup/PoCまで実行機能はdefault-off。
-- Task 62のRP command受理libraryを追加。条件付きjournal作成、重複時のidentity照合、cancel/cleanup checkpoint保持を実装。MicroVM起動・recovery・queue接続はTask 63で未実装。
-- README Phase 0–9には残項目が他にもある。上記Task 36–63がその実行順と受入条件を具体化する。完了判定時はREADMEの該当チェックとこのboardを両方更新する。
+- Task 38の固定commit checkout providerを実装・検証済み。Tenant/Installation/Repository認可後にのみ資格情報を要求し、askpass FD経由でtokenを渡す。専用packageのstatement coverageは83.6%。Task 39はCP側のdurable dispatch handoff/result処理、Tasks 62–65はRP journal・公式SDK controller・cancel/cleanup・復旧テストまで実装。基盤はLambda MicroVM、EC2は対象外。Task 61のimage/network PoC、Task 45の実agent連携、Task 40のworker/recovery配備まで実行機能はdefault-off。
+- Task 62のRP command受理libraryを追加。条件付きjournal作成、重複時のidentity照合、cancel/cleanup checkpoint保持を実装。Tasks 63–65でcontroller/公式SDK adapter、CP cancel Outbox、物理cleanup/retry、durable result replayとlocal/PostgreSQL統合テストを実装。実agent/queue/recovery scheduler配備とAWS PoCは未完了。
+- README Phase 0–9には残項目が他にもある。上記Task 36–65がその実行順と受入条件を具体化する。完了判定時はREADMEの該当チェックとこのboardを両方更新する。
 
 ## 実装の完了定義
 

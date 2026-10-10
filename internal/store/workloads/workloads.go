@@ -342,6 +342,9 @@ func RequestCancel(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, run
 	if err := appendEvent(ctx, tx, current, "workload.cancel_requested", occurredAt); err != nil {
 		return domain.WorkloadRun{}, err
 	}
+	if err := enqueueCancellation(ctx, tx, current, occurredAt); err != nil {
+		return domain.WorkloadRun{}, err
+	}
 	return current, nil
 }
 

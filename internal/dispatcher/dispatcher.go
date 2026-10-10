@@ -162,7 +162,7 @@ func (d *Dispatcher) route(event outbox.Event) (string, error) {
 		}
 		return d.config.WorkloadSchedulerQueueURL, nil
 	}
-	if event.AggregateType == "workload_attempt" && event.EventType == "workload_attempt.dispatch" {
+	if event.AggregateType == "workload_attempt" && (event.EventType == "workload_attempt.dispatch" || event.EventType == "workload_attempt.cancel") {
 		var command workloadDispatchEnvelope
 		if err := json.Unmarshal(event.Payload, &command); err != nil {
 			return "", fmt.Errorf("decode Workload dispatch command: %w", err)

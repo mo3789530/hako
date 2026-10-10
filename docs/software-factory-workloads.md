@@ -137,7 +137,7 @@ with `If-Match`, and S3 409/412 conflicts map to a retryable journal conflict.
 The journal keeps immutable attempt identity and independent execution and
 cleanup state, and rejects advancing to launch/run after cancellation. It is a
 storage/state-machine foundation: the Task 62 command Acceptor now uses it,
-but no deployed command queue consumer or MicroVM launch controller is wired.
+and Tasks 63–65 add a controller/official AWS SDK adapter, but no production agent/command queue/recovery scheduler is wired.
 A successful conditional write is not an atomic transaction with a runtime API.
 
 `internal/workloadcontroller.Acceptor` validates the versioned identity-only
@@ -146,7 +146,7 @@ the journal. Duplicate deliveries reload the saved checkpoint and require an
 exact Tenant/Run/attempt/generation/placement/token match and a valid ETag.
 They preserve cancellation and cleanup state. Storage errors are returned for
 retry rather than reported as success. Acceptance does not execute a Job:
-Task 63 must supply durable recovery for accepted journals before this becomes
+Task 40 must deploy durable recovery for accepted journals before this becomes
 an acknowledgement boundary in a deployed command consumer.
 The local Fake Runtime also has an explicit Go test Job entry point for an
 already-checked-out repository and immutable commit. It verifies `HEAD` before
@@ -181,8 +181,9 @@ are embedded in artifact metadata.
 A historical runtime design is recorded in [ADR 0006](adr/0006-workload-worker-substrate.md),
 but its EC2 choice has been superseded and EC2 is out of scope. The runtime is
 Lambda MicroVM per [ADR 0008](adr/0008-non-ec2-workload-runtime.md). Task 61 must
-validate the concrete provider/API and capabilities before Task 63 implements
-provider operations and Task 40 deploys them. The CP dispatch/result fencing, S3 journal, and
+validate image/container/network capabilities in AWS. Tasks 63–65 now implement
+controller/SDK adapter, CP cancel Outbox, cleanup and durable result replay libraries;
+Task 40 composes and deploys the remaining agent/queue/recovery dependencies. The CP dispatch/result fencing, S3 journal, and
 short-lived queue handoff remain substrate-neutral. SQS visibility renewal
 cannot hold a receipt for the API's full 24-hour deadline, and the Resource
 Plane executor must not connect directly to Control Plane DSQL.

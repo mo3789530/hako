@@ -32,6 +32,30 @@ func Decode(data []byte) (Command, error) {
 	if len(data) == 0 || len(data) > 64<<10 {
 		return c, ErrInvalidCommand
 	}
+	// encoding/json accepts duplicate keys and case-insensitive field aliases.
+	// This trust boundary requires one exact spelling and one value per field.
+	keys := json.NewDecoder(bytes.NewReader(data))
+	start, err := keys.Token()
+	if err != nil || start != json.Delim('{') {
+		return Command{}, ErrInvalidCommand
+	}
+	allowed := map[string]bool{"schema_version": true, "tenant_id": true, "workload_run_id": true, "attempt_id": true, "generation": true, "resource_plane_id": true, "idempotency_token": true}
+	seen := make(map[string]bool)
+	for keys.More() {
+		token, err := keys.Token()
+		name, ok := token.(string)
+		if err != nil || !ok || !allowed[name] || seen[name] {
+			return Command{}, ErrInvalidCommand
+		}
+		seen[name] = true
+		var value json.RawMessage
+		if keys.Decode(&value) != nil || bytes.Equal(value, []byte("null")) {
+			return Command{}, ErrInvalidCommand
+		}
+	}
+	if _, err := keys.Token(); err != nil {
+		return Command{}, ErrInvalidCommand
+	}
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
 	if d.Decode(&c) != nil {

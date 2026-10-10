@@ -1,6 +1,6 @@
 # ADR 0008: Lambda MicroVM Workload Runtime
 
-- Status: Architecture direction accepted; provider API and PoC pending
+- Status: AWS Lambda MicroVMs API confirmed; adapter implemented; production PoC pending
 - Date: 2026-10-10
 - Scope: Software Factory Workload Runtime; aligned with Workspace Lambda MicroVM.
 
@@ -12,7 +12,7 @@ Workspaceは論理的・永続的なリソース、MicroVMは交換可能なRunt
 
 ## 実装前に確認する事項
 
-設計上のLambda MicroVMと通常のAWS Lambda function invocationを同一視しない。具体的な提供サービス/API、Region、MicroVMの作成・停止・再発見方法、権限をTask 61で特定する。現時点では提供APIや実行可能時間を検証済みとして扱わない。
+AWS Lambda MicroVMs専用APIと公式Go SDKを確認済み。RunMicrovmの固定ClientToken、GetMicrovm、TerminateMicrovmを使うadapterをTasks 63–65で実装した。1 MicroVMの上限は8時間、ARM64のみ。標準Internet egressを避けるためVPC connectorを必須とする。仕様・公式資料・実装境界は[Lambda MicroVM Workloads](../lambda-microvm-workloads.md)。実AWS PoCは未実施。
 
 - 既存Run APIの作成時から1秒〜24時間というdeadline契約との適合。
 - Docker/containerd/Podman、compose、開発用DBに必要なguest権限と制限。先のnested-container除外は撤回し、Lambda MicroVMでの実証事項とする。
@@ -35,6 +35,6 @@ Workload adapterは `EnsureRunning`、`Cancel`、`GetStatus`、`CollectResult`�
 
 ## Follow-up
 
-Task 61でprovider/APIと実行契約を確認し、Task 39でadapter/controllerを接続する。Task 40の配備はその確認に依存する。実PoCで起動、container実行、隔離、停止、cleanup、artifact、長時間deadlineを検証するまでRun作成はdefault-off。
+Tasks 63–65でcontroller/SDK adapter/cancel Outbox/local recovery testsを実装。Task 61のimage/container/network実証、Task 45のagent、Task 40のworker/recovery配備は未完了。汎用Run APIの24時間契約をAWSの8時間制約へ暗黙に丸めず、adapterは対応外のdurationを起動前に拒否する。実PoCで起動、隔離、停止、cleanup、artifactを検証するまでRun作成はdefault-off。
 
 本ADRによるAWSリソース作成・変更はない。APIサーバーのLambda container image + Lambda Web Adapter配備は独立した設計であり、Workspace/JobのMicroVM lifecycleが実装済みであることを意味しない。

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -132,6 +133,20 @@ func TestDecodeInvalid(t *testing.T) {
 				t.Fatalf("error = %v", err)
 			}
 		})
+	}
+}
+
+func TestDecodeRejectsAmbiguousFields(t *testing.T) {
+	valid := string(envelope(t, nil))
+	for _, data := range []string{
+		strings.Replace(valid, `"generation":1`, `"generation":1,"generation":2`, 1),
+		strings.Replace(valid, `"tenant_id"`, `"Tenant_ID"`, 1),
+		strings.Replace(valid, `"schema_version":1`, `"schema_version":null`, 1),
+		`{"schema_version":`,
+	} {
+		if _, err := Decode([]byte(data)); !errors.Is(err, ErrInvalidCommand) {
+			t.Errorf("ambiguous envelope accepted: %v", err)
+		}
 	}
 }
 func TestAcceptStoreFailure(t *testing.T) {
