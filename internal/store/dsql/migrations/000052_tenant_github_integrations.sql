@@ -1,0 +1,20 @@
+CREATE TABLE IF NOT EXISTS tenant_github_integrations (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    app_registration_id TEXT NOT NULL,
+    github_app_id BIGINT NOT NULL,
+    credential_binding_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('draft', 'verifying', 'ready', 'active', 'disabled')),
+    config_revision BIGINT NOT NULL CHECK (config_revision > 0),
+    credential_generation BIGINT NOT NULL CHECK (credential_generation > 0),
+    idempotency_key TEXT NOT NULL,
+    request_sha256 TEXT NOT NULL,
+    created_by TEXT NOT NULL REFERENCES users(id),
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    FOREIGN KEY (app_registration_id, github_app_id) REFERENCES github_app_registrations(id, github_app_id),
+    FOREIGN KEY (tenant_id, credential_binding_id, github_app_id) REFERENCES github_credential_bindings(tenant_id, id, github_app_id),
+    UNIQUE (tenant_id, id),
+    UNIQUE (tenant_id, idempotency_key),
+    UNIQUE (tenant_id, app_registration_id)
+)

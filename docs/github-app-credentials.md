@@ -1,8 +1,9 @@
 # GitHub App credentials for read-only Job checkout
 
 Task 37 provides `internal/githubapp.TokenClient` and the trusted Control Plane
-`githubregistry.CredentialAuthorizer`. This is a reusable internal library, not
-a public token API or deployed worker. Task 38 wires secure checkout; Tasks 39/40
+`githubregistry.CredentialAuthorizer`. Task 38 adds the worker-side source
+checkout package that uses an injected short-lived credential provider. These
+are internal libraries, not a public token API or deployed worker. Tasks 39/40
 wire and deploy the trusted orchestration path. Run creation remains default-off.
 
 ## Configuration and trust boundary

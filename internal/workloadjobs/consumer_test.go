@@ -13,11 +13,17 @@ type fakeScheduleQueue struct {
 	deleted    []string
 	visibility []time.Duration
 	deleteErr  error
+	limits     []int
+	visErr     error
 }
 
 func (q *fakeScheduleQueue) Receive(_ context.Context, limit int, wait time.Duration) ([]ScheduleDelivery, error) {
-	if limit != 10 || wait != 20*time.Second {
+	q.limits = append(q.limits, limit)
+	if wait != 20*time.Second {
 		return nil, errors.New("unexpected receive configuration")
+	}
+	if len(q.deliveries) > limit {
+		return q.deliveries[:limit], nil
 	}
 	return q.deliveries, nil
 }
@@ -32,7 +38,7 @@ func (q *fakeScheduleQueue) Delete(_ context.Context, receipt string) error {
 
 func (q *fakeScheduleQueue) ChangeVisibility(_ context.Context, receipt string, timeout time.Duration) error {
 	q.visibility = append(q.visibility, timeout)
-	return nil
+	return q.visErr
 }
 
 func TestSchedulerConsumerDeletesOnlyAfterHandlerSucceeds(t *testing.T) {
@@ -48,7 +54,7 @@ func TestSchedulerConsumerDeletesOnlyAfterHandlerSucceeds(t *testing.T) {
 		}
 		return nil
 	})
-	consumer, err := NewSchedulerConsumer(queue, handler, ConsumerConfig{})
+	consumer, err := NewSchedulerConsumer(queue, handler, ConsumerConfig{BatchSize: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,13 +95,44 @@ func TestSchedulerConsumerLeavesMalformedAndReceiptlessMessagesOnQueue(t *testin
 		t.Fatal("malformed messages must not reach the handler")
 		return nil
 	})
-	consumer, err := NewSchedulerConsumer(queue, handler, ConsumerConfig{})
+	consumer, err := NewSchedulerConsumer(queue, handler, ConsumerConfig{BatchSize: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
 	stats, err := consumer.RunOnce(context.Background())
 	if err == nil || stats != (ConsumerStats{Received: 3, Failed: 3}) || len(queue.deleted) != 0 {
 		t.Fatalf("malformed deliveries must be left for retry/DLQ: stats=%+v deleted=%v err=%v", stats, queue.deleted, err)
+	}
+}
+
+func TestSchedulerConsumerDefaultsToBatchOne(t *testing.T) {
+	queue := &fakeScheduleQueue{}
+	consumer, err := NewSchedulerConsumer(queue, ScheduleHandlerFunc(func(context.Context, ScheduleRequest) error { return nil }), ConsumerConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := consumer.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(queue.limits) != 1 || queue.limits[0] != 1 {
+		t.Fatalf("default scheduler batch size = %v, want [1]", queue.limits)
+	}
+}
+
+func TestSchedulerConsumerDoesNotAcknowledgeWhenVisibilityRenewalFails(t *testing.T) {
+	queue := &fakeScheduleQueue{deliveries: []ScheduleDelivery{{ReceiptHandle: "receipt-1", Body: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_1"}`)}}}
+	queue.visErr = errors.New("visibility unavailable")
+	handler := ScheduleHandlerFunc(func(ctx context.Context, _ ScheduleRequest) error {
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	consumer, err := NewSchedulerConsumer(queue, handler, ConsumerConfig{VisibilityTimeout: time.Second, VisibilityHeartbeat: 10 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := consumer.RunOnce(context.Background())
+	if err == nil || stats.Handled != 0 || stats.Failed != 1 || len(queue.deleted) != 0 {
+		t.Fatalf("visibility failure must stop work and leave receipt unacknowledged: stats=%+v deleted=%v err=%v", stats, queue.deleted, err)
 	}
 }
 

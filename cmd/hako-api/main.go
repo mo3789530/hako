@@ -47,11 +47,12 @@ func main() {
 		runtimeClass = "standard"
 	}
 	createConfig := api.WorkspaceCreateConfig{
-		Region:               strings.TrimSpace(os.Getenv("HAKO_DEFAULT_RESOURCE_PLANE_REGION")),
-		RequiredCapabilities: []string{"microvm"},
-		RuntimeClass:         runtimeClass,
-		Image:                strings.TrimSpace(os.Getenv("HAKO_DEFAULT_WORKSPACE_IMAGE")),
-		WorkloadRunsEnabled:  strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_WORKLOAD_RUNS_ENABLED")), "true"),
+		Region:                     strings.TrimSpace(os.Getenv("HAKO_DEFAULT_RESOURCE_PLANE_REGION")),
+		RequiredCapabilities:       []string{"microvm"},
+		RuntimeClass:               runtimeClass,
+		Image:                      strings.TrimSpace(os.Getenv("HAKO_DEFAULT_WORKSPACE_IMAGE")),
+		WorkloadRunsEnabled:        strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_WORKLOAD_RUNS_ENABLED")), "true"),
+		GitHubAppManagementEnabled: strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_GITHUB_APP_MANAGEMENT_ENABLED")), "true"),
 	}
 	var webhookHandler http.Handler
 	secretARN := strings.TrimSpace(os.Getenv("HAKO_GITHUB_WEBHOOK_SECRET_ARN"))

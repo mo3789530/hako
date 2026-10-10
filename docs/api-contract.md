@@ -42,6 +42,37 @@ duplicate parameters, empty values, and out-of-range/non-integer values return
 HTTP 400 `invalid_pagination`. The response contains `items`, `total`, `limit`,
 and `offset`; cursor pagination is not implemented yet.
 
+## Tenant GitHub App metadata
+
+Tenant App metadata routes are registered only when
+`HAKO_GITHUB_APP_MANAGEMENT_ENABLED=true`. They require a Cognito access token
+with `hako/api`, a Hako user, and Owner/Admin membership in the path Tenant.
+Other members and callers from another Tenant receive the hidden 404 response.
+
+`GET /v1/tenants/{tenant_id}/github/apps` accepts `limit` (default 50, range
+1–100) and `offset` (range 0–10,000). `POST` on that path creates an inert
+draft and requires `Idempotency-Key` plus JSON fields `github_app_id`, `slug`,
+`client_id`, and `credential_binding_id`. The binding must already be approved
+for that exact Tenant and App ID. The API rejects unknown fields, including
+Secret, ARN, Role, and URL inputs. `GET /{integration_id}` returns the same
+sanitized metadata shape. Responses omit the binding ID and all credential
+references.
+
+`POST /{integration_id}/disable`, `/verify`, and `/select-default` require
+`{"expected_revision": N}`. Draft disable advances the configuration and
+credential revisions. Verification and default selection currently return
+HTTP 409 `github_app_not_ready`; no Tenant App is verified, selected, or
+activated by these routes. Other stable errors are `invalid_request` (400),
+`idempotency_conflict` and `state_conflict` (409). Create and disable append a
+safe audit summary in the same transaction as metadata changes; idempotent
+create replay does not append another event.
+
+The matching CLI commands are `hako github app list`, `add`, `show`, `verify`,
+`select-default`, and `disable`. The CLI accepts only the opaque approved
+binding ID and never accepts Secret values or arbitrary resource references.
+Credential bindings are provisioned through an operator-only database path;
+the API database role has read-only access to that table.
+
 ## Audit events
 
 Workspace create, suspend, resume, and delete requests, plus Tenant placement

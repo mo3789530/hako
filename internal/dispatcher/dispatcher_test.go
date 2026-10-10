@@ -119,6 +119,38 @@ func TestRunOnceRoutesWorkloadScheduleRequestToDedicatedQueue(t *testing.T) {
 	}
 }
 
+func TestRunOnceRoutesWorkloadDispatchToPinnedResourcePlane(t *testing.T) {
+	store := &fakeStore{events: []outbox.Event{{
+		ID: "evt_attempt", AggregateType: "workload_attempt", AggregateID: "attempt_1", EventType: "workload_attempt.dispatch", Attempt: 1,
+		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_1","attempt_id":"attempt_1","generation":1,"resource_plane_id":"rp_tokyo","client_token":"hako-fixed"}`),
+	}}}
+	publisher := &fakePublisher{}
+	dispatcher, err := New(store, publisher, map[string]string{"rp_tokyo": "rp-queue"}, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := dispatcher.RunOnce(context.Background())
+	if err != nil || stats != (Stats{Claimed: 1, Published: 1}) || len(publisher.queueURLs) != 1 || publisher.queueURLs[0] != "rp-queue" {
+		t.Fatalf("Workload dispatch was not routed to its pinned Resource Plane: stats=%+v queues=%v err=%v", stats, publisher.queueURLs, err)
+	}
+}
+
+func TestRunOnceRejectsInconsistentWorkloadDispatch(t *testing.T) {
+	store := &fakeStore{events: []outbox.Event{{
+		ID: "evt_attempt", AggregateType: "workload_attempt", AggregateID: "attempt_1", EventType: "workload_attempt.dispatch", Attempt: 1,
+		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_1","attempt_id":"attempt_other","generation":1,"resource_plane_id":"rp_tokyo","client_token":"hako-fixed"}`),
+	}}}
+	publisher := &fakePublisher{}
+	dispatcher, err := New(store, publisher, map[string]string{"rp_tokyo": "rp-queue"}, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := dispatcher.RunOnce(context.Background())
+	if err == nil || stats != (Stats{Claimed: 1, Failed: 1}) || len(publisher.queueURLs) != 0 {
+		t.Fatalf("inconsistent Workload dispatch was accepted: stats=%+v queues=%v err=%v", stats, publisher.queueURLs, err)
+	}
+}
+
 func TestRunOnceDefersWorkloadRequestWithoutSchedulerQueue(t *testing.T) {
 	store := &fakeStore{events: []outbox.Event{{
 		ID: "evt_workload", AggregateType: "workload_run", AggregateID: "run_1", EventType: "workload_run.schedule_requested", Attempt: 1,

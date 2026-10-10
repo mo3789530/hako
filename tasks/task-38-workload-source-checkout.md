@@ -1,6 +1,6 @@
 # Task 38: Secure Immutable Repository Checkout
 
-Status: Ready (Task 37 complete). Priority: P0.
+Status: Done (checkout package, docs, and acceptance tests; 2026-10-10). Priority: P0.
 
 ## Goal
 
@@ -21,3 +21,10 @@ Provide a worker-side source provider that checks out only the Tenant-authorized
 - A test proves user-controlled ref metadata never selects the checked-out revision.
 - No clone is performed on the API process; source checkout occurs only in the isolated worker execution boundary selected by Task 36.
 - Document supported repository size/features and any intentionally rejected clone behavior.
+- Tests for the new Repository Checkout implementation achieve at least **80% statement coverage**. Report the measured percentage from the checkout implementation package, separately from aggregate coverage of the broader `workloadjobs` package.
+
+## Progress (2026-10-10)
+
+- Added `internal/repositorycheckout` with canonical Tenant repository authorization before credential access, immutable SHA fetch, private temporary storage, FD-based askpass, disabled redirects/hooks, and rejected submodule/LFS sources.
+- Fake local Git repository tests cover exact SHA despite mutable ref metadata, unavailable commits, authorization denial, suspended installations, token redaction, timeout, cleanup, size limit, and path traversal.
+- `go test -cover ./internal/repositorycheckout` reports 83.6% statement coverage. Handler integration remains Task 39; worker deployment remains Task 40.

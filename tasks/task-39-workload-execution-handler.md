@@ -1,12 +1,14 @@
 # Task 39: Idempotent Workload Execution Handler
 
-Status: Blocked on Task 38 (Task 36 complete). Priority: P0.
+Status: In Progress (durable Control Plane dispatch handoff underway). Priority: P0.
 
 ## Goal
 
 Implement the short-lived dispatch, Resource Plane execution, and result/cleanup handlers specified by [ADR 0006](../docs/adr/0006-workload-worker-substrate.md). Reuse checkout, redaction, and artifact interfaces, but split the current direct-DB Service into Control Plane orchestration and Resource Plane executor. A valid queue message must never be treated as success merely because it decoded.
 
 ## Work
+
+- Progress: added a transactional scheduler handoff that reloads the Run, recognizes terminal/duplicate deliveries, records a fixed placement and generation-scoped attempt, and writes a Resource Plane dispatch Outbox event. Added the attempt/cleanup lifecycle schema and Outbox routing for the dispatch event. Scheduler defaults now use batch size 1, 120-second visibility with 30-second renewal, and a five-minute processing cap; a visibility renewal failure cancels handler work and leaves the receipt unacknowledged. Resource Plane journal/controller, result handling, cancellation during launch, and full recovery remain outstanding.
 
 - Implement a handler keyed by the versioned `(tenant_id, workload_run_id)` envelope; reload all authoritative fields from DSQL and ignore caller/message-supplied execution parameters.
 - Acknowledge terminal duplicates without re-execution. Reject wrong Tenant/Run pairs, unsupported kinds, missing commit/repository, and cancelled Runs safely.

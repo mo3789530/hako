@@ -59,6 +59,16 @@ type workloadScheduleEnvelope struct {
 	WorkloadRunID string `json:"workload_run_id"`
 }
 
+type workloadDispatchEnvelope struct {
+	SchemaVersion   int    `json:"schema_version"`
+	TenantID        string `json:"tenant_id"`
+	WorkloadRunID   string `json:"workload_run_id"`
+	AttemptID       string `json:"attempt_id"`
+	Generation      int64  `json:"generation"`
+	ResourcePlaneID string `json:"resource_plane_id"`
+	ClientToken     string `json:"client_token"`
+}
+
 func New(store Store, publisher Publisher, queueURLs map[string]string, config Config) (*Dispatcher, error) {
 	if store == nil || publisher == nil {
 		return nil, errors.New("outbox store and publisher are required")
@@ -151,6 +161,22 @@ func (d *Dispatcher) route(event outbox.Event) (string, error) {
 			return "", errors.New("Workload scheduler queue is not configured")
 		}
 		return d.config.WorkloadSchedulerQueueURL, nil
+	}
+	if event.AggregateType == "workload_attempt" && event.EventType == "workload_attempt.dispatch" {
+		var command workloadDispatchEnvelope
+		if err := json.Unmarshal(event.Payload, &command); err != nil {
+			return "", fmt.Errorf("decode Workload dispatch command: %w", err)
+		}
+		if command.SchemaVersion != 1 || command.TenantID == "" || command.WorkloadRunID == "" ||
+			command.AttemptID == "" || command.AttemptID != event.AggregateID || command.Generation < 1 ||
+			command.ResourcePlaneID == "" || command.ClientToken == "" {
+			return "", errors.New("Workload dispatch command has an unsupported or inconsistent envelope")
+		}
+		queueURL := d.queues[command.ResourcePlaneID]
+		if queueURL == "" {
+			return "", fmt.Errorf("no Resource Plane queue configured for %q", command.ResourcePlaneID)
+		}
+		return queueURL, nil
 	}
 	resourcePlaneID, err := validateCommand(event)
 	if err != nil {

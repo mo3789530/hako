@@ -9,6 +9,12 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO hako_api;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE github_installation_setup_states TO hako_api;
 -- Workload Run tables are introduced in migrations 000046-000048.
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE workload_runs, workload_run_events, workload_artifacts TO hako_api;
+-- Tenant App metadata (000050-000053); operator approval is NOT an API power.
+GRANT SELECT ON TABLE github_credential_bindings TO hako_api;
+REVOKE INSERT, UPDATE, DELETE ON TABLE github_credential_bindings FROM hako_api;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE github_app_registrations, tenant_github_integrations, tenant_github_default_integrations TO hako_api;
+-- Credential bindings must be provisioned through an explicitly authorized
+-- operator DB role, not this API role. No Secret values belong in these rows.
 
 -- The Dispatcher role can claim/publish Outbox rows but cannot alter schema or
 -- access Workspace, Tenant, User, Session, or Operation tables.

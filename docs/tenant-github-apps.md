@@ -1,6 +1,6 @@
 # Tenant別GitHub App設計
 
-Status: **設計のみ。Tasks 56–60未実装**。現行共通App方式は変更していない。
+Status: **Task 56のmetadata/API scaffoldを実装済み。Tenant Appの検証・有効化は未実装でdefault-off**。現行共通App方式は変更していない。
 決定事項は[ADR 0007](adr/0007-tenant-github-apps.md)、既存資格情報実装は
 [GitHub App credentials](github-app-credentials.md)を参照。
 
@@ -38,7 +38,7 @@ Tenant
 registration ID、integration ID、credential binding IDは別物。表示App IDとSecret解決用IDを混同しない。
 上記はmigration実装ではなく、DSQL/Postgres双方の対応DDL・既存FK・バックフィルを実装時に確認する。
 
-## 3. 設定APIとRBAC（予定）
+## 3. 設定APIとRBAC
 
 | API | 権限・契約 |
 |---|---|
@@ -55,12 +55,28 @@ Webhookは`POST /v1/integrations/github/{opaque_route_id}/webhook`を別途追�
 
 POSTにはidempotency key、更新にはexpected revisionを用い、競合は409。未承認binding、別Tenant/App所有bindingはSecret取得前に拒否する。
 App verificationとdefault選択は別操作であり、GitHub疎通成功だけでRunを起動しない。
-初期版はCLIの`hako github app list/add/verify/select-default/disable`からmetadataを操作し、Secret値を入力させない。
+Task 56では`hako github app list/add/show/verify/select-default/disable`からmetadataを操作する。API routeは`HAKO_GITHUB_APP_MANAGEMENT_ENABLED=true`で明示的に有効化し、未設定時はrouteを登録しない。Tenant Appはdraftのままで、`verify`と`select-default`は409 `github_app_not_ready`を返す。CLI/APIにSecret値を入力させない。
+
+`add`は`Idempotency-Key`必須で、`disable`/`verify`/`select-default`は`expected_revision`を要求する。Owner/Admin以外と別Tenantのresourceはhidden 404。詳細なpath、body、response、error codeは[Control Plane API Contract](api-contract.md#tenant-github-app-metadata)を参照。
 
 ## 4. Secret provisioningとIAM境界
 
 1. Tenant App管理者がGitHubで別Appを作成する。運用担当が認証された別経路で三種類のSecretを受領・保管し、App ID/Tenant/用途とreader Roleを承認する。Hako管理APIへのraw key uploadは提供しない。
-2. 運用側provisionerがSecret/Roleを作成しcredential binding metadataを登録する。Tenant Owner/Adminは自分に承認されたbinding IDだけを選べる。ARN文字列のprefix一致だけでは承認扱いにしない。
+2. 運用側provisionerがSecret/Roleを作成しcredential binding metadataを登録する。Task 56では`github_credential_bindings`に対するAPI roleの権限をSELECTだけに制限する。登録はDSQL admin/operatorの別認証で、Tenant・App IDと三つの用途別Secret referenceを確認した後に行う。Tenant Owner/Adminは自分のTenant/App IDに一致する`approved` binding IDだけを指定できる。ARN文字列のprefix一致だけでは承認扱いにしない。
+
+operator登録のparameterized SQL templateは次のとおり。`:name`は運用ツールがbindする値を表し、psqlへそのまま渡す構文ではない。API経由で実行せず、provisioning/approval記録を確認した運用者が実行する。列にはSecret値ではなく、承認済みresource referenceだけを保存する。
+
+```sql
+INSERT INTO github_credential_bindings (
+  id, tenant_id, github_app_id, status,
+  private_key_secret_ref, oauth_secret_ref, webhook_secret_ref, approved_at
+) VALUES (
+  :binding_id, :tenant_id, :github_app_id, 'approved',
+  :private_key_secret_ref, :oauth_secret_ref, :webhook_secret_ref, :approved_at
+);
+```
+
+Bindingの更新・停止とIAM/Secret provisioningの自動化はこのTaskの範囲外。APIにはbinding ID以外のARN/Role/URLを渡せず、承認bindingが見つからない場合はSecret accessより前に拒否する。
 3. CP brokerはauthoritative Tenant/integration/bindingからRoleを解決する。取得Roleはprivate-key、OAuth交換、Webhook検証の用途別に分け、それぞれexact ARNの`GetSecretValue`と必要時の限定KMS decryptのみを許可する。
 4. API/Job VM/RPにTenant Secretの包括的読取Roleを渡さない。broker Roleだけが承認reader Roleに対する限定`sts:AssumeRole`を持つ。Tenant/用途/session識別を監査し、利用者からRole ARN/session tagを受け取らない。
 5. Credential readerにはSecretの作成/更新/tag変更、IAM変更、compute操作権限を与えない。Secret承認・rotationとreadは別権限。

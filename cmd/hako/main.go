@@ -24,6 +24,16 @@ var cliBrowserOpener auth.BrowserOpener = openBrowser
 
 func main() {
 	switch {
+	case len(os.Args) >= 4 && os.Args[1] == "github" && os.Args[2] == "app":
+		result, key, err := manageGitHubAppCLI(os.Args[3:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hako github app: %v\n", err)
+			if key != "" {
+				fmt.Fprintf(os.Stderr, "Retry identical add with --idempotency-key %s\n", key)
+			}
+			os.Exit(1)
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(result)
 	case len(os.Args) == 2 && os.Args[1] == "login":
 		if err := login(); err != nil {
 			fmt.Fprintf(os.Stderr, "hako login: %v\n", err)

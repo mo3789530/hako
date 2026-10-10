@@ -50,11 +50,12 @@ type tenantMembershipResponse struct {
 }
 
 type WorkspaceCreateConfig struct {
-	Region               string
-	RequiredCapabilities []string
-	RuntimeClass         string
-	Image                string
-	WorkloadRunsEnabled  bool
+	Region                     string
+	RequiredCapabilities       []string
+	RuntimeClass               string
+	Image                      string
+	WorkloadRunsEnabled        bool
+	GitHubAppManagementEnabled bool
 }
 
 type workspaceCreateRequest struct {
@@ -152,6 +153,15 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 		e.GET("/v1/integrations/github/setup/callback", completeGitHubInstallationSetup(pool, setupVerifier))
 	}
 	protected := e.Group("", CognitoMiddleware(verifier))
+	if workspaceConfig.GitHubAppManagementEnabled {
+		apps := protected.Group("/v1/tenants/:tenant_id/github/apps", RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool), githubAppOwnerMiddleware)
+		apps.GET("", githubAppMetadata(pool, "list"))
+		apps.POST("", githubAppMetadata(pool, "add"))
+		apps.GET("/:integration_id", githubAppMetadata(pool, "show"))
+		for _, action := range []string{"disable", "verify", "select-default"} {
+			apps.POST("/:integration_id/"+action, githubAppMetadata(pool, action))
+		}
+	}
 	if setupVerifier != nil {
 		protected.POST("/v1/tenants/:tenant_id/github/installations/setup", beginGitHubInstallationSetup(pool, setupVerifier),
 			RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))

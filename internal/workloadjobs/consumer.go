@@ -47,6 +47,7 @@ type ConsumerConfig struct {
 	WaitTime            time.Duration
 	VisibilityTimeout   time.Duration
 	VisibilityHeartbeat time.Duration
+	ProcessingTimeout   time.Duration
 }
 
 type SchedulerConsumer struct {
@@ -66,7 +67,7 @@ func NewSchedulerConsumer(queue ScheduleQueue, handler ScheduleHandler, config C
 		return nil, errors.New("Workload schedule queue and handler are required")
 	}
 	if config.BatchSize == 0 {
-		config.BatchSize = 10
+		config.BatchSize = 1
 	}
 	if config.BatchSize < 1 || config.BatchSize > 10 {
 		return nil, errors.New("Workload SQS batch size must be 1-10")
@@ -78,16 +79,22 @@ func NewSchedulerConsumer(queue ScheduleQueue, handler ScheduleHandler, config C
 		return nil, errors.New("Workload SQS long-poll wait time must be 0-20 seconds")
 	}
 	if config.VisibilityTimeout == 0 {
-		config.VisibilityTimeout = 10 * time.Minute
+		config.VisibilityTimeout = 120 * time.Second
 	}
 	if config.VisibilityTimeout < time.Second || config.VisibilityTimeout > 12*time.Hour || config.VisibilityTimeout%time.Second != 0 {
 		return nil, errors.New("Workload SQS visibility timeout must be whole seconds from 1 second to 12 hours")
 	}
 	if config.VisibilityHeartbeat == 0 {
-		config.VisibilityHeartbeat = config.VisibilityTimeout / 2
+		config.VisibilityHeartbeat = 30 * time.Second
 	}
 	if config.VisibilityHeartbeat <= 0 || config.VisibilityHeartbeat >= config.VisibilityTimeout {
 		return nil, errors.New("Workload SQS visibility heartbeat must be positive and shorter than the visibility timeout")
+	}
+	if config.ProcessingTimeout == 0 {
+		config.ProcessingTimeout = 5 * time.Minute
+	}
+	if config.ProcessingTimeout <= 0 || config.ProcessingTimeout > 5*time.Minute {
+		return nil, errors.New("Workload scheduler processing timeout must be positive and at most five minutes")
 	}
 	return &SchedulerConsumer{queue: queue, handler: handler, config: config}, nil
 }
@@ -131,7 +138,7 @@ func (c *SchedulerConsumer) handle(ctx context.Context, receipt string, request 
 	if err := c.queue.ChangeVisibility(ctx, receipt, c.config.VisibilityTimeout); err != nil {
 		return fmt.Errorf("extend Workload SQS visibility: %w", err)
 	}
-	handlerCtx, cancel := context.WithCancel(ctx)
+	handlerCtx, cancel := context.WithTimeout(ctx, c.config.ProcessingTimeout)
 	defer cancel()
 	heartbeatDone := make(chan struct{})
 	heartbeatErr := make(chan error, 1)

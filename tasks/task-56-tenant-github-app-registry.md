@@ -1,6 +1,6 @@
 # Task 56: Tenant GitHub App Registry and Configuration API
 
-Status: Ready. Priority: P0. Depends on: Task 37 (complete).
+Status: Done (metadata/API/CLI, docs, and PostgreSQL integration validation; 2026-10-10). Priority: P0. Depends on: Task 37 (complete).
 
 ## Goal
 
@@ -19,3 +19,9 @@ Implement the metadata/API foundation in [ADR 0007](../docs/adr/0007-tenant-gith
 - PostgreSQL/API/CLI tests cover two Tenants, role matrix, duplicate App ownership, cross-Tenant binding references, concurrent selection, idempotency and safe responses/audit.
 - Shared legacy setup/Run creation behavior is unchanged. Owned feature stays default-off; no Secret read, IAM expansion, or AWS apply.
 - DSQL/Postgres-compatible migration and updated API/error documentation are included. Migration of existing binding/Run identity is Task 59.
+
+## Progress (2026-10-10)
+
+- Added additive metadata tables, API/CLI routes, default-off management flag, API-role read-only binding access, and operator-only SQL registration guidance.
+- Owned configurations remain inert drafts; verify/default selection return `github_app_not_ready` until later tasks provide verification and activation.
+- Unit and PostgreSQL integration tests passed, including Tenant isolation, role checks, duplicate App ownership, idempotency, audit safety, migration application, and concurrent default-row uniqueness. Tests use an isolated schema on the existing local PostgreSQL container; the database remains running after verification.

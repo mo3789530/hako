@@ -91,6 +91,20 @@ reports acceptance, not that the executor has already stopped.
 
 ## Current scope and follow-up
 
+Task 38 adds `internal/repositorycheckout`, a worker-side provider that first
+resolves the canonical owner/repository through the active Tenant Installation
+binding, then obtains a short-lived token and fetches only the persisted
+lowercase commit SHA. The user-supplied `ref` is metadata and never selects the
+revision. Git receives the token through a private askpass file descriptor; it
+does not appear in Git arguments, environment, remote configuration, output,
+or the returned checkout result. The temporary directory is mode `0700` and
+the caller receives an explicit cleanup handle. Fetches are shallow and capped
+at two minutes with a 512 MiB pack-file limit and 1 GiB total worktree limit.
+Redirects, hooks, submodules, and Git LFS are disabled or rejected. Repositories
+using submodules/LFS and sources above these limits are unsupported. Checkout
+is not yet connected to the Workload handler or deployed worker; Tasks 39/40
+own that integration and deployment.
+
 The persistence/domain foundation and state/artifact store are implemented.
 `internal/workloadjobs.SchedulerConsumer` now consumes the versioned SQS
 schedule envelope, extends message visibility while a handler runs, and only
