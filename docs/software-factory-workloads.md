@@ -130,6 +130,15 @@ after durable apply, duplicate, or stale classification; malformed and
 transiently failed deliveries remain for retry/DLQ. It is not yet wired into a
 deployed service or queue configuration, and physical VM cleanup remains a
 separate unfinished protocol.
+
+`internal/workloadjournal` provides a Resource Plane S3 journal primitive.
+Creation uses `If-None-Match: *`; updates require the previously observed ETag
+with `If-Match`, and S3 409/412 conflicts map to a retryable journal conflict.
+The journal keeps immutable attempt identity and independent execution and
+cleanup state, and rejects advancing to launch/run after cancellation. It is a
+storage/state-machine foundation only: no command queue consumer or EC2
+controller currently uses it, and a successful conditional write is not an
+atomic transaction with an AWS compute API.
 The local Fake Runtime also has an explicit Go test Job entry point for an
 already-checked-out repository and immutable commit. It verifies `HEAD` before
 execution and invokes `go test ./...` only inside a one-shot Podman container
