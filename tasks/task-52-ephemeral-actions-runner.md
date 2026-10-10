@@ -1,6 +1,8 @@
 # Task 52: GitHub Actions Ephemeral Runner Mode
 
-Status: Blocked on Tasks 40 and 41. Priority: P3.
+Status: Todo (design contract exists; implementation depends on worker/Checks foundations). Priority: P3.
+
+Claude Code Action support is tracked separately in [Task 73](task-73-claude-code-action.md), including Tenant-scoped model credentials, untrusted PR denial, and action-specific E2E.
 
 ## Goal
 

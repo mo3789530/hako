@@ -1,5 +1,7 @@
 # Task 59: Tenant App Compatibility Migration and Credential IAM
 
+残作業の実行単位：[Task 69](task-69-tenant-checkout-broker.md)、[Task 70](task-70-tenant-migration-cutover.md)。親タスクは集約用に保持し、子タスク完了だけで配備済みとはしない。
+
 Status: In Progress (Tenant App-to-Installation binding and immutable Workload Run integration/revision/generation pinning implemented with no owned-to-shared fallback; transactional legacy backfill, queued Run drain, trusted checkout provider construction, purpose-specific IAM/resources and policy validation remain). Priority: P0.
 
 ## Goal

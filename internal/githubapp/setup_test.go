@@ -13,6 +13,41 @@ import (
 	"testing"
 )
 
+func TestSetupClientNeverFollowsCredentialRedirects(t *testing.T) {
+	for _, phase := range []string{"exchange", "installations"} {
+		t.Run(phase, func(t *testing.T) {
+			leaked := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/leak" {
+					leaked = true
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if phase == "exchange" || r.URL.Path == "/user/installations" {
+					w.Header().Set("Location", "/leak")
+					w.WriteHeader(http.StatusTemporaryRedirect)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"access_token":"test-user-token","token_type":"bearer"}`)
+			}))
+			defer server.Close()
+			original := server.Client()
+			client, err := NewSetupClient(SetupConfig{Slug: "hako-app", AppID: 123, ClientID: "client", ClientSecret: "secret", CallbackURL: "https://hako.example/callback", HTTPClient: original})
+			if err != nil {
+				t.Fatal(err)
+			}
+			client.oauthURL, client.apiURL = server.URL+"/exchange", server.URL
+			if _, err := client.VerifyInstallation(context.Background(), "code", 987, strings.Repeat("v", 43)); err == nil || leaked {
+				t.Fatalf("credentials followed redirect: leaked=%t err=%v", leaked, err)
+			}
+			if original.CheckRedirect != nil {
+				t.Fatal("constructor mutated caller HTTP client")
+			}
+		})
+	}
+}
+
 func TestSetupClientExchangesCodeAndVerifiesUserInstallation(t *testing.T) {
 	var installationAuth string
 	const codeVerifier = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~"

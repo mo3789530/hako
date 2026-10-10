@@ -1,12 +1,16 @@
 # Task 50: Security, Recovery, and Production Operations
 
-Status: Blocked on Tasks 40, 42, and 49. Priority: P2.
+残作業の実行単位：[Task 68](task-68-webhook-abuse-controls.md)。親タスクは集約用に保持し、子タスク完了だけで配備済みとはしない。
+
+Status: In Progress (local code/dependency review, pinned OAuth authorization, credential-redirect rejection and CI govulncheck implemented; production gates depend on Tasks 40, 42 and 49). Priority: P2.
 
 ## Goal
 
 Close cross-cutting security and operational gaps before production or broader Tenant onboarding.
 
 ## Work
+
+Review evidence and remaining risks: [Security review](../docs/security-review.md).
 
 - Review Tenant isolation, Hako RBAC, session replay, duplicate/out-of-order Operations, webhook replay, queue poison messages, secrets, artifact access, and untrusted fork PRs.
 - Define DSQL backup/restore, migration rollback/forward fix, Outbox retention, artifact retention/deletion, Workspace cleanup, orphan AWS discovery, and DLQ redrive procedures.

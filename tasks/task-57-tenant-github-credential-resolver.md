@@ -1,5 +1,7 @@
 # Task 57: Tenant GitHub Credential Resolver and Cache Isolation
 
+残作業の実行単位：[Task 69](task-69-tenant-checkout-broker.md)。親タスクは集約用に保持し、子タスク完了だけで配備済みとはしない。
+
 Status: In Progress (App proof API, active/draft revision/generation resolver, exact reader provider, per-use active generation authorization/cache partition, and durable Run identity pin/provider contract implemented; production Run→AWS credential broker wiring remains). Priority: P0.
 
 ## Goal

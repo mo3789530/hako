@@ -65,9 +65,17 @@ func NewSetupClient(config SetupConfig) (*SetupClient, error) {
 	if config.HTTPClient == nil {
 		config.HTTPClient = &http.Client{Timeout: 10 * time.Second}
 	}
+	// OAuth POST redirects can forward the client secret and code in their
+	// body. Disable redirects for both token exchange and user-token requests,
+	// including when callers supply a custom client.
+	client := *config.HTTPClient
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	if client.Timeout <= 0 || client.Timeout > 10*time.Second {
+		client.Timeout = 10 * time.Second
+	}
 	return &SetupClient{
 		slug: config.Slug, appID: config.AppID, clientID: config.ClientID, clientSecret: config.ClientSecret, callbackURL: callbackURL.String(),
-		httpClient: config.HTTPClient, oauthURL: "https://github.com/login/oauth/access_token", apiURL: "https://api.github.com",
+		httpClient: &client, oauthURL: "https://github.com/login/oauth/access_token", apiURL: "https://api.github.com",
 	}, nil
 }
 

@@ -58,6 +58,7 @@ type WorkspaceCreateConfig struct {
 	GitHubAppManagementEnabled bool
 	GitHubAppProofVerifier     TenantGitHubAppProofVerifier
 	TenantGitHubWebhookHandler http.Handler
+	TenantGitHubSetupResolver  TenantGitHubSetupVerifierResolver
 }
 
 type workspaceCreateRequest struct {
@@ -157,8 +158,8 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 			return nil
 		})
 	}
-	if setupVerifier != nil {
-		e.GET("/v1/integrations/github/setup/callback", completeGitHubInstallationSetup(pool, setupVerifier))
+	if setupVerifier != nil || workspaceConfig.TenantGitHubSetupResolver != nil {
+		e.GET("/v1/integrations/github/setup/callback", completeGitHubInstallationSetup(pool, setupVerifier, workspaceConfig.TenantGitHubSetupResolver))
 	}
 	protected := e.Group("", CognitoMiddleware(verifier))
 	if workspaceConfig.GitHubAppManagementEnabled {
@@ -166,6 +167,9 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 		apps.GET("", githubAppMetadata(pool, "list", workspaceConfig.GitHubAppProofVerifier))
 		apps.POST("", githubAppMetadata(pool, "add", workspaceConfig.GitHubAppProofVerifier))
 		apps.GET("/:integration_id", githubAppMetadata(pool, "show", workspaceConfig.GitHubAppProofVerifier))
+		if workspaceConfig.TenantGitHubSetupResolver != nil {
+			apps.POST("/:integration_id/setup", beginGitHubInstallationSetupForApp(pool, nil, workspaceConfig.TenantGitHubSetupResolver))
+		}
 		for _, action := range []string{"disable", "verify", "select-default"} {
 			apps.POST("/:integration_id/"+action, githubAppMetadata(pool, action, workspaceConfig.GitHubAppProofVerifier))
 		}

@@ -1206,6 +1206,8 @@ MVPではtmux利用でも構いません。
 
 Hakoの基本セキュリティ原則です。
 
+実装の確認結果と未完了の受入条件は[Security review](docs/security-review.md)を参照してください。既知Go脆弱性の修正とCI検査を追加しています。実AWSの隔離・権限・運用確認は後続タスクです。
+
 ```text
 No Public SSH
 

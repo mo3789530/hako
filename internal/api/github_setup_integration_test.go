@@ -18,12 +18,15 @@ import (
 	"github.com/mo3789530/hako/internal/auth"
 	"github.com/mo3789530/hako/internal/githubapp"
 	"github.com/mo3789530/hako/internal/store/dsql"
+	"github.com/mo3789530/hako/internal/store/githubregistry"
 	"github.com/mo3789530/hako/internal/testutil"
 )
 
 type integrationGitHubSetupVerifier struct {
 	verifiedInstallationID int64
 	verifiedCodeVerifier   string
+	appID                  int64
+	beforeVerify           func()
 }
 
 func (v *integrationGitHubSetupVerifier) SetupURL(state string) string {
@@ -43,7 +46,20 @@ func (v *integrationGitHubSetupVerifier) VerifyInstallation(_ context.Context, c
 	}
 	v.verifiedInstallationID = installationID
 	v.verifiedCodeVerifier = codeVerifier
-	return githubapp.InstallationIdentity{ID: installationID, AppID: 123, AccountLogin: "acme"}, nil
+	if v.beforeVerify != nil {
+		v.beforeVerify()
+	}
+	appID := v.appID
+	if appID == 0 {
+		appID = 123
+	}
+	return githubapp.InstallationIdentity{ID: installationID, AppID: appID, AccountLogin: "acme"}, nil
+}
+
+type integrationSetupResolver func(context.Context, githubregistry.SetupAppPin) (githubapp.SetupVerifier, error)
+
+func (f integrationSetupResolver) ResolveSetupVerifier(ctx context.Context, pin githubregistry.SetupAppPin) (githubapp.SetupVerifier, error) {
+	return f(ctx, pin)
 }
 
 func TestGitHubInstallationSetupUsesOneTimeStateAndVerifiedCallback(t *testing.T) {
@@ -130,5 +146,99 @@ func TestGitHubInstallationSetupUsesOneTimeStateAndVerifiedCallback(t *testing.T
 	handler.ServeHTTP(replayResponse, replay)
 	if replayResponse.Code != http.StatusBadRequest {
 		t.Fatalf("replayed setup callback = HTTP %d %s, want 400", replayResponse.Code, replayResponse.Body.String())
+	}
+	for _, statement := range []string{
+		`INSERT INTO github_credential_bindings (id,tenant_id,github_app_id,status,private_key_secret_ref,oauth_secret_ref,webhook_secret_ref,approved_at) VALUES ('api_setup_binding','tenant_github_setup_api',911,'approved','private','oauth','webhook',now())`,
+		`INSERT INTO github_app_registrations (id,github_app_id,mode,owner_tenant_id,slug,client_id,created_at) VALUES ('api_setup_registration',911,'tenant_owned','tenant_github_setup_api','owned-app','client',now())`,
+		`INSERT INTO tenant_github_integrations (id,tenant_id,app_registration_id,github_app_id,credential_binding_id,status,config_revision,credential_generation,idempotency_key,request_sha256,created_by,created_at,updated_at) VALUES ('api_setup_integration','tenant_github_setup_api','api_setup_registration',911,'api_setup_binding','active',3,6,'api-setup-key','hash','usr_github_setup_api',now(),now())`,
+	} {
+		if _, err := pool.Exec(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ownedVerifier := &integrationGitHubSetupVerifier{appID: 911}
+	resolverCalls := 0
+	ownedHandler := NewHandlerWithGitHubApp(verifier, pool, nil, githubVerifier, WorkspaceCreateConfig{
+		GitHubAppManagementEnabled: true,
+		TenantGitHubSetupResolver: integrationSetupResolver(func(_ context.Context, pin githubregistry.SetupAppPin) (githubapp.SetupVerifier, error) {
+			resolverCalls++
+			if pin.TenantID != "tenant_github_setup_api" || pin.IntegrationID != "api_setup_integration" || pin.GitHubAppID != 911 || pin.ConfigRevision != 3 {
+				t.Fatalf("untrusted setup identity: %+v", pin)
+			}
+			return ownedVerifier, nil
+		}),
+	})
+	startOwned := func(tenant string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/tenants/"+tenant+"/github/apps/api_setup_integration/setup", strings.NewReader(`{}`))
+		req.Header.Set("Authorization", "Bearer "+appToken)
+		req.Header.Set("Content-Type", "application/json")
+		res := httptest.NewRecorder()
+		ownedHandler.ServeHTTP(res, req)
+		return res
+	}
+	if response := startOwned("tenant_other"); response.Code != http.StatusNotFound || resolverCalls != 0 {
+		t.Fatalf("cross-Tenant setup accessed broker: HTTP %d calls=%d", response.Code, resolverCalls)
+	}
+	startOwnedState := func() string {
+		response := startOwned("tenant_github_setup_api")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("owned setup start: HTTP %d %s", response.Code, response.Body.String())
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &setup); err != nil {
+			t.Fatal(err)
+		}
+		u, err := url.Parse(setup.SetupURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u.Query().Get("state")
+	}
+	ownedState := startOwnedState()
+	callbackURL := "/v1/integrations/github/setup/callback?installation_id=7744&setup_action=install&state=" + url.QueryEscape(ownedState)
+	noBroker := httptest.NewRecorder()
+	handler.ServeHTTP(noBroker, httptest.NewRequest(http.MethodGet, callbackURL, nil))
+	if noBroker.Code != http.StatusBadGateway {
+		t.Fatalf("owned setup fell back to shared verifier: HTTP %d", noBroker.Code)
+	}
+	redirect := httptest.NewRecorder()
+	ownedHandler.ServeHTTP(redirect, httptest.NewRequest(http.MethodGet, callbackURL+"&tenant_id=attacker&integration_id=attacker", nil))
+	if redirect.Code != http.StatusFound {
+		t.Fatalf("owned setup redirect: HTTP %d %s", redirect.Code, redirect.Body.String())
+	}
+	oauthOwned := "/v1/integrations/github/setup/callback?code=valid-code&state=" + url.QueryEscape(ownedState)
+	ownedVerifier.appID = 912
+	wrongApp := httptest.NewRecorder()
+	ownedHandler.ServeHTTP(wrongApp, httptest.NewRequest(http.MethodGet, oauthOwned, nil))
+	if wrongApp.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong-App callback accepted: HTTP %d", wrongApp.Code)
+	}
+	ownedVerifier.appID = 911
+	ownedVerifier.beforeVerify = func() {
+		if _, err := pool.Exec(ctx, `UPDATE tenant_github_integrations SET credential_generation=7 WHERE id='api_setup_integration'`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rotated := httptest.NewRecorder()
+	ownedHandler.ServeHTTP(rotated, httptest.NewRequest(http.MethodGet, oauthOwned, nil))
+	if rotated.Code != http.StatusBadRequest {
+		t.Fatalf("changed generation accepted after OAuth verification: HTTP %d %s", rotated.Code, rotated.Body.String())
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM tenant_github_app_installation_bindings WHERE installation_id=7744`).Scan(&bindings); err != nil || bindings != 0 {
+		t.Fatalf("failed setup created binding: %d %v", bindings, err)
+	}
+	ownedVerifier.beforeVerify = nil
+	ownedState = startOwnedState()
+	redirect = httptest.NewRecorder()
+	ownedHandler.ServeHTTP(redirect, httptest.NewRequest(http.MethodGet, "/v1/integrations/github/setup/callback?installation_id=7744&setup_action=install&state="+url.QueryEscape(ownedState), nil))
+	if redirect.Code != http.StatusFound {
+		t.Fatalf("new owned setup redirect: HTTP %d", redirect.Code)
+	}
+	completed := httptest.NewRecorder()
+	ownedHandler.ServeHTTP(completed, httptest.NewRequest(http.MethodGet, "/v1/integrations/github/setup/callback?code=valid-code&state="+url.QueryEscape(ownedState), nil))
+	if completed.Code != http.StatusOK {
+		t.Fatalf("complete owned setup: HTTP %d %s", completed.Code, completed.Body.String())
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM tenant_github_app_installation_bindings WHERE installation_id=7744 AND integration_id='api_setup_integration'`).Scan(&bindings); err != nil || bindings != 1 {
+		t.Fatalf("verified owned binding absent: %d %v", bindings, err)
 	}
 }

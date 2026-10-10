@@ -1,6 +1,6 @@
 # Tenant別GitHub App設計
 
-Status: **Tasks 56–59を部分実装。Tenant Appの有効化/運用は未完了でdefault-off**。Draft proof APIとcredential libraries、opaque Webhook ingress/DB resolver/Installation authorization、queued generation revalidation、Installation/Run identity schemaを追加。API binaryはprivate-key reader roleを直接assumeせず、trusted credential brokerがない場合はverifyを無効扱いにする。Tenant Webhook routeは専用flagとWebhook-purpose reader Role ARN allowlistでopt-in可能だが、real role trust/Secret provisioningは未実施。OAuth state、legacy backfill/drain、E2Eは残る。現行共通App方式は変更していない。
+Status: **Tasks 56–59を部分実装。Tenant Appの有効化/運用は未完了でdefault-off**。Draft proof API/credential libraries、Webhook resolver/authorization/generation再検証、Installation/Run identityに加え、OAuth state pinとcallback adapterを追加。API binaryはprivate-key reader roleを直接assumeせず、trusted credential brokerがない場合はverifyを無効扱いにする。Tenant Webhook routeは専用flagとWebhook-purpose reader Role ARN allowlistでopt-in可能だが、real role trust/Secret provisioningは未実施。OAuth-purpose brokerのproduction接続、CLI setup、legacy backfill/drain、E2Eは残る。現行共通App方式は維持する。
 決定事項は[ADR 0007](adr/0007-tenant-github-apps.md)、既存資格情報実装は
 [GitHub App credentials](github-app-credentials.md)を参照。
 
@@ -36,7 +36,7 @@ Tenant
 | Workload Run/dispatch | サーバー解決したintegration_id、App registration、config_revision/credential_generationを固定。Run処理中に別Appへ差替えない。Secret ARNやcredentialはmessageに載せない |
 
 registration ID、integration ID、credential binding IDは別物。表示App IDとSecret解決用IDを混同しない。
-Installation bindingとWorkload Run pinのDDLはTasks 58/59のmigrationで追加済み。旧Installation/Runのbackfill、Webhook processor再検証と配備時のmigration runbookは未完了。
+Installation binding、Workload Run pin、OAuth setup pinのDDLはTasks 58/59のmigrationで追加済み。Webhook processor再検証も実装済み。旧Installation/Runのbackfillと配備時のmigration runbookは未完了。
 
 ## 3. 設定APIとRBAC
 
@@ -103,6 +103,8 @@ broker侵害のblast radiusは承認済み全Roleに及び得る。Tenant別Secr
 OAuth client_id/client-secret/slugはstateで固定したintegrationから解決する。callbackの一時user tokenでuser-visible Installationを確認し、expected App ID・installation・accountに照合する。
 完了transactionでOwner/Admin資格、Tenant ownership、active integration、revision/generation、one-time stateを再検証する。変更前に開始したcallbackはやり直す。
 
+migration `000062`でstate pinと再検証を実装。APIにtrusted `TenantGitHubSetupResolver`を明示注入した場合のみowned setup routeを登録し、callbackでstored pinからverifierを選ぶ。App不一致、失効、shared fallback、owned bindingの再assignmentを拒否する。標準API binaryにそのresolverはまだ接続しておらず、production OAuth-purpose brokerとCLI setupは残る。詳細は[Installation setup](github-installation-setup.md)。
+
 Webhook routingは次の順序を固定する。
 
 1. opaque routeを候補integrationへ解決する。routeは秘密鍵でも認可証明でもない。unknown/disabled routeに安全な拒否・rate limitを適用する。
@@ -113,7 +115,7 @@ Webhook routingは次の順序を固定する。
 既存共通Webhook URLはshared専用aliasとして保持する。Tenant-ownedの処理失敗を共通secretで再検証しない。
 公開ingressにApp private key/OAuth client secretを読ませず、Webhook-purpose readerまたは内部検証brokerを使う。
 
-実装状況: Tenant ingress handlerはopaque route解決、raw-body HMAC、current/previous secretの期限付き検証、HMAC後のgeneration/Installation authorizer、integration/generation付きdurable inbox handoffを実装済み。DB resolverは承認bindingのWebhook-purpose reader Role、Secret ARN、固定VersionIdだけを解決し、STS readerはそのSecretに限定したsession policyでcurrent/previousの値を取得する。Installation payloadにApp IDが含まれる場合は正の整数として保存し、受信時とProcessorでroute側App IDとの一致を検証する。ProcessorはgenerationとInstallation bindingも再検証し、失効・不一致イベントをfailedへ隔離する。DB照会エラーは再試行対象として返し、失効として隔離しない。API route/Terraformはdefault-offで、実IAM trust/Secret provisioningとTenant App OAuth state/verifier連携は未実装。
+実装状況: Tenant ingress handlerはopaque route解決、raw-body HMAC、current/previous secretの期限付き検証、HMAC後のgeneration/Installation authorizer、integration/generation付きdurable inbox handoffを実装済み。DB resolverは承認bindingのWebhook-purpose reader Role、Secret ARN、固定VersionIdだけを解決し、STS readerはそのSecretに限定したsession policyでcurrent/previousの値を取得する。Installation payloadにApp IDが含まれる場合は正の整数として保存し、受信時とProcessorでroute側App IDとの一致を検証する。ProcessorはgenerationとInstallation bindingも再検証し、失効・不一致イベントをfailedへ隔離する。DB照会エラーは再試行対象として返し、失効として隔離しない。API route/Terraformはdefault-offで、実IAM trust/Secret provisioningとproduction OAuth broker接続は未実施。
 
 ## 7. ローテーション・停止
 

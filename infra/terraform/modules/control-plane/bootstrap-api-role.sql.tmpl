@@ -4,6 +4,9 @@ CREATE ROLE hako_api WITH LOGIN;
 AWS IAM GRANT hako_api TO 'REPLACE_WITH_API_LAMBDA_ROLE_ARN';
 GRANT USAGE ON SCHEMA public TO hako_api;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO hako_api;
+-- API compromise must not permit rewriting actor-oriented audit history.
+GRANT SELECT, INSERT ON TABLE audit_events, platform_audit_events TO hako_api;
+REVOKE UPDATE, DELETE ON TABLE audit_events, platform_audit_events FROM hako_api;
 -- If this bootstrap template was applied before migration 000043, rerun this
 -- explicit grant for the newly introduced one-time setup state table.
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE github_installation_setup_states TO hako_api;
@@ -16,6 +19,10 @@ GRANT SELECT ON TABLE github_credential_bindings TO hako_api;
 REVOKE INSERT, UPDATE, DELETE ON TABLE github_credential_bindings FROM hako_api;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE github_app_registrations, tenant_github_integrations, tenant_github_default_integrations TO hako_api;
 GRANT SELECT ON TABLE tenant_github_app_installation_bindings TO hako_api;
+-- The reviewed OAuth setup adapter inserts immutable integration bindings.
+-- No API permission to update/delete or reassign an existing binding.
+GRANT INSERT ON TABLE tenant_github_app_installation_bindings TO hako_api;
+REVOKE UPDATE, DELETE ON TABLE tenant_github_app_installation_bindings FROM hako_api;
 -- Credential bindings must be provisioned through an explicitly authorized
 -- operator DB role, not this API role. No Secret values belong in these rows.
 

@@ -1,5 +1,7 @@
 # Task 60: Tenant GitHub App E2E and Rotation Runbook
 
+残作業の実行単位：[Task 71](task-71-tenant-app-local-e2e.md)。親タスクは集約用に保持し、子タスク完了だけで配備済みとはしない。
+
 Status: Blocked on Tasks 56–59. Priority: P0.
 
 ## Goal

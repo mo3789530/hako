@@ -77,6 +77,18 @@ binding ID and never accepts Secret values or arbitrary resource references.
 Credential bindings are provisioned through an operator-only database path;
 the API database role has read-only access to that table.
 
+With an explicitly injected trusted `TenantGitHubSetupResolver`, metadata
+management also exposes `POST /{integration_id}/setup` with `{}`. Only active
+owned integrations with approved bindings are eligible. Each request creates
+fresh one-time state pinned to Tenant, integration, App registration/App ID,
+revision and generation. Both redirect and OAuth callback resolve their
+verifier from that stored pin; callback query Tenant/App IDs are not used.
+Wrong-App verification returns 401, expired/changed/consumed state returns
+400, and an unavailable broker returns sanitized 502
+`github_setup_unavailable`. Final binding creation rechecks Owner/Admin and
+the pin transactionally. This adapter is not configured by the production
+API binary yet; that binary does not expose the owned setup endpoint.
+
 ## Audit events
 
 Workspace create, suspend, resume, and delete requests, plus Tenant placement
@@ -97,9 +109,10 @@ target, safe summary details, and UTC occurrence time. Workspace lifecycle Opera
 asynchronous execution and system/reconciler transitions, while `audit_events`
 records who requested an API mutation.
 
-The audit table is append-only by application convention, but database-level
-role restrictions, read/export API, retention policy, and audit of read-only
-API access are not yet configured. Do not put credentials, tokens, or secret
+The audit table is append-only by application convention. The reviewed DSQL
+bootstrap template now revokes API UPDATE/DELETE on actor audit tables, but
+this grant change has not been applied to an AWS deployment. Read/export API,
+retention policy, and audit of read-only API access remain unconfigured. Do not put credentials, tokens, or secret
 values into event details.
 
 ## Related design decisions

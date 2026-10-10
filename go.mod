@@ -1,6 +1,6 @@
 module github.com/mo3789530/hako
 
-go 1.27.0
+go 1.27.2
 
 require (
 	github.com/aws/aws-lambda-go v1.54.0
@@ -15,7 +15,7 @@ require (
 	github.com/aws/smithy-go v1.28.5
 	github.com/awslabs/aurora-dsql-connectors/go/pgx v0.4.0
 	github.com/golang-jwt/jwt/v5 v5.3.0
-	github.com/jackc/pgx/v5 v5.8.0
+	github.com/jackc/pgx/v5 v5.9.2
 	github.com/labstack/echo/v5 v5.3.1
 	github.com/zalando/go-keyring v0.2.6
 )
@@ -43,5 +43,5 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.26.0 // indirect
-	golang.org/x/text v0.40.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
 )

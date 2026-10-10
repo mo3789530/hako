@@ -23,10 +23,20 @@ import (
 
 const githubSetupStateTTL = 10 * time.Minute
 
+// TenantGitHubSetupVerifierResolver belongs to a trusted OAuth-purpose broker.
+// The pin comes from database state, never from callback query parameters.
+type TenantGitHubSetupVerifierResolver interface {
+	ResolveSetupVerifier(context.Context, githubregistry.SetupAppPin) (githubapp.SetupVerifier, error)
+}
+
 func beginGitHubInstallationSetup(pool transaction.Beginner, verifier githubapp.SetupVerifier) echo.HandlerFunc {
+	return beginGitHubInstallationSetupForApp(pool, verifier, nil)
+}
+
+func beginGitHubInstallationSetupForApp(pool transaction.Beginner, verifier githubapp.SetupVerifier, resolver TenantGitHubSetupVerifierResolver) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		user, ok := HakoUserFromContext(c)
-		if !ok || pool == nil || verifier == nil {
+		if !ok || pool == nil || verifier == nil && resolver == nil {
 			return databaseUnavailable(c)
 		}
 		var request struct{}
@@ -49,13 +59,25 @@ func beginGitHubInstallationSetup(pool transaction.Beginner, verifier githubapp.
 		codeVerifier := base64.RawURLEncoding.EncodeToString(verifierBytes)
 		now := time.Now().UTC()
 		expiresAt := now.Add(githubSetupStateTTL)
+		var pin githubregistry.SetupAppPin
 		_, err := transaction.Within(c.Request().Context(), pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (struct{}, error) {
 			if _, err := authz.RequireTenantRole(ctx, tx, user.ID, tenantID, domain.TenantRoleOwner, domain.TenantRoleAdmin); err != nil {
 				return struct{}{}, err
 			}
 			stateHash := githubregistry.HashSetupState(state)
-			if err := githubregistry.CreateSetupState(ctx, tx, tenantID, user.ID, stateHash, codeVerifier, now, expiresAt); err != nil {
-				return struct{}{}, err
+			if resolver != nil {
+				var err error
+				pin, err = githubregistry.ResolveSetupAppPin(ctx, tx, tenantID, c.Param("integration_id"))
+				if err != nil {
+					return struct{}{}, err
+				}
+				if err := githubregistry.CreateTenantAppSetupState(ctx, tx, pin, user.ID, stateHash, codeVerifier, now, expiresAt); err != nil {
+					return struct{}{}, err
+				}
+			} else {
+				if err := githubregistry.CreateSetupState(ctx, tx, tenantID, user.ID, stateHash, codeVerifier, now, expiresAt); err != nil {
+					return struct{}{}, err
+				}
 			}
 			details, _ := json.Marshal(map[string]any{"expires_at": expiresAt})
 			if err := audit.Append(ctx, tx, audit.Event{TenantID: tenantID, ActorID: user.ID,
@@ -65,22 +87,39 @@ func beginGitHubInstallationSetup(pool transaction.Beginner, verifier githubapp.
 			}
 			return struct{}{}, nil
 		})
-		if errors.Is(err, authz.ErrTenantAccessDenied) {
+		if errors.Is(err, authz.ErrTenantAccessDenied) || errors.Is(err, githubregistry.ErrAppBindingDenied) {
 			return tenantNotFound(c)
 		}
 		if err != nil {
 			return databaseUnavailable(c)
 		}
+		requestVerifier := verifier
+		if resolver != nil {
+			requestVerifier, err = resolver.ResolveSetupVerifier(c.Request().Context(), pin)
+			if err != nil || requestVerifier == nil {
+				return githubSetupUnavailable(c)
+			}
+		}
+		c.Response().Header().Set("Cache-Control", "no-store")
+		c.Response().Header().Set("Referrer-Policy", "no-referrer")
+		setupURL := requestVerifier.SetupURL(state)
+		if setupURL == "" {
+			return githubSetupUnavailable(c)
+		}
 		return c.JSON(http.StatusCreated, map[string]any{
-			"setup_url":  verifier.SetupURL(state),
+			"setup_url":  setupURL,
 			"expires_at": expiresAt,
 		})
 	}
 }
 
-func completeGitHubInstallationSetup(pool transaction.Beginner, verifier githubapp.SetupVerifier) echo.HandlerFunc {
+func completeGitHubInstallationSetup(pool transaction.Beginner, verifier githubapp.SetupVerifier, resolvers ...TenantGitHubSetupVerifierResolver) echo.HandlerFunc {
+	var resolver TenantGitHubSetupVerifierResolver
+	if len(resolvers) > 0 {
+		resolver = resolvers[0]
+	}
 	return func(c *echo.Context) error {
-		if pool == nil || verifier == nil {
+		if pool == nil || verifier == nil && resolver == nil {
 			return databaseUnavailable(c)
 		}
 		c.Response().Header().Set("Cache-Control", "no-store")
@@ -122,9 +161,17 @@ func completeGitHubInstallationSetup(pool transaction.Beginner, verifier githuba
 			if err != nil {
 				return databaseUnavailable(c)
 			}
+			requestVerifier, err := verifierForSetupState(ctx, verifier, resolver, setupState)
+			if err != nil {
+				return githubSetupUnavailable(c)
+			}
 			c.Response().Header().Set("Cache-Control", "no-store")
 			c.Response().Header().Set("Referrer-Policy", "no-referrer")
-			return c.Redirect(http.StatusFound, verifier.AuthorizationURL(state, setupState.CodeVerifier))
+			authorizationURL := requestVerifier.AuthorizationURL(state, setupState.CodeVerifier)
+			if authorizationURL == "" {
+				return githubSetupUnavailable(c)
+			}
+			return c.Redirect(http.StatusFound, authorizationURL)
 		}
 		if !singleQueryValue(query["code"]) || strings.TrimSpace(query.Get("code")) == "" || query.Has("error") {
 			return invalidGitHubSetupRequest(c)
@@ -138,8 +185,12 @@ func completeGitHubInstallationSetup(pool transaction.Beginner, verifier githuba
 		if err != nil {
 			return databaseUnavailable(c)
 		}
-		identity, err := verifier.VerifyInstallation(ctx, query.Get("code"), setupState.InstallationID, setupState.CodeVerifier)
-		if err != nil || identity.ID != setupState.InstallationID {
+		requestVerifier, err := verifierForSetupState(ctx, verifier, resolver, setupState)
+		if err != nil {
+			return githubSetupUnavailable(c)
+		}
+		identity, err := requestVerifier.VerifyInstallation(ctx, query.Get("code"), setupState.InstallationID, setupState.CodeVerifier)
+		if err != nil || identity.ID != setupState.InstallationID || setupState.AppPin != nil && identity.AppID != setupState.AppPin.GitHubAppID {
 			if err != nil && !errors.Is(err, githubapp.ErrAuthorizationRejected) {
 				return c.JSON(http.StatusBadGateway, errorResponse{Error: errorBody{Code: "github_unavailable", Message: "GitHub Installation verification is temporarily unavailable"}})
 			}
@@ -148,7 +199,7 @@ func completeGitHubInstallationSetup(pool transaction.Beginner, verifier githuba
 		completedAt := time.Now().UTC()
 		var installation githubregistry.Installation
 		installation, err = transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (githubregistry.Installation, error) {
-			installation, err := githubregistry.CompleteSetupState(ctx, tx, stateHash, identity.ID, identity.AccountLogin, completedAt)
+			installation, err := githubregistry.CompleteSetupState(ctx, tx, stateHash, identity.ID, identity.AccountLogin, completedAt, identity.AppID)
 			if err != nil {
 				return githubregistry.Installation{}, err
 			}
@@ -180,6 +231,27 @@ func completeGitHubInstallationSetup(pool transaction.Beginner, verifier githuba
 		}
 		return c.JSON(http.StatusOK, map[string]any{"installation": installation, "verified": true})
 	}
+}
+
+func verifierForSetupState(ctx context.Context, shared githubapp.SetupVerifier, resolver TenantGitHubSetupVerifierResolver, state githubregistry.SetupState) (githubapp.SetupVerifier, error) {
+	if state.AppPin != nil {
+		if resolver == nil {
+			return nil, githubregistry.ErrAppBindingDenied
+		}
+		verifier, err := resolver.ResolveSetupVerifier(ctx, *state.AppPin)
+		if err != nil || verifier == nil {
+			return nil, githubregistry.ErrAppBindingDenied
+		}
+		return verifier, nil
+	}
+	if shared == nil {
+		return nil, githubregistry.ErrAppBindingDenied
+	}
+	return shared, nil
+}
+
+func githubSetupUnavailable(c *echo.Context) error {
+	return c.JSON(http.StatusBadGateway, errorResponse{Error: errorBody{Code: "github_setup_unavailable", Message: "GitHub App setup is temporarily unavailable"}})
 }
 
 func singleQueryValue(values []string) bool { return len(values) == 1 }

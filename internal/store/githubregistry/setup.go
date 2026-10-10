@@ -25,6 +25,7 @@ type SetupState struct {
 	UserID         domain.UserID
 	InstallationID int64
 	CodeVerifier   string
+	AppPin         *SetupAppPin
 }
 
 // HashSetupState returns the irreversible database representation of an
@@ -61,13 +62,25 @@ func ValidateSetupState(ctx context.Context, tx pgx.Tx, stateHash string, now ti
 	var state SetupState
 	var expiresAt time.Time
 	var consumedAt *time.Time
-	err := tx.QueryRow(ctx, `SELECT tenant_id, user_id, COALESCE(installation_id, 0), code_verifier, expires_at, consumed_at
-		FROM github_installation_setup_states WHERE state_sha256 = $1`, strings.ToLower(stateHash)).Scan(&state.TenantID, &state.UserID, &state.InstallationID, &state.CodeVerifier, &expiresAt, &consumedAt)
+	var integrationID, registrationID *string
+	var appID, revision, generation *int64
+	err := tx.QueryRow(ctx, `SELECT tenant_id, user_id, COALESCE(installation_id, 0), code_verifier, expires_at, consumed_at,
+		integration_id, app_registration_id, github_app_id, config_revision, credential_generation
+		FROM github_installation_setup_states WHERE state_sha256 = $1`, strings.ToLower(stateHash)).Scan(&state.TenantID, &state.UserID, &state.InstallationID, &state.CodeVerifier, &expiresAt, &consumedAt, &integrationID, &registrationID, &appID, &revision, &generation)
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && (consumedAt != nil || !expiresAt.After(now)) {
 		return SetupState{}, ErrInvalidSetupState
 	}
 	if err != nil {
 		return SetupState{}, fmt.Errorf("validate GitHub Installation setup state: %w", err)
+	}
+	if integrationID != nil || registrationID != nil || appID != nil || revision != nil || generation != nil {
+		if integrationID == nil || registrationID == nil || appID == nil || revision == nil || generation == nil {
+			return SetupState{}, ErrInvalidSetupState
+		}
+		state.AppPin = &SetupAppPin{TenantID: state.TenantID, IntegrationID: *integrationID, AppRegistrationID: *registrationID, GitHubAppID: *appID, ConfigRevision: *revision, CredentialGeneration: *generation}
+		if err := validateSetupAppPin(ctx, tx, *state.AppPin); err != nil {
+			return SetupState{}, err
+		}
 	}
 	return state, nil
 }
@@ -101,7 +114,7 @@ func SetSetupInstallation(ctx context.Context, tx pgx.Tx, stateHash string, inst
 // tenant claim/binding atomically. Callers must first verify through GitHub's
 // user access token that the installation is visible to the authorizing user
 // and belongs to the configured Hako App.
-func CompleteSetupState(ctx context.Context, tx pgx.Tx, stateHash string, installationID int64, accountLogin string, now time.Time) (Installation, error) {
+func CompleteSetupState(ctx context.Context, tx pgx.Tx, stateHash string, installationID int64, accountLogin string, now time.Time, verifiedAppID ...int64) (Installation, error) {
 	if tx == nil || len(stateHash) != 64 || installationID <= 0 || now.IsZero() {
 		return Installation{}, ErrInvalidSetupState
 	}
@@ -110,6 +123,9 @@ func CompleteSetupState(ctx context.Context, tx pgx.Tx, stateHash string, instal
 		return Installation{}, err
 	}
 	if state.InstallationID != installationID {
+		return Installation{}, ErrSetupInstallationMismatch
+	}
+	if state.AppPin != nil && (len(verifiedAppID) != 1 || verifiedAppID[0] != state.AppPin.GitHubAppID) {
 		return Installation{}, ErrSetupInstallationMismatch
 	}
 	if _, err := authz.RequireTenantRole(ctx, tx, state.UserID, state.TenantID, domain.TenantRoleOwner, domain.TenantRoleAdmin); err != nil {
@@ -143,6 +159,20 @@ func CompleteSetupState(ctx context.Context, tx pgx.Tx, stateHash string, instal
 	}
 	if boundTenantID != state.TenantID {
 		return Installation{}, ErrInstallationBound
+	}
+	if state.AppPin != nil {
+		if err := bindSetupAppInstallation(ctx, tx, *state.AppPin, installationID, now); err != nil {
+			return Installation{}, err
+		}
+	} else {
+		// Shared callbacks may not reactivate or replace an owned binding.
+		var owned bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM tenant_github_app_installation_bindings WHERE installation_id=$1)`, installationID).Scan(&owned); err != nil {
+			return Installation{}, err
+		}
+		if owned {
+			return Installation{}, ErrInstallationBound
+		}
 	}
 	return Get(ctx, tx, state.TenantID, installationID)
 }

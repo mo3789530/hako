@@ -1,5 +1,13 @@
 # GitHub App Installation setup
 
+## Tenant OAuth broker implementation boundary
+
+The broker core (`internal/githubbroker.OAuthService`) requires caller authorization and a live credential resolver per request. Verification rechecks the same authorization and metadata after GitHub I/O, rejecting rotation/revocation or wrong-App results. Only Installation identity is returned; setup/authorization URL generation performs no Secret read. Authentication is currently an injected interface: a concrete authenticated transport and production composition remain unimplemented. Do not expose this core as a public unauthenticated handler.
+
+The initial internal HTTP transport is now implemented under `internal/githubbroker`: private endpoints require TLS 1.3 with a verified client certificate whose URI SAN is `spiffe://hako/control-plane`; the API adapter accepts a matching workload certificate and broker CA roots. Requests carry the DB-pinned integration identity, while the broker authorizer receives the certificate identity in context. The HTTP handler tests exercise rejected certificate identity and mTLS handshake; certificate issuance/rotation, production authorizer/resolver composition and API deployment wiring remain Task 72/67 gates. The HTTP transport code is not enabled by the production API binary yet.
+
+Tenant-owned setup remains default-off. Migration 000063 adds nullable OAuth reader Role/Version fields. `ResolveSetupCredential` requires an approved live Tenant/App/revision/generation pin and rejects Role/Secret reuse with private-key or Webhook purposes. Missing provisioning fails closed. Broker-only `TenantOAuthSecretReader` assumes the exact approved Role and reads only the pinned Secret Version with bounded STS credentials and redacted errors. Authenticated broker transport and production API wiring are not implemented yet (Tasks 66–67). The public API must not become an OAuth Secret reader, and broker responses must never expose Secret values.
+
 The Installation ID on GitHub's setup redirect is untrusted input. Hako does
 not activate a Tenant claim based on that ID alone. The opt-in setup flow
 correlates a Hako Owner/Admin request with a short-lived state, obtains a
@@ -43,6 +51,21 @@ logs not to record callback query strings: OAuth `code` and `state` arrive in
 the callback URL, and credentials must not be retained in logs.
 
 ## GitHub App and Terraform configuration
+
+Tenant-owned setup additionally has an injectable API adapter for
+`POST /v1/tenants/{tenant_id}/github/apps/{integration_id}/setup`. Migration
+`000062` pins integration, App registration/App ID, revision and credential
+generation to the one-time state. The callback chooses the trusted verifier
+from that pin and rechecks it after GitHub verification before consuming the
+state and inserting the immutable integration/Installation binding. It
+rejects wrong-App results, configuration changes, revoked bindings and shared
+callbacks that would replace an owned binding. The normal API binary does
+not configure the trusted Tenant OAuth resolver yet; production activation,
+OAuth-purpose Secret reader/provisioning and CLI setup remain outstanding.
+Apply the revised API INSERT-only grant on
+`tenant_github_app_installation_bindings` before enabling this adapter.
+OAuth exchange and user-token requests never follow HTTP redirects, including
+when a custom HTTP client is supplied.
 
 In the GitHub App settings, configure both the Setup URL and OAuth Callback URL
 to the Control Plane route:

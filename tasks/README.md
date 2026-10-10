@@ -10,6 +10,31 @@
 4. AWS `apply`、実AWSリソース削除、秘密情報の取得/表示は別途明示承認がない限り行わない。Podmanを使うローカルテストは許可されているが、DBコンテナを停止しない。
 5. 終了時に検証結果・未完了項目・commit hashを報告する。別タスクへ範囲を広げず、次の依存可能タスクを示す。
 
+## 作業中タスクの整理（2026-10-11）
+
+主要作業はTask 58。OAuth state pin/callback adapterは実装・ローカル検証済みだが、production broker/CLI接続は未完了。Task 50のローカルセキュリティレビューと依存更新は検証済みで、実AWS確認・運用復旧は未完了。作業ツリーの変更は未commitであり、配備済みを意味しない。
+
+親タスク57–60/50の残作業をTask 66–71へ分割した。OAuth broker通信をTask 72、Claude Code ActionをTask 73として独立させた。親は集約用に残すため、残件数を数えるとき親と子を二重計上しない。子タスクはリポジトリ全体の残件数ではない。
+
+| 順序 | 実行タスク | 親 | 依存・状態 |
+|---|---|---|---|
+| 1 | [66 — OAuth trusted broker](task-66-tenant-oauth-broker.md) | 58 | In Progress：DB resolver/Secret reader実装、認証付きtransport未完了 |
+| 2 | [67 — OAuth API/CLI接続](task-67-tenant-oauth-cli-wiring.md) | 58 | Todo：66後 |
+| 並行可能 | [68 — Webhook abuse制御](task-68-webhook-abuse-controls.md) | 50, 58 | Todo：既存Webhook adapterを利用 |
+| 3 | [69 — proof/checkout broker接続](task-69-tenant-checkout-broker.md) | 57, 59 | Todo：既存resolver/checkoutを利用 |
+| 4 | [70 — binding移行/cutover tooling](task-70-tenant-migration-cutover.md) | 59 | Todo：67, 69後 |
+| 5 | [71 — 二Tenant local E2E](task-71-tenant-app-local-e2e.md) | 60 | Todo：67–70後 |
+| 6 | [72 — OAuth broker mTLS通信](task-72-oauth-broker-mtls.md) | 66 | In Progress：TLS endpoint/client adapter実装、証明書lifecycleとTLS testsが必要 |
+| 別系統 | [73 — Claude Code Action](task-73-claude-code-action.md) | 52 | Todo：Runner/worker/Checks/security基盤後 |
+
+直近の作業はTask 66/72のbroker認証transport。API/CLI接続Task 67へ進み、その後Tenant local E2E71を行う。Claude Code Action Task 73はTask 52のephemeral runnerを再利用し、model secret境界を独立して受け入れる。API/CLIとローカル検証を優先し、Terraform配備は後段とする。その他、実agent接続45、MicroVM image/network PoC61/43、worker配備40、Factory E2E42、Workspace/EFS/Gateway43–47、運用48–50、拡張51–55も残る。詳細は下表と各taskの受入条件を参照する。
+
+### ローカル実装と外部承認の境界
+
+- ローカルで進める：broker adapter、API/CLI接続、fake/Postgres E2E、移行dry-run、runbook。
+- 外部変更前に承認が必要：実Secret取得、Role/Secret provisioning、AWS apply、GitHub設定変更、Tenant activation/cutover。
+- 未検証：実MicroVM/container/network/EFS隔離、Gateway replay/revocation、実AWS recovery。libraryテスト合格を配備完了として扱わない。
+
 ## 優先順位と依存関係
 
 ### P0 — Software Factoryの安全な最小実行経路
@@ -33,7 +58,7 @@
 |---|---|---|
 | [56 — Tenant App Registry/API](task-56-tenant-github-app-registry.md) | 完了：metadata、Owner/Admin API/CLI、承認binding、inert draft | 37（完了） |
 | [57 — Tenant資格情報resolver](task-57-tenant-github-credential-resolver.md) | 進行中：App proof API、active/draft resolver、exact reader provider、revision/generation cache partition/per-use authorizationとRun identity pin contractを実装。production checkout broker wiringが残る | 56 |
-| [58 — Tenant OAuth/Webhook](task-58-tenant-github-setup-webhooks.md) | 進行中：DB/STS Webhook-only resolver、Installation/App ID照合、queue generation fenceとDB障害retry、default-off Terraform ingress/IAM allowlist実装。OAuth stateと実Role provisioningが残る | 56, 57 |
+| [58 — Tenant OAuth/Webhook](task-58-tenant-github-setup-webhooks.md) | 進行中：Webhook resolver/照合/fence、OAuth state pinとcallback adapter実装。production OAuth broker/CLIと実Role provisioningが残る | 56, 57 |
 | [59 — 移行/IAM](task-59-tenant-github-migration-iam.md) | 進行中：Installation binding/Run immutable credential pin実装。backfill/drain/exact IAM/rollback検証が残る | 56–58 |
 | [60 — Tenant App E2E/運用](task-60-tenant-github-app-e2e.md) | 二Tenant越境拒否、rotation、migration、shared回帰 | 56–59 |
 
@@ -74,7 +99,7 @@
 |---|---|---|---|
 | 14 | [48 — Health reporterとplacement運用](task-48-health-reporter.md) | 認証付きreporter、AWS probes、freshness、容量/health検証 | なし |
 | 15 | [49 — Terraform/AWS E2E](task-49-aws-environment-e2e.md) | Account分離環境、実AWS apply手順、作成〜接続〜cleanup検証 | 43–46, 48 |
-| 16 | [50 — Security/Operations](task-50-security-operations.md) | 監査、アラーム、backup/recovery、孤立リソース、CI/AWS定期E2E | 40, 42, 49 |
+| 16 | [50 — Security/Operations](task-50-security-operations.md) | 進行中：既知Go脆弱性11件修正、OAuth redirect拒否、CI govulncheckとlocal review。監査/復旧/実AWS検証が残る | 40, 42, 49 |
 
 ### P3 — Software Factoryの拡張と利用制御
 
@@ -85,7 +110,7 @@
 | 19 | [54 — Preview/Catalog/Deploy](task-54-preview-catalog-deploy.md) | Preview、Software Catalog、OIDC deploy policy | 43–46, 50, 51 |
 | 20 | [55 — Quota/Usage UX](task-55-quota-usage.md) | workload/service quota、利用量と操作UX | 40, 47, 50 |
 
-## 直近の実装状態（2026-10-10確認）
+## 直近の実装状態（2026-10-11確認）
 
 - Workload RunのDB/domain、Tenant visibility、create/list/detail/cancel APIとCLI、transactional Outbox、専用scheduler SQSへのDispatcher、厳格decode・visibility延長・成功後ackするconsumer coreは実装済み。
 - Go testを隔離Podman containerで実行するFake Runtime、commit照合、redacted logs、S3 writer、state/artifact ServiceとTask 38固定commit checkoutを実装済み。Task 39ではCP result handler/result SQS consumerと、条件付きS3 CASを使うRP journal primitiveも追加したが、Fake Runtime Service/SQS workerおよび実Resource Plane executor/controllerとは未接続。
@@ -95,11 +120,11 @@
 - Placement policy/capacity/healthのDB・Schedulerロジックはあるが、Resource Planeからの自動health報告と本番AWS検証は未実装。
 - Tenant別App/三種類のSecret/承認reader Roleの設計を追加（Tasks 56–60）。Task 56でmetadata schemaとAPI-roleのDB grant、Task 57でactive/draft resolver、STS/Secrets Managerのexact Role/Secret/Version provider、integration/revision/generation単位のcache identityとper-use active generation authorization、外部proofとDB OCC再検証を分けたverify APIを追加した。Run integration接続、現行GitHub App設定やAWS IAMのTenant分離は未変更。
 - Task 56のmetadata/API/CLI基盤とPostgreSQL integration validationが完了。Owner/Admin制御、inert draft、idempotency、revision付きdisable、監査、default-off flag、operator-only binding registration手順を追加。Tenant App機能は未有効化。Tasks 57–60は未完了。
-- Task 57でTenant credential proof/resolver/cache safety libraryを追加。API binaryはprivate-key Secret reader Roleを直接assumeせず、信頼されたbroker adapterがない間はverifyを利用不可にする。Task 58でWebhook-purposeのexact-role/version resolver、HMAC後のInstallation authorization、queue処理時のgeneration fence、default-off routeとTerraform role allowlistを追加。OAuth setup pinningと実Role/Secret provisioningは残り、Tenant App activationは引き続きdefault-off。
+- Task 57でTenant credential proof/resolver/cache safety libraryを追加。API binaryはprivate-key Secret reader Roleを直接assumeせず、信頼されたbroker adapterがない間はverifyを利用不可にする。Task 58でWebhook resolver/authorizer/fence、default-off routeとTerraform role allowlist、OAuth setup pin/callback adapterを追加。production OAuth broker/CLIと実Role/Secret provisioningは残り、Tenant App activationは引き続きdefault-off。
 - Task 59のschemaでTenant App/Installation bindingとWorkload Runのintegration/revision/generationを永続化。新規Runはserver-side bindingでpinされ、active Tenant AppがあるのにInstallation未bindingならshared credentialへfallbackしない。旧Runは明示的にshared/null identityのまま。AWS checkout brokerとpurpose-specific IAM、既存データbackfill/drainは未完了。
 - Task 38の固定commit checkout providerを実装・検証済み。Tenant/Installation/Repository認可後にのみ資格情報を要求し、askpass FD経由でtokenを渡す。専用packageのstatement coverageは83.6%。Task 39はCP側のdurable dispatch handoff/result処理、Tasks 62–65はRP journal・公式SDK controller・cancel/cleanup・復旧テストまで実装。基盤はLambda MicroVM、EC2は対象外。Task 61のimage/network PoC、Task 45の実agent連携、Task 40のworker/recovery配備まで実行機能はdefault-off。
 - Task 62のRP command受理libraryを追加。条件付きjournal作成、重複時のidentity照合、cancel/cleanup checkpoint保持を実装。Tasks 63–65でcontroller/公式SDK adapter、CP cancel Outbox、物理cleanup/retry、durable result replayとlocal/PostgreSQL統合テストを実装。実agent/queue/recovery scheduler配備とAWS PoCは未完了。
-- README Phase 0–9には残項目が他にもある。上記Task 36–65がその実行順と受入条件を具体化する。完了判定時はREADMEの該当チェックとこのboardを両方更新する。
+- README Phase 0–9には残項目が他にもある。Task 36–65と追加の実行単位66–73がその実行順と受入条件を具体化する。完了判定時はREADMEの該当チェックとこのboardを両方更新する。
 
 ## 実装の完了定義
 
