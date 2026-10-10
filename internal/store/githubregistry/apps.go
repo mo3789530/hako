@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/idempotency"
@@ -40,6 +42,59 @@ type AppDraftRequest struct {
 	Slug                string `json:"slug"`
 	ClientID            string `json:"client_id"`
 	CredentialBindingID string `json:"credential_binding_id"`
+}
+
+// AppProofCredential is resolved from authoritative Tenant-owned metadata for
+// one verification attempt. The key reference is not a secret value; callers
+// must use it only in the trusted credential service and must not log it.
+type AppProofCredential struct {
+	TenantID             domain.TenantID `json:"tenant_id"`
+	IntegrationID        string          `json:"integration_id"`
+	GitHubAppID          int64           `json:"github_app_id"`
+	PrivateKeySecretARN  string          `json:"-"`
+	ConfigRevision       int64           `json:"config_revision"`
+	CredentialGeneration int64           `json:"credential_generation"`
+}
+
+func (c AppProofCredential) String() string {
+	return "Tenant GitHub App proof credential [REDACTED]"
+}
+
+func (c AppProofCredential) GoString() string { return c.String() }
+
+// ResolveAppProofCredential permits only an approved, draft Tenant-owned App
+// at the exact expected revision/generation. It deliberately exposes only the
+// private-key reference needed to prove App ownership, never OAuth/webhook refs.
+func ResolveAppProofCredential(ctx context.Context, tx pgx.Tx, tenant domain.TenantID, integrationID string, expectedRevision, expectedGeneration int64) (AppProofCredential, error) {
+	if tx == nil || tenant == "" || !validOpaqueMetadata(integrationID, 128) || expectedRevision < 1 || expectedGeneration < 1 {
+		return AppProofCredential{}, ErrAppBindingDenied
+	}
+	var result AppProofCredential
+	err := tx.QueryRow(ctx, `SELECT i.tenant_id, i.id, i.github_app_id, b.private_key_secret_ref,
+		i.config_revision, i.credential_generation
+		FROM tenant_github_integrations i
+		JOIN github_app_registrations a ON a.id = i.app_registration_id AND a.github_app_id = i.github_app_id
+		JOIN github_credential_bindings b ON b.tenant_id = i.tenant_id AND b.id = i.credential_binding_id AND b.github_app_id = i.github_app_id
+		WHERE i.tenant_id = $1 AND i.id = $2 AND i.status = 'draft'
+		AND a.mode = 'tenant_owned' AND a.owner_tenant_id = i.tenant_id
+		AND b.status = 'approved'
+		AND i.config_revision = $3 AND i.credential_generation = $4`, tenant, integrationID, expectedRevision, expectedGeneration).
+		Scan(&result.TenantID, &result.IntegrationID, &result.GitHubAppID, &result.PrivateKeySecretARN, &result.ConfigRevision, &result.CredentialGeneration)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return AppProofCredential{}, ErrAppBindingDenied
+		}
+		return AppProofCredential{}, err
+	}
+	if !validExactSecretARN(result.PrivateKeySecretARN) {
+		return AppProofCredential{}, ErrAppBindingDenied
+	}
+	return result, nil
+}
+
+func validExactSecretARN(value string) bool {
+	parsed, err := arn.Parse(value)
+	return err == nil && parsed.Partition == "aws" && parsed.Service == "secretsmanager" && parsed.Region != "" && len(parsed.AccountID) == 12 && strings.HasPrefix(parsed.Resource, "secret:") && len(parsed.Resource) > len("secret:") && !strings.ContainsAny(value, "*?\r\n")
 }
 
 func NormalizeAppDraft(request AppDraftRequest) (AppDraftRequest, error) {

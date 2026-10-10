@@ -123,6 +123,59 @@ func TestAppDraftApprovalIdempotencyOwnershipAndDisable(t *testing.T) {
 	}
 }
 
+func TestResolveAppProofCredentialIsTenantAndRevisionBound(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	for _, query := range []string{
+		`INSERT INTO tenants (id,name,created_at) VALUES ('tenant_proof_a','A',now()),('tenant_proof_b','B',now())`,
+		`INSERT INTO users (id,cognito_subject,email,created_at) VALUES ('usr_proof','proof-sub','',now())`,
+		`INSERT INTO github_credential_bindings (id,tenant_id,github_app_id,status,private_key_secret_ref,oauth_secret_ref,webhook_secret_ref,approved_at) VALUES ('proof_binding','tenant_proof_a',123,'approved','arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:proof-key','oauth-ref','webhook-ref',now())`,
+		`INSERT INTO github_app_registrations (id,github_app_id,mode,owner_tenant_id,slug,client_id,created_at) VALUES ('proof_registration',123,'tenant_owned','tenant_proof_a','proof-app','client',now())`,
+		`INSERT INTO tenant_github_integrations (id,tenant_id,app_registration_id,github_app_id,credential_binding_id,status,config_revision,credential_generation,idempotency_key,request_sha256,created_by,created_at,updated_at) VALUES ('proof_integration','tenant_proof_a','proof_registration',123,'proof_binding','draft',4,7,'proof-key','request-hash','usr_proof',now(),now())`,
+	} {
+		if _, err := pool.Exec(ctx, query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var matchingRows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM tenant_github_integrations i
+		JOIN github_app_registrations a ON a.id = i.app_registration_id AND a.github_app_id = i.github_app_id
+		JOIN github_credential_bindings b ON b.tenant_id = i.tenant_id AND b.id = i.credential_binding_id AND b.github_app_id = i.github_app_id
+		WHERE i.tenant_id = 'tenant_proof_a' AND i.id = 'proof_integration' AND i.status = 'draft'
+		AND a.mode = 'tenant_owned' AND a.owner_tenant_id = i.tenant_id AND b.status = 'approved'
+		AND i.config_revision = 4 AND i.credential_generation = 7`).Scan(&matchingRows); err != nil || matchingRows != 1 {
+		t.Fatalf("proof resolver fixture did not match its authorization predicate (rows=%d err=%v)", matchingRows, err)
+	}
+	resolve := func(tenant domain.TenantID, revision, generation int64) (AppProofCredential, error) {
+		return transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (AppProofCredential, error) {
+			return ResolveAppProofCredential(ctx, tx, tenant, "proof_integration", revision, generation)
+		})
+	}
+	credential, err := resolve("tenant_proof_a", 4, 7)
+	if err != nil || credential.GitHubAppID != 123 || credential.PrivateKeySecretARN != "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:proof-key" || credential.ConfigRevision != 4 || credential.CredentialGeneration != 7 {
+		t.Fatalf("authoritative draft proof credential did not resolve (err=%v app_id=%d revision=%d generation=%d)", err, credential.GitHubAppID, credential.ConfigRevision, credential.CredentialGeneration)
+	}
+	if _, err := resolve("tenant_proof_b", 4, 7); !errors.Is(err, ErrAppBindingDenied) {
+		t.Fatal("another Tenant resolved the integration credential")
+	}
+	if _, err := resolve("tenant_proof_a", 3, 7); !errors.Is(err, ErrAppBindingDenied) {
+		t.Fatal("stale config revision resolved")
+	}
+	if _, err := resolve("tenant_proof_a", 4, 6); !errors.Is(err, ErrAppBindingDenied) {
+		t.Fatal("stale credential generation resolved")
+	}
+	if _, err := pool.Exec(ctx, `UPDATE tenant_github_integrations SET status = 'disabled' WHERE id = 'proof_integration'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolve("tenant_proof_a", 4, 7); !errors.Is(err, ErrAppBindingDenied) {
+		t.Fatal("disabled integration resolved")
+	}
+}
+
 func TestConcurrentAppDraftDeliveryCreatesOneIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

@@ -14,9 +14,11 @@ Installations. It is not a separate private-key secret for every Tenant.
 Verified Installation bindings, repository authorization and token-cache keys
 are Tenant-scoped; one Tenant cannot request another Tenant's token. Registering
 a Tenant-owned GitHub App with its own App ID/private-key ARN, secret lifecycle
-and routing is not implemented; its [design and Tasks 56–60](tenant-github-apps.md)
-are now recorded separately. The existing OAuth client secret likewise
-belongs to the configured Hako App, not to an individual Tenant.
+and routing are not implemented; Task 57 now has only the draft App proof and
+credential-reference resolver primitives. Its [design and Tasks 56–60](tenant-github-apps.md)
+remain the source of truth for the unimplemented tenant credential lifecycle.
+The existing OAuth client secret likewise belongs to the configured Hako App,
+not to an individual Tenant.
 
 `TokenClient.VerifyApp` is a trusted-library primitive for verifying a
 configured key/App ID pair through GitHub `GET /app`. It returns no App details
