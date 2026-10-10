@@ -39,6 +39,8 @@ type GitHubAppMetadataResult struct {
 	Items       []githubregistry.AppIntegration `json:"items,omitempty"`
 	Limit       int                             `json:"limit,omitempty"`
 	Offset      int                             `json:"offset,omitempty"`
+	SetupURL    string                          `json:"setup_url,omitempty"`
+	ExpiresAt   *time.Time                      `json:"expires_at,omitempty"`
 }
 
 func githubAppOwnerMiddleware(next echo.HandlerFunc) echo.HandlerFunc {

@@ -16,4 +16,8 @@ func TestParseGitHubAppCLIAllowsReferencesNotSecretInputs(t *testing.T) {
 	if err != nil || input.ExpectedRevision != 1 {
 		t.Fatal("revision-bound disable parsing failed")
 	}
+	input, err = parseGitHubAppCLI([]string{"setup", "--tenant", "tenant_one", "--integration", "gint_one"})
+	if err != nil || input.Action != "setup" || input.IntegrationID != "gint_one" {
+		t.Fatal("Tenant GitHub App setup parsing failed")
+	}
 }

@@ -40,6 +40,8 @@ Installation binding、Workload Run pin、OAuth setup pinのDDLはTasks 58/59の
 
 ## 3. 設定APIとRBAC
 
+Tenant OAuth brokerが設定されたAPIでは、`hako github app setup --tenant <id> --integration <id>`がOwner/Admin用の一回限りInstall URLを取得し、ブラウザを開く。broker設定がない場合はowned setup routeを登録しない。
+
 | API | 権限・契約 |
 |---|---|
 | `GET /v1/tenants/{tenant}/github/apps` | Owner/Admin。mode、App ID、slug、integration status、revisionだけ返す |

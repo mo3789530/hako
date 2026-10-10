@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -55,7 +56,7 @@ func NewMTLSClient(certificate tls.Certificate, brokerRoots *x509.CertPool) (*ht
 	if !validIdentity {
 		return nil, ErrUnavailable
 	}
-	return &http.Client{Timeout: 6 * time.Second, Transport: &http.Transport{
+	return &http.Client{Timeout: 6 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }, Transport: &http.Transport{
 		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: brokerRoots, Certificates: []tls.Certificate{certificate}},
 		Proxy:           nil, DisableKeepAlives: false, MaxIdleConnsPerHost: 8,
 	}}, nil
@@ -172,11 +173,23 @@ type HTTPResolver struct {
 	Client  *http.Client
 }
 
-func (c *HTTPResolver) ResolveSetupVerifier(_ context.Context, pin githubregistry.SetupAppPin) (githubapp.SetupVerifier, error) {
-	if c == nil || c.Client == nil || !strings.HasPrefix(c.BaseURL, "https://") {
+func NewHTTPResolver(baseURL string, client *http.Client) (*HTTPResolver, error) {
+	base, err := url.Parse(strings.TrimSpace(baseURL))
+	if client == nil || err != nil || base.Scheme != "https" || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" {
 		return nil, ErrUnavailable
 	}
-	return &httpVerifier{base: strings.TrimRight(c.BaseURL, "/"), client: c.Client, pin: pin}, nil
+	return &HTTPResolver{BaseURL: strings.TrimRight(base.String(), "/"), Client: client}, nil
+}
+
+func (c *HTTPResolver) ResolveSetupVerifier(_ context.Context, pin githubregistry.SetupAppPin) (githubapp.SetupVerifier, error) {
+	if c == nil {
+		return nil, ErrUnavailable
+	}
+	validated, err := NewHTTPResolver(c.BaseURL, c.Client)
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	return &httpVerifier{base: validated.BaseURL, client: c.Client, pin: pin}, nil
 }
 
 type httpVerifier struct {

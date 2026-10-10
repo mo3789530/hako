@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/mo3789530/hako/internal/idempotency"
 	"github.com/mo3789530/hako/internal/store/githubregistry"
@@ -22,6 +24,40 @@ type GitHubAppMetadataRequest struct {
 	IdempotencyKey   string
 	ExpectedRevision int64
 	Limit, Offset    int
+}
+
+type GitHubAppSetupResult struct {
+	SetupURL  string    `json:"setup_url"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+func BeginTenantGitHubAppSetup(ctx context.Context, baseURL, accessToken, tenantID, integrationID string, client *http.Client) (GitHubAppSetupResult, error) {
+	var result GitHubAppSetupResult
+	if !validTenantID(tenantID) || !validOpaqueID(integrationID) || strings.TrimSpace(accessToken) == "" {
+		return result, errors.New("valid Tenant, integration and access token are required")
+	}
+	endpoint, err := apiEndpoint(baseURL, "/v1/tenants/"+url.PathEscape(tenantID)+"/github/apps/"+url.PathEscape(integrationID)+"/setup")
+	if err != nil {
+		return result, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader([]byte(`{}`)))
+	if err != nil {
+		return result, errors.New("create GitHub App setup request failed")
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	response, err := safeAPIClient(client).Do(req)
+	if err != nil {
+		return result, errors.New("GitHub App setup request failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		return result, readAPIError(response)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil || !validGitHubSetupURL(result.SetupURL, "/apps/") || result.ExpiresAt.IsZero() {
+		return GitHubAppSetupResult{}, errors.New("invalid GitHub App setup response")
+	}
+	return result, nil
 }
 
 func ManageGitHubApp(ctx context.Context, baseURL, accessToken string, input GitHubAppMetadataRequest, client *http.Client) (GitHubAppMetadataResult, error) {

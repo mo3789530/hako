@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -103,7 +104,7 @@ func beginGitHubInstallationSetupForApp(pool transaction.Beginner, verifier gith
 		c.Response().Header().Set("Cache-Control", "no-store")
 		c.Response().Header().Set("Referrer-Policy", "no-referrer")
 		setupURL := requestVerifier.SetupURL(state)
-		if setupURL == "" {
+		if !validGitHubSetupURL(setupURL, "/apps/") {
 			return githubSetupUnavailable(c)
 		}
 		return c.JSON(http.StatusCreated, map[string]any{
@@ -168,7 +169,7 @@ func completeGitHubInstallationSetup(pool transaction.Beginner, verifier githuba
 			c.Response().Header().Set("Cache-Control", "no-store")
 			c.Response().Header().Set("Referrer-Policy", "no-referrer")
 			authorizationURL := requestVerifier.AuthorizationURL(state, setupState.CodeVerifier)
-			if authorizationURL == "" {
+			if !validGitHubSetupURL(authorizationURL, "/login/oauth/authorize") {
 				return githubSetupUnavailable(c)
 			}
 			return c.Redirect(http.StatusFound, authorizationURL)
@@ -231,6 +232,11 @@ func completeGitHubInstallationSetup(pool transaction.Beginner, verifier githuba
 		}
 		return c.JSON(http.StatusOK, map[string]any{"installation": installation, "verified": true})
 	}
+}
+
+func validGitHubSetupURL(value, pathPrefix string) bool {
+	parsed, err := url.Parse(value)
+	return err == nil && parsed.Scheme == "https" && parsed.Host == "github.com" && parsed.User == nil && parsed.Fragment == "" && strings.HasPrefix(parsed.Path, pathPrefix)
 }
 
 func verifierForSetupState(ctx context.Context, shared githubapp.SetupVerifier, resolver TenantGitHubSetupVerifierResolver, state githubregistry.SetupState) (githubapp.SetupVerifier, error) {

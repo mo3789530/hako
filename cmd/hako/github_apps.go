@@ -45,12 +45,12 @@ func parseGitHubAppCLI(args []string) (api.GitHubAppMetadataRequest, error) {
 			}
 			input.IdempotencyKey = key
 		}
-	case "show", "disable", "verify", "select-default":
-		if input.IntegrationID == "" || (input.Action != "show" && input.ExpectedRevision < 1) {
+	case "show", "disable", "verify", "select-default", "setup":
+		if input.IntegrationID == "" || (input.Action != "show" && input.Action != "setup" && input.ExpectedRevision < 1) {
 			return input, errors.New("--integration and positive --revision are required for changes")
 		}
 	default:
-		return input, errors.New("supported actions: list, add, show, disable, verify, select-default")
+		return input, errors.New("supported actions: list, add, show, setup, disable, verify, select-default")
 	}
 	return input, nil
 }
@@ -59,6 +59,20 @@ func manageGitHubAppCLI(args []string) (api.GitHubAppMetadataResult, string, err
 	input, err := parseGitHubAppCLI(args)
 	if err != nil {
 		return api.GitHubAppMetadataResult{}, "", err
+	}
+	if input.Action == "setup" {
+		token, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
+		if err != nil {
+			return api.GitHubAppMetadataResult{}, "", err
+		}
+		setup, err := api.BeginTenantGitHubAppSetup(context.Background(), strings.TrimSpace(os.Getenv("HAKO_API_URL")), token, input.TenantID, input.IntegrationID, nil)
+		if err != nil {
+			return api.GitHubAppMetadataResult{}, "", err
+		}
+		if err := cliBrowserOpener(setup.SetupURL); err != nil {
+			return api.GitHubAppMetadataResult{}, "", err
+		}
+		return api.GitHubAppMetadataResult{SetupURL: setup.SetupURL, ExpiresAt: &setup.ExpiresAt}, "", nil
 	}
 	token, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
 	if err != nil {

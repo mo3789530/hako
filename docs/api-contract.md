@@ -86,8 +86,15 @@ verifier from that stored pin; callback query Tenant/App IDs are not used.
 Wrong-App verification returns 401, expired/changed/consumed state returns
 400, and an unavailable broker returns sanitized 502
 `github_setup_unavailable`. Final binding creation rechecks Owner/Admin and
-the pin transactionally. This adapter is not configured by the production
-API binary yet; that binary does not expose the owned setup endpoint.
+the pin transactionally. The production API can be configured with
+`HAKO_TENANT_GITHUB_OAUTH_BROKER_URL`, `HAKO_TENANT_GITHUB_OAUTH_CLIENT_CERT_FILE`,
+`HAKO_TENANT_GITHUB_OAUTH_CLIENT_KEY_FILE`, and
+`HAKO_TENANT_GITHUB_OAUTH_BROKER_CA_FILE`; all four are required together and
+the App management feature flag must also be enabled. The API sends only its
+mTLS client identity and database-resolved pin to the broker. The CLI command
+`hako github app setup --tenant <tenant> --integration <integration>` starts
+the one-time flow and opens the returned GitHub URL. Broker endpoint deployment
+and certificate provisioning remain separate operations.
 
 ## Audit events
 

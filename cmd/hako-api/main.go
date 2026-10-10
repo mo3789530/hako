@@ -55,6 +55,14 @@ func main() {
 		WorkloadRunsEnabled:        strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_WORKLOAD_RUNS_ENABLED")), "true"),
 		GitHubAppManagementEnabled: strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_GITHUB_APP_MANAGEMENT_ENABLED")), "true"),
 	}
+	tenantSetupResolver, err := tenantOAuthBrokerFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
+	if tenantSetupResolver != nil && !createConfig.GitHubAppManagementEnabled {
+		log.Fatal("Tenant GitHub OAuth broker requires HAKO_GITHUB_APP_MANAGEMENT_ENABLED=true")
+	}
+	createConfig.TenantGitHubSetupResolver = tenantSetupResolver
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_TENANT_GITHUB_WEBHOOK_ENABLED")), "true") {
 		awsConfig, err := config.LoadDefaultConfig(ctx)
 		if err != nil {
