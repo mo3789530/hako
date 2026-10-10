@@ -51,7 +51,7 @@ registration ID、integration ID、credential binding IDは別物。表示App ID
 | `POST .../{integration}/setup` | Owner/Admin。対象integrationに固定した既存PKCE setup flowを開始 |
 
 OAuth callbackは既存共通routeを維持し、one-time stateから対象integrationを解決する。callback queryのTenant/App IDでverifierを選ばない。
-Webhookは`POST /v1/integrations/github/{opaque_route_id}/webhook`を別途追加する。
+Webhookは`POST /v1/integrations/github/apps/{integration_id}/webhook`を別途追加する。
 
 POSTにはidempotency key、更新にはexpected revisionを用い、競合は409。未承認binding、別Tenant/App所有bindingはSecret取得前に拒否する。
 App verificationとdefault選択は別操作であり、GitHub疎通成功だけでRunを起動しない。
@@ -112,6 +112,8 @@ Webhook routingは次の順序を固定する。
 
 既存共通Webhook URLはshared専用aliasとして保持する。Tenant-ownedの処理失敗を共通secretで再検証しない。
 公開ingressにApp private key/OAuth client secretを読ませず、Webhook-purpose readerまたは内部検証brokerを使う。
+
+実装状況: Tenant ingress handlerはこの順序のうちopaque route解決、raw-body HMAC、current/previous secretの期限付き検証、HMAC後のgeneration/Installation authorizer、integration付きdurable inbox handoffまで実装済み。API routeとdedup keyも追加した。AWS-backed webhook-only secret resolver、DB側generation/Installation authorizer、processorでのintegration recheck、およびTenant App OAuth state/verifier連携は未実装で、owned modeはdefault-offのまま。
 
 ## 7. ローテーション・停止
 

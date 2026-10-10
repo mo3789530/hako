@@ -39,6 +39,11 @@ func TestInboxRecordIsDurableAndIdempotent(t *testing.T) {
 	if err != nil || inserted {
 		t.Fatalf("replay = inserted %v, err %v", inserted, err)
 	}
+	otherIntegration := delivery
+	otherIntegration.IntegrationID = "integration_other"
+	if inserted, err = inbox.Record(ctx, otherIntegration, now); err != nil || !inserted {
+		t.Fatalf("same Delivery ID in another integration = inserted %v, err %v", inserted, err)
+	}
 	conflicting := delivery
 	conflicting.Payload = []byte(strings.Replace(string(delivery.Payload), `"action":"opened"`, `"action":"opened","changed":true`, 1))
 	if _, err := inbox.Record(ctx, conflicting, now); !errors.Is(err, ErrDeliveryIDConflict) {
@@ -51,8 +56,8 @@ func TestInboxRecordIsDurableAndIdempotent(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*), MIN(payload_json), MAX(event_schema_version), MIN(normalized_event_json) FROM github_webhook_deliveries WHERE delivery_id = $1`, delivery.DeliveryID).Scan(&count, &payload, &schemaVersion, &eventJSON); err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 || payload != string(delivery.Payload) || schemaVersion != githubwebhook.RepositoryEventSchemaVersion {
-		t.Fatalf("persisted rows = %d schema=%d payload=%s; want one original payload and normalized schema", count, schemaVersion, payload)
+	if count != 2 || payload != string(delivery.Payload) || schemaVersion != githubwebhook.RepositoryEventSchemaVersion {
+		t.Fatalf("persisted rows = %d schema=%d payload=%s; want one row per integration and normalized schema", count, schemaVersion, payload)
 	}
 	var normalized githubwebhook.RepositoryEvent
 	if err := json.Unmarshal([]byte(eventJSON), &normalized); err != nil || normalized.Type != "repository.pull_request.opened" || normalized.Repository == nil || normalized.Repository.GitHubID != 42 || normalized.PullRequest == nil || normalized.PullRequest.Number != 17 {

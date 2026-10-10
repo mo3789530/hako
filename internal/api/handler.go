@@ -57,6 +57,7 @@ type WorkspaceCreateConfig struct {
 	WorkloadRunsEnabled        bool
 	GitHubAppManagementEnabled bool
 	GitHubAppProofVerifier     TenantGitHubAppProofVerifier
+	TenantGitHubWebhookHandler http.Handler
 }
 
 type workspaceCreateRequest struct {
@@ -147,6 +148,12 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 	if webhookHandler != nil {
 		e.POST("/v1/integrations/github/webhook", func(c *echo.Context) error {
 			webhookHandler.ServeHTTP(c.Response(), c.Request())
+			return nil
+		})
+	}
+	if workspaceConfig.TenantGitHubWebhookHandler != nil {
+		e.POST("/v1/integrations/github/apps/:integration_id/webhook", func(c *echo.Context) error {
+			workspaceConfig.TenantGitHubWebhookHandler.ServeHTTP(c.Response(), c.Request())
 			return nil
 		})
 	}

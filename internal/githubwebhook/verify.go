@@ -25,9 +25,12 @@ var ErrDeliveryIDConflict = errors.New("GitHub Delivery ID was reused with a dif
 
 type VerifiedDelivery struct {
 	DeliveryID string
-	Event      string
-	Action     string
-	Payload    json.RawMessage
+	// IntegrationID is empty for the legacy shared-App route. Tenant-owned
+	// ingress sets it only after the route-specific HMAC has been verified.
+	IntegrationID string
+	Event         string
+	Action        string
+	Payload       json.RawMessage
 }
 
 type Inbox interface {

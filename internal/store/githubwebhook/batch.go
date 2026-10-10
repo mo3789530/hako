@@ -33,7 +33,7 @@ func ProcessBatch(ctx context.Context, pool BatchPool, policy transaction.Policy
 	if pool == nil || batchSize < 1 || batchSize > MaxRepositoryEventBatchSize {
 		return stats, fmt.Errorf("database pool and batch size between 1 and %d are required", MaxRepositoryEventBatchSize)
 	}
-	rows, err := pool.Query(ctx, `SELECT d.delivery_id, d.event_type
+	rows, err := pool.Query(ctx, `SELECT d.integration_id, d.delivery_id, d.event_type
 		FROM github_webhook_deliveries d
 		WHERE d.processing_status = 'received'
 		  AND d.event_schema_version = $2
@@ -49,11 +49,11 @@ func ProcessBatch(ctx context.Context, pool BatchPool, policy transaction.Policy
 	if err != nil {
 		return stats, fmt.Errorf("select pending GitHub repository events: %w", err)
 	}
-	type pendingDelivery struct{ id, eventType string }
+	type pendingDelivery struct{ integrationID, id, eventType string }
 	var pending []pendingDelivery
 	for rows.Next() {
 		var delivery pendingDelivery
-		if err := rows.Scan(&delivery.id, &delivery.eventType); err != nil {
+		if err := rows.Scan(&delivery.integrationID, &delivery.id, &delivery.eventType); err != nil {
 			rows.Close()
 			return stats, fmt.Errorf("scan pending GitHub repository event: %w", err)
 		}
@@ -69,9 +69,9 @@ func ProcessBatch(ctx context.Context, pool BatchPool, policy transaction.Policy
 		stats.Claimed++
 		processed, err := transaction.Within(ctx, pool, policy, func(ctx context.Context, tx pgx.Tx) (bool, error) {
 			if delivery.eventType == "installation" {
-				return ProcessInstallationLifecycleDelivery(ctx, tx, delivery.id, processedAt)
+				return ProcessInstallationLifecycleDeliveryForIntegration(ctx, tx, delivery.integrationID, delivery.id, processedAt)
 			}
-			return ProcessInstallationRepositoryDelivery(ctx, tx, delivery.id, processedAt)
+			return ProcessInstallationRepositoryDeliveryForIntegration(ctx, tx, delivery.integrationID, delivery.id, processedAt)
 		})
 		if errors.Is(err, githubregistry.ErrInstallationNotActive) {
 			stats.Deferred++

@@ -33,14 +33,18 @@ type Inbox struct {
 // caller's transaction. An inactive Installation or unsupported event leaves
 // the delivery unchanged so another consumer or a later retry can handle it.
 func ProcessInstallationRepositoryDelivery(ctx context.Context, tx pgx.Tx, deliveryID string, processedAt time.Time) (bool, error) {
-	if tx == nil || !coreValidDeliveryID(deliveryID) {
+	return ProcessInstallationRepositoryDeliveryForIntegration(ctx, tx, "shared", deliveryID, processedAt)
+}
+
+func ProcessInstallationRepositoryDeliveryForIntegration(ctx context.Context, tx pgx.Tx, integrationID, deliveryID string, processedAt time.Time) (bool, error) {
+	if tx == nil || !validStoredIntegrationID(integrationID) || !coreValidDeliveryID(deliveryID) {
 		return false, errors.New("transaction and valid GitHub Delivery ID are required")
 	}
 	var status string
 	var schemaVersion int
 	var eventJSON string
 	err := tx.QueryRow(ctx, `SELECT processing_status, event_schema_version, normalized_event_json
-		FROM github_webhook_deliveries WHERE delivery_id = $1`, deliveryID).Scan(&status, &schemaVersion, &eventJSON)
+		FROM github_webhook_deliveries WHERE integration_id = $1 AND delivery_id = $2`, integrationID, deliveryID).Scan(&status, &schemaVersion, &eventJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, pgx.ErrNoRows
 	}
@@ -76,7 +80,7 @@ func ProcessInstallationRepositoryDelivery(ctx context.Context, tx pgx.Tx, deliv
 		processedAt = time.Now().UTC()
 	}
 	tag, err := tx.Exec(ctx, `UPDATE github_webhook_deliveries SET processing_status = 'processed'
-		WHERE delivery_id = $1 AND processing_status = 'received' AND event_schema_version = $2`, deliveryID, schemaVersion)
+		WHERE integration_id = $1 AND delivery_id = $2 AND processing_status = 'received' AND event_schema_version = $3`, integrationID, deliveryID, schemaVersion)
 	if err != nil {
 		return false, fmt.Errorf("mark GitHub webhook delivery processed: %w", err)
 	}
@@ -91,13 +95,17 @@ func ProcessInstallationRepositoryDelivery(ctx context.Context, tx pgx.Tx, deliv
 // Webhooks never create or restore Tenant authorization: setup verification
 // remains the only path to an active binding.
 func ProcessInstallationLifecycleDelivery(ctx context.Context, tx pgx.Tx, deliveryID string, processedAt time.Time) (bool, error) {
-	if tx == nil || !coreValidDeliveryID(deliveryID) {
+	return ProcessInstallationLifecycleDeliveryForIntegration(ctx, tx, "shared", deliveryID, processedAt)
+}
+
+func ProcessInstallationLifecycleDeliveryForIntegration(ctx context.Context, tx pgx.Tx, integrationID, deliveryID string, processedAt time.Time) (bool, error) {
+	if tx == nil || !validStoredIntegrationID(integrationID) || !coreValidDeliveryID(deliveryID) {
 		return false, errors.New("transaction and valid GitHub Delivery ID are required")
 	}
 	var status, eventType, action, eventJSON string
 	var schemaVersion int
 	err := tx.QueryRow(ctx, `SELECT processing_status, event_type, action, event_schema_version, normalized_event_json
-		FROM github_webhook_deliveries WHERE delivery_id = $1`, deliveryID).
+		FROM github_webhook_deliveries WHERE integration_id = $1 AND delivery_id = $2`, integrationID, deliveryID).
 		Scan(&status, &eventType, &action, &schemaVersion, &eventJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, pgx.ErrNoRows
@@ -158,7 +166,7 @@ func ProcessInstallationLifecycleDelivery(ctx context.Context, tx pgx.Tx, delive
 		}
 	}
 	tag, err := tx.Exec(ctx, `UPDATE github_webhook_deliveries SET processing_status = 'processed'
-		WHERE delivery_id = $1 AND processing_status = 'received' AND event_schema_version = $2`, deliveryID, schemaVersion)
+		WHERE integration_id = $1 AND delivery_id = $2 AND processing_status = 'received' AND event_schema_version = $3`, integrationID, deliveryID, schemaVersion)
 	if err != nil {
 		return false, fmt.Errorf("mark GitHub Installation event processed: %w", err)
 	}
@@ -207,6 +215,13 @@ func (i Inbox) Record(ctx context.Context, delivery githubwebhook.VerifiedDelive
 	if receivedAt.IsZero() {
 		receivedAt = time.Now().UTC()
 	}
+	integrationID := delivery.IntegrationID
+	if integrationID == "" {
+		integrationID = "shared"
+	}
+	if !validStoredIntegrationID(integrationID) {
+		return false, errors.New("verified GitHub webhook integration identity is invalid")
+	}
 	var installationID any
 	if normalized.InstallationID > 0 {
 		installationID = normalized.InstallationID
@@ -215,9 +230,9 @@ func (i Inbox) Record(ctx context.Context, delivery githubwebhook.VerifiedDelive
 	payloadHash := hex.EncodeToString(digest[:])
 	return transaction.Within(ctx, i.Pool, i.Policy, func(ctx context.Context, tx pgx.Tx) (bool, error) {
 		tag, err := tx.Exec(ctx, `INSERT INTO github_webhook_deliveries
-			(delivery_id, event_type, action, payload_json, payload_sha256, received_at, processing_status, event_schema_version, normalized_event_json, installation_id)
-			VALUES ($1, $2, $3, $4, $5, $6, 'received', $7, $8, $9)
-			ON CONFLICT (delivery_id) DO NOTHING`, delivery.DeliveryID, delivery.Event, delivery.Action, string(delivery.Payload), payloadHash, receivedAt, githubwebhook.RepositoryEventSchemaVersion, string(normalizedJSON), installationID)
+			(integration_id, delivery_id, event_type, action, payload_json, payload_sha256, received_at, processing_status, event_schema_version, normalized_event_json, installation_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, 'received', $8, $9, $10)
+			ON CONFLICT (integration_id, delivery_id) DO NOTHING`, integrationID, delivery.DeliveryID, delivery.Event, delivery.Action, string(delivery.Payload), payloadHash, receivedAt, githubwebhook.RepositoryEventSchemaVersion, string(normalizedJSON), installationID)
 		if err != nil {
 			return false, fmt.Errorf("insert GitHub webhook delivery: %w", err)
 		}
@@ -226,7 +241,7 @@ func (i Inbox) Record(ctx context.Context, delivery githubwebhook.VerifiedDelive
 		}
 		var existingHash string
 		var schemaVersion int
-		if err := tx.QueryRow(ctx, `SELECT payload_sha256, event_schema_version FROM github_webhook_deliveries WHERE delivery_id = $1`, delivery.DeliveryID).Scan(&existingHash, &schemaVersion); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT payload_sha256, event_schema_version FROM github_webhook_deliveries WHERE integration_id = $1 AND delivery_id = $2`, integrationID, delivery.DeliveryID).Scan(&existingHash, &schemaVersion); err != nil {
 			return false, fmt.Errorf("read existing GitHub webhook delivery: %w", err)
 		}
 		if existingHash != payloadHash {
@@ -234,12 +249,24 @@ func (i Inbox) Record(ctx context.Context, delivery githubwebhook.VerifiedDelive
 		}
 		if schemaVersion == 0 {
 			if _, err := tx.Exec(ctx, `UPDATE github_webhook_deliveries
-				SET event_schema_version = $2, normalized_event_json = $3, installation_id = $5
-				WHERE delivery_id = $1 AND payload_sha256 = $4 AND event_schema_version = 0`,
-				delivery.DeliveryID, githubwebhook.RepositoryEventSchemaVersion, string(normalizedJSON), payloadHash, installationID); err != nil {
+				SET event_schema_version = $3, normalized_event_json = $4, installation_id = $6
+				WHERE integration_id = $1 AND delivery_id = $2 AND payload_sha256 = $5 AND event_schema_version = 0`,
+				integrationID, delivery.DeliveryID, githubwebhook.RepositoryEventSchemaVersion, string(normalizedJSON), payloadHash, installationID); err != nil {
 				return false, fmt.Errorf("backfill normalized GitHub event: %w", err)
 			}
 		}
 		return false, nil
 	})
+}
+
+func validStoredIntegrationID(value string) bool {
+	if len(value) < 3 || len(value) > 128 {
+		return false
+	}
+	for _, r := range value {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-') {
+			return false
+		}
+	}
+	return true
 }
