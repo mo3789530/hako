@@ -67,14 +67,14 @@
 ## 直近の実装状態（2026-10-10確認）
 
 - Workload RunのDB/domain、Tenant visibility、create/list/detail/cancel APIとCLI、transactional Outbox、専用scheduler SQSへのDispatcher、厳格decode・visibility延長・成功後ackするconsumer coreは実装済み。
-- Go testを隔離Podman containerで実行するFake Runtime、commit照合、redacted logs、S3 writer、state/artifact ServiceとTask 38固定commit checkoutを実装済み。Task 39ではCP result handlerも追加したが、Fake Runtime Service/SQS workerおよび実Resource Plane executorとは未接続。
+- Go testを隔離Podman containerで実行するFake Runtime、commit照合、redacted logs、S3 writer、state/artifact ServiceとTask 38固定commit checkoutを実装済み。Task 39ではCP result handlerとdurable outcome後だけackするinjectable result SQS consumerも追加したが、Fake Runtime Service/SQS workerおよび実Resource Plane executorとは未接続。
 - `enable_workload_run_creation`はdefault-off。worker/handlerの運用可能性を確認せず有効化しない。
 - Task 37の資格情報libraryは実装・検証済み。App private keyはAWSCURRENTから取得し、Tenant/Repository認可とlive Installation検証後にread-only tokenを発行する。専用service/IAM配備とcheckout接続は未実装。
 - Resource PlaneのWorkspace Lambdaは明示opt-inのFake Runtime用。実AWS MicroVM Runtime、durable fencing、EFS、Gatewayは未実装。
 - Placement policy/capacity/healthのDB・Schedulerロジックはあるが、Resource Planeからの自動health報告と本番AWS検証は未実装。
 - Tenant別App/三種類のSecret/承認reader Roleの設計を追加（Tasks 56–60）。Task 56でmetadata schemaとAPI-roleのDB grantを追加したが、現行GitHub App設定やAWS IAMのTenant分離は未変更。
 - Task 56のmetadata/API/CLI基盤とPostgreSQL integration validationが完了。Owner/Admin制御、inert draft、idempotency、revision付きdisable、監査、default-off flag、operator-only binding registration手順を追加。Tenant App機能は未有効化。Tasks 57–60は未完了。
-- Task 38の固定commit checkout providerを実装・検証済み。Tenant/Installation/Repository認可後にのみ資格情報を要求し、askpass FD経由でtokenを渡す。専用packageのstatement coverageは83.6%。Task 39はCP側のdurable dispatch handoffとfenced result handlerまで実装、RP execution/journal/cleanup/recoveryを継続中。
+- Task 38の固定commit checkout providerを実装・検証済み。Tenant/Installation/Repository認可後にのみ資格情報を要求し、askpass FD経由でtokenを渡す。専用packageのstatement coverageは83.6%。Task 39はCP側のdurable dispatch handoff、fenced result handler、durable outcome後だけackするinjectable result SQS consumerまで実装。RP execution/journal、deployed consumer、cleanup/recoveryを継続中。
 - README Phase 0–9には残項目が他にもある。上記Task 36–60がその実行順と受入条件を具体化する。完了判定時はREADMEの該当チェックとこのboardを両方更新する。
 
 ## 実装の完了定義

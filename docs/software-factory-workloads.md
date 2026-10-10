@@ -117,15 +117,19 @@ The SQS worker role will require receive/delete/change-visibility permissions
 scoped to the scheduler queue. This is consumer infrastructure, not yet a
 deployed worker or a handler wired to repository checkout and execution.
 
-The Control Plane now has a result application handler for the versioned
+The Control Plane now has a result application handler and an injectable SQS
+consumer for the versioned
 Resource Plane result envelope. It validates Tenant, Run, attempt, generation,
 placement, and commit against DSQL; stale generations are acknowledged without
 state changes, and terminal duplicates are idempotent. Cancellation requests
 and the immutable `timeout_at` win over a late success. A result can carry only
 redacted log artifact metadata (opaque storage reference, size up to 100 MiB,
 and SHA-256); artifact metadata and the terminal Run transition commit in one
-transaction. This handler is not yet connected to a deployed result SQS
-consumer, and physical VM cleanup remains a separate unfinished protocol.
+transaction. The consumer defaults to batch size one and deletes a receipt only
+after durable apply, duplicate, or stale classification; malformed and
+transiently failed deliveries remain for retry/DLQ. It is not yet wired into a
+deployed service or queue configuration, and physical VM cleanup remains a
+separate unfinished protocol.
 The local Fake Runtime also has an explicit Go test Job entry point for an
 already-checked-out repository and immutable commit. It verifies `HEAD` before
 execution and invokes `go test ./...` only inside a one-shot Podman container
