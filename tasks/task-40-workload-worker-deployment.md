@@ -1,6 +1,6 @@
 # Task 40: Workload Worker, Queue, and Artifact Deployment
 
-Status: Blocked on Task 39 integration and Task 61 Lambda MicroVM provider/API validation. Priority: P0.
+Status: Blocked on Task 61 provider/API validation and Task 63 controller/recovery. Priority: P0.
 
 ## Goal
 

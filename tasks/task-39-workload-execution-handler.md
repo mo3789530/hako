@@ -1,10 +1,10 @@
 # Task 39: Idempotent Workload Execution Handler
 
-Status: In Progress (durable Control Plane dispatch handoff underway). Priority: P0.
+Status: In Progress (CP foundations implemented; RP integration split into Tasks 62–63). Priority: P0.
 
 ## Goal
 
-Implement the short-lived dispatch, Resource Plane execution, and result/cleanup handlers specified by [ADR 0006](../docs/adr/0006-workload-worker-substrate.md). Reuse checkout, redaction, and artifact interfaces, but split the current direct-DB Service into Control Plane orchestration and Resource Plane executor. A valid queue message must never be treated as success merely because it decoded.
+Implement the short-lived dispatch, Resource Plane execution, and result/cleanup handlers specified by [ADR 0008](../docs/adr/0008-non-ec2-workload-runtime.md). Reuse checkout, redaction, and artifact interfaces, but split the current direct-DB Service into Control Plane orchestration and Resource Plane executor. Task 62 implements durable command acceptance; Task 63 owns Lambda MicroVM launch/recovery/cancel/cleanup and queue integration. A valid queue message must never be treated as success merely because it decoded.
 
 ## Work
 
