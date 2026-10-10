@@ -1,96 +1,40 @@
-# ADR 0008: Software Factory Workload runtime (non-EC2)
+# ADR 0008: Lambda MicroVM Workload Runtime
 
-- Status: Accepted for the initial native Job profile; deployment and AWS PoC pending
+- Status: Architecture direction accepted; provider API and PoC pending
 - Date: 2026-10-10
-- Scope: Software Factory `job` Runs only. Workspace Runtime selection remains Task 43.
+- Scope: Software Factory Workload Runtime; aligned with Workspace Lambda MicroVM.
 
 ## Decision
 
-Use one Amazon ECS task on AWS Fargate per Workload Run attempt for the initial
-native Job profile. Hako does not create, configure, or operate EC2 instances,
-EC2-backed worker fleets, AMIs, EBS worker disks, or EC2 lifecycle APIs. Fargate
-is a managed non-EC2 execution API from Hako's perspective; Hako owns ECS task
-definitions, `RunTask`/`StopTask`, networking, IAM boundaries, and cleanup.
+ユーザー指定により実行基盤は **Lambda MicroVM** とする。先のFargate選定は撤回する。EC2 worker、AMI、EBS worker disk、EC2 lifecycle権限も追加しない。Gateway用ECS/Fargate案は今回のWorkload基盤訂正とは別の責務である。
 
-The first supported profile is an OCI image that runs a bounded command directly
-(initially the existing fixed-commit `go test ./...` path). It does not run
-Docker-in-Docker, a Docker daemon, Podman, privileged containers, or arbitrary
-nested containers. Build workloads that require those capabilities remain
-unsupported until a separate non-EC2 build design is accepted. Local Podman is
-still useful for developer tests, but is not the production isolation boundary.
+Workspaceは論理的・永続的なリソース、MicroVMは交換可能なRuntime Allocationである。JobはRun attemptごとに独立したMicroVMへ配置し、実行済みAllocationを別Runへ再利用しない。
 
-## Why
+## 実装前に確認する事項
 
-- Native Runs have deadlines up to 24 hours. Standard Lambda invocations are
-  limited to 900 seconds, so they cannot host the whole Run. Lambda remains
-  appropriate for short-lived API, dispatcher, and controller functions.
-- Fargate supports long-running tasks and provides task-level isolated,
-  hardware-virtualized infrastructure. Its Linux task ephemeral storage starts
-  at 20 GiB and can be configured up to 200 GiB.
-- Fargate does not support privileged containers, host devices, or the full set
-  of Linux capabilities. Therefore the initial profile deliberately does not
-  promise nested Podman/Docker.
-- Hako's Lambda MicroVM direction describes Workspace compute and is not an
-  existing durable 24-hour native-Job execution API in this repository. Do not
-  equate an ordinary Lambda invocation with a persistent Workspace.
+設計上のLambda MicroVMと通常のAWS Lambda function invocationを同一視しない。具体的な提供サービス/API、Region、MicroVMの作成・停止・再発見方法、権限をTask 61で特定する。現時点では提供APIや実行可能時間を検証済みとして扱わない。
 
-## Runtime contract and ownership
+- 既存Run APIの作成時から1秒〜24時間というdeadline契約との適合。
+- Docker/containerd/Podman、compose、開発用DBに必要なguest権限と制限。先のnested-container除外は撤回し、Lambda MicroVMでの実証事項とする。
+- MicroVMごとのTenant隔離、untrusted code、CPU/memory/disk制限、network default-deny。
+- 固定commitのsource搬入、attempt限定artifact搬出、Secret非露出。
+- 起動時間、quota、費用、cancel/launch競合、deadline、cleanup、障害復旧。
+- Workspace向けsuspend/resume、永続volume、長時間接続はTask 43とも整合させる。
 
-The substrate adapter exposes `EnsureRunning`, `Cancel`, `GetStatus`,
-`CollectResult`, and `Cleanup`, keyed by immutable Run/attempt/generation and
-Resource Plane placement. `EnsureRunning` must be idempotent for that identity;
-`Cancel` is durable and may race launch; stale attempts cannot publish results;
-Run terminal state and physical cleanup confirmation are separate states.
+必要な能力が確認できない場合は実行機能をdefault-offのまま保ち、未達要件を記録する。別のcompute基盤へ自動的に変更しない。
 
-- Control Plane remains the System of Record and owns DSQL state, dispatch,
-  result fencing, deadlines, authorization, and user-visible status. It receives
-  no ECS lifecycle permissions.
-- Resource Plane owns the command/result queues, Fargate task launch/stop,
-  attempt-scoped artifact flow, and cleanup reconciliation. It never connects
-  to DSQL and never receives GitHub App private keys.
-- The untrusted command runs without a task role, DSQL access, ambient GitHub
-  credential, or broad AWS credentials, and with default-deny network policy.
-  The ECS task execution role is for ECS image/log operations and is not exposed
-  to the workload. A trusted service stages the fixed-SHA source before launch.
-  Any artifact handoff must be attempt-scoped, short-lived, and unable to access
-  other Tenants' objects. Network access required for a Job must be explicitly
-  allowlisted by policy; arbitrary Internet access is off by default.
-- A Run's task and ephemeral storage are disposable. Workspace persistence and
-  durable database services are not provided by this Job runtime. Task cleanup
-  must stop the task and verify terminal ECS state; orphan detection is required.
-- Queue visibility covers only short dispatch/consumer work, never the full
-  Run. Run deadline and task lifecycle are tracked independently of SQS receipt
-  lifetime.
+## Runtime契約と責務
 
-## Alternatives and limits
+Workload adapterは `EnsureRunning`、`Cancel`、`GetStatus`、`CollectResult`、`Cleanup`を持つ。Tenant/Run/attempt/generation/placementを固定し、providerのidempotencyと再発見機構を確認してから実装する。cancel tombstone、stale result拒否、Run終端と物理cleanupの独立管理は既存の条件付きRP journalとCP result fencingを維持する。
 
-| Candidate | Decision |
-|---|---|
-| Standard Lambda | Rejected for the full Job: invocation timeout is at most 15 minutes, below the 24-hour Run contract. Keep for short control functions. |
-| Hako Lambda MicroVM | Not selected for native Jobs: this repo does not yet expose a durable, cancellable, per-attempt 24-hour Workload API on that runtime. Continue evaluating separately for Workspace Runtime (Task 43). |
-| ECS/Fargate | Selected for the initial direct-command Job profile. Long-running task support and task isolation fit; privileged/nested-container workloads are explicitly unsupported. |
-| EC2 / EC2-backed worker | Out of scope by user direction; must not be introduced as a fallback. |
-
-This decision does not claim that all arbitrary untrusted code is safe. Kernel,
-runtime, and control-plane vulnerabilities remain risks. Before enabling Run
-creation, Task 40 must validate IAM and network isolation, launch/cancel races,
-deadline handling, artifact scoping, stop/cleanup recovery, task quota and cost,
-and alarm coverage. Run creation remains default-off until those checks pass.
+- Control PlaneはDSQL、認可、placement、dispatch、result、deadlineの正本を持つ。
+- Resource Planeはprovider操作、Runtime Allocation、command/result queue、artifact搬送、cleanupを所有する。DSQLへ直接接続しない。
+- MicroVMのuntrusted codeへGitHub App private keyや広範なAWS資格情報を渡さない。source/artifactの権限は当該attemptへ限定する。
+- SQS receiptは短時間のdurable handoff後に解放し、Run実行時間をqueue visibilityへ依存させない。
+- ローカルPodmanは開発・command policy検証用であり、本番MicroVM隔離の実証は別途行う。
 
 ## Follow-up
 
-Task 40 owns Fargate task/controller deployment and a measured PoC. It must
-confirm supported CPU/memory/storage combinations and quotas in the target
-Region, cold-start/launch latency, a 24-hour fake-clock lifecycle test, actual
-stop/cleanup behavior, artifact transfer, and an isolated smoke Run. No AWS
-resources are created or changed by this ADR. Revisit this ADR if nested
-container execution becomes a hard requirement; do not silently enable
-privileged containers or fall back to EC2.
+Task 61でprovider/APIと実行契約を確認し、Task 39でadapter/controllerを接続する。Task 40の配備はその確認に依存する。実PoCで起動、container実行、隔離、停止、cleanup、artifact、長時間deadlineを検証するまでRun作成はdefault-off。
 
-## References
-
-- [Lambda function timeout](https://docs.aws.amazon.com/lambda/latest/dg/configuration-timeout.html)
-- [AWS decision guide: Lambda or Fargate](https://docs.aws.amazon.com/decision-guides/latest/decision-guides/choosing-aws-serverless-service.html)
-- [Fargate task isolation](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/security-shared-model.html)
-- [Fargate task definition limitations](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/fargate-tasks-services.html)
-- [Fargate ephemeral storage](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/fargate-task-storage.html)
+本ADRによるAWSリソース作成・変更はない。APIサーバーのLambda container image + Lambda Web Adapter配備は独立した設計であり、Workspace/JobのMicroVM lifecycleが実装済みであることを意味しない。
