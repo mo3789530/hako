@@ -299,6 +299,11 @@ func TestTenantWebhookDeliveryGenerationIsRevalidatedBeforeQueueProcessing(t *te
 	}
 	stale := makeDelivery("f1b2c3d4-e5f6-4789-8abc-def012345678", 5, 9403)
 	current := makeDelivery("f2b2c3d4-e5f6-4789-8abc-def012345678", 6, 9404)
+	wrongApp := makeDelivery("f3b2c3d4-e5f6-4789-8abc-def012345678", 6, 9405)
+	wrongApp.Payload = []byte(`{"action":"added","installation":{"id":9401,"app_id":9999},"repositories_added":[{"id":9405,"name":"wrong-app","owner":{"login":"acme"}}]}`)
+	if inserted, err := inbox.Record(ctx, wrongApp, now); err != nil || !inserted {
+		t.Fatalf("record wrong-App delivery: inserted=%t err=%v", inserted, err)
+	}
 	if inserted, err := inbox.Record(ctx, stale, now); err != nil || !inserted {
 		t.Fatalf("record stale delivery: inserted=%t err=%v", inserted, err)
 	}
@@ -319,6 +324,17 @@ func TestTenantWebhookDeliveryGenerationIsRevalidatedBeforeQueueProcessing(t *te
 	if staleStatus != "failed" || currentStatus != "processed" {
 		t.Fatalf("generation fencing statuses stale=%s current=%s", staleStatus, currentStatus)
 	}
+	var wrongAppStatus string
+	if err := pool.QueryRow(ctx, `SELECT processing_status FROM github_webhook_deliveries WHERE integration_id='integration_hook_generation' AND delivery_id=$1`, wrongApp.DeliveryID).Scan(&wrongAppStatus); err != nil {
+		t.Fatal(err)
+	}
+	var wrongAppRepos int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM tenant_github_repositories WHERE tenant_id='tenant_hook_generation' AND github_repository_id=9405`).Scan(&wrongAppRepos); err != nil {
+		t.Fatal(err)
+	}
+	if wrongAppStatus != "failed" || wrongAppRepos != 0 {
+		t.Fatalf("wrong-App delivery mutated state: status=%s repositories=%d", wrongAppStatus, wrongAppRepos)
+	}
 	var staleRepo, currentRepo int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM tenant_github_repositories WHERE tenant_id='tenant_hook_generation' AND github_repository_id=9403`).Scan(&staleRepo); err != nil {
 		t.Fatal(err)
@@ -328,5 +344,32 @@ func TestTenantWebhookDeliveryGenerationIsRevalidatedBeforeQueueProcessing(t *te
 	}
 	if staleRepo != 0 || currentRepo != 1 {
 		t.Fatalf("stale/current repository mutation counts = %d/%d", staleRepo, currentRepo)
+	}
+	// A database failure must leave the delivery retryable, not quarantine it
+	// as if the integration had been revoked.
+	retryable := makeDelivery("f4b2c3d4-e5f6-4789-8abc-def012345678", 6, 9406)
+	if _, err := inbox.Record(ctx, retryable, now); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `ALTER TABLE github_credential_bindings RENAME TO unavailable_credential_bindings`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ProcessInstallationRepositoryDeliveryForIntegration(ctx, tx, retryable.IntegrationID, retryable.DeliveryID, now); err == nil {
+		t.Fatal("integration lookup database failure was treated as revoked authorization")
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var retryableStatus string
+	if err := pool.QueryRow(ctx, `SELECT processing_status FROM github_webhook_deliveries WHERE integration_id=$1 AND delivery_id=$2`, retryable.IntegrationID, retryable.DeliveryID).Scan(&retryableStatus); err != nil {
+		t.Fatal(err)
+	}
+	if retryableStatus != "received" {
+		t.Fatalf("database failure quarantined retryable event: %s", retryableStatus)
 	}
 }

@@ -113,10 +113,10 @@ define opt-in per-Tenant Apps (Tasks 56–59 are partially implemented; Tenant
 App activation remains default-off, and Task 60/E2E work remains). The
 Tenant-owned webhook route and purpose-limited credential reader are also
 implemented behind a separate default-off flag; real per-Tenant IAM trust and
-Secret provisioning have not been deployed. Payload App-ID consistency
-validation and integration-aware OAuth setup remain required before enabling
-this path. Never select a tenant based only on an unverified request header
-or repository name.
+Secret provisioning have not been deployed. Payload App-ID consistency is
+checked when the Installation payload includes it; integration-aware OAuth
+setup remains required before enabling this path. Never select a tenant based
+only on an unverified request header or repository name.
 
 `POST` and `GET /v1/tenants/{tenant_id}/github/installations` are owner/admin
 routes for recording and viewing pending installation claims. A request is

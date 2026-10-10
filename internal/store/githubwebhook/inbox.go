@@ -66,7 +66,11 @@ func ProcessInstallationRepositoryDeliveryForIntegration(ctx context.Context, tx
 	if event.DeliveryID != deliveryID || event.GitHubEvent != "installation_repositories" {
 		return false, ErrUnsupportedWebhookEvent
 	}
-	if !authorizeStoredTenantEvent(ctx, tx, integrationID, credentialGeneration, event) {
+	allowed, err := authorizeStoredTenantEvent(ctx, tx, integrationID, credentialGeneration, event)
+	if err != nil {
+		return false, err
+	}
+	if !allowed {
 		if err := failStaleWebhookDelivery(ctx, tx, integrationID, deliveryID); err != nil {
 			return false, err
 		}
@@ -135,7 +139,11 @@ func ProcessInstallationLifecycleDeliveryForIntegration(ctx context.Context, tx 
 	if event.DeliveryID != deliveryID || event.GitHubEvent != "installation" || event.InstallationID <= 0 || event.Action != action || event.Type != "github.installation."+action {
 		return false, ErrUnsupportedWebhookEvent
 	}
-	if !authorizeStoredTenantEvent(ctx, tx, integrationID, credentialGeneration, event) {
+	allowed, err := authorizeStoredTenantEvent(ctx, tx, integrationID, credentialGeneration, event)
+	if err != nil {
+		return false, err
+	}
+	if !allowed {
 		if err := failStaleWebhookDelivery(ctx, tx, integrationID, deliveryID); err != nil {
 			return false, err
 		}
@@ -209,23 +217,27 @@ func coreValidDeliveryID(value string) bool {
 	return true
 }
 
-func authorizeStoredTenantEvent(ctx context.Context, tx pgx.Tx, integrationID string, generation int64, event githubwebhook.RepositoryEvent) bool {
+func authorizeStoredTenantEvent(ctx context.Context, tx pgx.Tx, integrationID string, generation int64, event githubwebhook.RepositoryEvent) (bool, error) {
 	if integrationID == "shared" {
-		return generation == 0
+		return generation == 0, nil
 	}
 	if generation < 1 || event.InstallationID <= 0 {
-		return false
+		return false, nil
 	}
 	var tenantID string
 	if err := tx.QueryRow(ctx, `SELECT i.tenant_id FROM tenant_github_integrations i
 		JOIN github_app_registrations r ON r.id = i.app_registration_id AND r.github_app_id = i.github_app_id
 		JOIN github_credential_bindings c ON c.tenant_id = i.tenant_id AND c.id = i.credential_binding_id AND c.github_app_id = i.github_app_id
 		WHERE i.id = $1 AND i.status = 'active' AND i.credential_generation = $2
-		AND r.mode = 'tenant_owned' AND r.owner_tenant_id = i.tenant_id AND c.status = 'approved'`, integrationID, generation).Scan(&tenantID); err != nil {
-		return false
+		AND ($3::bigint IS NULL OR i.github_app_id = $3)
+		AND r.mode = 'tenant_owned' AND r.owner_tenant_id = i.tenant_id AND c.status = 'approved'`, integrationID, generation, event.GitHubAppID).Scan(&tenantID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("revalidate Tenant webhook integration: %w", err)
 	}
 	if event.GitHubEvent == "installation" && event.Action == "created" {
-		return true
+		return true, nil
 	}
 	query := `SELECT EXISTS (SELECT 1 FROM tenant_github_app_installation_bindings b
 		JOIN tenant_github_installations i ON i.tenant_id = b.tenant_id AND i.installation_id = b.installation_id
@@ -237,7 +249,10 @@ func authorizeStoredTenantEvent(ctx context.Context, tx pgx.Tx, integrationID st
 			AND i.status = 'active' AND i.suspended_at IS NULL)`
 	}
 	var bound bool
-	return tx.QueryRow(ctx, query, tenantID, integrationID, event.InstallationID).Scan(&bound) == nil && bound
+	if err := tx.QueryRow(ctx, query, tenantID, integrationID, event.InstallationID).Scan(&bound); err != nil {
+		return false, fmt.Errorf("revalidate Tenant webhook Installation: %w", err)
+	}
+	return bound, nil
 }
 
 func failStaleWebhookDelivery(ctx context.Context, tx pgx.Tx, integrationID, deliveryID string) error {

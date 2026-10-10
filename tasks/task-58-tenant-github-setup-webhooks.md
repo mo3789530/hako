@@ -21,6 +21,8 @@ Progress: Added an opt-in `/v1/integrations/github/apps/:integration_id/webhook`
 - Unit tests cover invalid-signature ordering, route isolation, generation/Installation handoff, bounded previous-secret grace and error redaction. PostgreSQL integration tests prove same delivery ID is independent across integration routes while same-route replay/collision behavior is retained.
 - Remaining: provision and review per-Tenant role trust/Secret version metadata, OAuth state pinning/integration-aware setup verifier, and end-to-end rotation/replay tests. Tenant-owned mode remains default-off.
 
+App identity follow-up: optional `installation.app_id` is preserved in the normalized event and must match the route's registered App at ingress and processor authorization. Invalid IDs are rejected during normalization. Unit and PostgreSQL tests cover a different App's pre-binding event, wrong-App queue quarantine without repository mutation, and database lookup failures remaining retryable.
+
 - Fake GitHub/API/Postgres tests cover correct setup, cross-App callback, state changed mid-flight, membership removal, bad/missing signature, wrong route, replay/conflict, same delivery ID across integrations and bounded grace expiry.
 - Existing shared setup/Webhook tests remain valid. Unverified payload cannot trigger Tenant Secret selection or state mutation.
 - Update callback/log-redaction and App setup/runbook docs. No GitHub settings or real Secret modifications.

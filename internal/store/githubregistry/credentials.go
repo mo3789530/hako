@@ -88,7 +88,8 @@ func (a CredentialAuthorizer) AuthorizeWebhookDelivery(ctx context.Context, inte
 			JOIN github_app_registrations r ON r.id = i.app_registration_id AND r.github_app_id = i.github_app_id
 			JOIN github_credential_bindings b ON b.tenant_id = i.tenant_id AND b.id = i.credential_binding_id AND b.github_app_id = i.github_app_id
 			WHERE i.id = $1 AND i.status = 'active' AND i.credential_generation = $2
-			AND r.mode = 'tenant_owned' AND r.owner_tenant_id = i.tenant_id AND b.status = 'approved'`, integrationID, generation).Scan(&tenant)
+			AND ($3::bigint IS NULL OR i.github_app_id = $3)
+			AND r.mode = 'tenant_owned' AND r.owner_tenant_id = i.tenant_id AND b.status = 'approved'`, integrationID, generation, event.GitHubAppID).Scan(&tenant)
 		if err != nil {
 			return false, err
 		}

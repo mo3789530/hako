@@ -162,10 +162,18 @@ func TestWebhookCredentialResolverAndAuthorizerAreIntegrationScoped(t *testing.T
 
 	authorizer := CredentialAuthorizer{Pool: pool}
 	created := githubwebhook.RepositoryEvent{GitHubEvent: "installation", Action: "created", InstallationID: 9201}
+	wrongAppID := int64(912)
+	created.GitHubAppID = &wrongAppID
+	if err := authorizer.AuthorizeWebhookDelivery(ctx, access.IntegrationID, access.CredentialGeneration, created); !errors.Is(err, ErrInstallationNotActive) {
+		t.Fatal("pre-binding installation.created with another App ID was accepted")
+	}
+	correctAppID := int64(911)
+	created.GitHubAppID = &correctAppID
 	if err := authorizer.AuthorizeWebhookDelivery(ctx, access.IntegrationID, access.CredentialGeneration, created); err != nil {
 		t.Fatal("signed pre-binding installation.created should be accepted only for inboxing")
 	}
 	repositoryEvent := githubwebhook.RepositoryEvent{GitHubEvent: "installation_repositories", Action: "added", InstallationID: 9201}
+	repositoryEvent.GitHubAppID = &correctAppID
 	if err := authorizer.AuthorizeWebhookDelivery(ctx, access.IntegrationID, access.CredentialGeneration, repositoryEvent); !errors.Is(err, ErrInstallationNotActive) {
 		t.Fatal("unbound Installation repository event was accepted")
 	}

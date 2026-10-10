@@ -113,7 +113,7 @@ Webhook routingは次の順序を固定する。
 既存共通Webhook URLはshared専用aliasとして保持する。Tenant-ownedの処理失敗を共通secretで再検証しない。
 公開ingressにApp private key/OAuth client secretを読ませず、Webhook-purpose readerまたは内部検証brokerを使う。
 
-実装状況: Tenant ingress handlerはopaque route解決、raw-body HMAC、current/previous secretの期限付き検証、HMAC後のgeneration/Installation authorizer、integration/generation付きdurable inbox handoffを実装済み。DB resolverは承認bindingのWebhook-purpose reader Role、Secret ARN、固定VersionIdだけを解決し、STS readerはそのSecretに限定したsession policyでcurrent/previousの値を取得する。Processorもqueue処理時にgenerationとInstallation bindingを再検証し、古いイベントをfailedへ隔離する。一方、GitHub payload内App IDとroute側App IDの一致検証は未実装であり、有効化前の受入条件として残る。API route/Terraformはdefault-offで、実IAM trust/Secret provisioningとTenant App OAuth state/verifier連携も未実装。
+実装状況: Tenant ingress handlerはopaque route解決、raw-body HMAC、current/previous secretの期限付き検証、HMAC後のgeneration/Installation authorizer、integration/generation付きdurable inbox handoffを実装済み。DB resolverは承認bindingのWebhook-purpose reader Role、Secret ARN、固定VersionIdだけを解決し、STS readerはそのSecretに限定したsession policyでcurrent/previousの値を取得する。Installation payloadにApp IDが含まれる場合は正の整数として保存し、受信時とProcessorでroute側App IDとの一致を検証する。ProcessorはgenerationとInstallation bindingも再検証し、失効・不一致イベントをfailedへ隔離する。DB照会エラーは再試行対象として返し、失効として隔離しない。API route/Terraformはdefault-offで、実IAM trust/Secret provisioningとTenant App OAuth state/verifier連携は未実装。
 
 ## 7. ローテーション・停止
 

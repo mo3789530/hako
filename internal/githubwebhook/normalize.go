@@ -22,6 +22,7 @@ type RepositoryEvent struct {
 	GitHubEvent         string          `json:"github_event"`
 	Action              string          `json:"action,omitempty"`
 	InstallationID      int64           `json:"installation_id,omitempty"`
+	GitHubAppID         *int64          `json:"github_app_id,omitempty"`
 	Repository          *RepositoryRef  `json:"repository,omitempty"`
 	RepositoriesAdded   []RepositoryRef `json:"repositories_added,omitempty"`
 	RepositoriesRemoved []RepositoryRef `json:"repositories_removed,omitempty"`
@@ -62,7 +63,8 @@ type githubPayload struct {
 	Ref          string `json:"ref"`
 	After        string `json:"after"`
 	Installation struct {
-		ID      int64 `json:"id"`
+		ID      int64  `json:"id"`
+		AppID   *int64 `json:"app_id"`
 		Account struct {
 			Login string `json:"login"`
 		} `json:"account"`
@@ -115,6 +117,9 @@ func Normalize(delivery VerifiedDelivery) (RepositoryEvent, error) {
 	if err := decoder.Decode(&payload); err != nil || payload.Action != delivery.Action {
 		return RepositoryEvent{}, fmt.Errorf("%w: decode GitHub event payload", ErrInvalidDelivery)
 	}
+	if payload.Installation.AppID != nil && *payload.Installation.AppID <= 0 {
+		return RepositoryEvent{}, fmt.Errorf("%w: installation App ID must be positive when present", ErrInvalidDelivery)
+	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return RepositoryEvent{}, fmt.Errorf("%w: payload must contain exactly one JSON object", ErrInvalidDelivery)
@@ -125,6 +130,7 @@ func Normalize(delivery VerifiedDelivery) (RepositoryEvent, error) {
 		GitHubEvent:   delivery.Event,
 		Action:        delivery.Action,
 		Actor:         boundedText(payload.Sender.Login, 100),
+		GitHubAppID:   payload.Installation.AppID,
 	}
 	switch delivery.Event {
 	case "push":

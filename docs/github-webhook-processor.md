@@ -34,6 +34,9 @@ that inbox.
   are marked `failed` (quarantined) rather than mutating Tenant state. The
   legacy shared route uses the reserved `shared` integration and generation
   zero.
+- When present, the normalized Installation App ID must match the registered
+  App at both ingress and processing. Database lookup errors propagate for
+  retry; they do not quarantine an otherwise valid event.
 - A database error fails the Lambda invocation so EventBridge retries. The
   durable inbox remains the source of truth. Unbound repository-membership
   events are not selected; unbound lifecycle events are processed as no-ops,

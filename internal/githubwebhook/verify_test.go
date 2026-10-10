@@ -179,6 +179,34 @@ func TestNormalizeBuildsVersionedHakoEvents(t *testing.T) {
 	}
 }
 
+func TestNormalizePreservesOptionalInstallationAppID(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		installation string
+		wantID       int64
+		wantError    bool
+	}{
+		{"missing", `{"id":12}`, 0, false},
+		{"present", `{"id":12,"app_id":911}`, 911, false},
+		{"zero", `{"id":12,"app_id":0}`, 0, true},
+		{"negative", `{"id":12,"app_id":-1}`, 0, true},
+		{"wrong type", `{"id":12,"app_id":"911"}`, 0, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			event, err := Normalize(VerifiedDelivery{DeliveryID: testDeliveryID, Event: "installation", Action: "created", Payload: []byte(`{"action":"created","installation":` + test.installation + `}`)})
+			if (err != nil) != test.wantError {
+				t.Fatalf("normalization error = %v", err)
+			}
+			if test.wantError {
+				return
+			}
+			if test.wantID == 0 && event.GitHubAppID != nil || test.wantID != 0 && (event.GitHubAppID == nil || *event.GitHubAppID != test.wantID) {
+				t.Fatalf("normalized App ID = %v", event.GitHubAppID)
+			}
+		})
+	}
+}
+
 func TestNormalizeRejectsMissingOrMismatchedRequiredFields(t *testing.T) {
 	tests := []VerifiedDelivery{
 		{DeliveryID: testDeliveryID, Event: "push", Payload: []byte(`{"ref":"refs/heads/main"}`)},
