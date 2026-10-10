@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -41,6 +42,7 @@ func TestInboxRecordIsDurableAndIdempotent(t *testing.T) {
 	}
 	otherIntegration := delivery
 	otherIntegration.IntegrationID = "integration_other"
+	otherIntegration.CredentialGeneration = 7
 	if inserted, err = inbox.Record(ctx, otherIntegration, now); err != nil || !inserted {
 		t.Fatalf("same Delivery ID in another integration = inserted %v, err %v", inserted, err)
 	}
@@ -264,5 +266,67 @@ func TestProcessBatchAppliesInstallationSuspendUnsuspendAndDeleteLifecycle(t *te
 		return githubregistry.ListRepositories(ctx, tx, "tenant_hook_lifecycle", 901)
 	}); !errors.Is(err, githubregistry.ErrInstallationNotActive) {
 		t.Fatalf("deleted Installation Repository access error = %v, want inactive", err)
+	}
+}
+
+func TestTenantWebhookDeliveryGenerationIsRevalidatedBeforeQueueProcessing(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	statements := []string{
+		`INSERT INTO tenants (id,name,created_at) VALUES ('tenant_hook_generation','Webhook generation',now())`,
+		`INSERT INTO users (id,cognito_subject,email,created_at) VALUES ('usr_hook_generation','hook-generation-sub','',now())`,
+		`INSERT INTO tenant_github_installations (tenant_id,installation_id,account_login,status,requested_by,requested_at,updated_at) VALUES ('tenant_hook_generation',9401,'acme','active','usr_hook_generation',now(),now())`,
+		`INSERT INTO github_app_installation_bindings (installation_id,tenant_id,bound_at) VALUES (9401,'tenant_hook_generation',now())`,
+		`INSERT INTO github_app_registrations (id,github_app_id,mode,owner_tenant_id,slug,client_id,created_at) VALUES ('registration_hook_generation',9402,'tenant_owned','tenant_hook_generation','hook-generation','client',now())`,
+		`INSERT INTO github_credential_bindings (id,tenant_id,github_app_id,status,private_key_secret_ref,oauth_secret_ref,webhook_secret_ref,approved_at) VALUES ('binding_hook_generation','tenant_hook_generation',9402,'approved','private-ref','oauth-ref','webhook-ref',now())`,
+		`INSERT INTO tenant_github_integrations (id,tenant_id,app_registration_id,github_app_id,credential_binding_id,status,config_revision,credential_generation,idempotency_key,request_sha256,created_by,created_at,updated_at) VALUES ('integration_hook_generation','tenant_hook_generation','registration_hook_generation',9402,'binding_hook_generation','active',2,6,'hook-generation-key','hook-generation-hash','usr_hook_generation',now(),now())`,
+		`INSERT INTO tenant_github_app_installation_bindings (tenant_id,integration_id,installation_id,bound_at) VALUES ('tenant_hook_generation','integration_hook_generation',9401,now())`,
+	}
+	for _, statement := range statements {
+		if _, err := pool.Exec(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inbox := Inbox{Pool: pool, Policy: transaction.DefaultPolicy()}
+	makeDelivery := func(id string, generation int64, repositoryID int64) githubwebhook.VerifiedDelivery {
+		payload := []byte(fmt.Sprintf(`{"action":"added","installation":{"id":9401},"repositories_added":[{"id":%d,"name":"repo-%d","default_branch":"main","owner":{"login":"acme"}}]}`, repositoryID, repositoryID))
+		return githubwebhook.VerifiedDelivery{IntegrationID: "integration_hook_generation", CredentialGeneration: generation, DeliveryID: id, Event: "installation_repositories", Action: "added", Payload: payload}
+	}
+	stale := makeDelivery("f1b2c3d4-e5f6-4789-8abc-def012345678", 5, 9403)
+	current := makeDelivery("f2b2c3d4-e5f6-4789-8abc-def012345678", 6, 9404)
+	if inserted, err := inbox.Record(ctx, stale, now); err != nil || !inserted {
+		t.Fatalf("record stale delivery: inserted=%t err=%v", inserted, err)
+	}
+	if inserted, err := inbox.Record(ctx, current, now); err != nil || !inserted {
+		t.Fatalf("record current delivery: inserted=%t err=%v", inserted, err)
+	}
+	stats, err := ProcessBatch(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(time.Second))
+	if err != nil || stats.Processed != 1 {
+		t.Fatalf("process Tenant webhook batch: %+v err=%v", stats, err)
+	}
+	var staleStatus, currentStatus string
+	if err := pool.QueryRow(ctx, `SELECT processing_status FROM github_webhook_deliveries WHERE integration_id='integration_hook_generation' AND delivery_id=$1`, stale.DeliveryID).Scan(&staleStatus); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT processing_status FROM github_webhook_deliveries WHERE integration_id='integration_hook_generation' AND delivery_id=$1`, current.DeliveryID).Scan(&currentStatus); err != nil {
+		t.Fatal(err)
+	}
+	if staleStatus != "failed" || currentStatus != "processed" {
+		t.Fatalf("generation fencing statuses stale=%s current=%s", staleStatus, currentStatus)
+	}
+	var staleRepo, currentRepo int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM tenant_github_repositories WHERE tenant_id='tenant_hook_generation' AND github_repository_id=9403`).Scan(&staleRepo); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM tenant_github_repositories WHERE tenant_id='tenant_hook_generation' AND github_repository_id=9404`).Scan(&currentRepo); err != nil {
+		t.Fatal(err)
+	}
+	if staleRepo != 0 || currentRepo != 1 {
+		t.Fatalf("stale/current repository mutation counts = %d/%d", staleRepo, currentRepo)
 	}
 }

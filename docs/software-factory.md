@@ -21,7 +21,7 @@ Hako Resource Plane
 GitHub Checks / Pull Request / Actions
 ```
 
-This is an extension roadmap, not a claim that GitHub integration, the AWS
+This is an extension roadmap, not a claim that the full GitHub Factory, the AWS
 Workspace Runtime, or runner execution already exists. The current Hako core
 remains the system of record for Tenant, Workspace, Placement, Operation, and
 Resource Plane. Workspace remains distinct from a MicroVM; this design adds
@@ -37,9 +37,10 @@ version-1 normalized Hako event in the Control Plane database. Replays with
 the same ID and payload are acknowledged as duplicates; ID reuse with
 different content is rejected. Terraform grants the API Lambda read access
 only to the configured Secrets Manager ARN and creates an unauthenticated API
-Gateway route only when enabled. No GitHub App is registered automatically;
-normalized events are not yet dispatched, and installation/repository
-ownership checks must be added before creating work. Tenant owners/admins can
+Gateway route only when enabled. No GitHub App is registered automatically.
+The shared-App processor handles Installation lifecycle and repository-
+membership events; push, pull-request, and workflow-job events remain pending
+and are not dispatched to workloads. Tenant owners/admins can
 submit inert installation claims through the tenant API; those claims remain
 `pending`. A separate opt-in setup flow redirects through the GitHub App
 Installation setup URL and then GitHub OAuth authorization. Hako exchanges the
@@ -108,11 +109,14 @@ multiple customers: each GitHub Installation belongs to exactly one Hako
 Tenant, and each installed repository is registered under that Tenant. Do not
 create a new GitHub App per Tenant for the standard flow. The separate
 [Tenant-owned App design](tenant-github-apps.md) and [ADR 0007](adr/0007-tenant-github-apps.md)
-define opt-in per-Tenant Apps (Tasks 56–60, not implemented). A later BYO-App mode
-can store each tenant's `app_id`, private-key Secret ARN, and webhook-secret
-reference separately; webhook ingress would then resolve an opaque
-integration ID before selecting that App's secret. Never select a tenant based
-only on an unverified request header or repository name.
+define opt-in per-Tenant Apps (Tasks 56–59 are partially implemented; Tenant
+App activation remains default-off, and Task 60/E2E work remains). The
+Tenant-owned webhook route and purpose-limited credential reader are also
+implemented behind a separate default-off flag; real per-Tenant IAM trust and
+Secret provisioning have not been deployed. Payload App-ID consistency
+validation and integration-aware OAuth setup remain required before enabling
+this path. Never select a tenant based only on an unverified request header
+or repository name.
 
 `POST` and `GET /v1/tenants/{tenant_id}/github/installations` are owner/admin
 routes for recording and viewing pending installation claims. A request is

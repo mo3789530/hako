@@ -15,6 +15,7 @@ GRANT SELECT ON TABLE workload_run_attempts TO hako_api;
 GRANT SELECT ON TABLE github_credential_bindings TO hako_api;
 REVOKE INSERT, UPDATE, DELETE ON TABLE github_credential_bindings FROM hako_api;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE github_app_registrations, tenant_github_integrations, tenant_github_default_integrations TO hako_api;
+GRANT SELECT ON TABLE tenant_github_app_installation_bindings TO hako_api;
 -- Credential bindings must be provisioned through an explicitly authorized
 -- operator DB role, not this API role. No Secret values belong in these rows.
 
@@ -30,7 +31,9 @@ GRANT SELECT, UPDATE ON TABLE outbox_events TO hako_dispatcher;
 CREATE ROLE hako_webhook_processor WITH LOGIN;
 AWS IAM GRANT hako_webhook_processor TO 'REPLACE_WITH_GITHUB_WEBHOOK_PROCESSOR_ROLE_ARN';
 GRANT USAGE ON SCHEMA public TO hako_webhook_processor;
-GRANT SELECT ON TABLE github_webhook_deliveries, github_app_installation_bindings, tenant_github_installations TO hako_webhook_processor;
+GRANT SELECT ON TABLE github_webhook_deliveries, github_app_installation_bindings, tenant_github_installations,
+    github_app_registrations, tenant_github_integrations, github_credential_bindings,
+    tenant_github_app_installation_bindings TO hako_webhook_processor;
 GRANT UPDATE (processing_status) ON TABLE github_webhook_deliveries TO hako_webhook_processor;
 GRANT UPDATE (status, suspended_at, updated_at) ON TABLE tenant_github_installations TO hako_webhook_processor;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE tenant_github_repositories TO hako_webhook_processor;

@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/githubapp"
+	"github.com/mo3789530/hako/internal/githubwebhook"
 	"github.com/mo3789530/hako/internal/store/transaction"
 )
 
@@ -71,3 +72,50 @@ func (a CredentialAuthorizer) AuthorizeTenantApp(ctx context.Context, identity g
 
 var _ githubapp.RepositoryAuthorizer = CredentialAuthorizer{}
 var _ githubapp.TenantAppAuthorizer = CredentialAuthorizer{}
+
+// AuthorizeWebhookDelivery runs only after route-specific HMAC validation. A
+// signed pre-binding installation.created event may enter the inbox, but only
+// an Installation bound to this exact active integration can deliver events
+// that mutate existing Tenant state.
+func (a CredentialAuthorizer) AuthorizeWebhookDelivery(ctx context.Context, integrationID string, generation int64, event githubwebhook.RepositoryEvent) error {
+	if a.Pool == nil || !validOpaqueMetadata(integrationID, 128) || generation < 1 || event.InstallationID <= 0 {
+		return ErrInstallationNotActive
+	}
+	allowed, err := transaction.Within(ctx, a.Pool, a.Policy, func(ctx context.Context, tx pgx.Tx) (bool, error) {
+		var tenant domain.TenantID
+		err := tx.QueryRow(ctx, `SELECT i.tenant_id
+			FROM tenant_github_integrations i
+			JOIN github_app_registrations r ON r.id = i.app_registration_id AND r.github_app_id = i.github_app_id
+			JOIN github_credential_bindings b ON b.tenant_id = i.tenant_id AND b.id = i.credential_binding_id AND b.github_app_id = i.github_app_id
+			WHERE i.id = $1 AND i.status = 'active' AND i.credential_generation = $2
+			AND r.mode = 'tenant_owned' AND r.owner_tenant_id = i.tenant_id AND b.status = 'approved'`, integrationID, generation).Scan(&tenant)
+		if err != nil {
+			return false, err
+		}
+		if event.GitHubEvent == "installation" && event.Action == "created" {
+			return true, nil
+		}
+		var bound bool
+		query := `SELECT EXISTS (
+			SELECT 1 FROM tenant_github_app_installation_bindings b
+			JOIN tenant_github_installations i ON i.tenant_id = b.tenant_id AND i.installation_id = b.installation_id
+			WHERE b.tenant_id = $1 AND b.integration_id = $2 AND b.installation_id = $3)`
+		if event.GitHubEvent != "installation" {
+			query = `SELECT EXISTS (
+				SELECT 1 FROM tenant_github_app_installation_bindings b
+				JOIN tenant_github_installations i ON i.tenant_id = b.tenant_id AND i.installation_id = b.installation_id
+				WHERE b.tenant_id = $1 AND b.integration_id = $2 AND b.installation_id = $3
+				AND i.status = 'active' AND i.suspended_at IS NULL)`
+		}
+		if err := tx.QueryRow(ctx, query, tenant, integrationID, event.InstallationID).Scan(&bound); err != nil {
+			return false, err
+		}
+		return bound, nil
+	})
+	if err != nil || !allowed {
+		return ErrInstallationNotActive
+	}
+	return nil
+}
+
+var _ githubwebhook.WebhookDeliveryAuthorizer = CredentialAuthorizer{}

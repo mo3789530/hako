@@ -25,6 +25,25 @@ variable "github_webhook_secret_arn" {
   }
 }
 
+variable "tenant_github_webhook_enabled" {
+  description = "Enable the opaque Tenant-owned GitHub App Webhook ingress. Requires explicitly enumerated Webhook-purpose reader Roles; disabled by default."
+  type        = bool
+  default     = false
+}
+
+variable "tenant_github_webhook_reader_role_arns" {
+  description = "Exact, operator-approved per-Tenant Webhook-purpose reader Role ARNs the API may assume. No private-key or OAuth reader roles are accepted by this contract."
+  type        = set(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for role_arn in var.tenant_github_webhook_reader_role_arns : can(regex("^arn:aws:iam::[0-9]{12}:role/hako/tenant-webhook-reader/[A-Za-z0-9_-]{1,128}$", role_arn))
+    ]) && (!var.tenant_github_webhook_enabled || length(var.tenant_github_webhook_reader_role_arns) > 0)
+    error_message = "Tenant Webhook ingress requires exact per-Tenant Webhook-purpose reader Role ARNs under role/hako/tenant-webhook-reader; wildcard and other-purpose roles are forbidden."
+  }
+}
+
 variable "github_app_slug" {
   description = "GitHub App slug used to generate the tenant Installation setup URL."
   type        = string

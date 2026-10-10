@@ -26,6 +26,14 @@ that inbox.
   a claim or binding. The global Installation binding is retained after
   revocation to prevent automatic reassignment to a different Tenant; operator
   reassignment tooling is not implemented.
+- Tenant-owned deliveries are keyed by `(integration_id, delivery_id)` and
+  carry the credential generation that verified their signature. Before
+  applying lifecycle or repository-membership changes, the processor
+  rechecks that the integration is still active at that generation and that
+  the Installation is bound to that integration. Stale or revoked deliveries
+  are marked `failed` (quarantined) rather than mutating Tenant state. The
+  legacy shared route uses the reserved `shared` integration and generation
+  zero.
 - A database error fails the Lambda invocation so EventBridge retries. The
   durable inbox remains the source of truth. Unbound repository-membership
   events are not selected; unbound lifecycle events are processed as no-ops,

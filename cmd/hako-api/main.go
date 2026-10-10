@@ -23,6 +23,7 @@ import (
 	"github.com/mo3789530/hako/internal/githubapp"
 	"github.com/mo3789530/hako/internal/githubwebhook"
 	"github.com/mo3789530/hako/internal/store/dsql"
+	"github.com/mo3789530/hako/internal/store/githubregistry"
 	webhookinbox "github.com/mo3789530/hako/internal/store/githubwebhook"
 	"github.com/mo3789530/hako/internal/store/transaction"
 )
@@ -53,6 +54,18 @@ func main() {
 		Image:                      strings.TrimSpace(os.Getenv("HAKO_DEFAULT_WORKSPACE_IMAGE")),
 		WorkloadRunsEnabled:        strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_WORKLOAD_RUNS_ENABLED")), "true"),
 		GitHubAppManagementEnabled: strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_GITHUB_APP_MANAGEMENT_ENABLED")), "true"),
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_TENANT_GITHUB_WEBHOOK_ENABLED")), "true") {
+		awsConfig, err := config.LoadDefaultConfig(ctx)
+		if err != nil {
+			log.Fatal("configure Tenant GitHub Webhook-purpose Secret reader")
+		}
+		resolver := api.TenantGitHubWebhookCredentialResolver{Pool: databasePool, Policy: transaction.DefaultPolicy(), Config: awsConfig}
+		handler, err := githubwebhook.NewTenantHTTPHandler(resolver, githubregistry.CredentialAuthorizer{Pool: databasePool, Policy: transaction.DefaultPolicy()}, webhookinbox.Inbox{Pool: databasePool, Policy: transaction.DefaultPolicy()}, githubwebhook.DefaultMaxBodyBytes)
+		if err != nil {
+			log.Fatalf("configure Tenant GitHub webhook handler: %v", err)
+		}
+		createConfig.TenantGitHubWebhookHandler = handler
 	}
 	var webhookHandler http.Handler
 	secretARN := strings.TrimSpace(os.Getenv("HAKO_GITHUB_WEBHOOK_SECRET_ARN"))

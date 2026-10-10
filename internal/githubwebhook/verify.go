@@ -27,10 +27,11 @@ type VerifiedDelivery struct {
 	DeliveryID string
 	// IntegrationID is empty for the legacy shared-App route. Tenant-owned
 	// ingress sets it only after the route-specific HMAC has been verified.
-	IntegrationID string
-	Event         string
-	Action        string
-	Payload       json.RawMessage
+	IntegrationID        string
+	CredentialGeneration int64
+	Event                string
+	Action               string
+	Payload              json.RawMessage
 }
 
 type Inbox interface {

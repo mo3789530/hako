@@ -207,6 +207,11 @@ resource "aws_iam_role_policy" "api_lambda" {
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
         Resource = var.github_app_client_secret_arn
+        }], !var.tenant_github_webhook_enabled ? [] : [{
+        Sid      = "AssumeApprovedTenantWebhookReaders"
+        Effect   = "Allow"
+        Action   = ["sts:AssumeRole"]
+        Resource = sort(tolist(var.tenant_github_webhook_reader_role_arns))
     }])
   })
 }
@@ -233,6 +238,7 @@ resource "aws_lambda_function" "api" {
       HAKO_DEFAULT_WORKSPACE_RUNTIME_CLASS = var.default_workspace_runtime_class
       HAKO_WORKLOAD_RUNS_ENABLED           = tostring(var.enable_workload_run_creation)
       HAKO_GITHUB_WEBHOOK_SECRET_ARN       = var.github_webhook_secret_arn
+      HAKO_TENANT_GITHUB_WEBHOOK_ENABLED   = tostring(var.tenant_github_webhook_enabled)
       HAKO_GITHUB_APP_SLUG                 = var.github_app_setup_enabled ? var.github_app_slug : ""
       HAKO_GITHUB_APP_ID                   = var.github_app_setup_enabled ? tostring(var.github_app_id) : ""
       HAKO_GITHUB_APP_CLIENT_ID            = var.github_app_setup_enabled ? var.github_app_client_id : ""
@@ -273,6 +279,7 @@ resource "aws_lambda_function" "api_image" {
       HAKO_WORKLOAD_RUNS_ENABLED           = tostring(var.enable_workload_run_creation)
       HAKO_API_HTTP_MODE                   = "true"
       HAKO_GITHUB_WEBHOOK_SECRET_ARN       = var.github_webhook_secret_arn
+      HAKO_TENANT_GITHUB_WEBHOOK_ENABLED   = tostring(var.tenant_github_webhook_enabled)
       HAKO_GITHUB_APP_SLUG                 = var.github_app_setup_enabled ? var.github_app_slug : ""
       HAKO_GITHUB_APP_ID                   = var.github_app_setup_enabled ? tostring(var.github_app_id) : ""
       HAKO_GITHUB_APP_CLIENT_ID            = var.github_app_setup_enabled ? var.github_app_client_id : ""
@@ -598,6 +605,16 @@ resource "aws_apigatewayv2_route" "github_webhook" {
   count              = var.github_webhook_secret_arn == "" ? 0 : 1
   api_id             = aws_apigatewayv2_api.control_plane.id
   route_key          = "POST /v1/integrations/github/webhook"
+  target             = "integrations/${aws_apigatewayv2_integration.api_lambda.id}"
+  authorization_type = "NONE"
+}
+
+# Tenant-owned webhook routes authenticate with a route-resolved Webhook-only
+# secret reader; they never share the legacy App's secret or Cognito JWT.
+resource "aws_apigatewayv2_route" "tenant_github_webhook" {
+  count              = var.tenant_github_webhook_enabled ? 1 : 0
+  api_id             = aws_apigatewayv2_api.control_plane.id
+  route_key          = "POST /v1/integrations/github/apps/{integration_id}/webhook"
   target             = "integrations/${aws_apigatewayv2_integration.api_lambda.id}"
   authorization_type = "NONE"
 }

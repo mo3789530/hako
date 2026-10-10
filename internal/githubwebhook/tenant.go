@@ -20,6 +20,12 @@ type WebhookCredential struct {
 	PreviousUntil  time.Time
 }
 
+func (WebhookCredential) String() string     { return "Tenant GitHub App webhook credential [REDACTED]" }
+func (c WebhookCredential) GoString() string { return c.String() }
+func (WebhookCredential) MarshalJSON() ([]byte, error) {
+	return json.Marshal("[REDACTED Tenant GitHub App webhook credential]")
+}
+
 type WebhookCredentialResolver interface {
 	ResolveWebhookCredential(context.Context, string) (WebhookCredential, error)
 }
@@ -27,7 +33,7 @@ type WebhookCredentialResolver interface {
 // WebhookDeliveryAuthorizer checks route generation and Installation binding
 // after HMAC verification and before any Tenant-specific inbox mutation.
 type WebhookDeliveryAuthorizer interface {
-	AuthorizeWebhookDelivery(context.Context, string, int64, int64) error
+	AuthorizeWebhookDelivery(context.Context, string, int64, RepositoryEvent) error
 }
 
 type TenantInbox interface {
@@ -73,11 +79,6 @@ func (h *TenantHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	credential, err := h.resolver.ResolveWebhookCredential(r.Context(), routeID)
-	if err != nil || credential.IntegrationID != routeID || credential.Generation <= 0 || len(credential.CurrentSecret) == 0 {
-		http.NotFound(w, r)
-		return
-	}
 	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || mediaType != "application/json" {
 		http.Error(w, "content type must be application/json", http.StatusUnsupportedMediaType)
@@ -86,6 +87,11 @@ func (h *TenantHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	body, err := ReadBounded(r, h.maxBodyBytes)
 	if err != nil {
 		http.Error(w, "invalid webhook request", http.StatusBadRequest)
+		return
+	}
+	credential, err := h.resolver.ResolveWebhookCredential(r.Context(), routeID)
+	if err != nil || credential.IntegrationID != routeID || credential.Generation <= 0 || len(credential.CurrentSecret) == 0 {
+		http.NotFound(w, r)
 		return
 	}
 	verified, err := Verify(r.Header, body, credential.CurrentSecret, h.maxBodyBytes)
@@ -101,11 +107,12 @@ func (h *TenantHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unsupported or incomplete webhook event", http.StatusUnprocessableEntity)
 		return
 	}
-	if err := h.authorizer.AuthorizeWebhookDelivery(r.Context(), routeID, credential.Generation, normalized.InstallationID); err != nil {
+	if err := h.authorizer.AuthorizeWebhookDelivery(r.Context(), routeID, credential.Generation, normalized); err != nil {
 		http.Error(w, "invalid webhook request", http.StatusUnauthorized)
 		return
 	}
 	verified.IntegrationID = routeID
+	verified.CredentialGeneration = credential.Generation
 	inserted, err := h.inbox.Record(r.Context(), verified, h.now().UTC())
 	if errors.Is(err, ErrDeliveryIDConflict) {
 		http.Error(w, "delivery ID conflict", http.StatusConflict)

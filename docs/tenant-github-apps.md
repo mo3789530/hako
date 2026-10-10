@@ -1,6 +1,6 @@
 # Tenant別GitHub App設計
 
-Status: **Tasks 56–59を部分実装。Tenant Appの有効化/運用は未完了でdefault-off**。Draft proof APIとcredential libraries、opaque Webhook ingress boundary、Installation/Run identity schemaを追加。API binaryはprivate-key reader roleを直接assumeせず、trusted credential brokerがない場合はverifyを無効扱いにする。OAuth state、AWS-backed webhook resolver、purpose IAM、legacy backfill/drain、E2Eは残る。現行共通App方式は変更していない。
+Status: **Tasks 56–59を部分実装。Tenant Appの有効化/運用は未完了でdefault-off**。Draft proof APIとcredential libraries、opaque Webhook ingress/DB resolver/Installation authorization、queued generation revalidation、Installation/Run identity schemaを追加。API binaryはprivate-key reader roleを直接assumeせず、trusted credential brokerがない場合はverifyを無効扱いにする。Tenant Webhook routeは専用flagとWebhook-purpose reader Role ARN allowlistでopt-in可能だが、real role trust/Secret provisioningは未実施。OAuth state、legacy backfill/drain、E2Eは残る。現行共通App方式は変更していない。
 決定事項は[ADR 0007](adr/0007-tenant-github-apps.md)、既存資格情報実装は
 [GitHub App credentials](github-app-credentials.md)を参照。
 
@@ -55,7 +55,7 @@ Webhookは`POST /v1/integrations/github/apps/{integration_id}/webhook`を別途�
 
 POSTにはidempotency key、更新にはexpected revisionを用い、競合は409。未承認binding、別Tenant/App所有bindingはSecret取得前に拒否する。
 App verificationとdefault選択は別操作であり、GitHub疎通成功だけでRunを起動しない。
-Task 56では`hako github app list/add/show/verify/select-default/disable`からmetadataを操作する。API routeは`HAKO_GITHUB_APP_MANAGEMENT_ENABLED=true`で明示的に有効化し、未設定時はrouteを登録しない。Task 57ではtrusted broker proof adapterを構成したときにのみ`verify`がdraftからreadyへ進む。標準API binaryはprivate-key accessを持たず、adapter未構成なら409 `github_app_not_ready`、証明失敗なら秘匿された502 `github_app_verification_failed`を返す。`select-default`は未実装のため409を返す。CLI/APIにSecret値を入力させない。
+Task 56では`hako github app list/add/show/verify/select-default/disable`からmetadataを操作する。API routeは`HAKO_GITHUB_APP_MANAGEMENT_ENABLED=true`で明示的に有効化し、未設定時はrouteを登録しない。Task 57ではtrusted broker proof adapterを構成したときにのみ`verify`がdraftからreadyへ進む。標準API binaryはprivate-key accessを持たず、adapter未構成なら409 `github_app_not_ready`、証明失敗なら秘匿された502 `github_app_verification_failed`を返す。Tenant Webhook ingressは`HAKO_TENANT_GITHUB_WEBHOOK_ENABLED=true`とTerraformのexact Webhook-role allowlistで別途opt-inする。`select-default`は未実装のため409を返す。CLI/APIにSecret値を入力させない。
 
 `add`は`Idempotency-Key`必須で、`disable`/`verify`/`select-default`は`expected_revision`を要求する。Owner/Admin以外と別Tenantのresourceはhidden 404。詳細なpath、body、response、error codeは[Control Plane API Contract](api-contract.md#tenant-github-app-metadata)を参照。
 
@@ -113,7 +113,7 @@ Webhook routingは次の順序を固定する。
 既存共通Webhook URLはshared専用aliasとして保持する。Tenant-ownedの処理失敗を共通secretで再検証しない。
 公開ingressにApp private key/OAuth client secretを読ませず、Webhook-purpose readerまたは内部検証brokerを使う。
 
-実装状況: Tenant ingress handlerはこの順序のうちopaque route解決、raw-body HMAC、current/previous secretの期限付き検証、HMAC後のgeneration/Installation authorizer、integration付きdurable inbox handoffまで実装済み。API routeとdedup keyも追加した。AWS-backed webhook-only secret resolver、DB側generation/Installation authorizer、processorでのintegration recheck、およびTenant App OAuth state/verifier連携は未実装で、owned modeはdefault-offのまま。
+実装状況: Tenant ingress handlerはopaque route解決、raw-body HMAC、current/previous secretの期限付き検証、HMAC後のgeneration/Installation authorizer、integration/generation付きdurable inbox handoffを実装済み。DB resolverは承認bindingのWebhook-purpose reader Role、Secret ARN、固定VersionIdだけを解決し、STS readerはそのSecretに限定したsession policyでcurrent/previousの値を取得する。Processorもqueue処理時にgenerationとInstallation bindingを再検証し、古いイベントをfailedへ隔離する。一方、GitHub payload内App IDとroute側App IDの一致検証は未実装であり、有効化前の受入条件として残る。API route/Terraformはdefault-offで、実IAM trust/Secret provisioningとTenant App OAuth state/verifier連携も未実装。
 
 ## 7. ローテーション・停止
 

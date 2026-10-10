@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/githubapp"
+	"github.com/mo3789530/hako/internal/githubwebhook"
 	"github.com/mo3789530/hako/internal/store/dsql"
 	"github.com/mo3789530/hako/internal/store/transaction"
 	"github.com/mo3789530/hako/internal/testutil"
@@ -125,5 +126,73 @@ func TestCredentialAuthorizerRevalidatesTenantAppRevisionAndGeneration(t *testin
 	}
 	if err := authorizer.AuthorizeTenantApp(ctx, identity); !errors.Is(err, ErrInstallationNotActive) {
 		t.Fatal("old in-memory client remained authorized after credential rotation")
+	}
+}
+
+func TestWebhookCredentialResolverAndAuthorizerAreIntegrationScoped(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	statements := []string{
+		`INSERT INTO tenants (id,name,created_at) VALUES ('tenant_hook_auth','Webhook auth',now())`,
+		`INSERT INTO users (id,cognito_subject,email,created_at) VALUES ('usr_hook_auth','hook-auth-sub','',now())`,
+		`INSERT INTO github_credential_bindings (id,tenant_id,github_app_id,status,private_key_secret_ref,oauth_secret_ref,webhook_secret_ref,approved_at,webhook_secret_reader_role_arn,webhook_secret_version_id,previous_webhook_secret_version_id,previous_webhook_secret_valid_until) VALUES ('binding_hook_auth','tenant_hook_auth',911,'approved','private-ref','oauth-ref','arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:webhook',now(),'arn:aws:iam::123456789012:role/hako/webhook-reader','11111111111111111111111111111111','22222222222222222222222222222222',now()+interval '5 minutes')`,
+		`INSERT INTO github_app_registrations (id,github_app_id,mode,owner_tenant_id,slug,client_id,created_at) VALUES ('registration_hook_auth',911,'tenant_owned','tenant_hook_auth','hook-app','client',now())`,
+		`INSERT INTO tenant_github_integrations (id,tenant_id,app_registration_id,github_app_id,credential_binding_id,status,config_revision,credential_generation,idempotency_key,request_sha256,created_by,created_at,updated_at) VALUES ('integration_hook_auth','tenant_hook_auth','registration_hook_auth',911,'binding_hook_auth','active',3,6,'hook-auth-key','hook-auth-hash','usr_hook_auth',now(),now())`,
+	}
+	for _, statement := range statements {
+		if _, err := pool.Exec(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	access, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (AppWebhookCredentialAccess, error) {
+		return ResolveActiveWebhookCredentialAccess(ctx, tx, "integration_hook_auth")
+	})
+	if err != nil || access.TenantID != "tenant_hook_auth" || access.GitHubAppID != 911 || access.CredentialGeneration != 6 || access.ReaderRoleARN != "arn:aws:iam::123456789012:role/hako/webhook-reader" || access.SecretVersionID != "11111111111111111111111111111111" || access.PreviousVersionID != "22222222222222222222222222222222" || access.PreviousValidUntil == nil {
+		t.Fatalf("approved Webhook-purpose metadata did not resolve exactly: %+v err=%v", access, err)
+	}
+	if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (AppWebhookCredentialAccess, error) {
+		return ResolveActiveWebhookCredentialAccess(ctx, tx, "unknown_integration")
+	}); !errors.Is(err, ErrAppBindingDenied) {
+		t.Fatal("unknown route resolved an arbitrary credential binding")
+	}
+
+	authorizer := CredentialAuthorizer{Pool: pool}
+	created := githubwebhook.RepositoryEvent{GitHubEvent: "installation", Action: "created", InstallationID: 9201}
+	if err := authorizer.AuthorizeWebhookDelivery(ctx, access.IntegrationID, access.CredentialGeneration, created); err != nil {
+		t.Fatal("signed pre-binding installation.created should be accepted only for inboxing")
+	}
+	repositoryEvent := githubwebhook.RepositoryEvent{GitHubEvent: "installation_repositories", Action: "added", InstallationID: 9201}
+	if err := authorizer.AuthorizeWebhookDelivery(ctx, access.IntegrationID, access.CredentialGeneration, repositoryEvent); !errors.Is(err, ErrInstallationNotActive) {
+		t.Fatal("unbound Installation repository event was accepted")
+	}
+	now := time.Now().UTC()
+	if _, err := pool.Exec(ctx, `INSERT INTO tenant_github_installations (tenant_id,installation_id,account_login,status,requested_by,requested_at,updated_at) VALUES ('tenant_hook_auth',9201,'acme','active','usr_hook_auth',$1,$1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO github_app_installation_bindings (installation_id,tenant_id,bound_at) VALUES (9201,'tenant_hook_auth',$1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO tenant_github_app_installation_bindings (tenant_id,integration_id,installation_id,bound_at) VALUES ('tenant_hook_auth','integration_hook_auth',9201,$1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := authorizer.AuthorizeWebhookDelivery(ctx, access.IntegrationID, access.CredentialGeneration, repositoryEvent); err != nil {
+		t.Fatal("active bound Installation was denied")
+	}
+	if err := authorizer.AuthorizeWebhookDelivery(ctx, access.IntegrationID, access.CredentialGeneration-1, repositoryEvent); !errors.Is(err, ErrInstallationNotActive) {
+		t.Fatal("stale integration generation was accepted")
+	}
+	if _, err := pool.Exec(ctx, `UPDATE tenant_github_installations SET suspended_at=$1 WHERE tenant_id='tenant_hook_auth' AND installation_id=9201`, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := authorizer.AuthorizeWebhookDelivery(ctx, access.IntegrationID, access.CredentialGeneration, repositoryEvent); !errors.Is(err, ErrInstallationNotActive) {
+		t.Fatal("suspended Installation repository event was accepted")
+	}
+	suspendEvent := githubwebhook.RepositoryEvent{GitHubEvent: "installation", Action: "suspend", InstallationID: 9201}
+	if err := authorizer.AuthorizeWebhookDelivery(ctx, access.IntegrationID, access.CredentialGeneration, suspendEvent); err != nil {
+		t.Fatal("signed lifecycle events for a known binding must remain processable")
 	}
 }

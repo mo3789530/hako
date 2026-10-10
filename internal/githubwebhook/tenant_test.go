@@ -18,10 +18,10 @@ func (f tenantResolverFunc) ResolveWebhookCredential(ctx context.Context, id str
 	return f(ctx, id)
 }
 
-type tenantDeliveryAuthorizerFunc func(context.Context, string, int64, int64) error
+type tenantDeliveryAuthorizerFunc func(context.Context, string, int64, RepositoryEvent) error
 
-func (f tenantDeliveryAuthorizerFunc) AuthorizeWebhookDelivery(ctx context.Context, id string, generation, installation int64) error {
-	return f(ctx, id, generation, installation)
+func (f tenantDeliveryAuthorizerFunc) AuthorizeWebhookDelivery(ctx context.Context, id string, generation int64, event RepositoryEvent) error {
+	return f(ctx, id, generation, event)
 }
 
 type tenantInboxFunc func(context.Context, VerifiedDelivery, time.Time) (bool, error)
@@ -47,15 +47,15 @@ func TestTenantWebhookVerifiesBeforeAuthorizationAndScopesDelivery(t *testing.T)
 			t.Fatalf("resolver got untrusted route %q", route)
 		}
 		return WebhookCredential{IntegrationID: route, Generation: 7, CurrentSecret: secret}, nil
-	}), tenantDeliveryAuthorizerFunc(func(_ context.Context, route string, generation, installation int64) error {
+	}), tenantDeliveryAuthorizerFunc(func(_ context.Context, route string, generation int64, event RepositoryEvent) error {
 		authCalls++
-		if route != integrationID || generation != 7 || installation != 12 {
-			t.Fatalf("unexpected authorization identity: %s %d %d", route, generation, installation)
+		if route != integrationID || generation != 7 || event.InstallationID != 12 {
+			t.Fatalf("unexpected authorization identity: %s %d %+v", route, generation, event)
 		}
 		return nil
 	}), tenantInboxFunc(func(_ context.Context, delivery VerifiedDelivery, _ time.Time) (bool, error) {
 		inboxCalls++
-		if delivery.IntegrationID != integrationID || delivery.DeliveryID != testDeliveryID {
+		if delivery.IntegrationID != integrationID || delivery.CredentialGeneration != 7 || delivery.DeliveryID != testDeliveryID {
 			t.Fatalf("delivery lacks trusted integration identity: %+v", delivery)
 		}
 		return true, nil
@@ -80,7 +80,7 @@ func TestTenantWebhookRejectsInvalidSignatureBeforeTenantAuthorization(t *testin
 	authCalls := 0
 	handler, err := NewTenantHTTPHandler(tenantResolverFunc(func(_ context.Context, route string) (WebhookCredential, error) {
 		return WebhookCredential{IntegrationID: route, Generation: 1, CurrentSecret: secret}, nil
-	}), tenantDeliveryAuthorizerFunc(func(context.Context, string, int64, int64) error { authCalls++; return nil }), tenantInboxFunc(func(context.Context, VerifiedDelivery, time.Time) (bool, error) {
+	}), tenantDeliveryAuthorizerFunc(func(context.Context, string, int64, RepositoryEvent) error { authCalls++; return nil }), tenantInboxFunc(func(context.Context, VerifiedDelivery, time.Time) (bool, error) {
 		t.Fatal("invalid signature reached inbox")
 		return false, nil
 	}), 0)
@@ -114,7 +114,7 @@ func TestTenantWebhookAllowsPreviousSecretOnlyDuringGrace(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			handler, err := NewTenantHTTPHandler(tenantResolverFunc(func(_ context.Context, route string) (WebhookCredential, error) {
 				return WebhookCredential{IntegrationID: route, Generation: 2, CurrentSecret: []byte("new-secret"), PreviousSecret: previous, PreviousUntil: tc.until}, nil
-			}), tenantDeliveryAuthorizerFunc(func(context.Context, string, int64, int64) error { return nil }), tenantInboxFunc(func(context.Context, VerifiedDelivery, time.Time) (bool, error) { return true, nil }), 0)
+			}), tenantDeliveryAuthorizerFunc(func(context.Context, string, int64, RepositoryEvent) error { return nil }), tenantInboxFunc(func(context.Context, VerifiedDelivery, time.Time) (bool, error) { return true, nil }), 0)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -135,14 +135,43 @@ func TestTenantWebhookAllowsPreviousSecretOnlyDuringGrace(t *testing.T) {
 func TestTenantWebhookHidesUnknownRoutesAndResolverErrors(t *testing.T) {
 	handler, err := NewTenantHTTPHandler(tenantResolverFunc(func(context.Context, string) (WebhookCredential, error) {
 		return WebhookCredential{}, errors.New("secret detail")
-	}), tenantDeliveryAuthorizerFunc(func(context.Context, string, int64, int64) error { return nil }), tenantInboxFunc(func(context.Context, VerifiedDelivery, time.Time) (bool, error) { return true, nil }), 0)
+	}), tenantDeliveryAuthorizerFunc(func(context.Context, string, int64, RepositoryEvent) error { return nil }), tenantInboxFunc(func(context.Context, VerifiedDelivery, time.Time) (bool, error) { return true, nil }), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest("POST", "/v1/integrations/github/apps/unknown_route/webhook", strings.NewReader("{}"))
+	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != 404 || strings.Contains(response.Body.String(), "secret detail") {
 		t.Fatalf("route leaked resolver state: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestTenantWebhookRejectsMalformedTransportBeforeSecretRead(t *testing.T) {
+	resolverCalls := 0
+	handler, err := NewTenantHTTPHandler(tenantResolverFunc(func(_ context.Context, route string) (WebhookCredential, error) {
+		resolverCalls++
+		return WebhookCredential{IntegrationID: route, Generation: 1, CurrentSecret: []byte("secret")}, nil
+	}), tenantDeliveryAuthorizerFunc(func(context.Context, string, int64, RepositoryEvent) error { return nil }), tenantInboxFunc(func(context.Context, VerifiedDelivery, time.Time) (bool, error) { return true, nil }), 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, contentType, body string
+		want                    int
+	}{
+		{name: "wrong content type", contentType: "text/plain", body: "x", want: 415},
+		{name: "oversized", contentType: "application/json", body: strings.Repeat("x", 9), want: 400},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := httptest.NewRequest("POST", "/v1/integrations/github/apps/integration_tenant_a/webhook", strings.NewReader(tc.body))
+			request.Header.Set("Content-Type", tc.contentType)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != tc.want || resolverCalls != 0 {
+				t.Fatalf("status=%d resolverCalls=%d", response.Code, resolverCalls)
+			}
+		})
 	}
 }

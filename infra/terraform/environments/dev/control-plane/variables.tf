@@ -26,6 +26,18 @@ variable "github_webhook_secret_arn" {
   default     = ""
 }
 
+variable "tenant_github_webhook_enabled" {
+  description = "Enable Tenant-owned GitHub webhook ingress after per-Tenant Webhook reader Roles are provisioned."
+  type        = bool
+  default     = false
+}
+
+variable "tenant_github_webhook_reader_role_arns" {
+  description = "Exact operator-approved Webhook-purpose reader Role ARNs, one per enabled Tenant App."
+  type        = set(string)
+  default     = []
+}
+
 variable "github_app_slug" {
   description = "GitHub App slug for its installation setup URL."
   type        = string

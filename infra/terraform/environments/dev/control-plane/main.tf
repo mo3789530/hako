@@ -7,6 +7,8 @@ module "control_plane" {
   cognito_cli_callback_urls                = var.cognito_cli_callback_urls
   api_lambda_zip_path                      = var.api_lambda_zip_path
   github_webhook_secret_arn                = var.github_webhook_secret_arn
+  tenant_github_webhook_enabled            = var.tenant_github_webhook_enabled
+  tenant_github_webhook_reader_role_arns   = var.tenant_github_webhook_reader_role_arns
   github_app_slug                          = var.github_app_slug
   github_app_id                            = var.github_app_id
   github_app_client_id                     = var.github_app_client_id
