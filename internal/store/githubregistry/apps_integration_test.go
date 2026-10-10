@@ -133,7 +133,7 @@ func TestResolveAppProofCredentialIsTenantAndRevisionBound(t *testing.T) {
 	for _, query := range []string{
 		`INSERT INTO tenants (id,name,created_at) VALUES ('tenant_proof_a','A',now()),('tenant_proof_b','B',now())`,
 		`INSERT INTO users (id,cognito_subject,email,created_at) VALUES ('usr_proof','proof-sub','',now())`,
-		`INSERT INTO github_credential_bindings (id,tenant_id,github_app_id,status,private_key_secret_ref,oauth_secret_ref,webhook_secret_ref,approved_at) VALUES ('proof_binding','tenant_proof_a',123,'approved','arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:proof-key','oauth-ref','webhook-ref',now())`,
+		`INSERT INTO github_credential_bindings (id,tenant_id,github_app_id,status,private_key_secret_ref,oauth_secret_ref,webhook_secret_ref,approved_at,private_key_reader_role_arn,private_key_secret_version_id) VALUES ('proof_binding','tenant_proof_a',123,'approved','arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:proof-key','oauth-ref','webhook-ref',now(),'arn:aws:iam::123456789012:role/hako/tenant-app-key-reader','0123456789abcdef0123456789abcdef')`,
 		`INSERT INTO github_app_registrations (id,github_app_id,mode,owner_tenant_id,slug,client_id,created_at) VALUES ('proof_registration',123,'tenant_owned','tenant_proof_a','proof-app','client',now())`,
 		`INSERT INTO tenant_github_integrations (id,tenant_id,app_registration_id,github_app_id,credential_binding_id,status,config_revision,credential_generation,idempotency_key,request_sha256,created_by,created_at,updated_at) VALUES ('proof_integration','tenant_proof_a','proof_registration',123,'proof_binding','draft',4,7,'proof-key','request-hash','usr_proof',now(),now())`,
 	} {
@@ -156,7 +156,7 @@ func TestResolveAppProofCredentialIsTenantAndRevisionBound(t *testing.T) {
 		})
 	}
 	credential, err := resolve("tenant_proof_a", 4, 7)
-	if err != nil || credential.GitHubAppID != 123 || credential.PrivateKeySecretARN != "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:proof-key" || credential.ConfigRevision != 4 || credential.CredentialGeneration != 7 {
+	if err != nil || credential.GitHubAppID != 123 || credential.PrivateKeySecretARN != "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:proof-key" || credential.PrivateKeyReaderRoleARN != "arn:aws:iam::123456789012:role/hako/tenant-app-key-reader" || credential.PrivateKeyVersionID != "0123456789abcdef0123456789abcdef" || credential.ConfigRevision != 4 || credential.CredentialGeneration != 7 {
 		t.Fatalf("authoritative draft proof credential did not resolve (err=%v app_id=%d revision=%d generation=%d)", err, credential.GitHubAppID, credential.ConfigRevision, credential.CredentialGeneration)
 	}
 	if _, err := resolve("tenant_proof_b", 4, 7); !errors.Is(err, ErrAppBindingDenied) {
@@ -167,6 +167,21 @@ func TestResolveAppProofCredentialIsTenantAndRevisionBound(t *testing.T) {
 	}
 	if _, err := resolve("tenant_proof_a", 4, 6); !errors.Is(err, ErrAppBindingDenied) {
 		t.Fatal("stale credential generation resolved")
+	}
+	if _, err := pool.Exec(ctx, `UPDATE github_credential_bindings SET private_key_reader_role_arn = 'arn:aws:iam::123456789012:role/*' WHERE id = 'proof_binding'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolve("tenant_proof_a", 4, 7); !errors.Is(err, ErrAppBindingDenied) {
+		t.Fatal("wildcard reader role was accepted")
+	}
+	if _, err := pool.Exec(ctx, `UPDATE github_credential_bindings SET private_key_reader_role_arn = 'arn:aws:iam::123456789012:role/hako/tenant-app-key-reader', private_key_secret_version_id = 'AWSCURRENT' WHERE id = 'proof_binding'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolve("tenant_proof_a", 4, 7); !errors.Is(err, ErrAppBindingDenied) {
+		t.Fatal("mutable AWSCURRENT secret stage was accepted for tenant-owned App")
+	}
+	if _, err := pool.Exec(ctx, `UPDATE github_credential_bindings SET private_key_secret_version_id = '0123456789abcdef0123456789abcdef' WHERE id = 'proof_binding'`); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `UPDATE tenant_github_integrations SET status = 'disabled' WHERE id = 'proof_integration'`); err != nil {
 		t.Fatal(err)

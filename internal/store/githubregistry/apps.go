@@ -48,12 +48,14 @@ type AppDraftRequest struct {
 // one verification attempt. The key reference is not a secret value; callers
 // must use it only in the trusted credential service and must not log it.
 type AppProofCredential struct {
-	TenantID             domain.TenantID `json:"tenant_id"`
-	IntegrationID        string          `json:"integration_id"`
-	GitHubAppID          int64           `json:"github_app_id"`
-	PrivateKeySecretARN  string          `json:"-"`
-	ConfigRevision       int64           `json:"config_revision"`
-	CredentialGeneration int64           `json:"credential_generation"`
+	TenantID                domain.TenantID `json:"tenant_id"`
+	IntegrationID           string          `json:"integration_id"`
+	GitHubAppID             int64           `json:"github_app_id"`
+	PrivateKeySecretARN     string          `json:"-"`
+	PrivateKeyReaderRoleARN string          `json:"-"`
+	PrivateKeyVersionID     string          `json:"-"`
+	ConfigRevision          int64           `json:"config_revision"`
+	CredentialGeneration    int64           `json:"credential_generation"`
 }
 
 func (c AppProofCredential) String() string {
@@ -71,6 +73,7 @@ func ResolveAppProofCredential(ctx context.Context, tx pgx.Tx, tenant domain.Ten
 	}
 	var result AppProofCredential
 	err := tx.QueryRow(ctx, `SELECT i.tenant_id, i.id, i.github_app_id, b.private_key_secret_ref,
+		b.private_key_reader_role_arn, b.private_key_secret_version_id,
 		i.config_revision, i.credential_generation
 		FROM tenant_github_integrations i
 		JOIN github_app_registrations a ON a.id = i.app_registration_id AND a.github_app_id = i.github_app_id
@@ -79,17 +82,35 @@ func ResolveAppProofCredential(ctx context.Context, tx pgx.Tx, tenant domain.Ten
 		AND a.mode = 'tenant_owned' AND a.owner_tenant_id = i.tenant_id
 		AND b.status = 'approved'
 		AND i.config_revision = $3 AND i.credential_generation = $4`, tenant, integrationID, expectedRevision, expectedGeneration).
-		Scan(&result.TenantID, &result.IntegrationID, &result.GitHubAppID, &result.PrivateKeySecretARN, &result.ConfigRevision, &result.CredentialGeneration)
+		Scan(&result.TenantID, &result.IntegrationID, &result.GitHubAppID, &result.PrivateKeySecretARN,
+			&result.PrivateKeyReaderRoleARN, &result.PrivateKeyVersionID, &result.ConfigRevision, &result.CredentialGeneration)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return AppProofCredential{}, ErrAppBindingDenied
 		}
 		return AppProofCredential{}, err
 	}
-	if !validExactSecretARN(result.PrivateKeySecretARN) {
+	if !validExactSecretARN(result.PrivateKeySecretARN) || !validExactIAMRoleARN(result.PrivateKeyReaderRoleARN) || !validSecretVersionID(result.PrivateKeyVersionID) {
 		return AppProofCredential{}, ErrAppBindingDenied
 	}
 	return result, nil
+}
+
+func validExactIAMRoleARN(value string) bool {
+	parsed, err := arn.Parse(value)
+	return err == nil && parsed.Partition == "aws" && parsed.Service == "iam" && parsed.Region == "" && len(parsed.AccountID) == 12 && strings.HasPrefix(parsed.Resource, "role/") && len(parsed.Resource) > len("role/") && !strings.ContainsAny(value, "*?\r\n")
+}
+
+func validSecretVersionID(value string) bool {
+	if len(value) != 32 {
+		return false
+	}
+	for _, r := range value {
+		if !((r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') || (r >= '0' && r <= '9')) {
+			return false
+		}
+	}
+	return true
 }
 
 func validExactSecretARN(value string) bool {

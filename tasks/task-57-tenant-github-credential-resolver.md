@@ -1,6 +1,6 @@
 # Task 57: Tenant GitHub Credential Resolver and Cache Isolation
 
-Status: In Progress (App ID proof and revision/generation-bound draft credential resolver implemented; role/version-pinned Secret provider, integration-scoped cache, verify API and Run integration binding remain). Priority: P0.
+Status: In Progress (App ID proof and revision/generation-bound draft resolver with exact reader Role/Secret Version metadata implemented; STS-backed Secret provider, integration-scoped cache, verify API and Run integration binding remain). Priority: P0.
 
 ## Goal
 
@@ -16,7 +16,7 @@ Extend Task 37's internal credential library using [Tenant App design sections 4
 
 ## Acceptance / tests / docs
 
-Progress: `TokenClient.VerifyApp` signs with the configured App key, calls GitHub `GET /app`, checks the returned App ID, and returns only fixed safe credential errors. `ResolveAppProofCredential` resolves only a draft Tenant-owned integration, exact approved binding and private-key reference for the expected config revision and credential generation; it never returns OAuth/webhook refs. Integration tests cover cross-Tenant, stale revision/generation and disabled-state rejection. These are library primitives only; no public proof endpoint or ready/active transition is enabled.
+Progress: `TokenClient.VerifyApp` signs with the configured App key, calls GitHub `GET /app`, checks the returned App ID, and returns only fixed safe credential errors. `ResolveAppProofCredential` resolves only a draft Tenant-owned integration, exact approved binding, exact reader Role ARN, exact private-key Secret ARN and immutable 32-hex Version ID for the expected config revision and credential generation; it never returns OAuth/webhook refs. Missing pins, wildcard Role ARNs and `AWSCURRENT` are rejected. Integration tests cover cross-Tenant, stale revision/generation, malformed pin and disabled-state rejection. These are metadata/library primitives only: STS AssumeRole and Secrets Manager retrieval, no public proof endpoint, and no ready/active transition are enabled yet.
 
 - Generated RSA keys, fake Secret/STS/GitHub providers test A/B isolation, correct Role/ARN/version, mismatched App proof, rotation, revoked/suspended configuration, concurrent requests and stale client/cache.
 - Tokens/keys cannot appear in DB/messages/errors/artifacts; no public token endpoint is added.
