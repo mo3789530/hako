@@ -98,12 +98,24 @@ explicitly enabled) repository trigger events from that inbox.
 
 ## Local verification
 
-The integration suite uses isolated PostgreSQL schemas and exercises
-active-binding selection, lifecycle transitions, idempotency, and pending
-events:
+The focused lifecycle E2E exercises signed HTTP ingress, Tenant Owner/Admin
+and platform-operator redaction/replay/audit boundaries, concurrent duplicate
+receipt/replay/processing, push and pull-request verification Runs, opt-in
+time-boundary behavior, stale Installation/Repository denial, seven-day raw
+payload purge, and terminal Check/Outbox acknowledgment. It creates an isolated
+schema in the already-running local PostgreSQL database and does not stop the
+server or modify other schemas:
 
 ```sh
-HAKO_TEST_DATABASE_URL='postgres://…' go test -tags=integration ./internal/store/githubwebhook ./internal/store/githubregistry ./internal/workloadjobs -count=1
+make test-webhook-lifecycle-integration
+```
+
+Override `HAKO_TEST_DATABASE_URL` when the local PostgreSQL connection differs
+from the repository default. The broader integration suite also exercises the
+webhook store and Workload integration packages:
+
+```sh
+HAKO_TEST_DATABASE_URL='postgres://…' go test -tags=integration ./internal/api ./internal/store/githubwebhook ./internal/store/githubregistry ./internal/workloadjobs -count=1
 make build-webhook-processor-lambda
 ```
 
@@ -171,8 +183,8 @@ provisioning, monitoring, and deployment remain separate operational gates.
 
 This processor does not verify GitHub's setup callback or activate pending
 Installation claims. It does not process `workflow_job`, call GitHub APIs, or
-run a GitHub Actions runner. The platform operator API is implemented locally;
-the broader retention/replay/trigger E2E and a detailed operator replay runbook
-remain tracked by Tasks 78–79. The opt-in Terraform is not applied, and the
-downstream runtime executor is not deployed; keep trigger mode disabled until
-the Check consumer and MicroVM-backed Workload worker are deployed and monitored.
+run a GitHub Actions runner. Tasks 78–79 provide local operator API/runbook and
+lifecycle E2E coverage. Production operator provisioning, monitoring, Terraform
+apply, and downstream runtime execution are not verified; keep trigger mode
+disabled until the Check consumer and Lambda MicroVM-backed Workload worker are
+deployed and monitored.

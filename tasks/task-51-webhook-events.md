@@ -1,6 +1,6 @@
 # Task 51: GitHub Webhook Event Lifecycle and Operations
 
-Status: In Progress; [Task 78](task-78-webhook-platform-operator-dlq.md) is implemented locally, and [Task 79](task-79-webhook-lifecycle-e2e.md) remains for full lifecycle E2E. Signature verification, versioned normalization for push/pull_request/workflow_job, Tenant-bound inbox and Installation lifecycle processor already exist. Seven-day raw-payload purge, Owner/Admin replay endpoint, redacted failed-delivery API/CLI listing, per-delivery concurrent processor fencing, idempotent Delivery ID→Workload Run persistence, default-off per-repository push/PR trigger scheduling, and platform operator replay are implemented locally with focused PostgreSQL tests. Priority: P0.
+Status: Implemented locally (Tasks 78–79 operator API/runbook and lifecycle PostgreSQL E2E complete; 2026-10-11). Production operator provisioning, AWS deployment, and downstream MicroVM worker enablement remain separate gates. Signature verification, versioned normalization for push/pull_request/workflow_job, Tenant-bound inbox and Installation lifecycle processor, seven-day raw-payload purge, Owner/Admin replay and redacted listing, per-delivery processor fencing, Delivery ID-idempotent Run/Check/Outbox, default-off repository triggers, and platform operator replay are locally verified. Priority: P0.
 
 ## Goal
 

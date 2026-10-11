@@ -1,6 +1,6 @@
 # Task 79: Webhook Retention, Replay, and Trigger End-to-End Tests
 
-Status: Todo. Priority: P0. Parent: Task 51. Depends on: Tasks 51 and 78.
+Status: Implemented locally (PostgreSQL lifecycle E2E, focused Make target, docs; 2026-10-11). Production AWS/GitHub configuration remains unverified. Priority: P0. Parent: Task 51. Depends on: Tasks 51 and 78.
 
 ## Goal
 

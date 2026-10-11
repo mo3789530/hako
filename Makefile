@@ -1,4 +1,4 @@
-.PHONY: fmt lint test test-integration test-integration-local test-workload-runtime test-workload-runtime-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-github-checks-consumer-image terraform-fmt terraform-validate
+.PHONY: fmt lint test test-integration test-integration-local test-webhook-lifecycle-integration test-workload-runtime test-workload-runtime-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-github-checks-consumer-image terraform-fmt terraform-validate
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -not -path './.git/*')
@@ -15,6 +15,10 @@ test-integration:
 
 test-integration-local:
 	HAKO_TEST_DATABASE_URL="$${HAKO_TEST_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" go test -tags=integration ./... -count=1
+
+# Uses an isolated schema in the already-running local PostgreSQL database.
+test-webhook-lifecycle-integration:
+	HAKO_TEST_DATABASE_URL="$${HAKO_TEST_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" go test -tags=integration ./internal/api -run '^TestWebhookLifecycleE2E$$' -count=1
 
 test-workload-runtime:
 	go test -race ./internal/workloadcontroller ./internal/workloadjournal ./internal/dispatcher

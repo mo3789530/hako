@@ -12,7 +12,7 @@
 
 ## 作業中タスクの整理（2026-10-11）
 
-Task 41のGitHub Checks delivery（mTLS broker/consumer、idempotent Check更新、Queue/DLQ/IAM/alarmとdefault-off service Terraform）はローカル実装・検証済みで、production Secret/certificate/network/image/deployment gate待ち。Task 51のWebhook基盤（7日raw payload retention、監査付きTenant replay、redacted failed-delivery API/CLI、processor fencing、Delivery ID冪等Run/Check/Outbox、default-off repository triggers）もPostgreSQLで検証済み。Task 78のplatform `hako-admin`向けDLQ API/runbookはローカル検証済みで、Webhookローカル残件はTask 79の包括lifecycle E2E。Tenant GitHub App Tasks 66–72とTask 68はローカル実装・検証済みだが、production certificate/IAM/worker wiring/cutoverは未実施。AWS apply、実Secret取得、実GitHub設定変更はしていない。
+Task 41のGitHub Checks delivery（mTLS broker/consumer、idempotent Check更新、Queue/DLQ/IAM/alarmとdefault-off service Terraform）はローカル実装・検証済みで、production Secret/certificate/network/image/deployment gate待ち。Task 51/78/79のWebhook基盤・operator API/runbook・包括lifecycle PostgreSQL E2Eもローカル検証済み。Tenant GitHub App Tasks 66–72とTask 68はローカル実装・検証済みだが、production certificate/IAM/worker wiring/cutoverは未実施。AWS apply、実Secret取得、実GitHub設定変更はしていない。
 
 親タスク57–60/50の残作業をTask 66–71へ分割した。OAuth broker通信をTask 72、Claude Code ActionをTask 73–77、Webhook Task 51の残件をTask 78–79へ分割する。親は集約用に残すため、残件数を数えるとき親と子を二重計上しない。子タスクはリポジトリ全体の残件数ではない。
 
@@ -26,7 +26,7 @@ Task 41のGitHub Checks delivery（mTLS broker/consumer、idempotent Check更新
 | 5 | [70 — binding移行/cutover tooling](task-70-tenant-migration-cutover.md) | 59, 67, 69 | Implemented locally：revision/generation fence付きdry-run/backfill、run drain guard/default選択、rollback/idempotency検証。production cutoverは承認後 |
 | 6 | [71 — 二Tenant local E2E](task-71-tenant-app-local-e2e.md) | 60, 67–70 | Implemented locally：並行callback、Tenant別Webhook/Run pin/checkout、replay・cross-App/Tenant拒否、rotation/disable/shared回帰とOCC retry。production rolloutは未検証 |
 | 後続 | [73 — Claude Code Action親タスク](task-73-claude-code-action.md) | 52 | Todo：Task 74–77に分割。Runner/worker/Checks/security foundation後 |
-| 後続 | [78–79 — Webhook運用/E2E](task-78-webhook-platform-operator-dlq.md) | 51 | Todo：platform `hako-admin` DLQ操作とretention/replay/triggerの包括E2Eに分割 |
+| 完了（ローカル） | [78–79 — Webhook運用/E2E](task-78-webhook-platform-operator-dlq.md) | 51 | Operator API/runbookとretention/replay/trigger lifecycle E2EをPostgreSQLで検証。Production運用ゲートは別 |
 
 Tenant App子タスクのlocal受入条件はTask 70/71まで実装・検証済み。production broker/certificate/IAM/worker wiringと承認済みcutoverは未完了で、次の実装順は下の「整理後の実行キュー」に集約する。Task 68のローカル実装も完了扱いだが、監視・AWS配備レビューは別の運用作業として残る。Terraform配備はAPI/CLIとローカル検証の後段とする。Workspace/EFS/Gateway（43–47）、運用（48–50）、Software Factory拡張（53–55）も未完了。親子タスクは二重計上せず、詳細は各taskの受入条件を参照する。
 
@@ -81,7 +81,7 @@ Tenant App子タスクのlocal受入条件はTask 70/71まで実装・検証済�
 
 | 順 | タスク | 状態と次の作業 | 完了条件 |
 |---|---|---|---|
-| 1 | [79 — Webhook lifecycle E2E](task-79-webhook-lifecycle-e2e.md) | **次に着手**。Task 51/78全体を通すPostgreSQL/fake E2EとCI commandを追加 | retention、Tenant/operator replay、重複race、opt-in境界、失効bindingを網羅 |
+| 完了（ローカル） | [79 — Webhook lifecycle E2E](task-79-webhook-lifecycle-e2e.md) | signed ingressからRun/Check/Outbox terminal acknowledgmentまでPostgreSQL/fake E2E、focused Make target、runbookを追加 | `make test-webhook-lifecycle-integration`と関連integration suiteで検証 |
 | — | [78 — Platform operator DLQ](task-78-webhook-platform-operator-dlq.md) | **ローカル実装・focused PostgreSQL検証済み**。production operator-group provisioning/deploymentは別ゲート | cross-Tenant redacted listing、`hako-admin` authorization、expiry/active-binding replay、atomic audit、rate limit、runbook |
 | 3 | [41 — GitHub Checks](task-41-github-checks.md) | **ローカル実装済み・運用ゲート待ち**。専用Queue/DLQ、consumer task/service、roles、Secret ARN/mTLS注入、DSQL権限、任意SNS通知をdefault-off Terraform化。AWS apply/Secret作成は別承認 | network/Secret/image inputsのreview・approved deploymentと運用確認（apply前は未完了） |
 | 4 | [43 — Workspace Runtime](task-43-workspace-runtime.md), [45 — hako-agent](task-45-hako-agent.md), [61 — MicroVM PoC](task-61-workload-runtime-selection.md) | **未完了**。Lambda MicroVMでagent起動・認証・停止を設計し、image/container/network/egressのPoC条件を固める。EC2は対象外 | fake/local試験と、承認後に実施する実MicroVM PoCの境界を明記 |
@@ -91,7 +91,7 @@ Tenant App子タスクのlocal受入条件はTask 70/71まで実装・検証済�
 | 8 | [74 — Provenance](task-74-claude-action-provenance.md) → [75 — Tenant credential policy](task-75-claude-tenant-credential-policy.md) | **未着手**。Task 52上でworkflow/job identityを検証してからTenantのmodel credentialを認可・解決する | 不正workflow/fork/cross-Tenantではruntime作成・Secret解決前に拒否 |
 | 9 | [76 — Action execution](task-76-claude-action-execution.md) → [77 — E2E/operations](task-77-claude-action-e2e.md) | **未着手**。公式Claude Code Actionをユーザー定義workflowのままLambda MicroVM ephemeral runnerで実行し、Checkとcleanupを確認 | Fake provider/runner/GitHub + PostgreSQL E2E、失敗時cleanup、運用・security文書 |
 
-Task 41はローカル受入済みでproduction deployment gate待ち。Task 51のコード基盤も実装済みで、Task 78はlocal完了、Task 79が次のWebhook実装作業。Tenant App Tasks 66–72はローカルのAPI/CLI/broker/mTLS/E2E基盤が実装済みで、本番証明書/IAM/worker配備は別の運用ゲートとして追跡する。Task 68もlocal controlsは実装済みだが、alerting/deployment reviewは残る。
+Task 41とTask 51のローカル受入は完了しproduction deployment gate待ち。Task 78/79のWebhookローカル作業は完了。Tenant App Tasks 66–72はローカルのAPI/CLI/broker/mTLS/E2E基盤が実装済みで、本番証明書/IAM/worker配備は別の運用ゲートとして追跡する。Task 68もlocal controlsは実装済みだが、alerting/deployment reviewは残る。
 
 Claude Code Actionは**現在実装されていない**。Task 73は親の集約項目、実作業は74→75→76→77。Task 52のephemeral runnerとTask 40のLambda MicroVM workerが前提で、Task 75はTenantごとのmodel credential policyを新規実装する。既存GitHub App credentialやAWS credentialをClaudeへ流用しない。
 
