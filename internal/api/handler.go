@@ -205,6 +205,12 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 	protected.PUT("/v1/admin/resource-planes/:resource_plane_id/health", putResourcePlaneHealth(pool),
 		RequireScopes(auth.HakoAPIScope), RequireCognitoGroup("hako-admin"), HakoUserMiddleware(pool),
 	)
+	protected.GET("/v1/admin/github/webhook-deliveries", listPlatformGitHubFailedDeliveries(pool),
+		RequireScopes(auth.HakoAPIScope), RequireCognitoGroup("hako-admin"), HakoUserMiddleware(pool),
+	)
+	protected.POST("/v1/admin/github/webhook-deliveries/:integration_id/:delivery_id/replay", replayPlatformGitHubDelivery(pool),
+		RequireScopes(auth.HakoAPIScope), RequireCognitoGroup("hako-admin"), HakoUserMiddleware(pool),
+	)
 	protected.POST("/v1/tenants/:tenant_id/workspaces", createWorkspace(pool, workspaceConfig),
 		RequireScopes(auth.HakoAPIScope),
 		HakoUserMiddleware(pool),

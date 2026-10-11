@@ -58,24 +58,96 @@ Secret, ARN, Role, and URL inputs. `GET /{integration_id}` returns the same
 sanitized metadata shape. Responses omit the binding ID and all credential
 references.
 
-`POST /{integration_id}/disable`, `/verify`, and `/select-default` require
-`{"expected_revision": N}`. Draft disable advances the configuration and
+`POST /{integration_id}/disable` and `/verify` require
+`{"expected_revision": N}`. `/select-default` additionally requires
+`expected_generation`; it only succeeds for a ready/active owned App with all
+three approved purpose-specific credential readers and no legacy nonterminal
+Workload Runs. It activates a ready integration and records the Tenant default
+in one transaction. All nonterminal Runs pinned to another integration must be
+drained first; a previous active Tenant-owned default is disabled with its
+revision and credential generation advanced in the same transaction. Stale revision/generation and undrained Runs return HTTP
+409 (`state_conflict` or `legacy_runs_not_drained`). Draft disable advances the configuration and
 credential revisions. When the API has its trusted proof verifier configured,
 `/verify` resolves the exact approved key pin, calls GitHub `GET /app` outside
 the database transaction, then rechecks revision/generation before moving
 `draft` to `ready`. Without that verifier it returns HTTP 409
 `github_app_not_ready`; failed identity proof returns a sanitized 502
-`github_app_verification_failed`. `/select-default` remains unimplemented and
-returns 409; verification alone does not activate or select the App. Other stable errors are `invalid_request` (400),
-`idempotency_conflict` and `state_conflict` (409). Create and disable append a
-safe audit summary in the same transaction as metadata changes; idempotent
-create replay does not append another event.
+`github_app_verification_failed`. Verification alone does not activate or
+select the App.
+
+`POST /{integration_id}/migration` accepts an explicit `action` (`plan` or
+`backfill`), `expected_revision`, `expected_generation`, and 1–100 unique
+positive `installation_ids`. `plan` is read-only. `backfill` additionally
+requires `confirm: true`, and inserts only rows whose stored, setup-verified
+GitHub App ID matches the active integration. Unknown historical App identity,
+inactive/suspended installations, and conflicting bindings are blocked; a
+mixed batch rolls back atomically. Backfill never changes Workload Run pins or
+the Tenant default. Stale pins and unsafe targets return 409. The backfill and
+its safe audit summary commit in the same transaction. Other stable errors are
+`invalid_request` (400), `idempotency_conflict` and `state_conflict` (409).
+Create/disable audit metadata changes transactionally; idempotent create
+replay does not append another event.
 
 The matching CLI commands are `hako github app list`, `add`, `show`, `verify`,
-`select-default`, and `disable`. The CLI accepts only the opaque approved
+`select-default`, `migration-plan`, `migration-backfill`, `deliveries`, and
+`disable`.
+Migration commands require `--revision`, `--generation`, explicit
+`--installations`; applying a backfill also requires `--apply`. The CLI accepts only the opaque approved
 binding ID and never accepts Secret values or arbitrary resource references.
 Credential bindings are provisioned through an operator-only database path;
 the API database role has read-only access to that table.
+
+`GET /v1/tenants/{tenant_id}/github/apps/{integration_id}/deliveries` lists
+failed deliveries for that Tenant integration. It uses `limit` (default 20,
+range 1–100) and `offset` (range 0–1,000,000), and returns a `deliveries` page
+with delivery ID, event/action, actor login, received/payload-purged timestamps,
+and replay count. It never returns raw payload or normalized event content.
+The matching CLI is `hako github app deliveries --tenant <tenant>
+--integration <integration> [--limit N --offset N]`.
+
+When both GitHub App management and webhook-triggered Workload Runs are enabled,
+Tenant Owners/Admins can opt a synchronized repository in or out with
+`PUT /v1/tenants/{tenant_id}/github/installations/{installation_id}/repositories/{repository_id}/factory`
+and `{"enabled":true|false}`. The route validates an explicit boolean and
+returns repository metadata including `factory_enabled` and, when enabled,
+`factory_enabled_at`. `hako github repository factory enable|disable --tenant
+<tenant> --installation <id> --repository <id>` mirrors the API. The setting
+defaults off. Disabling clears the opt-in timestamp; re-enabling records a new
+timestamp, so deliveries received before that opt-in are not retroactively
+scheduled. Even with the repository enabled, webhook trigger processing also
+requires `HAKO_WEBHOOK_WORKLOAD_TRIGGERS_ENABLED=true` and Workload Runs to be
+enabled. The feature flag defaults off.
+
+`POST /v1/tenants/{tenant_id}/github/apps/{integration_id}/deliveries/{delivery_id}/replay`
+is available when Tenant GitHub App management is enabled and requires Tenant
+Owner/Admin authorization. The body is `{"reason":"..."}` with an 8–500 byte
+operator explanation. Only failed Tenant-owned deliveries with the current
+active integration generation and Installation binding can be replayed. The
+request preserves the original Delivery ID, is audited with actor and reason,
+and is limited to three requests per delivery per hour. Success returns HTTP
+202 with only `delivery_id` and `status`; stale/ineligible deliveries return
+409, and rate-limited requests return 429 with `Retry-After`. Raw payloads and
+normalized event contents are never returned by this endpoint.
+
+Platform operators with a verified Cognito `hako-admin` group can inspect
+failed Tenant-owned webhook deliveries across Tenants through
+`GET /v1/admin/github/webhook-deliveries?limit=N&offset=N` (limit 1–100,
+offset 0–1,000,000). The response contains only Tenant/integration/delivery,
+event/action/actor, Installation/Repository IDs, received/payload-purged time,
+replay count, and a replay-eligibility boolean. Legacy `shared` deliveries are
+omitted because they do not have an unambiguous Tenant integration owner.
+Tenant membership, including Owner/Admin, does not grant this platform route.
+
+An operator may request an audited replay with
+`POST /v1/admin/github/webhook-deliveries/{integration_id}/{delivery_id}/replay`
+and the same 8–500 byte `reason` body. Only active Tenant-owned integrations,
+current credential generations and active Installation bindings with an
+unexpired, retained payload may be replayed. The request preserves the
+original Delivery ID, uses the same three-per-hour limit as Tenant replay, and
+stores actor and reason in `platform_audit_events` atomically with the state
+change. It returns HTTP 202 with Tenant ID, Delivery ID and `received` status;
+ineligible deliveries return 409 and rate-limited requests return 429. The
+processor revalidates authorization before applying event side effects.
 
 With an explicitly injected trusted `TenantGitHubSetupResolver`, metadata
 management also exposes `POST /{integration_id}/setup` with `{}`. Only active
