@@ -84,7 +84,8 @@ Tenant App子タスクのlocal受入条件はTask 70/71まで実装・検証済�
 | 完了（ローカル） | [79 — Webhook lifecycle E2E](task-79-webhook-lifecycle-e2e.md) | signed ingressからRun/Check/Outbox terminal acknowledgmentまでPostgreSQL/fake E2E、focused Make target、runbookを追加 | `make test-webhook-lifecycle-integration`と関連integration suiteで検証 |
 | — | [78 — Platform operator DLQ](task-78-webhook-platform-operator-dlq.md) | **ローカル実装・focused PostgreSQL検証済み**。production operator-group provisioning/deploymentは別ゲート | cross-Tenant redacted listing、`hako-admin` authorization、expiry/active-binding replay、atomic audit、rate limit、runbook |
 | 3 | [41 — GitHub Checks](task-41-github-checks.md) | **ローカル実装済み・運用ゲート待ち**。専用Queue/DLQ、consumer task/service、roles、Secret ARN/mTLS注入、DSQL権限、任意SNS通知をdefault-off Terraform化。AWS apply/Secret作成は別承認 | network/Secret/image inputsのreview・approved deploymentと運用確認（apply前は未完了） |
-| 4 | [43 — Workspace Runtime](task-43-workspace-runtime.md), [45 — hako-agent](task-45-hako-agent.md), [61 — MicroVM PoC](task-61-workload-runtime-selection.md) | **未完了**。Lambda MicroVMでagent起動・認証・停止を設計し、image/container/network/egressのPoC条件を固める。EC2は対象外 | fake/local試験と、承認後に実施する実MicroVM PoCの境界を明記 |
+| 4 | [80 — Runtime契約](task-80-workspace-runtime-contract.md) → [81 — durable journal/fence](task-81-workspace-runtime-journal.md) → [82 — Lambda MicroVM adapter](task-82-workspace-lambda-microvm-adapter.md) → [83 — recovery/fake API E2E](task-83-workspace-runtime-recovery-e2e.md) | **未着手**。親Task 43を4つに分割。Task 61のWorkload adapterをWorkspace対応と誤認しない。EC2は対象外 | local fake/APIとdurable fence。実AWS image/container/network/lifecycle PoCは承認後 |
+| 4a | [45 — hako-agent](task-45-hako-agent.md), [61 — MicroVM PoC](task-61-workload-runtime-selection.md) | **未完了**。Agentとimage/container/network/egressのPoC条件。Workspace runtimeはTasks 80–83で別管理 | fake/local試験と、承認後に実施する実MicroVM PoCの境界を明記 |
 | 5 | [40 — Worker deployment](task-40-workload-worker-deployment.md) | **未完了**。Task 43/45/61の契約をworker・queue・artifact・recoveryへ接続。default-offを維持 | local integration、Terraform validate/plan、runbook。実AWS適用は承認後 |
 | 6 | [42 — Software Factory E2E](task-42-software-factory-e2e.md) | **未完了**。GitHub install→PR→isolated test→Check→logs/artifact→cleanupを通す | fake GitHub + local PostgreSQLで再現可能なE2E |
 | 7 | [52 — Ephemeral Actions runner](task-52-ephemeral-actions-runner.md) | **未着手**。queued workflow_jobからLambda MicroVM上の1 job限定runnerを起動し、全terminal pathでderegister/cleanup | 重複、誤割当、fork、timeout、cancel、cleanup retryのテスト |
@@ -101,7 +102,7 @@ Claude Code Actionは**現在実装されていない**。Task 73は親の集約
 
 | 順序 | Task | 内容 | Depends on |
 |---|---|---|---|
-| 9 | [43 — Workspace Runtime実装](task-43-workspace-runtime.md) | ADR、durable fencing、MicroVM lifecycle、補償cleanup | なし |
+| 9 | [43 — Workspace Runtime](task-43-workspace-runtime.md) / Tasks [80–83](task-80-workspace-runtime-contract.md) | ADR/contract → durable fencing → MicroVM lifecycle → recovery/E2E | Task 61 runtime evidence |
 | 10 | [44 — EFS Workspace保存](task-44-efs-workspace.md) | Access Point、mount、再作成時のデータ維持 | 43 |
 | 11 | [45 — hako-agent](task-45-hako-agent.md) | 起動、heartbeat、exec、PTY、process管理、Secret参照 | 43 |
 | 12 | [46 — Session/Gateway](task-46-session-gateway.md) | 短命ticket、ECS Gateway、HTTPS/WSS proxy | 43, 45 |

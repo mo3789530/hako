@@ -1,22 +1,29 @@
 # Task 43: Production Workspace Runtime
 
-Status: Ready for design; implementation depends on ADR decision. Priority: P1.
+Status: In Progress (decomposed into Tasks 80–83; no Workspace production runtime is implemented yet). Priority: P1.
 
 ## Goal
 
 Replace the production gap behind the current fake-only Resource Controller with an AWS Runtime that implements ensure-running, suspend, resume, and delete without weakening the existing Workspace revision-fencing contract.
 
-## Work
+## Execution units
 
-- First record an ADR for the concrete MicroVM/compute provider and its lifecycle/API limits; do not assume that a Lambda function invocation itself provides a durable interactive Workspace.
-- Implement the `Runtime` interface with provider API clients, explicit per-operation deadlines, operation idempotency, and durable revision/tombstone fencing before side effects.
-- Persist/re-discover provider IDs via tagged Resource Bindings and repair DB/provider drift without taking over unrelated resources.
-- Compensate partial provisioning and make delete idempotent; preserve failed cleanup state for retries and operator visibility.
-- Keep Resource Plane credentials in IAM roles and never move provider credentials into Control Plane or user clients.
+Implement in dependency order; do not count this parent together with its child tasks:
+
+1. [Task 80: Runtime contract and capability ADR](task-80-workspace-runtime-contract.md)
+2. [Task 81: Durable journal and revision fence](task-81-workspace-runtime-journal.md)
+3. [Task 82: Lambda MicroVM Runtime adapter](task-82-workspace-lambda-microvm-adapter.md)
+4. [Task 83: Reconciliation and local fake-provider E2E](task-83-workspace-runtime-recovery-e2e.md)
+
+Task 61's Workload Job adapter is not a Workspace runtime and does not satisfy
+this parent task. Keep real AWS PoC, image/network proof, and deployment
+approval as separate gates; EC2 remains out of scope.
 
 ## Acceptance criteria
 
-- Provider fake tests cover duplicate operations, stale revisions, concurrent operations, partial create failure, retry, delete tombstones, and foreign resources.
-- Integration tests cover actual Runtime adapter against a local fake provider API; no AWS apply is implicit.
-- IAM and tags are minimal and follow `docs/aws-resource-tags.md`.
-- Operational boundaries, provider quotas, suspend/resume semantics, and unsupported runtime classes are documented.
+- Tasks 80–83 acceptance criteria pass and are individually documented/tested.
+- Runtime adapter uses durable per-Workspace revision/tombstone fencing before
+  provider effects, minimal IAM, and tags from `docs/aws-resource-tags.md`.
+- Provider API integration runs against a local fake; no AWS apply is implicit.
+- AWS image/container/network/lifecycle PoC remains explicitly unverified until
+  approved and completed in a real Resource Plane account.
