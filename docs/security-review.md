@@ -23,7 +23,7 @@
 
 ## 残るリスク・受入条件
 
-- **公開Webhookの負荷制御**: valid routeへの不正署名でもHMAC前のDB/STS/Secrets Manager読取が発生する。per-route rate limit、適切なGateway throttle、取得頻度制限と監視を実装・検証する。現時点のTenant ingressはdefault-off。
+- **公開Webhookの負荷制御**: Tenant ingressではheader preflightの後、active integrationに限定したDSQL共有rate counterとAPI Gateway route throttleをHMAC/Secret取得より前に適用する（Task 68）。default-offのため、これらの制限はAWSへ配備されるまで有効にならない。429/DB failureの監視と実環境負荷の確認が残る。
 - **trusted brokerの侵害範囲**: processのAssumeRole許可が複数Tenant readerに及ぶ場合、そのbroker侵害の影響も複数Tenantへ及び得る。IAM trust/KMS/Secret resource policyを実環境で確認し、用途とTenantを限定する。
 - **実Runtime/通信経路**: MicroVM guest network/container権限、EFS Access Point越境、Gateway session ticketのreplay/revocation、agent相互認証は後続実装とAWS PoCの受入条件。
 - **運用**: 監査の保持/export、callback query非記録、readアクセス監査、Secret rotation、DLQ redrive、backup/recovery演習、container image scanは未完了。Secret値を取得して確認しない。

@@ -56,6 +56,29 @@ func TestVerifyUsesRawBodyAndReturnsAllowlistedEvent(t *testing.T) {
 	}
 }
 
+func TestValidateWebhookHeadersRejectsMalformedAndDuplicatedValues(t *testing.T) {
+	valid := signedHeaders([]byte("{}"), "push", testDeliveryID)
+	if err := ValidateWebhookHeaders(valid); err != nil {
+		t.Fatalf("valid transport headers rejected: %v", err)
+	}
+	cases := map[string]func(http.Header){
+		"missing signature":   func(h http.Header) { h.Del("X-Hub-Signature-256") },
+		"duplicate signature": func(h http.Header) { h.Add("X-Hub-Signature-256", h.Get("X-Hub-Signature-256")) },
+		"malformed hex":       func(h http.Header) { h.Set("X-Hub-Signature-256", "sha256="+strings.Repeat("z", 64)) },
+		"invalid delivery":    func(h http.Header) { h.Set("X-GitHub-Delivery", "not-a-uuid") },
+		"invalid event":       func(h http.Header) { h.Set("X-GitHub-Event", "push/evil") },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			headers := valid.Clone()
+			mutate(headers)
+			if err := ValidateWebhookHeaders(headers); err == nil {
+				t.Fatal("malformed transport accepted")
+			}
+		})
+	}
+}
+
 func TestVerifyRejectsInvalidSignatureHeadersPayloadAndEvents(t *testing.T) {
 	validBody := []byte(`{"action":"queued"}`)
 	tests := []struct {

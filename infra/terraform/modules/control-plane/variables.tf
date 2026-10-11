@@ -31,6 +31,28 @@ variable "tenant_github_webhook_enabled" {
   default     = false
 }
 
+variable "tenant_github_webhook_throttle_rate" {
+  description = "API Gateway per-route request rate for public Tenant GitHub webhook ingress."
+  type        = number
+  default     = 50
+
+  validation {
+    condition     = var.tenant_github_webhook_throttle_rate > 0 && var.tenant_github_webhook_throttle_rate <= 10000
+    error_message = "Tenant GitHub Webhook throttle rate must be between 0 and 10000 requests per second."
+  }
+}
+
+variable "tenant_github_webhook_throttle_burst" {
+  description = "API Gateway per-route burst capacity for public Tenant GitHub webhook ingress."
+  type        = number
+  default     = 100
+
+  validation {
+    condition     = var.tenant_github_webhook_throttle_burst > 0 && var.tenant_github_webhook_throttle_burst <= 5000
+    error_message = "Tenant GitHub Webhook throttle burst must be between 1 and 5000 requests."
+  }
+}
+
 variable "tenant_github_webhook_reader_role_arns" {
   description = "Exact, operator-approved per-Tenant Webhook-purpose reader Role ARNs the API may assume. No private-key or OAuth reader roles are accepted by this contract."
   type        = set(string)

@@ -633,6 +633,15 @@ resource "aws_apigatewayv2_stage" "default" {
   api_id      = aws_apigatewayv2_api.control_plane.id
   name        = "$default"
   auto_deploy = true
+
+  dynamic "route_settings" {
+    for_each = var.tenant_github_webhook_enabled ? [true] : []
+    content {
+      route_key              = "POST /v1/integrations/github/apps/{integration_id}/webhook"
+      throttling_rate_limit  = var.tenant_github_webhook_throttle_rate
+      throttling_burst_limit = var.tenant_github_webhook_throttle_burst
+    }
+  }
 }
 
 resource "aws_lambda_permission" "api_gateway" {

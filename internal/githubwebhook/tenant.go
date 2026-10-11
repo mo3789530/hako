@@ -40,6 +40,12 @@ type TenantInbox interface {
 	Record(context.Context, VerifiedDelivery, time.Time) (bool, error)
 }
 
+// WebhookAttemptLimiter is shared across API instances and must update its
+// per-integration budget atomically before resolving any Secret.
+type WebhookAttemptLimiter interface {
+	AllowWebhookAttempt(context.Context, string, time.Time) (bool, error)
+}
+
 // TenantHTTPHandler serves an opaque per-integration route. It never searches
 // all Tenant secrets: exactly one route candidate is resolved, and untrusted
 // body identity is ignored until that candidate's HMAC passes.
@@ -48,17 +54,22 @@ type TenantHTTPHandler struct {
 	authorizer   WebhookDeliveryAuthorizer
 	inbox        TenantInbox
 	maxBodyBytes int64
+	limiter      WebhookAttemptLimiter
 	now          func() time.Time
 }
 
-func NewTenantHTTPHandler(resolver WebhookCredentialResolver, authorizer WebhookDeliveryAuthorizer, inbox TenantInbox, maxBodyBytes int64) (*TenantHTTPHandler, error) {
+func NewTenantHTTPHandler(resolver WebhookCredentialResolver, authorizer WebhookDeliveryAuthorizer, inbox TenantInbox, maxBodyBytes int64, limiters ...WebhookAttemptLimiter) (*TenantHTTPHandler, error) {
 	if resolver == nil || authorizer == nil || inbox == nil {
 		return nil, errors.New("Tenant webhook resolver, authorizer, and inbox are required")
 	}
 	if maxBodyBytes <= 0 {
 		maxBodyBytes = DefaultMaxBodyBytes
 	}
-	return &TenantHTTPHandler{resolver: resolver, authorizer: authorizer, inbox: inbox, maxBodyBytes: maxBodyBytes, now: time.Now}, nil
+	var limiter WebhookAttemptLimiter
+	if len(limiters) > 0 {
+		limiter = limiters[0]
+	}
+	return &TenantHTTPHandler{resolver: resolver, authorizer: authorizer, inbox: inbox, maxBodyBytes: maxBodyBytes, limiter: limiter, now: time.Now}, nil
 }
 
 func (h *TenantHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -79,15 +90,32 @@ func (h *TenantHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	contentTypes := r.Header.Values("Content-Type")
 	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil || mediaType != "application/json" {
+	if len(contentTypes) != 1 || err != nil || mediaType != "application/json" {
 		http.Error(w, "content type must be application/json", http.StatusUnsupportedMediaType)
+		return
+	}
+	if err := ValidateWebhookHeaders(r.Header); err != nil {
+		http.Error(w, "invalid webhook request", http.StatusBadRequest)
 		return
 	}
 	body, err := ReadBounded(r, h.maxBodyBytes)
 	if err != nil {
 		http.Error(w, "invalid webhook request", http.StatusBadRequest)
 		return
+	}
+	if h.limiter != nil {
+		allowed, err := h.limiter.AllowWebhookAttempt(r.Context(), routeID, h.now().UTC())
+		if err != nil {
+			http.Error(w, "webhook temporarily unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if !allowed {
+			w.Header().Set("Retry-After", "60")
+			http.Error(w, "webhook rate limit exceeded", http.StatusTooManyRequests)
+			return
+		}
 	}
 	credential, err := h.resolver.ResolveWebhookCredential(r.Context(), routeID)
 	if err != nil || credential.IntegrationID != routeID || credential.Generation <= 0 || len(credential.CurrentSecret) == 0 {

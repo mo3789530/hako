@@ -30,6 +30,12 @@ func (f tenantInboxFunc) Record(ctx context.Context, delivery VerifiedDelivery, 
 	return f(ctx, delivery, at)
 }
 
+type tenantLimiterFunc func(context.Context, string, time.Time) (bool, error)
+
+func (f tenantLimiterFunc) AllowWebhookAttempt(ctx context.Context, id string, now time.Time) (bool, error) {
+	return f(ctx, id, now)
+}
+
 func signWebhook(secret, body []byte) string {
 	mac := hmac.New(sha256.New, secret)
 	_, _ = mac.Write(body)
@@ -141,6 +147,9 @@ func TestTenantWebhookHidesUnknownRoutesAndResolverErrors(t *testing.T) {
 	}
 	request := httptest.NewRequest("POST", "/v1/integrations/github/apps/unknown_route/webhook", strings.NewReader("{}"))
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-GitHub-Event", "push")
+	request.Header.Set("X-GitHub-Delivery", testDeliveryID)
+	request.Header.Set("X-Hub-Signature-256", signWebhook([]byte("unknown-route-secret"), []byte("{}")))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != 404 || strings.Contains(response.Body.String(), "secret detail") {
@@ -167,11 +176,90 @@ func TestTenantWebhookRejectsMalformedTransportBeforeSecretRead(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			request := httptest.NewRequest("POST", "/v1/integrations/github/apps/integration_tenant_a/webhook", strings.NewReader(tc.body))
 			request.Header.Set("Content-Type", tc.contentType)
+			if tc.name == "oversized" {
+				request.Header.Set("X-GitHub-Event", "push")
+				request.Header.Set("X-GitHub-Delivery", testDeliveryID)
+				request.Header.Set("X-Hub-Signature-256", signWebhook([]byte("secret"), []byte(tc.body)))
+			}
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, request)
 			if response.Code != tc.want || resolverCalls != 0 {
 				t.Fatalf("status=%d resolverCalls=%d", response.Code, resolverCalls)
 			}
 		})
+	}
+}
+
+func TestTenantWebhookLimiterFailureFailsClosedBeforeSecretResolution(t *testing.T) {
+	resolverCalls := 0
+	handler, err := NewTenantHTTPHandler(tenantResolverFunc(func(context.Context, string) (WebhookCredential, error) {
+		resolverCalls++
+		return WebhookCredential{}, nil
+	}), tenantDeliveryAuthorizerFunc(func(context.Context, string, int64, RepositoryEvent) error { return nil }), tenantInboxFunc(func(context.Context, VerifiedDelivery, time.Time) (bool, error) { return false, nil }), 0, tenantLimiterFunc(func(context.Context, string, time.Time) (bool, error) {
+		return false, errors.New("database detail must not leak")
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := validPushWebhookPayload
+	request := httptest.NewRequest("POST", "/v1/integrations/github/apps/integration_tenant_a/webhook", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-GitHub-Event", "push")
+	request.Header.Set("X-GitHub-Delivery", testDeliveryID)
+	request.Header.Set("X-Hub-Signature-256", signWebhook([]byte("secret"), []byte(body)))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != 503 || resolverCalls != 0 || strings.Contains(response.Body.String(), "database detail") {
+		t.Fatalf("status=%d resolver=%d body=%q", response.Code, resolverCalls, response.Body.String())
+	}
+}
+
+func TestTenantWebhookRateLimitRunsBeforeSecretResolution(t *testing.T) {
+	resolverCalls, limitCalls := 0, 0
+	handler, err := NewTenantHTTPHandler(tenantResolverFunc(func(context.Context, string) (WebhookCredential, error) {
+		resolverCalls++
+		return WebhookCredential{}, errors.New("must not resolve")
+	}), tenantDeliveryAuthorizerFunc(func(context.Context, string, int64, RepositoryEvent) error { return nil }), tenantInboxFunc(func(context.Context, VerifiedDelivery, time.Time) (bool, error) { return false, nil }), 0, tenantLimiterFunc(func(_ context.Context, id string, _ time.Time) (bool, error) {
+		limitCalls++
+		if id != "integration_tenant_a" {
+			t.Fatalf("unexpected integration %q", id)
+		}
+		return false, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := validPushWebhookPayload
+	request := httptest.NewRequest("POST", "/v1/integrations/github/apps/integration_tenant_a/webhook", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-GitHub-Event", "push")
+	request.Header.Set("X-GitHub-Delivery", testDeliveryID)
+	request.Header.Set("X-Hub-Signature-256", signWebhook([]byte("secret"), []byte(body)))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != 429 || response.Header().Get("Retry-After") != "60" || resolverCalls != 0 || limitCalls != 1 {
+		t.Fatalf("status=%d limit=%d resolver=%d", response.Code, limitCalls, resolverCalls)
+	}
+}
+
+func TestTenantWebhookRejectsMalformedHeadersBeforeLimiter(t *testing.T) {
+	limitCalls := 0
+	handler, err := NewTenantHTTPHandler(tenantResolverFunc(func(context.Context, string) (WebhookCredential, error) {
+		t.Fatal("malformed headers resolved secret")
+		return WebhookCredential{}, nil
+	}), tenantDeliveryAuthorizerFunc(func(context.Context, string, int64, RepositoryEvent) error { return nil }), tenantInboxFunc(func(context.Context, VerifiedDelivery, time.Time) (bool, error) { return false, nil }), 0, tenantLimiterFunc(func(context.Context, string, time.Time) (bool, error) { limitCalls++; return true, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest("POST", "/v1/integrations/github/apps/integration_tenant_a/webhook", strings.NewReader("{}"))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-GitHub-Event", "push")
+	request.Header.Set("X-GitHub-Delivery", testDeliveryID)
+	request.Header.Add("X-Hub-Signature-256", signWebhook([]byte("secret"), []byte("{}")))
+	request.Header.Add("X-Hub-Signature-256", signWebhook([]byte("secret"), []byte("{}")))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != 400 || limitCalls != 0 {
+		t.Fatalf("status=%d limiter=%d", response.Code, limitCalls)
 	}
 }

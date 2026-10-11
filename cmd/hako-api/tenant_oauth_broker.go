@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/mo3789530/hako/internal/api"
@@ -58,4 +59,16 @@ func tenantOAuthBrokerFromEnv() (api.TenantGitHubSetupVerifierResolver, error) {
 		return nil, errors.New("invalid Tenant GitHub OAuth broker URL")
 	}
 	return resolver, nil
+}
+
+func tenantWebhookRateLimitFromEnv() (int, error) {
+	value := strings.TrimSpace(os.Getenv("HAKO_TENANT_GITHUB_WEBHOOK_RATE_LIMIT"))
+	if value == "" {
+		return 120, nil
+	}
+	limit, err := strconv.Atoi(value)
+	if err != nil || limit < 1 || limit > 100000 {
+		return 0, errors.New("HAKO_TENANT_GITHUB_WEBHOOK_RATE_LIMIT must be between 1 and 100000")
+	}
+	return limit, nil
 }

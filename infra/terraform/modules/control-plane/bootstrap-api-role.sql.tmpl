@@ -18,6 +18,8 @@ GRANT SELECT ON TABLE workload_run_attempts TO hako_api;
 GRANT SELECT ON TABLE github_credential_bindings TO hako_api;
 REVOKE INSERT, UPDATE, DELETE ON TABLE github_credential_bindings FROM hako_api;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE github_app_registrations, tenant_github_integrations, tenant_github_default_integrations TO hako_api;
+GRANT SELECT, INSERT, UPDATE ON TABLE github_webhook_rate_limits TO hako_api;
+REVOKE DELETE ON TABLE github_webhook_rate_limits FROM hako_api;
 GRANT SELECT ON TABLE tenant_github_app_installation_bindings TO hako_api;
 -- The reviewed OAuth setup adapter inserts immutable integration bindings.
 -- No API permission to update/delete or reassign an existing binding.

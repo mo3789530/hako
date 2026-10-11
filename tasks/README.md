@@ -20,7 +20,7 @@
 |---|---|---|---|
 | 1 | [66 — OAuth trusted broker](task-66-tenant-oauth-broker.md) | 58 | In Progress：DB resolver/Secret reader実装、認証付きtransport未完了 |
 | 2 | [67 — OAuth API/CLI接続](task-67-tenant-oauth-cli-wiring.md) | 58 | In Progress：API mTLS設定/CLI setup、API/CLI/DB suite通過。full mTLS callback E2E待ち |
-| 並行可能 | [68 — Webhook abuse制御](task-68-webhook-abuse-controls.md) | 50, 58 | Todo：既存Webhook adapterを利用 |
+| 並行可能 | [68 — Webhook abuse制御](task-68-webhook-abuse-controls.md) | 50, 58 | In Progress：header preflight/DSQL rate limit/Gateway throttle実装 |
 | 3 | [69 — proof/checkout broker接続](task-69-tenant-checkout-broker.md) | 57, 59 | Todo：既存resolver/checkoutを利用 |
 | 4 | [70 — binding移行/cutover tooling](task-70-tenant-migration-cutover.md) | 59 | Todo：67, 69後 |
 | 5 | [71 — 二Tenant local E2E](task-71-tenant-app-local-e2e.md) | 60 | Todo：67–70後 |

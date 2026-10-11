@@ -146,6 +146,32 @@ func Verify(headers http.Header, body []byte, secret []byte, maxBodyBytes int64)
 	return VerifiedDelivery{DeliveryID: deliveryID, Event: event, Action: action, Payload: append(json.RawMessage(nil), body...)}, nil
 }
 
+// ValidateWebhookHeaders rejects malformed/duplicated transport identity
+// before the Tenant credential resolver performs STS or Secrets Manager IO.
+func ValidateWebhookHeaders(headers http.Header) error {
+	one := func(name string) (string, bool) {
+		values := headers.Values(name)
+		if len(values) != 1 || values[0] == "" || strings.TrimSpace(values[0]) != values[0] {
+			return "", false
+		}
+		return values[0], true
+	}
+	event, okEvent := one("X-GitHub-Event")
+	delivery, okDelivery := one("X-GitHub-Delivery")
+	signature, okSignature := one("X-Hub-Signature-256")
+	if !okEvent || len(event) > 100 || !validEventName(event) || !okDelivery || !validDeliveryID(delivery) || !okSignature || len(signature) != len("sha256=")+sha256.Size*2 || !strings.HasPrefix(signature, "sha256=") {
+		return ErrInvalidDelivery
+	}
+	if _, err := hex.DecodeString(strings.TrimPrefix(signature, "sha256=")); err != nil {
+		return ErrInvalidDelivery
+	}
+	return nil
+}
+
+func validEventName(event string) bool {
+	return oneOf(event, "push", "installation", "installation_repositories", "pull_request", "workflow_job")
+}
+
 func verifySignature(secret, body []byte, supplied string) error {
 	if !strings.HasPrefix(supplied, "sha256=") || len(supplied) != len("sha256=")+sha256.Size*2 {
 		return fmt.Errorf("%w: X-Hub-Signature-256 is missing or malformed", ErrInvalidDelivery)

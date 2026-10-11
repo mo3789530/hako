@@ -15,3 +15,20 @@ func TestTenantOAuthBrokerConfigurationIsAllOrNothing(t *testing.T) {
 		t.Fatal("partial broker configuration accepted")
 	}
 }
+
+func TestTenantWebhookRateLimitFromEnv(t *testing.T) {
+	t.Setenv("HAKO_TENANT_GITHUB_WEBHOOK_RATE_LIMIT", "")
+	if got, err := tenantWebhookRateLimitFromEnv(); err != nil || got != 120 {
+		t.Fatalf("default rate=%d err=%v", got, err)
+	}
+	for _, value := range []string{"0", "-1", "100001", "not-a-number"} {
+		t.Setenv("HAKO_TENANT_GITHUB_WEBHOOK_RATE_LIMIT", value)
+		if _, err := tenantWebhookRateLimitFromEnv(); err == nil {
+			t.Errorf("accepted invalid rate %q", value)
+		}
+	}
+	t.Setenv("HAKO_TENANT_GITHUB_WEBHOOK_RATE_LIMIT", "250")
+	if got, err := tenantWebhookRateLimitFromEnv(); err != nil || got != 250 {
+		t.Fatalf("configured rate=%d err=%v", got, err)
+	}
+}

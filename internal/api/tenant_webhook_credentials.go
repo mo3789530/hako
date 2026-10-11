@@ -20,6 +20,16 @@ type TenantGitHubWebhookCredentialResolver struct {
 	Config aws.Config
 }
 
+type TenantGitHubWebhookAttemptLimiter struct {
+	Pool        transaction.Beginner
+	Policy      transaction.Policy
+	MaxAttempts int
+}
+
+func (l TenantGitHubWebhookAttemptLimiter) AllowWebhookAttempt(ctx context.Context, integrationID string, now time.Time) (bool, error) {
+	return githubregistry.AllowWebhookAttempt(ctx, l.Pool, l.Policy, integrationID, now, l.MaxAttempts)
+}
+
 func (r TenantGitHubWebhookCredentialResolver) ResolveWebhookCredential(ctx context.Context, integrationID string) (githubwebhook.WebhookCredential, error) {
 	if r.Pool == nil {
 		return githubwebhook.WebhookCredential{}, githubregistry.ErrAppBindingDenied

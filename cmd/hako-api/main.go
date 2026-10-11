@@ -64,12 +64,17 @@ func main() {
 	}
 	createConfig.TenantGitHubSetupResolver = tenantSetupResolver
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_TENANT_GITHUB_WEBHOOK_ENABLED")), "true") {
+		webhookRateLimit, err := tenantWebhookRateLimitFromEnv()
+		if err != nil {
+			log.Fatal(err)
+		}
 		awsConfig, err := config.LoadDefaultConfig(ctx)
 		if err != nil {
 			log.Fatal("configure Tenant GitHub Webhook-purpose Secret reader")
 		}
 		resolver := api.TenantGitHubWebhookCredentialResolver{Pool: databasePool, Policy: transaction.DefaultPolicy(), Config: awsConfig}
-		handler, err := githubwebhook.NewTenantHTTPHandler(resolver, githubregistry.CredentialAuthorizer{Pool: databasePool, Policy: transaction.DefaultPolicy()}, webhookinbox.Inbox{Pool: databasePool, Policy: transaction.DefaultPolicy()}, githubwebhook.DefaultMaxBodyBytes)
+		limiter := api.TenantGitHubWebhookAttemptLimiter{Pool: databasePool, Policy: transaction.DefaultPolicy(), MaxAttempts: webhookRateLimit}
+		handler, err := githubwebhook.NewTenantHTTPHandler(resolver, githubregistry.CredentialAuthorizer{Pool: databasePool, Policy: transaction.DefaultPolicy()}, webhookinbox.Inbox{Pool: databasePool, Policy: transaction.DefaultPolicy()}, githubwebhook.DefaultMaxBodyBytes, limiter)
 		if err != nil {
 			log.Fatalf("configure Tenant GitHub webhook handler: %v", err)
 		}
