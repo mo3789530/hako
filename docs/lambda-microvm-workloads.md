@@ -23,7 +23,8 @@ CPの`RequestCancel`はdesired stateとcurrent attempt向け`workload_attempt.ca
 - 初期adapterはcommercial `aws` partition、固定image ARN/numeric version/digest、明示的なAWS-managed `ALL_INGRESS` connectorを扱う。接続はHTTPS、agent portだけの短命認証tokenを用いるAgentRunner実装が必要。公開shell connectorは追加しない。
 - `ExecutionRoleArn`は指定しない。取得したMicroVMに想定外のexecution roleがあればagentを開始しない。GitHub App private keyやSecret値を`runHookPayload`へ渡さない。
 - `/run` hookはtrusted agentの初期化だけを行う。unknown launchのcancel時に、同じClientTokenでIDを回復する`RunMicrovm`が新しいVMを作る可能性があるため、hookでrepository codeを実行してはならない。
-- Docker/containerd/Podman、EFS、suspend/resume、imageの署名・source搬送の実証はTask 61/43–45に残る。一般Lambda functionのcontainer image配備とは異なるAPIを使う。
+- Workload Job adapterではsuspend/resumeを使わない。Workspace向けAPI operationは存在するが、EFS再作成・Process recovery・8時間上限を含むWorkspace契約は[別文書](workspace-lambda-microvm.md)に従い、実AWS PoCは未実施。
+- Docker/containerd/Podman、EFS、imageの署名・source搬送の実証はTask 61/43–45に残る。一般Lambda functionのcontainer image配備とは異なるAPIを使う。
 
 ## 未接続の本番構成
 

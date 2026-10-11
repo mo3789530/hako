@@ -588,17 +588,24 @@ Enterprise isolation
 
 ## 16. MicroVM
 
-基本モデルは、
+基本モデルは、Workspaceごとに同時に最大1つのMicroVM Allocationを持つ形です。
+MicroVMは交換可能な実行資源であり、Workspaceと同じ寿命ではありません。
 
 ```text
 1 Workspace
-=
-1 Lambda MicroVM
+→ 0..1 current Lambda MicroVM Allocation
 ```
 
 です。
 
 ただしWorkspaceとMicroVM IDは別管理です。
+Lambda MicroVMは最大8時間で終了する可能性があり、suspendは同じVMの
+memory/local diskを保つだけです。終了後の自動置換にはEFS永続化とagent復旧が必要で、
+Task 44/45完了までは有効化しません。詳細は[Workspace Runtime契約](docs/workspace-lambda-microvm.md)。
+
+`small`/`standard`/`large`のCPU・memory値は現時点では目標案であり、Lambda
+MicroVM APIがそのサイズ指定を提供することは確認できていません。Runtime adapterは
+実際に提供できるprofileだけを許可し、未対応classをfail closedにします。
 
 Hako側では、
 

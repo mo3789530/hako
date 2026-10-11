@@ -17,6 +17,13 @@ tag-based discovery. These helpers are unit tested, but the production AWS
 Runtime does not yet exist and therefore no real Workspace resource is tagged
 or rediscovered today.
 
+Do not assume every AWS resource can be tagged. The documented Lambda MicroVMs
+`TagResource`/`ListTags` ARN pattern does not include MicroVM allocations, and
+`ListMicrovms` does not return tags. Until AWS confirms otherwise, MicroVM
+recovery uses the Resource Plane's durable journal and persisted provider ID;
+tag-based discovery applies only to resource types whose APIs support it. See
+[Workspace Lambda MicroVM contract](workspace-lambda-microvm.md).
+
 `hako:operation-id` is provenance, not a resource uniqueness key: a later
 operation may update this tag. A resource binding in the Control Plane remains
 the normal resource mapping; discovery is a recovery/reconciliation path when

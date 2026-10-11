@@ -19,7 +19,7 @@ AWS Lambda MicroVMs専用APIと公式Go SDKを確認済み。RunMicrovmの固定
 - MicroVMごとのTenant隔離、untrusted code、CPU/memory/disk制限、network default-deny。
 - 固定commitのsource搬入、attempt限定artifact搬出、Secret非露出。
 - 起動時間、quota、費用、cancel/launch競合、deadline、cleanup、障害復旧。
-- Workspace向けsuspend/resume、永続volume、長時間接続はTask 43とも整合させる。
+- Workspace向けsuspend/resume、永続volume、長時間接続は[ADR 0009](0009-workspace-lambda-microvm-lifecycle.md)と整合させる。Workspace runtime API supportは文書化済みだが、AWS lifecycle PoCと永続データ復旧は未完了。
 
 必要な能力が確認できない場合は実行機能をdefault-offのまま保ち、未達要件を記録する。別のcompute基盤へ自動的に変更しない。
 
