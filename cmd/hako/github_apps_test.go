@@ -20,4 +20,26 @@ func TestParseGitHubAppCLIAllowsReferencesNotSecretInputs(t *testing.T) {
 	if err != nil || input.Action != "setup" || input.IntegrationID != "gint_one" {
 		t.Fatal("Tenant GitHub App setup parsing failed")
 	}
+	input, err = parseGitHubAppCLI([]string{"deliveries", "--tenant", "tenant_one", "--integration", "gint_one", "--limit", "25", "--offset", "50"})
+	if err != nil || input.Action != "deliveries" || input.Limit != 25 || input.Offset != 50 {
+		t.Fatal("failed webhook delivery CLI parsing failed")
+	}
+	if _, err := parseGitHubAppCLI([]string{"deliveries", "--tenant", "tenant_one"}); err == nil {
+		t.Fatal("failed webhook delivery CLI without integration was accepted")
+	}
+	input, err = parseGitHubAppCLI([]string{"migration-plan", "--tenant", "tenant_one", "--integration", "gint_one", "--revision", "4", "--generation", "8", "--installations", "12,13"})
+	if err != nil || len(input.InstallationIDs) != 2 || input.InstallationIDs[1] != 13 {
+		t.Fatal("explicit Tenant migration dry-run parsing failed")
+	}
+	if _, err := parseGitHubAppCLI([]string{"migration-backfill", "--tenant", "tenant_one", "--integration", "gint_one", "--revision", "4", "--generation", "8", "--installations", "12"}); err == nil {
+		t.Fatal("migration backfill without --apply was accepted")
+	}
+	input, err = parseGitHubAppCLI([]string{"migration-backfill", "--tenant", "tenant_one", "--integration", "gint_one", "--revision", "4", "--generation", "8", "--installations", "12", "--apply"})
+	if err != nil || !input.Confirm || input.Action != "migration-backfill" {
+		t.Fatal("explicitly confirmed migration backfill parsing failed")
+	}
+	input, err = parseGitHubAppCLI([]string{"select-default", "--tenant", "tenant_one", "--integration", "gint_one", "--revision", "4", "--generation", "8"})
+	if err != nil || input.ExpectedGeneration != 8 {
+		t.Fatal("revision and generation-bound default selection parsing failed")
+	}
 }

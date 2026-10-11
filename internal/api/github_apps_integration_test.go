@@ -107,7 +107,7 @@ func TestTenantAppMetadataAPIIsDraftOnlyOwnerScopedAndDefaultOff(t *testing.T) {
 		{ownerToken, http.MethodPost, base, `{"github_app_id":456,"slug":"other","client_id":"client","credential_binding_id":"binding_other"}`, 404},
 		{ownerToken, http.MethodPost, base, `{"github_app_id":123,"private_key_secret_arn":"arbitrary"}`, 400},
 		{ownerToken, http.MethodPost, base + "/" + id + "/verify", `{"expected_revision":1}`, 409},
-		{ownerToken, http.MethodPost, base + "/" + id + "/select-default", `{"expected_revision":1}`, 409},
+		{ownerToken, http.MethodPost, base + "/" + id + "/select-default", `{"expected_revision":1,"expected_generation":1}`, 409},
 		{ownerToken, http.MethodPost, base + "/" + id + "/disable", `{"expected_revision":99}`, 409},
 		{adminToken, http.MethodPost, base + "/" + id + "/disable", `{"expected_revision":1}`, 200},
 	} {

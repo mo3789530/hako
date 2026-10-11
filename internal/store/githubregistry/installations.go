@@ -25,6 +25,7 @@ var accountLoginPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[
 type Installation struct {
 	TenantID       domain.TenantID `json:"tenant_id"`
 	InstallationID int64           `json:"installation_id"`
+	GitHubAppID    int64           `json:"github_app_id,omitempty"`
 	AccountLogin   string          `json:"account_login"`
 	Status         string          `json:"status"`
 	Suspended      bool            `json:"suspended"`
@@ -80,9 +81,9 @@ func Get(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, installationI
 		return Installation{}, ErrInvalidInstallation
 	}
 	var installation Installation
-	err := tx.QueryRow(ctx, `SELECT tenant_id, installation_id, account_login, status, suspended_at IS NOT NULL, requested_by, requested_at, updated_at
+	err := tx.QueryRow(ctx, `SELECT tenant_id, installation_id, COALESCE(github_app_id, 0), account_login, status, suspended_at IS NOT NULL, requested_by, requested_at, updated_at
 		FROM tenant_github_installations WHERE tenant_id = $1 AND installation_id = $2`, tenantID, installationID).
-		Scan(&installation.TenantID, &installation.InstallationID, &installation.AccountLogin, &installation.Status, &installation.Suspended, &installation.RequestedBy, &installation.RequestedAt, &installation.UpdatedAt)
+		Scan(&installation.TenantID, &installation.InstallationID, &installation.GitHubAppID, &installation.AccountLogin, &installation.Status, &installation.Suspended, &installation.RequestedBy, &installation.RequestedAt, &installation.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Installation{}, pgx.ErrNoRows
 	}
@@ -96,7 +97,7 @@ func List(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID) ([]Installat
 	if tx == nil || tenantID == "" {
 		return nil, ErrInvalidInstallation
 	}
-	rows, err := tx.Query(ctx, `SELECT tenant_id, installation_id, account_login, status, suspended_at IS NOT NULL, requested_by, requested_at, updated_at
+	rows, err := tx.Query(ctx, `SELECT tenant_id, installation_id, COALESCE(github_app_id, 0), account_login, status, suspended_at IS NOT NULL, requested_by, requested_at, updated_at
 		FROM tenant_github_installations WHERE tenant_id = $1 ORDER BY requested_at DESC, installation_id`, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("list Tenant GitHub installations: %w", err)
@@ -105,7 +106,7 @@ func List(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID) ([]Installat
 	installations := make([]Installation, 0)
 	for rows.Next() {
 		var installation Installation
-		if err := rows.Scan(&installation.TenantID, &installation.InstallationID, &installation.AccountLogin, &installation.Status, &installation.Suspended, &installation.RequestedBy, &installation.RequestedAt, &installation.UpdatedAt); err != nil {
+		if err := rows.Scan(&installation.TenantID, &installation.InstallationID, &installation.GitHubAppID, &installation.AccountLogin, &installation.Status, &installation.Suspended, &installation.RequestedBy, &installation.RequestedAt, &installation.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan Tenant GitHub installation: %w", err)
 		}
 		installations = append(installations, installation)

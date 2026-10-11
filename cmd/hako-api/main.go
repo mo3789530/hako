@@ -48,12 +48,16 @@ func main() {
 		runtimeClass = "standard"
 	}
 	createConfig := api.WorkspaceCreateConfig{
-		Region:                     strings.TrimSpace(os.Getenv("HAKO_DEFAULT_RESOURCE_PLANE_REGION")),
-		RequiredCapabilities:       []string{"microvm"},
-		RuntimeClass:               runtimeClass,
-		Image:                      strings.TrimSpace(os.Getenv("HAKO_DEFAULT_WORKSPACE_IMAGE")),
-		WorkloadRunsEnabled:        strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_WORKLOAD_RUNS_ENABLED")), "true"),
-		GitHubAppManagementEnabled: strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_GITHUB_APP_MANAGEMENT_ENABLED")), "true"),
+		Region:                         strings.TrimSpace(os.Getenv("HAKO_DEFAULT_RESOURCE_PLANE_REGION")),
+		RequiredCapabilities:           []string{"microvm"},
+		RuntimeClass:                   runtimeClass,
+		Image:                          strings.TrimSpace(os.Getenv("HAKO_DEFAULT_WORKSPACE_IMAGE")),
+		WorkloadRunsEnabled:            strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_WORKLOAD_RUNS_ENABLED")), "true"),
+		WebhookWorkloadTriggersEnabled: strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_WEBHOOK_WORKLOAD_TRIGGERS_ENABLED")), "true"),
+		GitHubAppManagementEnabled:     strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_GITHUB_APP_MANAGEMENT_ENABLED")), "true"),
+	}
+	if createConfig.WebhookWorkloadTriggersEnabled && !createConfig.WorkloadRunsEnabled {
+		log.Fatal("Webhook-triggered Workload Runs require HAKO_WORKLOAD_RUNS_ENABLED=true")
 	}
 	tenantSetupResolver, err := tenantOAuthBrokerFromEnv()
 	if err != nil {

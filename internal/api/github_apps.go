@@ -15,6 +15,7 @@ import (
 	"github.com/mo3789530/hako/internal/idgen"
 	"github.com/mo3789530/hako/internal/store/audit"
 	"github.com/mo3789530/hako/internal/store/githubregistry"
+	webhookstore "github.com/mo3789530/hako/internal/store/githubwebhook"
 	"github.com/mo3789530/hako/internal/store/transaction"
 )
 
@@ -35,12 +36,50 @@ func (f TenantGitHubAppProofVerifierFunc) VerifyApp(ctx context.Context, credent
 }
 
 type GitHubAppMetadataResult struct {
-	Integration *githubregistry.AppIntegration  `json:"integration,omitempty"`
-	Items       []githubregistry.AppIntegration `json:"items,omitempty"`
-	Limit       int                             `json:"limit,omitempty"`
-	Offset      int                             `json:"offset,omitempty"`
-	SetupURL    string                          `json:"setup_url,omitempty"`
-	ExpiresAt   *time.Time                      `json:"expires_at,omitempty"`
+	Integration *githubregistry.AppIntegration         `json:"integration,omitempty"`
+	Items       []githubregistry.AppIntegration        `json:"items,omitempty"`
+	Deliveries  []GitHubWebhookDeliverySummary         `json:"deliveries,omitempty"`
+	Migration   *githubregistry.TenantAppMigrationPlan `json:"migration,omitempty"`
+	Total       int64                                  `json:"total,omitempty"`
+	Limit       int                                    `json:"limit,omitempty"`
+	Offset      int                                    `json:"offset,omitempty"`
+	SetupURL    string                                 `json:"setup_url,omitempty"`
+	ExpiresAt   *time.Time                             `json:"expires_at,omitempty"`
+}
+
+func listTenantGitHubFailedDeliveries(pool transaction.Beginner) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		if pool == nil {
+			return databaseUnavailable(c)
+		}
+		limit, offset, err := parseWorkspacePage(c)
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_pagination", Message: "Invalid pagination query"}})
+		}
+		items, total, err := webhookstore.ListTenantFailedDeliveries(c.Request().Context(), pool, transaction.DefaultPolicy(),
+			domain.TenantID(strings.TrimSpace(c.Param("tenant_id"))), strings.TrimSpace(c.Param("integration_id")), limit, offset)
+		if errors.Is(err, webhookstore.ErrTenantIntegrationNotFound) {
+			return tenantNotFound(c)
+		}
+		if err != nil {
+			return databaseUnavailable(c)
+		}
+		deliveries := make([]GitHubWebhookDeliverySummary, 0, len(items))
+		for _, item := range items {
+			deliveries = append(deliveries, GitHubWebhookDeliverySummary{DeliveryID: item.DeliveryID, EventType: item.EventType,
+				Action: item.Action, ActorLogin: item.ActorLogin, ReceivedAt: item.ReceivedAt, PayloadPurgedAt: item.PayloadPurged, ReplayCount: item.ReplayCount})
+		}
+		return c.JSON(http.StatusOK, GitHubAppMetadataResult{Deliveries: deliveries, Total: total, Limit: limit, Offset: offset})
+	}
+}
+
+type webhookReplayRequest struct {
+	Reason string `json:"reason"`
+}
+
+type webhookReplayResponse struct {
+	DeliveryID string `json:"delivery_id"`
+	Status     string `json:"status"`
 }
 
 func githubAppOwnerMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
@@ -51,6 +90,49 @@ func githubAppOwnerMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 		}
 		return next(c)
 	}
+}
+
+func replayTenantGitHubDelivery(pool transaction.Beginner) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		user, ok := HakoUserFromContext(c)
+		if !ok || pool == nil {
+			return databaseUnavailable(c)
+		}
+		var input webhookReplayRequest
+		if err := decodeJSONRequest(c, &input); err != nil {
+			if isRequestTooLarge(err) {
+				return requestTooLarge(c)
+			}
+			return githubWebhookReplayError(c, http.StatusBadRequest, "invalid_request", "A replay reason is required")
+		}
+		tenantID := domain.TenantID(strings.TrimSpace(c.Param("tenant_id")))
+		integrationID := strings.TrimSpace(c.Param("integration_id"))
+		deliveryID := strings.TrimSpace(c.Param("delivery_id"))
+		if tenantID == "" || integrationID == "" || deliveryID == "" || len(strings.TrimSpace(input.Reason)) < 8 || len(strings.TrimSpace(input.Reason)) > webhookstore.MaxWebhookReplayReasonBytes {
+			return githubWebhookReplayError(c, http.StatusBadRequest, "invalid_request", "A replay reason between 8 and 500 bytes is required")
+		}
+		err := webhookstore.RequestTenantDeliveryReplay(c.Request().Context(), pool, transaction.DefaultPolicy(), tenantID,
+			integrationID, deliveryID, user.ID, input.Reason, time.Now().UTC())
+		switch {
+		case err == nil:
+			return c.JSON(http.StatusAccepted, webhookReplayResponse{DeliveryID: deliveryID, Status: "received"})
+		case errors.Is(err, webhookstore.ErrInvalidDeliveryReplay):
+			return githubWebhookReplayError(c, http.StatusBadRequest, "invalid_request", "Replay request is invalid")
+		case errors.Is(err, webhookstore.ErrDeliveryReplayNotFound):
+			return tenantNotFound(c)
+		case errors.Is(err, webhookstore.ErrDeliveryReplayRateLimited):
+			c.Response().Header().Set("Retry-After", "3600")
+			return githubWebhookReplayError(c, http.StatusTooManyRequests, "rate_limited", "Replay rate limit exceeded")
+		case errors.Is(err, webhookstore.ErrDeliveryReplayNotEligible), errors.Is(err, webhookstore.ErrStaleTenantWebhook):
+			return githubWebhookReplayError(c, http.StatusConflict, "replay_not_eligible", "Delivery cannot be replayed under current Tenant policy")
+		default:
+			return databaseUnavailable(c)
+		}
+	}
+}
+
+func githubWebhookReplayError(c *echo.Context, status int, code, message string) error {
+	return c.JSON(status, errorResponse{Error: errorBody{Code: code, Message: message}})
 }
 
 func githubAppMetadata(pool transaction.Beginner, action string, proofVerifier TenantGitHubAppProofVerifier) echo.HandlerFunc {
@@ -66,7 +148,8 @@ func githubAppMetadata(pool transaction.Beginner, action string, proofVerifier T
 		id := c.Param("integration_id")
 		var draft githubregistry.AppDraftRequest
 		var revision struct {
-			ExpectedRevision int64 `json:"expected_revision"`
+			ExpectedRevision   int64 `json:"expected_revision"`
+			ExpectedGeneration int64 `json:"expected_generation"`
 		}
 		limit, offset := 50, 0
 		if action == "list" {
@@ -92,7 +175,7 @@ func githubAppMetadata(pool transaction.Beginner, action string, proofVerifier T
 				}
 				return githubAppError(c, githubregistry.ErrInvalidApp)
 			}
-			if revision.ExpectedRevision < 1 {
+			if revision.ExpectedRevision < 1 || action == "select-default" && revision.ExpectedGeneration < 1 {
 				return githubAppError(c, githubregistry.ErrInvalidApp)
 			}
 		}
@@ -125,19 +208,15 @@ func githubAppMetadata(pool transaction.Beginner, action string, proofVerifier T
 				app, created, err = githubregistry.CreateAppDraft(ctx, tx, tenant, user.ID, integrationID, registrationID, c.Request().Header.Get("Idempotency-Key"), draft, now)
 			case "disable":
 				app, err = githubregistry.DisableApp(ctx, tx, tenant, id, revision.ExpectedRevision, now)
+			case "select-default":
+				app, err = githubregistry.SelectDefaultAppGeneration(ctx, tx, tenant, id, revision.ExpectedRevision, revision.ExpectedGeneration, now)
 			default:
 				app, err = githubregistry.GetApp(ctx, tx, tenant, id)
 			}
 			if err != nil {
 				return result{}, err
 			}
-			if action == "select-default" {
-				if app.ConfigRevision != revision.ExpectedRevision {
-					return result{}, githubregistry.ErrAppConflict
-				}
-				return result{}, errGitHubAppNotReady
-			}
-			if action == "disable" || (action == "add" && created) {
+			if action == "disable" || action == "select-default" || (action == "add" && created) {
 				details, _ := json.Marshal(map[string]any{"github_app_id": app.GitHubAppID, "status": app.Status, "config_revision": app.ConfigRevision})
 				if err := audit.Append(ctx, tx, audit.Event{TenantID: tenant, ActorID: user.ID, Action: "tenant.github_app." + action, TargetType: "github_app_integration", TargetID: app.ID, Details: details, OccurredAt: now}); err != nil {
 					return result{}, err
@@ -239,6 +318,10 @@ func githubAppError(c *echo.Context, err error) error {
 		return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "idempotency_conflict", Message: "request key was used for different App metadata"}})
 	case errors.Is(err, githubregistry.ErrAppConflict):
 		return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "state_conflict", Message: "GitHub App metadata conflicts with current state"}})
+	case errors.Is(err, githubregistry.ErrTenantAppMigrationConflict):
+		return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "migration_conflict", Message: "one or more Installations cannot be safely bound to this integration"}})
+	case errors.Is(err, githubregistry.ErrLegacyRunsNotDrained):
+		return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "legacy_runs_not_drained", Message: "legacy Workload Runs must be terminal before selecting a Tenant GitHub App"}})
 	case errors.Is(err, errGitHubAppNotReady):
 		return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "github_app_not_ready", Message: "Tenant App verification is unavailable or the integration is not ready for activation"}})
 	case errors.Is(err, errGitHubAppVerificationFailed):

@@ -1,6 +1,6 @@
 # Task 72: OAuth Broker Mutual TLS Transport
 
-Status: In Progress (HTTPS endpoints, mTLS config, API adapter and handler identity tests implemented; certificate issuance/rotation and production composition remain). Priority: P0. Parent: Task 66.
+Status: Implemented locally (HTTPS endpoints, TLS 1.3 mTLS server/client, API adapters, full HTTPS handshake tests and executable TLS config implemented; certificate issuance/rotation and production network remain). Priority: P0. Parent: Task 66.
 
 ## Goal
 
@@ -22,4 +22,4 @@ Connect the Control Plane OAuth setup adapter to the credential broker over auth
 
 ## Progress
 
-Added `/v1/oauth/setup-url`, `/authorize-url`, and `/verify` handlers; server TLS config requires TLS 1.3 and verified client certificates, and the handler checks the Control Plane URI SAN. Added an API-side mTLS client constructor and `TenantGitHubSetupVerifierResolver` adapter. The verified identity is passed through request context to the broker authorization callback. API now returns a sanitized unavailable response if broker URL calls fail. Handler tests cover absent/unverified/wrong identity and prove credential resolution is not called. Remaining work includes full TLS handshake tests, certificate lifecycle, real resolver/authorizer composition, and production API wiring; no certificate provisioning or AWS changes were made.
+Added `/v1/oauth/setup-url`, `/authorize-url`, `/verify`, and `/v1/checkout/token` handlers. Server TLS config requires TLS 1.3 and verified client certificates; handlers require the exact Control Plane URI SAN before resolving credentials. API-side mTLS clients refuse redirects and enforce bounded timeouts. Real TLS handshake tests cover client certificate trust, identity, OAuth setup and checkout token request. `cmd/hako-github-broker` validates all-or-none server cert/key/client-CA config. See [Internal GitHub Credential Broker](../docs/github-credential-broker.md). Remaining work is certificate issuance/rotation, revocation/monitoring, private production network and deployment. No certificate provisioning or AWS changes were made.

@@ -67,16 +67,23 @@ func (f CredentialProviderFunc) CheckoutToken(ctx context.Context, tenant domain
 }
 
 type GitRepositoryCheckout struct {
-	authorizer  githubapp.RepositoryAuthorizer
-	credentials CredentialProvider
-	gitPath     string
-	timeout     time.Duration
-	baseURL     string
-	tempRoot    string
-	maxTreeSize int64
+	authorizer     githubapp.RepositoryAuthorizer
+	credentials    CredentialProvider
+	runCredentials RunCredentialProvider
+	gitPath        string
+	timeout        time.Duration
+	baseURL        string
+	tempRoot       string
+	maxTreeSize    int64
 }
 
 func NewGitRepositoryCheckout(authorizer githubapp.RepositoryAuthorizer, credentials CredentialProvider) (*GitRepositoryCheckout, error) {
+	return NewGitRepositoryCheckoutWithRunCredentials(authorizer, credentials, nil)
+}
+
+// NewGitRepositoryCheckoutWithRunCredentials keeps the legacy shared-App
+// provider separate from the authenticated broker used by Tenant-pinned Runs.
+func NewGitRepositoryCheckoutWithRunCredentials(authorizer githubapp.RepositoryAuthorizer, credentials CredentialProvider, runCredentials RunCredentialProvider) (*GitRepositoryCheckout, error) {
 	if authorizer == nil || credentials == nil {
 		return nil, errors.New("repository authorizer and checkout credentials are required")
 	}
@@ -84,7 +91,10 @@ func NewGitRepositoryCheckout(authorizer githubapp.RepositoryAuthorizer, credent
 	if err != nil {
 		return nil, errors.New("git executable is unavailable")
 	}
-	return &GitRepositoryCheckout{authorizer: authorizer, credentials: credentials, gitPath: gitPath,
+	if runCredentials == nil {
+		runCredentials, _ = credentials.(RunCredentialProvider)
+	}
+	return &GitRepositoryCheckout{authorizer: authorizer, credentials: credentials, runCredentials: runCredentials, gitPath: gitPath,
 		timeout: defaultRepositoryCheckoutLimit, baseURL: "https://github.com", maxTreeSize: maxCheckoutTreeSize}, nil
 }
 
@@ -110,11 +120,10 @@ func (s *GitRepositoryCheckout) Checkout(ctx context.Context, run domain.Workloa
 	}
 	var token string
 	if run.GitHubIntegrationID != "" {
-		provider, ok := s.credentials.(RunCredentialProvider)
-		if !ok {
+		if s.runCredentials == nil {
 			return CheckedOutRepository{}, ErrCheckoutCredentialFailure
 		}
-		token, err = provider.CheckoutRunToken(ctx, run)
+		token, err = s.runCredentials.CheckoutRunToken(ctx, run)
 	} else {
 		token, err = s.credentials.CheckoutToken(ctx, run.TenantID, run.GitHubInstallation, run.GitHubRepository)
 	}

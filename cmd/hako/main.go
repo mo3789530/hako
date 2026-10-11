@@ -24,6 +24,13 @@ var cliBrowserOpener auth.BrowserOpener = openBrowser
 
 func main() {
 	switch {
+	case len(os.Args) >= 5 && os.Args[1] == "github" && os.Args[2] == "repository" && os.Args[3] == "factory":
+		result, err := manageGitHubRepositoryFactoryCLI(os.Args[4:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hako github repository factory: %v\n", err)
+			os.Exit(1)
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(result)
 	case len(os.Args) >= 4 && os.Args[1] == "github" && os.Args[2] == "app":
 		result, key, err := manageGitHubAppCLI(os.Args[3:])
 		if err != nil {

@@ -1,6 +1,6 @@
 # Task 71: Two-Tenant App local E2E
 
-Status: Todo (local implementation). Depends on: 67–70.
+Status: Implemented locally; production rollout remains unverified. Depends on: 67–70.
 
 ## Scope
 
@@ -16,5 +16,9 @@ Task 60の横断受入テストをfake外部API・常時起動Postgresで実行�
 
 ## Handoff
 
-- 対象コード、テスト結果、関連docs、未検証の配備条件を記載する。
+- `internal/integration/tenant_github_app_e2e_integration_test.go` combines concurrent verified setup callbacks for two Tenants, per-integration HMAC webhook ingress/inbox, repository sync, server-pinned Workload Run creation, and persisted Run checkout credential resolution.
+- Negative assertions cover wrong App identity, duplicate delivery replay, same delivery ID with changed payload, cross-Tenant checkout, rotated generation, and disabled integration. A separate legacy shared-App Run proves the shared path remains unpinned. Setup transaction uses a synthetic retryable DSQL serialization conflict on its first `Begin` and verifies the retry succeeds.
+- Task 70 PostgreSQL tests cover migration dry-run/no writes, explicit App-ID identity, conflict rollback, idempotent backfill, unknown historical identity, revision/generation fence, legacy Run drain, activation, and existing Run pin immutability. Task 67 covers the API→mTLS broker→PostgreSQL OAuth callback; Task 69 covers checkout broker mTLS/token-mint boundary.
+- Run locally with `make test-integration-local` (or the CI `make test-integration` target with `HAKO_TEST_DATABASE_URL`). Tests create isolated PostgreSQL schemas and never stop the shared database. CI runs the full integration suite in `.github/workflows/ci.yml`.
+- The E2E uses fake secrets/provider identity and does not read real Secrets or call GitHub/AWS. Production certificates, IAM trust, AWS Lambda MicroVM/image/network behavior, worker deployment, and actual Tenant cutover remain unverified.
 - 実AWS apply、実Secret取得、外部設定変更はこのタスクのローカル実装に含めない。

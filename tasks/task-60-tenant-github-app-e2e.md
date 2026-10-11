@@ -2,7 +2,7 @@
 
 残作業の実行単位：[Task 71](task-71-tenant-app-local-e2e.md)。親タスクは集約用に保持し、子タスク完了だけで配備済みとはしない。
 
-Status: Blocked on Tasks 56–59. Priority: P0.
+Status: Local acceptance implemented in child Task 71 (two-Tenant PostgreSQL E2E); production rollout, IAM/certificate validation, and approved cutover remain. Priority: P0.
 
 ## Goal
 

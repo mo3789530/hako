@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/githubapp"
 	"github.com/mo3789530/hako/internal/store/githubregistry"
 )
 
@@ -124,7 +127,36 @@ func TestBrokerMTLSHandshakeAndHTTPResolver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewUnstartedServer(Handler(service))
+	run, access := checkoutFixture()
+	checkout, err := NewCheckoutService(func(context.Context, string, domain.TenantID, domain.WorkloadRunID) error { return nil },
+		func(_ context.Context, tenant domain.TenantID, runID domain.WorkloadRunID) (domain.WorkloadRun, githubapp.TenantPrivateKeyAccess, error) {
+			if tenant != run.TenantID || runID != run.ID {
+				return domain.WorkloadRun{}, githubapp.TenantPrivateKeyAccess{}, ErrCheckoutDenied
+			}
+			return run, access, nil
+		}, func(context.Context, domain.WorkloadRun, githubapp.TenantPrivateKeyAccess) (string, time.Time, error) {
+			return "ghs_mtls_checkout_token_value", time.Now().Add(time.Hour), nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checksIdentity := checksFixture()
+	checksIdentity.Run = run
+	checksIdentity.Access = access
+	checksIdentity.Repository = githubapp.RepositoryAccess{Owner: "acme", Name: "api"}
+	checksService, err := NewChecksService(func(context.Context, string, domain.TenantID, domain.WorkloadRunID) error { return nil },
+		func(_ context.Context, tenant domain.TenantID, runID domain.WorkloadRunID) (ChecksRunIdentity, error) {
+			if tenant != run.TenantID || runID != run.ID {
+				return ChecksRunIdentity{}, ErrChecksDenied
+			}
+			return checksIdentity, nil
+		}, func(context.Context, ChecksRunIdentity) (githubapp.CheckToken, error) {
+			return fakeBrokerChecksToken{value: "ghs_mtls_checks_write_token", expiry: time.Now().Add(time.Hour)}, nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewUnstartedServer(HandlerWithServices(service, checkout, checksService))
 	serverCAs, _ := ServerTLSConfig(clientRoots)
 	server.TLS = serverCAs
 	server.StartTLS()
@@ -145,6 +177,32 @@ func TestBrokerMTLSHandshakeAndHTTPResolver(t *testing.T) {
 	}
 	if resolved != 1 {
 		t.Fatalf("unexpected credential resolution count %d", resolved)
+	}
+	checkoutClient, err := NewCheckoutMTLSClient(issue(controlPlaneURI), brokerRoots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkoutProvider, err := NewHTTPCheckoutProvider(server.URL, checkoutClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token, err := checkoutProvider.CheckoutRunToken(context.Background(), run); err != nil || token != "ghs_mtls_checkout_token_value" {
+		t.Fatalf("mTLS checkout token request failed: token=%q err=%v", token, err)
+	}
+	checksClient, err := NewChecksMTLSClient(issue(controlPlaneURI), brokerRoots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checksProvider, err := NewHTTPChecksCredentialProvider(server.URL, checksClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkToken, repository, err := checksProvider.ChecksRunToken(context.Background(), run)
+	if err != nil || checkToken.Value() != "ghs_mtls_checks_write_token" || repository != checksIdentity.Repository {
+		t.Fatalf("mTLS Checks credential request failed: repository=%+v err=%v", repository, err)
+	}
+	if fmt.Sprint(checkToken) == checkToken.Value() {
+		t.Fatal("HTTP Checks credential formatting exposed the token")
 	}
 	if _, err := NewMTLSClient(issue("spiffe://hako/resource-plane"), brokerRoots); err == nil {
 		t.Fatal("client accepted another workload identity")
@@ -175,5 +233,93 @@ func TestBrokerTLSConfigurationRequiresClientTrust(t *testing.T) {
 	}
 	if _, err := NewMTLSClient(tls.Certificate{}, roots); err == nil {
 		t.Fatal("empty workload certificate accepted")
+	}
+}
+
+func TestCheckoutEndpointRequiresVerifiedControlPlaneAndNeverAcceptsCredentialPins(t *testing.T) {
+	run, access := checkoutFixture()
+	resolveCalls, mintCalls := 0, 0
+	service, err := NewCheckoutService(func(context.Context, string, domain.TenantID, domain.WorkloadRunID) error { return nil },
+		func(_ context.Context, tenant domain.TenantID, runID domain.WorkloadRunID) (domain.WorkloadRun, githubapp.TenantPrivateKeyAccess, error) {
+			resolveCalls++
+			if tenant != run.TenantID || runID != run.ID {
+				return domain.WorkloadRun{}, githubapp.TenantPrivateKeyAccess{}, ErrCheckoutDenied
+			}
+			return run, access, nil
+		}, func(context.Context, domain.WorkloadRun, githubapp.TenantPrivateKeyAccess) (string, time.Time, error) {
+			mintCalls++
+			return "ghs_checkout_token_never_log_this", time.Now().Add(time.Hour), nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := HandlerWithCheckout(nil, service)
+	invoke := func(body string, cert *x509.Certificate, verified bool) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/checkout/token", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if cert != nil {
+			req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}}
+			if verified {
+				req.TLS.VerifiedChains = [][]*x509.Certificate{{cert}}
+			}
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	control := &x509.Certificate{URIs: []*url.URL{{Scheme: "spiffe", Host: "hako", Path: "/control-plane"}}}
+	body := `{"tenant_id":"tenant_checkout","run_id":"run_checkout"}`
+	if got := invoke(body, nil, false); got.Code != http.StatusUnauthorized || resolveCalls != 0 || mintCalls != 0 {
+		t.Fatal("checkout endpoint processed an unauthenticated caller")
+	}
+	if got := invoke(`{"tenant_id":"tenant_checkout","run_id":"run_checkout","pin":{"private_key_secret_arn":"secret"}}`, control, true); got.Code != http.StatusBadRequest || resolveCalls != 0 || mintCalls != 0 {
+		t.Fatal("checkout endpoint accepted caller-supplied credential data")
+	}
+	got := invoke(body, control, true)
+	if got.Code != http.StatusOK || got.Header().Get("Cache-Control") != "no-store" || resolveCalls != 2 || mintCalls != 1 || !strings.Contains(got.Body.String(), "ghs_checkout_token_never_log_this") {
+		t.Fatalf("authorized checkout response status=%d resolve=%d mint=%d body=%s", got.Code, resolveCalls, mintCalls, got.Body.String())
+	}
+}
+
+func TestHTTPCheckoutProviderUsesPinnedRunIDsAndRejectsRedirectOrCacheableResponse(t *testing.T) {
+	run, _ := checkoutFixture()
+	for _, mode := range []string{"success", "cacheable", "redirect", "expired"} {
+		t.Run(mode, func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/checkout/token" || r.Method != http.MethodPost {
+					t.Errorf("unexpected broker request %s %s", r.Method, r.URL.Path)
+				}
+				var payload map[string]json.RawMessage
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || len(payload) != 2 || string(payload["tenant_id"]) != `"tenant_checkout"` || string(payload["run_id"]) != `"run_checkout"` {
+					t.Errorf("broker request did not contain only canonical identifiers: %s", fmt.Sprint(payload))
+				}
+				if mode == "redirect" {
+					http.Redirect(w, r, "/capture", http.StatusTemporaryRedirect)
+					return
+				}
+				if mode != "cacheable" {
+					w.Header().Set("Cache-Control", "no-store")
+				}
+				expires := time.Now().Add(time.Hour)
+				if mode == "expired" {
+					expires = time.Now().Add(-time.Minute)
+				}
+				_ = json.NewEncoder(w).Encode(response{Token: "ghs_checkout_token_never_log_this", ExpiresAt: expires})
+			}))
+			defer server.Close()
+			client := server.Client()
+			provider, err := NewHTTPCheckoutProvider(server.URL, client)
+			if err != nil {
+				t.Fatal(err)
+			}
+			token, err := provider.CheckoutRunToken(context.Background(), run)
+			if mode == "success" {
+				if err != nil || token != "ghs_checkout_token_never_log_this" {
+					t.Fatalf("CheckoutRunToken() token=%q err=%v", token, err)
+				}
+			} else if err == nil || token != "" {
+				t.Fatal("unsafe broker response was accepted")
+			}
+		})
 	}
 }

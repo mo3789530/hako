@@ -13,6 +13,7 @@ import (
 )
 
 var ErrInstallationNotActive = errors.New("GitHub App installation is not active for Tenant")
+var ErrRepositoryNotFound = errors.New("GitHub repository is not registered for Tenant")
 
 type Repository struct {
 	TenantID           domain.TenantID `json:"tenant_id"`
@@ -21,6 +22,8 @@ type Repository struct {
 	OwnerLogin         string          `json:"owner_login"`
 	RepositoryName     string          `json:"repository_name"`
 	DefaultBranch      string          `json:"default_branch"`
+	FactoryEnabled     bool            `json:"factory_enabled"`
+	FactoryEnabledAt   *time.Time      `json:"factory_enabled_at,omitempty"`
 	SynchronizedAt     time.Time       `json:"synchronized_at"`
 }
 
@@ -97,7 +100,7 @@ func ListRepositories(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, 
 	if !active {
 		return nil, ErrInstallationNotActive
 	}
-	rows, err := tx.Query(ctx, `SELECT tenant_id, installation_id, github_repository_id, owner_login, repository_name, default_branch, synchronized_at
+	rows, err := tx.Query(ctx, `SELECT tenant_id, installation_id, github_repository_id, owner_login, repository_name, default_branch, factory_enabled, factory_enabled_at, synchronized_at
 		FROM tenant_github_repositories WHERE tenant_id = $1 AND installation_id = $2
 		ORDER BY owner_login, repository_name, github_repository_id`, tenantID, installationID)
 	if err != nil {
@@ -107,7 +110,7 @@ func ListRepositories(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, 
 	repositories := make([]Repository, 0)
 	for rows.Next() {
 		var repository Repository
-		if err := rows.Scan(&repository.TenantID, &repository.InstallationID, &repository.GitHubRepositoryID, &repository.OwnerLogin, &repository.RepositoryName, &repository.DefaultBranch, &repository.SynchronizedAt); err != nil {
+		if err := rows.Scan(&repository.TenantID, &repository.InstallationID, &repository.GitHubRepositoryID, &repository.OwnerLogin, &repository.RepositoryName, &repository.DefaultBranch, &repository.FactoryEnabled, &repository.FactoryEnabledAt, &repository.SynchronizedAt); err != nil {
 			return nil, fmt.Errorf("scan Tenant GitHub repository: %w", err)
 		}
 		repositories = append(repositories, repository)
@@ -116,6 +119,47 @@ func ListRepositories(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, 
 		return nil, fmt.Errorf("iterate Tenant GitHub repositories: %w", err)
 	}
 	return repositories, nil
+}
+
+// SetRepositoryFactoryEnabled opts one currently registered repository into
+// or out of Hako's default webhook-triggered verification Job. Triggering is
+// per repository and disabled by default; workflow_job runner scheduling is
+// deliberately handled by the separate Actions runner implementation.
+func SetRepositoryFactoryEnabled(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, installationID, repositoryID int64, enabled bool, configuredAt time.Time) (Repository, error) {
+	if ctx == nil || tx == nil || tenantID == "" || installationID <= 0 || repositoryID <= 0 || configuredAt.IsZero() {
+		return Repository{}, ErrRepositoryNotFound
+	}
+	var repository Repository
+	err := tx.QueryRow(ctx, `UPDATE tenant_github_repositories r
+		SET factory_enabled = $4,
+		    factory_enabled_at = CASE WHEN $4 THEN COALESCE(r.factory_enabled_at, $5) ELSE NULL END
+		FROM github_app_installation_bindings b
+		JOIN tenant_github_installations i ON i.tenant_id = b.tenant_id AND i.installation_id = b.installation_id
+		WHERE r.tenant_id = $1 AND r.installation_id = $2 AND r.github_repository_id = $3
+		  AND b.tenant_id = r.tenant_id AND b.installation_id = r.installation_id
+		  AND i.status = 'active' AND i.suspended_at IS NULL
+		RETURNING r.tenant_id, r.installation_id, r.github_repository_id, r.owner_login, r.repository_name,
+		          r.default_branch, r.factory_enabled, r.factory_enabled_at, r.synchronized_at`, tenantID, installationID, repositoryID, enabled, configuredAt.UTC()).
+		Scan(&repository.TenantID, &repository.InstallationID, &repository.GitHubRepositoryID, &repository.OwnerLogin,
+			&repository.RepositoryName, &repository.DefaultBranch, &repository.FactoryEnabled, &repository.FactoryEnabledAt, &repository.SynchronizedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		var active bool
+		if lookupErr := tx.QueryRow(ctx, `SELECT EXISTS (
+			SELECT 1 FROM github_app_installation_bindings b
+			JOIN tenant_github_installations i ON i.tenant_id = b.tenant_id AND i.installation_id = b.installation_id
+			WHERE b.tenant_id = $1 AND b.installation_id = $2 AND i.status = 'active' AND i.suspended_at IS NULL
+		)`, tenantID, installationID).Scan(&active); lookupErr != nil {
+			return Repository{}, fmt.Errorf("verify active Tenant Installation for factory configuration: %w", lookupErr)
+		}
+		if !active {
+			return Repository{}, ErrInstallationNotActive
+		}
+		return Repository{}, ErrRepositoryNotFound
+	}
+	if err != nil {
+		return Repository{}, fmt.Errorf("update Tenant repository factory setting: %w", err)
+	}
+	return repository, nil
 }
 
 func validRepositoryRef(repository githubwebhook.RepositoryRef) bool {

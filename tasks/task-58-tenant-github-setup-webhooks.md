@@ -2,7 +2,7 @@
 
 残作業の実行単位：[Task 66](task-66-tenant-oauth-broker.md)、[Task 67](task-67-tenant-oauth-cli-wiring.md)、[Task 68](task-68-webhook-abuse-controls.md)。親タスクは集約用に保持し、子タスク完了だけで配備済みとはしない。
 
-Status: In Progress (Webhook resolver/authorizer, generation fence, route/IAM allowlist and pinned OAuth setup/callback adapter implemented; production OAuth-purpose broker, CLI and real role provisioning remain). Priority: P0.
+Status: In Progress (Webhook resolver/authorizer, generation fence, route/IAM allowlist and pinned OAuth setup/callback adapter implemented; API/CLI mTLS adapter and local checkout broker added in Tasks 67/69. Production broker composition, certificate lifecycle and real role provisioning remain). Priority: P0.
 
 ## Goal
 

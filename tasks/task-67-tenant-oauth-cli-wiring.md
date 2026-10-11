@@ -1,6 +1,6 @@
 # Task 67: Tenant OAuth API/CLI wiring
 
-Status: In Progress (API mTLS resolver config and CLI setup command implemented; full PostgreSQL/API flow tests and broker deployment contract remain). Depends on: 66, 72.
+Status: Implemented locally (API mTLS resolver config, CLI setup command and real mTLS broker→API→PostgreSQL callback E2E with fake GitHub/Secret providers pass). Production broker URL/certificate distribution, private networking and deployment operations remain. Depends on: 66, 72.
 
 ## Scope
 
@@ -20,7 +20,8 @@ Task 58のadapterをproduction API設定へ接続し、Tenant-owned App setupを
 - Added `hako github app setup --tenant ... --integration ...`, which calls the authenticated API, opens the short-lived returned setup URL and prints the response. API client validates the returned GitHub URL and expiry.
 - Setup URL and OAuth authorization redirect are restricted to exact `https://github.com` host/path families. The mTLS client refuses redirects. Configured broker URLs are validated at process startup; partial config or enabling broker config without App management fails startup.
 - Unit and existing PostgreSQL integration suites pass. Existing Tenant callback integration uses an injected fake resolver; a complete DB callback through the real mTLS adapter is still pending.
-- Remaining: production broker endpoint/certificate distribution, full mTLS→API→PostgreSQL callback test, and operational certificate rotation docs. No external App settings were changed.
+- Added an isolated PostgreSQL integration that connects API→HTTP mTLS broker→live setup pin resolver, invokes setup URL, PKCE authorization redirect and Installation verification, then confirms the binding persisted. GitHub verifier and OAuth Secret reader are fakes; no real Secret/GitHub account is used.
+- Remaining: production broker endpoint/certificate distribution, private networking and operational certificate rotation/deployment. No external App settings were changed.
 
 - 対象コード、テスト結果、関連docs、未検証の配備条件を記載する。
 - 実AWS apply、実Secret取得、外部設定変更はこのタスクのローカル実装に含めない。

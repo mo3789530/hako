@@ -36,14 +36,23 @@ func CallerFromContext(ctx context.Context) (string, bool) {
 }
 
 func NewOAuthService(authorize Authorize, resolve ResolveCredential, read ReadSecret, callbackURL string) (*OAuthService, error) {
-	if authorize == nil || resolve == nil || read == nil {
+	return NewOAuthServiceWithVerifierFactory(authorize, resolve, read, callbackURL, func(c githubapp.SetupConfig) (githubapp.SetupVerifier, error) {
+		return githubapp.NewSetupClient(c)
+	})
+}
+
+// NewOAuthServiceWithVerifierFactory allows a trusted broker composition to
+// inject its GitHub transport while keeping all credential resolution and
+// authorization checks in OAuthService.
+func NewOAuthServiceWithVerifierFactory(authorize Authorize, resolve ResolveCredential, read ReadSecret, callbackURL string, verifier NewVerifier) (*OAuthService, error) {
+	if authorize == nil || resolve == nil || read == nil || verifier == nil {
 		return nil, ErrUnavailable
 	}
 	// Reuse the OAuth client's callback validation without reading credentials.
 	if _, err := githubapp.NewSetupClient(githubapp.SetupConfig{Slug: "validation", AppID: 1, ClientID: "validation", ClientSecret: "validation", CallbackURL: callbackURL}); err != nil {
 		return nil, ErrUnavailable
 	}
-	return &OAuthService{authorize, resolve, read, func(c githubapp.SetupConfig) (githubapp.SetupVerifier, error) { return githubapp.NewSetupClient(c) }, callbackURL}, nil
+	return &OAuthService{authorize, resolve, read, verifier, callbackURL}, nil
 }
 
 func (s *OAuthService) credential(ctx context.Context, pin githubregistry.SetupAppPin) (githubregistry.SetupCredential, error) {

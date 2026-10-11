@@ -187,6 +187,29 @@ func TestTenantOwnedRunRequiresAndPassesPinnedCredentialIdentity(t *testing.T) {
 	}
 }
 
+func TestTenantOwnedRunUsesDedicatedBrokerWithoutChangingSharedProvider(t *testing.T) {
+	remote, commit, _, _ := createTestRemote(t)
+	run := testRun(commit)
+	run.GitHubIntegrationID = "integration_checkout"
+	run.GitHubConfigRevision = 4
+	run.GitHubCredentialGeneration = 9
+	shared := &testCredentials{token: "shared-token"}
+	broker := &pinnedTestCredentials{token: "tenant-broker-token"}
+	checkout, err := NewGitRepositoryCheckoutWithRunCredentials(&testAuthorizer{access: githubapp.RepositoryAccess{Owner: "acme", Name: "widget"}}, shared, broker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkout.baseURL = remote
+	result, err := checkout.Checkout(context.Background(), run)
+	if err != nil {
+		t.Fatalf("checkout via dedicated Tenant broker: %v", err)
+	}
+	defer result.Cleanup()
+	if shared.calls != 0 || broker.calls != 1 || broker.run.ID != run.ID || broker.run.GitHubIntegrationID != run.GitHubIntegrationID {
+		t.Fatalf("credential routing fell across providers: shared=%d broker=%d run=%+v", shared.calls, broker.calls, broker.run)
+	}
+}
+
 func TestTenantOwnedRunRejectsLegacyCredentialProvider(t *testing.T) {
 	remote, commit, _, _ := createTestRemote(t)
 	run := testRun(commit)

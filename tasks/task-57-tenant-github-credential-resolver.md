@@ -2,7 +2,7 @@
 
 残作業の実行単位：[Task 69](task-69-tenant-checkout-broker.md)。親タスクは集約用に保持し、子タスク完了だけで配備済みとはしない。
 
-Status: In Progress (App proof API, active/draft revision/generation resolver, exact reader provider, per-use active generation authorization/cache partition, and durable Run identity pin/provider contract implemented; production Run→AWS credential broker wiring remains). Priority: P0.
+Status: In Progress (App proof API, active/draft resolver, exact reader provider, per-use generation authorization/cache partition, durable Run pin, and local mTLS checkout broker implemented in Task 69; production broker process/worker/IAM wiring remains). Priority: P0.
 
 ## Goal
 
@@ -18,7 +18,7 @@ Extend Task 37's internal credential library using [Tenant App design sections 4
 
 ## Acceptance / tests / docs
 
-Progress: `TokenClient.VerifyApp` signs with the configured App key, calls GitHub `GET /app`, checks the returned App ID, and returns only fixed safe credential errors. The API reads draft proof metadata transactionally, calls an injected verifier outside DB transactions, then conditionally rechecks revision/generation and transitions to `ready`; failed proof does not change state. The normal API binary deliberately does not inject a direct AWS verifier: it cannot read Tenant private-key Secrets or assume key-reader roles, so verification remains unavailable until a trusted broker adapter is deployed. Draft and active resolvers return the exact approved binding, reader Role ARN, private-key Secret ARN and immutable Version ID only for the expected Tenant/App/revision/generation. `TenantPrivateKeySecretAPI` is a purpose-limited library for the trusted credential service; it assumes only the exact Role with a session policy restricted to `GetSecretValue` on that exact Secret, requests the pinned VersionId and rejects mismatched versions. Tenant-scoped `TokenClient` partitions cache identity by Tenant/integration/App/revision/generation and requires an authorizer that revalidates active integration state before cached-token reuse and after remote calls. Task 59 now persists the resolved identity on each Run, and checkout refuses to pass an owned Run to the shared legacy provider. Production proof/checkout broker, worker wiring and deployed IAM remain outstanding.
+Progress: `TokenClient.VerifyApp` signs with the configured App key, calls GitHub `GET /app`, checks the returned App ID, and returns only fixed safe credential errors. Draft and active resolvers return the exact approved binding, reader Role ARN, private-key Secret ARN and immutable Version ID only for the expected Tenant/App/revision/generation. `TenantPrivateKeySecretAPI` assumes only the exact Role with a session policy restricted to `GetSecretValue` on that exact Secret and requests the pinned VersionId. Tenant-scoped `TokenClient` revalidates active identity before cached-token reuse and after remote calls. Task 59 persists the resolved identity on each Run; Task 69 adds the local trusted mTLS checkout broker and strict owned/shared provider routing. The API binary still does not directly read Tenant private keys. Broker process/certificate lifecycle, worker wiring and deployed IAM remain outstanding.
 
 - Generated RSA keys, fake Secret/STS/GitHub providers test A/B isolation, correct Role/ARN/version, mismatched App proof, rotation, revoked/suspended configuration, concurrent requests and stale client/cache.
 - Tokens/keys cannot appear in DB/messages/errors/artifacts; no public token endpoint is added.

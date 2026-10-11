@@ -1,6 +1,6 @@
 # Task 66: Tenant OAuth-purpose credential broker
 
-Status: In Progress (OAuth-purpose DB resolver, exact-role/version Secret reader and initial mTLS broker transport implemented; certificate lifecycle/production wiring remain). Depends on: Task 58の既存state pin/callback adapter（親58全体の完了は不要）。
+Status: Implemented locally (OAuth-purpose DB resolver, exact-role/version Secret reader, OAuth/checkout HTTP service composition and mTLS server executable implemented). Production certificate lifecycle, IAM provisioning and deployment remain. Depends on: Task 58の既存state pin/callback adapter（親58全体の完了は不要）。
 
 ## Scope
 
@@ -21,7 +21,8 @@ Status: In Progress (OAuth-purpose DB resolver, exact-role/version Secret reader
 - OAuth reader: `TenantOAuthSecretReader` uses the approved exact Role, exact Secret ARN session policy, 900-second STS session and immutable VersionId with a 10-second read timeout. No global credential mutation or secret cache. Errors and access metadata formatting/JSON are redacted. Fake tests cover success, STS failure/expiry, nil client, wrong version, empty Secret and provider errors.
 - Broker core: `internal/githubbroker.OAuthService` requires injected caller authorization, resolves the live pin for every operation, reads secrets only for verification, validates returned App/Installation identity, and rechecks authorization and credential metadata after remote I/O. URL generation reads no Secret. Fake tests cover unauthenticated/cross-Tenant requests, rotation, revocation, wrong App and sanitized remote failures.
 - Transport progress is recorded in [Task 72](task-72-oauth-broker-mtls.md). The server requires verified TLS client certificates and exact Control Plane URI SAN; production TLS configuration and certificate lifecycle still need review/tests.
-- Remaining: production resolver/reader/authorization composition and API wiring (Task 67), broker HTTP/GitHub E2E. No real Secret was retrieved.
+- Full fake-provider real-adapter API→mTLS broker→PostgreSQL callback E2E now passes under Task 67. Remaining: certificate/role provisioning and deployment review. No real Secret was retrieved.
+- `cmd/hako-github-broker` now composes OAuth-purpose secret access, DB-backed Run/pin checkout resolution, token issuance, and a TLS 1.3 mTLS listener. Environment and non-deployment boundaries are in [Internal GitHub Credential Broker](../docs/github-credential-broker.md). The process was not deployed and no real Secret was retrieved.
 
 - 対象コード、テスト結果、関連docs、未検証の配備条件を記載する。
 - 実AWS apply、実Secret取得、外部設定変更はこのタスクのローカル実装に含めない。

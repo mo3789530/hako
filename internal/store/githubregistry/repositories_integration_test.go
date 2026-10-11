@@ -63,9 +63,30 @@ func TestRepositorySyncRequiresActiveTenantBindingAndAppliesMembershipEvents(t *
 		t.Fatalf("idempotent repository sync: %v", err)
 	}
 	repositories, err := ListRepositories(ctx, tx, "tenant_registry", 4401)
-	if err != nil || len(repositories) != 1 || repositories[0].GitHubRepositoryID != 8842 || repositories[0].RepositoryName != "api" {
+	if err != nil || len(repositories) != 1 || repositories[0].GitHubRepositoryID != 8842 || repositories[0].RepositoryName != "api" || repositories[0].FactoryEnabled {
 		_ = tx.Rollback(ctx)
 		t.Fatalf("list synced repositories = %+v, err %v", repositories, err)
+	}
+	enabled, err := SetRepositoryFactoryEnabled(ctx, tx, "tenant_registry", 4401, 8842, true, now)
+	if err != nil || !enabled.FactoryEnabled || enabled.FactoryEnabledAt == nil || enabled.FactoryEnabledAt.Before(now.Add(-time.Microsecond)) || enabled.FactoryEnabledAt.After(now.Add(time.Microsecond)) {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("enable repository factory = %+v, err %v", enabled, err)
+	}
+	repositories, err = ListRepositories(ctx, tx, "tenant_registry", 4401)
+	if err != nil || len(repositories) != 1 || !repositories[0].FactoryEnabled {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("list after enabling repository factory = %+v, err %v", repositories, err)
+	}
+	disabled, err := SetRepositoryFactoryEnabled(ctx, tx, "tenant_registry", 4401, 8842, false, now.Add(time.Second))
+	if err != nil || disabled.FactoryEnabled || disabled.FactoryEnabledAt != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("disable repository factory = %+v, err %v", disabled, err)
+	}
+	reenabled, err := SetRepositoryFactoryEnabled(ctx, tx, "tenant_registry", 4401, 8842, true, now.Add(2*time.Second))
+	reenabledAt := now.Add(2 * time.Second)
+	if err != nil || !reenabled.FactoryEnabled || reenabled.FactoryEnabledAt == nil || reenabled.FactoryEnabledAt.Before(reenabledAt.Add(-time.Microsecond)) || reenabled.FactoryEnabledAt.After(reenabledAt.Add(time.Microsecond)) {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("re-enable repository factory = %+v, err %v", reenabled, err)
 	}
 	removedEvent := addedRepositoriesEvent()
 	removedEvent.Type = "github.installation_repositories.removed"
@@ -87,6 +108,9 @@ func TestRepositorySyncRequiresActiveTenantBindingAndAppliesMembershipEvents(t *
 	}
 	if _, err := ListRepositories(ctx, readTx, domain.TenantID("tenant_other"), 4401); !errors.Is(err, ErrInstallationNotActive) {
 		t.Fatalf("cross-Tenant repository list error = %v", err)
+	}
+	if _, err := SetRepositoryFactoryEnabled(ctx, readTx, "tenant_registry", 4401, 99999, true, now); !errors.Is(err, ErrRepositoryNotFound) {
+		t.Fatalf("enable unregistered Repository error = %v", err)
 	}
 }
 

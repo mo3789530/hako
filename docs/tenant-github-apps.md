@@ -1,6 +1,6 @@
 # Tenant別GitHub App設計
 
-Status: **Tasks 56–59を部分実装。Tenant Appの有効化/運用は未完了でdefault-off**。Draft proof API/credential libraries、Webhook resolver/authorization/generation再検証、Installation/Run identityに加え、OAuth state pinとcallback adapterを追加。API binaryはprivate-key reader roleを直接assumeせず、trusted credential brokerがない場合はverifyを無効扱いにする。Tenant Webhook routeは専用flagとWebhook-purpose reader Role ARN allowlistでopt-in可能だが、real role trust/Secret provisioningは未実施。OAuth-purpose brokerのproduction接続、CLI setup、legacy backfill/drain、E2Eは残る。現行共通App方式は維持する。
+Status: **Tasks 56–59、66–71のlocal実装/E2Eを確認中。Tenant Appのproduction有効化は未完了でdefault-off**。Draft proof、OAuth setup/API/CLI adapter、Webhook resolver/authorization/generation再検証、Installation/Run identity pin、Run-pinned checkout broker、revision/generation-fenced dry-run/backfillとlegacy Run drain guard、二Tenantのsetup→Webhook→Run→checkout E2Eを実装。API binaryはprivate-key reader roleを直接assumeせず、broker未設定時はowned setup/verifyをfail closedにする。Tenant Webhook routeは専用flagでopt-in可能だが、real role trust/Secret provisioningは未実施。broker certificate lifecycle、worker wiringとproduction rolloutは残る。現行共通App方式は維持する。
 決定事項は[ADR 0007](adr/0007-tenant-github-apps.md)、既存資格情報実装は
 [GitHub App credentials](github-app-credentials.md)を参照。
 
@@ -36,7 +36,7 @@ Tenant
 | Workload Run/dispatch | サーバー解決したintegration_id、App registration、config_revision/credential_generationを固定。Run処理中に別Appへ差替えない。Secret ARNやcredentialはmessageに載せない |
 
 registration ID、integration ID、credential binding IDは別物。表示App IDとSecret解決用IDを混同しない。
-Installation binding、Workload Run pin、OAuth setup pinのDDLはTasks 58/59のmigrationで追加済み。Webhook processor再検証も実装済み。旧Installation/Runのbackfillと配備時のmigration runbookは未完了。
+Installation binding、Workload Run pin、OAuth setup pinのDDLはTasks 58/59のmigrationで追加済み。Task 70ではsetup callbackでGitHubから確認したApp IDをInstallation metadataへ保存するadditive migrationを追加した。Webhook processor再検証も実装済み。旧Installation bindingのlocal plan/backfillとlegacy Run drain guardはTask 70で実装・PostgreSQL検証済み。実データへの適用と配備runbook検証は未実施。
 
 ## 3. 設定APIとRBAC
 
@@ -48,7 +48,8 @@ Tenant OAuth brokerが設定されたAPIでは、`hako github app setup --tenant
 | `POST /v1/tenants/{tenant}/github/apps` | Owner/Admin。App ID/slug/client_idと**承認済みcredential_binding_id**を指定しdraft作成。raw Secret/任意ARN/Role/URLは拒否 |
 | `GET /v1/tenants/{tenant}/github/apps/{integration}` | Owner/Admin。sanitized metadataのみ。別Tenant IDはhidden 404 |
 | `POST .../{integration}/verify` | Owner/Admin。revision指定。trusted brokerがApp JWTの`GET /app`でApp IDと承認bundleを検証。外部副作用はDB transaction外 |
-| `POST .../{integration}/select-default` | Owner/Admin。Tenant selectionのexpected revision指定、ready状態のみ。既存binding/Runの切替は下記migration制約に従う |
+| `POST .../{integration}/select-default` | Owner/Admin。expected revisionとcredential generationを指定。ready状態、purpose別binding、legacy非終端Runのdrainを確認して選択 |
+| `POST .../{integration}/migration` | Owner/Admin。`action=plan`はread-only。`action=backfill`は明示Installation ID・expected revision/generation・`confirm=true`必須。既存Run pinは更新しない |
 | `POST .../{integration}/disable` | Owner/Admin。expected revision指定。新規setup/token/Runを拒否、state/cache無効化とcancel/reconcile要求をOutboxに保存 |
 | `POST .../{integration}/setup` | Owner/Admin。対象integrationに固定した既存PKCE setup flowを開始 |
 
@@ -57,9 +58,11 @@ Webhookは`POST /v1/integrations/github/apps/{integration_id}/webhook`を別途�
 
 POSTにはidempotency key、更新にはexpected revisionを用い、競合は409。未承認binding、別Tenant/App所有bindingはSecret取得前に拒否する。
 App verificationとdefault選択は別操作であり、GitHub疎通成功だけでRunを起動しない。
-Task 56では`hako github app list/add/show/verify/select-default/disable`からmetadataを操作する。API routeは`HAKO_GITHUB_APP_MANAGEMENT_ENABLED=true`で明示的に有効化し、未設定時はrouteを登録しない。Task 57ではtrusted broker proof adapterを構成したときにのみ`verify`がdraftからreadyへ進む。標準API binaryはprivate-key accessを持たず、adapter未構成なら409 `github_app_not_ready`、証明失敗なら秘匿された502 `github_app_verification_failed`を返す。Tenant Webhook ingressは`HAKO_TENANT_GITHUB_WEBHOOK_ENABLED=true`とTerraformのexact Webhook-role allowlistで別途opt-inする。`select-default`は未実装のため409を返す。CLI/APIにSecret値を入力させない。
+Task 56では`hako github app list/add/show/verify/select-default/disable`からmetadataを操作する。Task 70では`migration-plan --revision <n> --generation <n> --installations <id,...>`でread-only計画を確認し、`migration-backfill`に同じpinと明示的な`--apply`を付けて適用する。API routeは`HAKO_GITHUB_APP_MANAGEMENT_ENABLED=true`で明示的に有効化し、未設定時はrouteを登録しない。`verify`はtrusted broker proof adapterがある場合にdraftからreadyへ進む。標準API binaryはprivate-key accessを持たず、adapter未構成なら409 `github_app_not_ready`、証明失敗なら秘匿された502 `github_app_verification_failed`を返す。Tenant Webhook ingressは`HAKO_TENANT_GITHUB_WEBHOOK_ENABLED=true`とTerraformのexact Webhook-role allowlistで別途opt-inする。Default選択はexpected revision/generation、用途別credential binding、legacy非終端Run drainを満たす場合だけ成功する。CLI/APIにSecret値を入力させない。
 
-`add`は`Idempotency-Key`必須で、`disable`/`verify`/`select-default`は`expected_revision`を要求する。Owner/Admin以外と別Tenantのresourceはhidden 404。詳細なpath、body、response、error codeは[Control Plane API Contract](api-contract.md#tenant-github-app-metadata)を参照。
+`add`は`Idempotency-Key`必須で、`disable`/`verify`は`expected_revision`、`select-default`とmigrationは`expected_revision`および`expected_generation`を要求する。migration backfillには明示対象Installationと確認フラグが必要で、dry-runは変更しない。Owner/Admin以外と別Tenantのresourceはhidden 404。詳細なpath、body、response、error codeは[Control Plane API Contract](api-contract.md#tenant-github-app-metadata)を参照。
+
+Task 71の二Tenant local E2Eは、並行setup callback、integration別fake HMAC/Webhook inbox、Repository sync、Workload Run pin、checkout credential resolutionを一続きで検証する。誤App、delivery replay/ID conflict、cross-Tenant checkout、generation rotation、disableを拒否し、legacy shared RunがTenant pinへ誤変換されないことも確認する。Default cutoverは他integrationにpinされた非終端Runがゼロの場合に限定し、旧owned defaultをdisabledにしてrevision/generationを進める操作を新default選択とatomicにする。移行backfillとretryable DSQL transaction conflictはTask 70/71のPostgreSQL統合テストで確認する。実GitHub/AWS/Secretを使わないため、CI合格だけでは本番cutover/隔離の証明にならない。ローカル実行は`make test-integration-local`。
 
 ## 4. Secret provisioningとIAM境界
 
@@ -83,6 +86,7 @@ INSERT INTO github_credential_bindings (
 Task 57ではTenant-owned private key用に`private_key_reader_role_arn`と`private_key_secret_version_id`を追加した。resolverは`role/`のexact IAM Role ARN（wildcard不可）、完全なSecrets Manager Secret ARN、32桁hexのimmutable Version IDを要求し、`AWSCURRENT`や欠落pinを拒否する。`TenantPrivateKeySecretAPI`はSTS AssumeRoleにSecret ARN限定のsession policyを付け、Assumed Roleの短期credentialで固定VersionIdだけを取得し、AWS/GitHubエラーを外へ漏らさない。Tenant App token clientのcache identityにはTenant/integration/App/revision/generationを含め、active revision/generationとTenant/App ownerをDBで都度再検証するため、古いgenerationのclientはcached tokenも返せない。共有Appや既存credential clientはこのmetadataを使わず、従来のAWSCURRENT方式を維持する。AWSアクセスはproviderを実際のtrusted serviceへ接続した時のみ発生し、テストはfake providerを使う。
 
 Bindingの更新・停止とIAM/Secret provisioningの自動化はこのTaskの範囲外。APIにはbinding ID以外のARN/Role/URLを渡せず、承認bindingが見つからない場合はSecret accessより前に拒否する。
+
 3. CP brokerはauthoritative Tenant/integration/bindingからRoleを解決する。取得Roleはprivate-key、OAuth交換、Webhook検証の用途別に分け、それぞれexact ARNの`GetSecretValue`と必要時の限定KMS decryptのみを許可する。
 4. API/Job VM/RPにTenant Secretの包括的読取Roleを渡さない。broker Roleだけが承認reader Roleに対する限定`sts:AssumeRole`を持つ。Tenant/用途/session識別を監査し、利用者からRole ARN/session tagを受け取らない。
 5. Credential readerにはSecretの作成/更新/tag変更、IAM変更、compute操作権限を与えない。Secret承認・rotationとreadは別権限。
@@ -90,6 +94,12 @@ Bindingの更新・停止とIAM/Secret provisioningの自動化はこのTaskの�
 Secret値の受領・GitHub設定変更・AWS provisioningは明示承認を要する運用作業。
 ローカルテストでは全てfake Secret providerで代替する。Terraform implementation/validate/planはTask 59、applyは別承認。
 broker侵害のblast radiusは承認済み全Roleに及び得る。Tenant別Secret/IAMは共有brokerプロセスの完全隔離を保証しない。
+
+### 4.1 Run checkout broker boundary
+
+Tenant-owned Workload Runのcheckout credentialは、Run作成時に保存したTenant/integration/revision/generation pinからのみ解決する。Control Planeのtrusted checkout callerはmTLSでbrokerに接続し、要求bodyにはTenant IDとRun IDだけを含める。brokerはPostgreSQLからcanonical Runとactive credential bindingを同一transactionで読み、正確なprivate-key reader Role/Secret ARN/immutable Version IDを用いてrepository-scoped, read-only Installation tokenを作成する。callerがApp ID、Installation、Repository、ARN、Roleまたはgenerationを選ぶAPIではない。
+
+token mint前後にmTLS caller、Run状態、active integration pinを再検証する。Run取消、Tenant App disable、rotationでpinが変わった場合はtokenをcallerへ返さない。tokenは短命で`no-store`応答にのみ含まれ、checkoutのGit askpass pipeで使い、Run/queue/DB/artifact/logには保存しない。Tenant-owned Runでbrokerが未設定・失敗した場合はshared Appへfallbackしない。既存shared Runだけが旧shared providerを使う。broker endpoint/clientのlocal HTTPS/PostgreSQLテストは完了したが、broker process、certificate lifecycle、IAM provision、worker deploymentは未完了であり、Tenant Appはdefault-offを維持する（Task 69）。
 
 ## 5. Token resolverとcache
 
@@ -105,7 +115,7 @@ broker侵害のblast radiusは承認済み全Roleに及び得る。Tenant別Secr
 OAuth client_id/client-secret/slugはstateで固定したintegrationから解決する。callbackの一時user tokenでuser-visible Installationを確認し、expected App ID・installation・accountに照合する。
 完了transactionでOwner/Admin資格、Tenant ownership、active integration、revision/generation、one-time stateを再検証する。変更前に開始したcallbackはやり直す。
 
-migration `000062`でstate pinと再検証を実装。APIにtrusted `TenantGitHubSetupResolver`を明示注入した場合のみowned setup routeを登録し、callbackでstored pinからverifierを選ぶ。App不一致、失効、shared fallback、owned bindingの再assignmentを拒否する。標準API binaryにそのresolverはまだ接続しておらず、production OAuth-purpose brokerとCLI setupは残る。詳細は[Installation setup](github-installation-setup.md)。
+migration `000062`でstate pinと再検証を実装。APIにtrusted `TenantGitHubSetupResolver`を明示注入した場合のみowned setup routeを登録し、callbackでstored pinからverifierを選ぶ。App不一致、失効、shared fallback、owned bindingの再assignmentを拒否する。API startup mTLS configurationと`hako github app setup` CLI commandは実装済み。full callback E2E、broker process/certificate lifecycleは残る。詳細は[Installation setup](github-installation-setup.md)。
 
 Webhook routingは次の順序を固定する。
 

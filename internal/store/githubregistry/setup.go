@@ -128,6 +128,9 @@ func CompleteSetupState(ctx context.Context, tx pgx.Tx, stateHash string, instal
 	if state.AppPin != nil && (len(verifiedAppID) != 1 || verifiedAppID[0] != state.AppPin.GitHubAppID) {
 		return Installation{}, ErrSetupInstallationMismatch
 	}
+	if len(verifiedAppID) > 1 || len(verifiedAppID) == 1 && verifiedAppID[0] <= 0 {
+		return Installation{}, ErrSetupInstallationMismatch
+	}
 	if _, err := authz.RequireTenantRole(ctx, tx, state.UserID, state.TenantID, domain.TenantRoleOwner, domain.TenantRoleAdmin); err != nil {
 		return Installation{}, err
 	}
@@ -142,12 +145,26 @@ func CompleteSetupState(ctx context.Context, tx pgx.Tx, stateHash string, instal
 	if err != nil {
 		return Installation{}, err
 	}
+	var verifiedApp any
+	if len(verifiedAppID) == 1 {
+		verifiedApp = verifiedAppID[0]
+	}
 	if _, err := tx.Exec(ctx, `INSERT INTO tenant_github_installations
-		(tenant_id, installation_id, account_login, status, requested_by, requested_at, updated_at)
-		VALUES ($1, $2, $3, 'active', $4, $5, $5)
-		ON CONFLICT (tenant_id, installation_id) DO UPDATE SET account_login = $3, status = 'active', suspended_at = NULL, updated_at = $5`,
-		state.TenantID, installationID, accountLogin, state.UserID, now); err != nil {
+		(tenant_id, installation_id, github_app_id, account_login, status, requested_by, requested_at, updated_at)
+		VALUES ($1, $2, $3, $4, 'active', $5, $6, $6)
+		ON CONFLICT (tenant_id, installation_id) DO UPDATE SET account_login = $4, status = 'active', suspended_at = NULL,
+		github_app_id = COALESCE(tenant_github_installations.github_app_id, EXCLUDED.github_app_id), updated_at = $6`,
+		state.TenantID, installationID, verifiedApp, accountLogin, state.UserID, now); err != nil {
 		return Installation{}, fmt.Errorf("activate Tenant GitHub Installation claim: %w", err)
+	}
+	if verifiedAppID != nil && len(verifiedAppID) == 1 {
+		var storedAppID int64
+		if err := tx.QueryRow(ctx, `SELECT COALESCE(github_app_id, 0) FROM tenant_github_installations WHERE tenant_id=$1 AND installation_id=$2`, state.TenantID, installationID).Scan(&storedAppID); err != nil {
+			return Installation{}, err
+		}
+		if storedAppID != verifiedAppID[0] {
+			return Installation{}, ErrInstallationBound
+		}
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO github_app_installation_bindings (installation_id, tenant_id, bound_at)
 		VALUES ($1, $2, $3) ON CONFLICT (installation_id) DO NOTHING`, installationID, state.TenantID, now); err != nil {

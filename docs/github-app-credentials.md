@@ -68,10 +68,16 @@ Installation and Repository from the authoritative Run, not a supplied webhook
 payload. `CheckoutToken` is not authorization for arbitrary user token issuance.
 
 For the initial checkout, grant the GitHub App **Contents: read** and GitHub's
-required **Metadata: read**. Installation tokens are requested with exactly one
-`repository_ids` entry and `permissions: {contents: read}`. Write access, Checks,
-Issues, Actions and runner administration are not added here. The response is
-rejected if it includes another repository or any unexpected permission.
+required **Metadata: read**. Checkout Installation tokens are requested with
+exactly one `repository_ids` entry and `permissions: {contents: read}`. The
+checkout token method never requests or reuses write permissions. Task 41 adds
+an isolated `Checks: write` token method for Check result delivery; it uses a
+separate cache scope and also requests exactly one Repository. This is only a
+local library foundation and is not yet connected to Workload results. Enable
+the GitHub App permission only as part of an explicitly approved rollout; see
+[`github-checks.md`](github-checks.md). Issues, Actions and runner
+administration are not added here. Each token response is rejected if it
+includes another Repository or an unexpected permission.
 
 The authorizer joins the exact Tenant/repository to its globally bound, active,
 non-suspended Installation. The token client additionally checks GitHub's live
