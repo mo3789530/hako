@@ -31,7 +31,10 @@ type Config struct {
 	// WorkloadSchedulerQueueURL routes workload_run.schedule_requested events.
 	// It is optional until the Workload scheduler queue is provisioned.
 	WorkloadSchedulerQueueURL string
-	Now                       func() time.Time
+	// GitHubChecksQueueURL routes durable Workload Run Check updates. It is
+	// optional until the trusted Checks result worker is deployed.
+	GitHubChecksQueueURL string
+	Now                  func() time.Time
 }
 
 type Dispatcher struct {
@@ -57,6 +60,13 @@ type workloadScheduleEnvelope struct {
 	SchemaVersion int    `json:"schema_version"`
 	TenantID      string `json:"tenant_id"`
 	WorkloadRunID string `json:"workload_run_id"`
+}
+
+type githubCheckEnvelope struct {
+	SchemaVersion int    `json:"schema_version"`
+	TenantID      string `json:"tenant_id"`
+	WorkloadRunID string `json:"workload_run_id"`
+	Revision      int64  `json:"revision"`
 }
 
 type workloadDispatchEnvelope struct {
@@ -161,6 +171,20 @@ func (d *Dispatcher) route(event outbox.Event) (string, error) {
 			return "", errors.New("Workload scheduler queue is not configured")
 		}
 		return d.config.WorkloadSchedulerQueueURL, nil
+	}
+	if event.AggregateType == "workload_run" && event.EventType == "workload_run.github_check_requested" {
+		var message githubCheckEnvelope
+		if err := json.Unmarshal(event.Payload, &message); err != nil {
+			return "", fmt.Errorf("decode GitHub Check request: %w", err)
+		}
+		if message.SchemaVersion != 1 || message.TenantID == "" || message.WorkloadRunID == "" ||
+			message.WorkloadRunID != event.AggregateID || message.Revision < 1 {
+			return "", errors.New("GitHub Check request has an unsupported or inconsistent envelope")
+		}
+		if d.config.GitHubChecksQueueURL == "" {
+			return "", errors.New("GitHub Checks result queue is not configured")
+		}
+		return d.config.GitHubChecksQueueURL, nil
 	}
 	if event.AggregateType == "workload_attempt" && (event.EventType == "workload_attempt.dispatch" || event.EventType == "workload_attempt.cancel") {
 		var command workloadDispatchEnvelope

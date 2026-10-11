@@ -169,6 +169,61 @@ func TestCheckoutTokenSignsScopesCachesAndRefreshes(t *testing.T) {
 	}
 }
 
+func TestChecksTokenIsRepositoryScopedAndNeverReusesCheckoutToken(t *testing.T) {
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	var minted []string
+	client, _ := newTestTokenClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/app/installations/77", "/repos/acme/api/installation":
+			_, _ = io.WriteString(w, `{"id":77,"app_id":12,"suspended_at":null}`)
+		case "/app/installations/77/access_tokens":
+			var body struct {
+				RepositoryIDs []int64           `json:"repository_ids"`
+				Permissions   map[string]string `json:"permissions"`
+			}
+			if json.NewDecoder(r.Body).Decode(&body) != nil || len(body.RepositoryIDs) != 1 || body.RepositoryIDs[0] != 88 {
+				t.Error("Installation token was not limited to the authorized Repository")
+			}
+			if body.Permissions["checks"] == "write" && len(body.Permissions) == 1 {
+				minted = append(minted, "checks")
+				_ = json.NewEncoder(w).Encode(map[string]any{"token": "synthetic-checks-write-token", "expires_at": now.Add(time.Hour), "permissions": map[string]string{"checks": "write", "metadata": "read"}, "repositories": []map[string]int{{"id": 88}}})
+				return
+			}
+			if body.Permissions["contents"] == "read" && len(body.Permissions) == 1 {
+				minted = append(minted, "contents")
+				_ = json.NewEncoder(w).Encode(map[string]any{"token": testTokenValue, "expires_at": now.Add(time.Hour), "permissions": map[string]string{"contents": "read", "metadata": "read"}, "repositories": []map[string]int{{"id": 88}}})
+				return
+			}
+			t.Errorf("unexpected installation token permission scope: %+v", body.Permissions)
+		default:
+			t.Errorf("unexpected GitHub endpoint %s", r.URL.Path)
+		}
+	}))
+	client.now = func() time.Time { return now }
+
+	checkout, err := client.CheckoutToken(context.Background(), "tenant_one", 77, 88)
+	if err != nil || checkout.Value() != testTokenValue {
+		t.Fatalf("read-only checkout token failed: %v", err)
+	}
+	checks, err := client.ChecksToken(context.Background(), "tenant_one", 77, 88)
+	if err != nil || checks.Value() != "synthetic-checks-write-token" {
+		t.Fatalf("checks token failed: %v", err)
+	}
+	if _, err := client.CheckoutToken(context.Background(), "tenant_one", 77, 88); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ChecksToken(context.Background(), "tenant_one", 77, 88); err != nil {
+		t.Fatal(err)
+	}
+	if len(minted) != 2 || minted[0] != "contents" || minted[1] != "checks" {
+		t.Fatalf("permission scopes shared a token cache or minted unexpectedly: %v", minted)
+	}
+	if strings.Contains(fmt.Sprintf("%+v", checks), "synthetic-checks-write-token") {
+		t.Fatal("checks Installation token leaked via formatting")
+	}
+}
+
 func TestVerifyAppProvesConfiguredIDWithSafeErrors(t *testing.T) {
 	for _, tc := range []struct {
 		name string

@@ -1,4 +1,4 @@
-.PHONY: fmt lint test test-integration test-integration-local test-workload-runtime test-workload-runtime-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda terraform-fmt terraform-validate
+.PHONY: fmt lint test test-integration test-integration-local test-workload-runtime test-workload-runtime-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-github-checks-consumer-image terraform-fmt terraform-validate
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -not -path './.git/*')
@@ -56,6 +56,10 @@ build-resource-controller-lambda:
 	mkdir -p build/resource-controller-lambda
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o build/resource-controller-lambda/bootstrap ./cmd/hako-resource-controller-lambda
 	cd build/resource-controller-lambda && zip -q ../resource-controller-lambda.zip bootstrap
+
+# Builds an ARM64 ECS/Fargate image locally; publishing to ECR is a separate authorized step.
+build-github-checks-consumer-image:
+	podman build --arch arm64 --tag hako-checks-consumer:local -f cmd/hako-checks-consumer/Dockerfile .
 
 terraform-fmt:
 	terraform fmt -check -recursive infra/terraform

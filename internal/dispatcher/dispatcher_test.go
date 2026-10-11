@@ -119,6 +119,38 @@ func TestRunOnceRoutesWorkloadScheduleRequestToDedicatedQueue(t *testing.T) {
 	}
 }
 
+func TestRunOnceRoutesGitHubCheckRequestToDedicatedQueue(t *testing.T) {
+	store := &fakeStore{events: []outbox.Event{{
+		ID: "evt_check", AggregateType: "workload_run", AggregateID: "run_1", EventType: "workload_run.github_check_requested", Attempt: 1,
+		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_1","revision":2}`),
+	}}}
+	publisher := &fakePublisher{}
+	d, err := New(store, publisher, map[string]string{"rp_tokyo": "rp-queue"}, Config{GitHubChecksQueueURL: "checks-queue"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := d.RunOnce(context.Background())
+	if err != nil || stats != (Stats{Claimed: 1, Published: 1}) || len(publisher.queueURLs) != 1 || publisher.queueURLs[0] != "checks-queue" {
+		t.Fatalf("GitHub Check request was not routed to dedicated queue: stats=%+v queues=%v err=%v", stats, publisher.queueURLs, err)
+	}
+}
+
+func TestRunOnceRejectsInvalidGitHubCheckEnvelope(t *testing.T) {
+	store := &fakeStore{events: []outbox.Event{{
+		ID: "evt_check", AggregateType: "workload_run", AggregateID: "run_1", EventType: "workload_run.github_check_requested", Attempt: 1,
+		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_other","revision":1}`),
+	}}}
+	publisher := &fakePublisher{}
+	d, err := New(store, publisher, map[string]string{"rp_tokyo": "rp-queue"}, Config{GitHubChecksQueueURL: "checks-queue"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := d.RunOnce(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "inconsistent envelope") || stats != (Stats{Claimed: 1, Failed: 1}) || len(publisher.queueURLs) != 0 {
+		t.Fatalf("invalid GitHub Check event was accepted: stats=%+v queues=%v err=%v", stats, publisher.queueURLs, err)
+	}
+}
+
 func TestRunOnceRoutesWorkloadDispatchToPinnedResourcePlane(t *testing.T) {
 	store := &fakeStore{events: []outbox.Event{{
 		ID: "evt_attempt", AggregateType: "workload_attempt", AggregateID: "attempt_1", EventType: "workload_attempt.dispatch", Attempt: 1,

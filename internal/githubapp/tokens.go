@@ -135,6 +135,7 @@ type tokenCacheKey struct {
 	appID, configRevision    int64
 	credentialGeneration     int64
 	installation, repository int64
+	permissionScope          string
 }
 
 // TokenClient runs only in a trusted credential service. It does not expose a
@@ -291,31 +292,96 @@ func (c *TokenClient) CheckoutToken(ctx context.Context, tenant domain.TenantID,
 		return InstallationToken{}, ctx.Err()
 	}
 	defer func() { <-c.gate }()
-	key := tokenCacheKey{tenant: tenant, integration: c.config.IntegrationID, appID: c.config.AppID, configRevision: c.config.ConfigRevision, credentialGeneration: c.config.CredentialGeneration, installation: installationID, repository: repositoryID}
-	result, err := c.checkoutToken(ctx, key)
+	key := tokenCacheKey{tenant: tenant, integration: c.config.IntegrationID, appID: c.config.AppID, configRevision: c.config.ConfigRevision, credentialGeneration: c.config.CredentialGeneration, installation: installationID, repository: repositoryID, permissionScope: "contents:read"}
+	result, err := c.scopedInstallationToken(ctx, key, map[string]string{"contents": "read"})
 	if err != nil {
 		delete(c.cache, key)
 	}
 	return result, err
 }
 
+// ChecksToken mints a repository-scoped token with only checks:write. It has a
+// distinct cache identity from checkout tokens so a writable token can never
+// be returned through the read-only checkout API.
+func (c *TokenClient) ChecksToken(ctx context.Context, tenant domain.TenantID, installationID, repositoryID int64) (InstallationToken, error) {
+	if c == nil || c.authorizer == nil || tenant == "" || installationID <= 0 || repositoryID <= 0 {
+		return InstallationToken{}, credentialError("invalid_request")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return InstallationToken{}, err
+	}
+	select {
+	case c.gate <- struct{}{}:
+	case <-ctx.Done():
+		return InstallationToken{}, ctx.Err()
+	}
+	defer func() { <-c.gate }()
+	key := tokenCacheKey{tenant: tenant, integration: c.config.IntegrationID, appID: c.config.AppID, configRevision: c.config.ConfigRevision, credentialGeneration: c.config.CredentialGeneration, installation: installationID, repository: repositoryID, permissionScope: "checks:write"}
+	result, err := c.scopedInstallationToken(ctx, key, map[string]string{"checks": "write"})
+	if err != nil {
+		delete(c.cache, key)
+	}
+	return result, err
+}
+
+// ChecksRunToken enforces the immutable credential pin captured by a Workload
+// Run and returns the trusted Repository coordinates used by the Checks API.
+func (c *TokenClient) ChecksRunToken(ctx context.Context, run domain.WorkloadRun) (InstallationToken, RepositoryAccess, error) {
+	if c == nil || run.GitHubInstallation <= 0 || run.GitHubRepository <= 0 {
+		return InstallationToken{}, RepositoryAccess{}, credentialError("run_credential_identity_mismatch")
+	}
+	if (run.GitHubIntegrationID != "" || c.config.IntegrationID != "") && (c.config.IntegrationID != run.GitHubIntegrationID ||
+		c.config.TenantID != run.TenantID || c.config.ConfigRevision != run.GitHubConfigRevision ||
+		c.config.CredentialGeneration != run.GitHubCredentialGeneration) {
+		return InstallationToken{}, RepositoryAccess{}, credentialError("run_credential_identity_mismatch")
+	}
+	token, err := c.ChecksToken(ctx, run.TenantID, run.GitHubInstallation, run.GitHubRepository)
+	if err != nil {
+		return InstallationToken{}, RepositoryAccess{}, err
+	}
+	repository, err := c.authorizer.AuthorizeRepository(ctx, run.TenantID, run.GitHubInstallation, run.GitHubRepository)
+	if err != nil {
+		return InstallationToken{}, RepositoryAccess{}, credentialError("repository_unavailable")
+	}
+	if !validLogin(repository.Owner) || !validCredentialRepositoryName(repository.Name) {
+		return InstallationToken{}, RepositoryAccess{}, credentialError("repository_unavailable")
+	}
+	return token, repository, nil
+}
+
 // CheckoutRunToken enforces the durable integration/revision/generation pin
 // captured when the Workload Run was created. Shared-mode Runs continue to
 // use CheckoutToken through the legacy provider contract.
 func (c *TokenClient) CheckoutRunToken(ctx context.Context, run domain.WorkloadRun) (string, error) {
-	if c == nil || run.GitHubIntegrationID == "" || c.config.IntegrationID != run.GitHubIntegrationID ||
-		c.config.TenantID != run.TenantID || c.config.ConfigRevision != run.GitHubConfigRevision ||
-		c.config.CredentialGeneration != run.GitHubCredentialGeneration {
-		return "", credentialError("run_credential_identity_mismatch")
-	}
-	token, err := c.CheckoutToken(ctx, run.TenantID, run.GitHubInstallation, run.GitHubRepository)
+	token, err := c.CheckoutRunInstallationToken(ctx, run)
 	if err != nil {
 		return "", err
 	}
 	return token.Value(), nil
 }
 
+// CheckoutRunInstallationToken enforces the durable Workload Run pin and
+// returns the short-lived token metadata to the trusted checkout broker.
+func (c *TokenClient) CheckoutRunInstallationToken(ctx context.Context, run domain.WorkloadRun) (InstallationToken, error) {
+	if c == nil || run.GitHubIntegrationID == "" || c.config.IntegrationID != run.GitHubIntegrationID ||
+		c.config.TenantID != run.TenantID || c.config.ConfigRevision != run.GitHubConfigRevision ||
+		c.config.CredentialGeneration != run.GitHubCredentialGeneration {
+		return InstallationToken{}, credentialError("run_credential_identity_mismatch")
+	}
+	token, err := c.CheckoutToken(ctx, run.TenantID, run.GitHubInstallation, run.GitHubRepository)
+	if err != nil {
+		return InstallationToken{}, err
+	}
+	return token, nil
+}
+
 func (c *TokenClient) checkoutToken(ctx context.Context, key tokenCacheKey) (InstallationToken, error) {
+	return c.scopedInstallationToken(ctx, key, map[string]string{"contents": "read"})
+}
+
+func (c *TokenClient) scopedInstallationToken(ctx context.Context, key tokenCacheKey, permissions map[string]string) (InstallationToken, error) {
 	access, err := c.authorize(ctx, key)
 	if err != nil {
 		return InstallationToken{}, err
@@ -353,7 +419,7 @@ func (c *TokenClient) checkoutToken(ctx context.Context, key tokenCacheKey) (Ins
 		}
 		return token, nil
 	}
-	body, _ := json.Marshal(map[string]any{"repository_ids": []int64{key.repository}, "permissions": map[string]string{"contents": "read"}})
+	body, _ := json.Marshal(map[string]any{"repository_ids": []int64{key.repository}, "permissions": permissions})
 	var response struct {
 		Token        string            `json:"token"`
 		ExpiresAt    time.Time         `json:"expires_at"`
@@ -365,11 +431,16 @@ func (c *TokenClient) checkoutToken(ctx context.Context, key tokenCacheKey) (Ins
 	if err := c.request(ctx, http.MethodPost, fmt.Sprintf("/app/installations/%d/access_tokens", key.installation), appJWT, body, &response); err != nil {
 		return InstallationToken{}, err
 	}
-	if response.Token == "" || len(response.Token) > 16384 || strings.ContainsAny(response.Token, "\r\n\x00 ") || !response.ExpiresAt.After(c.now().Add(2*time.Minute)) || response.ExpiresAt.After(c.now().Add(65*time.Minute)) || response.Permissions["contents"] != "read" || len(response.Repositories) != 1 || response.Repositories[0].ID != key.repository {
+	if response.Token == "" || len(response.Token) > 16384 || strings.ContainsAny(response.Token, "\r\n\x00 ") || !response.ExpiresAt.After(c.now().Add(2*time.Minute)) || response.ExpiresAt.After(c.now().Add(65*time.Minute)) || len(response.Repositories) != 1 || response.Repositories[0].ID != key.repository {
 		return InstallationToken{}, credentialError("invalid_token_response")
 	}
+	for permission, level := range permissions {
+		if response.Permissions[permission] != level {
+			return InstallationToken{}, credentialError("invalid_token_response")
+		}
+	}
 	for permission, level := range response.Permissions {
-		if (permission != "contents" && permission != "metadata") || level != "read" {
+		if permission != "metadata" && permissions[permission] != level || permission == "metadata" && level != "read" {
 			return InstallationToken{}, credentialError("invalid_token_scope")
 		}
 	}
