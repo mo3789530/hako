@@ -28,6 +28,7 @@ type RepositoryEvent struct {
 	RepositoriesRemoved []RepositoryRef `json:"repositories_removed,omitempty"`
 	Ref                 string          `json:"ref,omitempty"`
 	CommitSHA           string          `json:"commit_sha,omitempty"`
+	Deleted             bool            `json:"deleted,omitempty"`
 	Actor               string          `json:"actor,omitempty"`
 	PullRequest         *PullRequestRef `json:"pull_request,omitempty"`
 	WorkflowJob         *WorkflowJobRef `json:"workflow_job,omitempty"`
@@ -62,6 +63,7 @@ type githubPayload struct {
 	Action       string `json:"action"`
 	Ref          string `json:"ref"`
 	After        string `json:"after"`
+	Deleted      bool   `json:"deleted"`
 	Installation struct {
 		ID      int64  `json:"id"`
 		AppID   *int64 `json:"app_id"`
@@ -139,7 +141,7 @@ func Normalize(delivery VerifiedDelivery) (RepositoryEvent, error) {
 			return RepositoryEvent{}, fmt.Errorf("%w: push requires installation, repository, ref, and commit SHA", ErrInvalidDelivery)
 		}
 		event.Type = "repository.push"
-		event.Repository, event.Ref, event.CommitSHA = repository, payload.Ref, strings.ToLower(payload.After)
+		event.Repository, event.Ref, event.CommitSHA, event.Deleted = repository, payload.Ref, strings.ToLower(payload.After), payload.Deleted
 		event.InstallationID = payload.Installation.ID
 	case "pull_request":
 		repository, err := normalizeRepository(payload.Repository)

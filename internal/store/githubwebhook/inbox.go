@@ -24,6 +24,8 @@ var ErrUnsupportedWebhookEvent = errors.New("unsupported GitHub webhook event fo
 var ErrUnsupportedRepositoryEvent = ErrUnsupportedWebhookEvent
 var ErrStaleTenantWebhook = errors.New("Tenant GitHub webhook integration changed before processing")
 
+const RawPayloadRetention = 7 * 24 * time.Hour
+
 type Inbox struct {
 	Pool   transaction.Beginner
 	Policy transaction.Policy
@@ -31,8 +33,11 @@ type Inbox struct {
 
 // ProcessInstallationRepositoryDelivery applies one stored schema-v1
 // Installation repository event and marks its inbox row processed in the
-// caller's transaction. An inactive Installation or unsupported event leaves
-// the delivery unchanged so another consumer or a later retry can handle it.
+// caller's transaction. FOR UPDATE fences concurrent processors for this
+// delivery; Aurora DSQL adjudicates the read with OCC and the transaction
+// runner retries conflicts. An inactive Installation or unsupported event
+// leaves the delivery unchanged so another consumer or a later retry can
+// handle it.
 func ProcessInstallationRepositoryDelivery(ctx context.Context, tx pgx.Tx, deliveryID string, processedAt time.Time) (bool, error) {
 	return ProcessInstallationRepositoryDeliveryForIntegration(ctx, tx, "shared", deliveryID, processedAt)
 }
@@ -46,7 +51,7 @@ func ProcessInstallationRepositoryDeliveryForIntegration(ctx context.Context, tx
 	var eventJSON string
 	var credentialGeneration int64
 	err := tx.QueryRow(ctx, `SELECT processing_status, event_schema_version, normalized_event_json, credential_generation
-		FROM github_webhook_deliveries WHERE integration_id = $1 AND delivery_id = $2`, integrationID, deliveryID).Scan(&status, &schemaVersion, &eventJSON, &credentialGeneration)
+		FROM github_webhook_deliveries WHERE integration_id = $1 AND delivery_id = $2 FOR UPDATE`, integrationID, deliveryID).Scan(&status, &schemaVersion, &eventJSON, &credentialGeneration)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, pgx.ErrNoRows
 	}
@@ -118,7 +123,7 @@ func ProcessInstallationLifecycleDeliveryForIntegration(ctx context.Context, tx 
 	var schemaVersion int
 	var credentialGeneration int64
 	err := tx.QueryRow(ctx, `SELECT processing_status, event_type, action, event_schema_version, normalized_event_json, credential_generation
-		FROM github_webhook_deliveries WHERE integration_id = $1 AND delivery_id = $2`, integrationID, deliveryID).
+		FROM github_webhook_deliveries WHERE integration_id = $1 AND delivery_id = $2 FOR UPDATE`, integrationID, deliveryID).
 		Scan(&status, &eventType, &action, &schemaVersion, &eventJSON, &credentialGeneration)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, pgx.ErrNoRows
@@ -197,6 +202,130 @@ func ProcessInstallationLifecycleDeliveryForIntegration(ctx context.Context, tx 
 		return false, errors.New("GitHub Installation event processing state changed concurrently")
 	}
 	return true, nil
+}
+
+type RepositoryRunCreator func(context.Context, pgx.Tx, domain.TenantID, string, string, time.Time) (bool, error)
+
+// ProcessRepositoryTriggerDelivery applies one authenticated push or pull
+// request delivery. Trigger execution is opt-in on the synchronized
+// Tenant/Installation/Repository record. The callback creates the Workload
+// Run in this same transaction, so processed status, queued Check and Run
+// Outbox cannot be separated by a crash.
+func ProcessRepositoryTriggerDelivery(ctx context.Context, tx pgx.Tx, integrationID, deliveryID string, processedAt time.Time, createRun RepositoryRunCreator) (bool, bool, error) {
+	if tx == nil || !validStoredIntegrationID(integrationID) || !coreValidDeliveryID(deliveryID) || createRun == nil {
+		return false, false, errors.New("transaction, valid GitHub Delivery ID, and Workload Run creator are required")
+	}
+	if processedAt.IsZero() {
+		processedAt = time.Now().UTC()
+	}
+	var status string
+	var schemaVersion int
+	var eventJSON string
+	var generation int64
+	var receivedAt time.Time
+	err := tx.QueryRow(ctx, `SELECT processing_status,event_schema_version,normalized_event_json,credential_generation,received_at
+		FROM github_webhook_deliveries WHERE integration_id=$1 AND delivery_id=$2 FOR UPDATE`, integrationID, deliveryID).
+		Scan(&status, &schemaVersion, &eventJSON, &generation, &receivedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, false, pgx.ErrNoRows
+	}
+	if err != nil {
+		return false, false, fmt.Errorf("lock GitHub repository trigger delivery: %w", err)
+	}
+	if status == "processed" || status == "failed" {
+		return false, false, nil
+	}
+	if status != "received" || schemaVersion != githubwebhook.RepositoryEventSchemaVersion {
+		return false, false, ErrUnsupportedWebhookEvent
+	}
+	var event githubwebhook.RepositoryEvent
+	if err := json.Unmarshal([]byte(eventJSON), &event); err != nil || event.DeliveryID != deliveryID || event.InstallationID <= 0 || event.Repository == nil {
+		return false, false, ErrUnsupportedWebhookEvent
+	}
+	if event.GitHubEvent != "push" && event.GitHubEvent != "pull_request" {
+		return false, false, ErrUnsupportedWebhookEvent
+	}
+	allowed, err := authorizeStoredTenantEvent(ctx, tx, integrationID, generation, event)
+	if err != nil {
+		return false, false, err
+	}
+	if !allowed {
+		if err := failStaleWebhookDelivery(ctx, tx, integrationID, deliveryID); err != nil {
+			return false, false, err
+		}
+		return true, false, nil
+	}
+	tenantID, err := resolveRepositoryEventTenant(ctx, tx, integrationID, event.InstallationID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		if err := failStaleWebhookDelivery(ctx, tx, integrationID, deliveryID); err != nil {
+			return false, false, err
+		}
+		return true, false, nil
+	}
+	if err != nil {
+		return false, false, fmt.Errorf("resolve Tenant for repository trigger: %w", err)
+	}
+	var factoryEnabled bool
+	var factoryEnabledAt *time.Time
+	if err := tx.QueryRow(ctx, `SELECT factory_enabled,factory_enabled_at FROM tenant_github_repositories
+		WHERE tenant_id=$1 AND installation_id=$2 AND github_repository_id=$3`, tenantID, event.InstallationID, event.Repository.GitHubID).Scan(&factoryEnabled, &factoryEnabledAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			if err := failStaleWebhookDelivery(ctx, tx, integrationID, deliveryID); err != nil {
+				return false, false, err
+			}
+			return true, false, nil
+		}
+		return false, false, fmt.Errorf("load Tenant repository trigger setting: %w", err)
+	}
+	runCreated := false
+	// Do not backfill or unexpectedly launch work for deliveries that arrived
+	// before an Owner/Admin explicitly opted this repository into triggers.
+	// The enabled timestamp is cleared on disable and reset on the next enable.
+	optedInBeforeDelivery := factoryEnabledAt != nil && !receivedAt.Before(*factoryEnabledAt)
+	if factoryEnabled && optedInBeforeDelivery && eligibleRepositoryTrigger(event) {
+		runCreated, err = createRun(ctx, tx, domain.TenantID(tenantID), integrationID, deliveryID, processedAt)
+		if err != nil {
+			return false, false, fmt.Errorf("create Workload Run from repository delivery: %w", err)
+		}
+	}
+	tag, err := tx.Exec(ctx, `UPDATE github_webhook_deliveries SET processing_status='processed'
+		WHERE integration_id=$1 AND delivery_id=$2 AND processing_status='received' AND event_schema_version=$3`,
+		integrationID, deliveryID, schemaVersion)
+	if err != nil {
+		return false, false, fmt.Errorf("mark repository trigger delivery processed: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return false, false, errors.New("repository trigger delivery processing state changed concurrently")
+	}
+	return true, runCreated, nil
+}
+
+func resolveRepositoryEventTenant(ctx context.Context, tx pgx.Tx, integrationID string, installationID int64) (string, error) {
+	if integrationID == "shared" {
+		var tenantID string
+		err := tx.QueryRow(ctx, `SELECT b.tenant_id FROM github_app_installation_bindings b
+			JOIN tenant_github_installations i ON i.tenant_id=b.tenant_id AND i.installation_id=b.installation_id
+			WHERE b.installation_id=$1 AND i.status='active' AND i.suspended_at IS NULL`, installationID).Scan(&tenantID)
+		return tenantID, err
+	}
+	var tenantID string
+	err := tx.QueryRow(ctx, `SELECT i.tenant_id FROM tenant_github_integrations i
+		JOIN tenant_github_app_installation_bindings b ON b.tenant_id=i.tenant_id AND b.integration_id=i.id
+		JOIN tenant_github_installations x ON x.tenant_id=b.tenant_id AND x.installation_id=b.installation_id
+		WHERE i.id=$1 AND b.installation_id=$2 AND i.status='active' AND x.status='active' AND x.suspended_at IS NULL`, integrationID, installationID).Scan(&tenantID)
+	return tenantID, err
+}
+
+func eligibleRepositoryTrigger(event githubwebhook.RepositoryEvent) bool {
+	if event.GitHubEvent == "push" && event.Deleted {
+		return false
+	}
+	switch event.Type {
+	case "repository.push", "repository.pull_request.opened", "repository.pull_request.reopened", "repository.pull_request.synchronize":
+		return true
+	default:
+		return false
+	}
 }
 
 func coreValidDeliveryID(value string) bool {
@@ -302,9 +431,9 @@ func (i Inbox) Record(ctx context.Context, delivery githubwebhook.VerifiedDelive
 	payloadHash := hex.EncodeToString(digest[:])
 	return transaction.Within(ctx, i.Pool, i.Policy, func(ctx context.Context, tx pgx.Tx) (bool, error) {
 		tag, err := tx.Exec(ctx, `INSERT INTO github_webhook_deliveries
-			(integration_id, delivery_id, event_type, action, payload_json, payload_sha256, received_at, processing_status, event_schema_version, normalized_event_json, installation_id, credential_generation)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, 'received', $8, $9, $10, $11)
-			ON CONFLICT (integration_id, delivery_id) DO NOTHING`, integrationID, delivery.DeliveryID, delivery.Event, delivery.Action, string(delivery.Payload), payloadHash, receivedAt, githubwebhook.RepositoryEventSchemaVersion, string(normalizedJSON), installationID, delivery.CredentialGeneration)
+			(integration_id, delivery_id, event_type, action, payload_json, payload_sha256, received_at, processing_status, event_schema_version, normalized_event_json, installation_id, credential_generation, actor_login, payload_expires_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, 'received', $8, $9, $10, $11, $12, $13)
+			ON CONFLICT (integration_id, delivery_id) DO NOTHING`, integrationID, delivery.DeliveryID, delivery.Event, delivery.Action, string(delivery.Payload), payloadHash, receivedAt, githubwebhook.RepositoryEventSchemaVersion, string(normalizedJSON), installationID, delivery.CredentialGeneration, normalized.Actor, receivedAt.Add(RawPayloadRetention))
 		if err != nil {
 			return false, fmt.Errorf("insert GitHub webhook delivery: %w", err)
 		}

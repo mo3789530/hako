@@ -58,6 +58,34 @@ func TestWorkloadRunIdempotencyTransitionsTimeoutAndArtifacts(t *testing.T) {
 	if err != nil || !created || stored.State != domain.WorkloadPending || stored.Revision != 1 {
 		t.Fatalf("create run = %+v created=%v err=%v", stored, created, err)
 	}
+	var checkStatus, checkConclusion, checkSHA, checkSummary string
+	var checkRunID *int64
+	if err := pool.QueryRow(ctx, `SELECT status, COALESCE(conclusion,''), commit_sha, output_summary, check_run_id
+		FROM workload_github_checks WHERE tenant_id = $1 AND workload_run_id = $2`, run.TenantID, run.ID).
+		Scan(&checkStatus, &checkConclusion, &checkSHA, &checkSummary, &checkRunID); err != nil ||
+		checkStatus != "queued" || checkConclusion != "" || checkSHA != run.CommitSHA || checkRunID != nil || !strings.Contains(checkSummary, "pending") {
+		t.Fatalf("initial durable GitHub Check = status %q conclusion %q SHA %q summary %q CheckID %v err=%v", checkStatus, checkConclusion, checkSHA, checkSummary, checkRunID, err)
+	}
+	checkState, err := transaction.Within(ctx, pool, policy, func(ctx context.Context, tx pgx.Tx) (GitHubCheck, error) {
+		return GetGitHubCheck(ctx, tx, run.TenantID, run.ID)
+	})
+	if err != nil || checkState.Status != "queued" || checkState.WorkloadRunID != run.ID || checkState.Revision != 1 || checkState.CheckRunID != 0 {
+		t.Fatalf("load durable GitHub Check = %+v err=%v", checkState, err)
+	}
+	var checkEvents int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM outbox_events WHERE aggregate_id = $1 AND event_type = 'workload_run.github_check_requested'`, run.ID).Scan(&checkEvents); err != nil || checkEvents != 1 {
+		t.Fatalf("initial GitHub Check Outbox event count = %d err=%v", checkEvents, err)
+	}
+	if _, err := transaction.Within(ctx, pool, policy, func(ctx context.Context, tx pgx.Tx) (struct{}, error) {
+		return struct{}{}, SaveGitHubCheckRunID(ctx, tx, run.TenantID, run.ID, run.CommitSHA, 991, now.Add(time.Second))
+	}); err != nil {
+		t.Fatalf("persist GitHub Check ID: %v", err)
+	}
+	if _, err := transaction.Within(ctx, pool, policy, func(ctx context.Context, tx pgx.Tx) (struct{}, error) {
+		return struct{}{}, SaveGitHubCheckRunID(ctx, tx, run.TenantID, run.ID, strings.Repeat("b", 40), 992, now.Add(time.Second))
+	}); !errors.Is(err, ErrGitHubCheckIdentityMismatch) {
+		t.Fatalf("persist Check ID against a different SHA = %v", err)
+	}
 	retry := run
 	retry.ID = "run_should_not_be_created"
 	createdRun, err = transaction.Within(ctx, pool, policy, func(ctx context.Context, tx pgx.Tx) (creation, error) {
@@ -100,6 +128,13 @@ func TestWorkloadRunIdempotencyTransitionsTimeoutAndArtifacts(t *testing.T) {
 	})
 	if err != nil || completed.State != domain.WorkloadCancelled || completed.CompletedAt == nil || completed.Revision != 3 {
 		t.Fatalf("cancel transition = %+v err=%v", completed, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT status, conclusion FROM workload_github_checks WHERE tenant_id = $1 AND workload_run_id = $2`, run.TenantID, run.ID).
+		Scan(&checkStatus, &checkConclusion); err != nil || checkStatus != "completed" || checkConclusion != "cancelled" {
+		t.Fatalf("terminal GitHub Check mapping = %q/%q err=%v", checkStatus, checkConclusion, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM outbox_events WHERE aggregate_id = $1 AND event_type = 'workload_run.github_check_requested'`, run.ID).Scan(&checkEvents); err != nil || checkEvents != 2 {
+		t.Fatalf("GitHub Check transition Outbox event count = %d err=%v", checkEvents, err)
 	}
 	if _, err := transaction.Within(ctx, pool, policy, func(ctx context.Context, tx pgx.Tx) (domain.WorkloadRun, error) {
 		return Transition(ctx, tx, TransitionInput{TenantID: run.TenantID, RunID: run.ID,

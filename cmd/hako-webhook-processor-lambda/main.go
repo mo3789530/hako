@@ -14,6 +14,7 @@ import (
 	"github.com/mo3789530/hako/internal/store/dsql"
 	webhookstore "github.com/mo3789530/hako/internal/store/githubwebhook"
 	"github.com/mo3789530/hako/internal/store/transaction"
+	"github.com/mo3789530/hako/internal/workloadjobs"
 )
 
 func main() {
@@ -31,9 +32,9 @@ func handlerFor(run runOnce) func(context.Context, events.CloudWatchEvent) error
 	return func(ctx context.Context, _ events.CloudWatchEvent) error {
 		stats, err := run(ctx)
 		if err != nil {
-			return fmt.Errorf("process GitHub repository event batch (claimed=%d processed=%d deferred=%d): %w", stats.Claimed, stats.Processed, stats.Deferred, err)
+			return fmt.Errorf("process GitHub repository event batch (claimed=%d processed=%d workload_runs_created=%d deferred=%d raw_payloads_purged=%d): %w", stats.Claimed, stats.Processed, stats.WorkloadRunsCreated, stats.Deferred, stats.RawPayloadsPurged, err)
 		}
-		log.Printf("GitHub repository event batch complete (claimed=%d processed=%d deferred=%d)", stats.Claimed, stats.Processed, stats.Deferred)
+		log.Printf("GitHub repository event batch complete (claimed=%d processed=%d workload_runs_created=%d deferred=%d raw_payloads_purged=%d)", stats.Claimed, stats.Processed, stats.WorkloadRunsCreated, stats.Deferred, stats.RawPayloadsPurged)
 		return nil
 	}
 }
@@ -44,7 +45,11 @@ func buildHandler(ctx context.Context) (func(context.Context, events.CloudWatchE
 		return nil, fmt.Errorf("connect Hako webhook processor database: %w", err)
 	}
 	return handlerFor(func(ctx context.Context) (webhookstore.BatchStats, error) {
-		return webhookstore.ProcessBatch(ctx, pool, transaction.DefaultPolicy(), 10, time.Now().UTC())
+		now := time.Now().UTC()
+		if strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_WEBHOOK_WORKLOAD_TRIGGERS_ENABLED")), "true") {
+			return webhookstore.ProcessBatchWithRepositoryTriggers(ctx, pool, transaction.DefaultPolicy(), 10, now, workloadjobs.CreateWebhookRepositoryRun)
+		}
+		return webhookstore.ProcessBatch(ctx, pool, transaction.DefaultPolicy(), 10, now)
 	}), nil
 }
 

@@ -1,6 +1,6 @@
 # Task 68: Public Webhook abuse controls
 
-Status: In Progress (header preflight, DSQL shared per-integration counter, 429 path and API Gateway route throttle implemented; unit/PostgreSQL integration tests and Terraform validation pass. Live AWS configuration remains default-off/unapplied). Depends on: 58 の既存Webhook adapter.
+Status: Implemented locally (header preflight, DSQL shared per-integration counter, 429 path and API Gateway route throttle; unit/PostgreSQL integration tests and Terraform validation pass). Alerting, deployment review and live AWS configuration remain default-off/unapplied. Depends on: 58 の既存Webhook adapter.
 
 ## Scope
 

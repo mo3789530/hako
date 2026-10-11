@@ -155,6 +155,14 @@ func TestNormalizeBuildsVersionedHakoEvents(t *testing.T) {
 			},
 		},
 		{
+			name: "deleted branch push", event: "push",
+			payload:  `{"ref":"refs/heads/feature/old","after":"0000000000000000000000000000000000000000","deleted":true,"installation":{"id":12},"repository":{"id":42,"name":"api","default_branch":"main","owner":{"login":"acme"}}}`,
+			wantType: "repository.push",
+			check: func(got RepositoryEvent) bool {
+				return got.Deleted && got.CommitSHA == "0000000000000000000000000000000000000000"
+			},
+		},
+		{
 			name: "pull request", event: "pull_request",
 			payload:  `{"action":"opened","installation":{"id":12},"repository":{"id":42,"name":"api","owner":{"login":"acme"}},"pull_request":{"number":9,"state":"open","head":{"ref":"feature/add","sha":"` + sha + `"},"base":{"ref":"main"}}}`,
 			wantType: "repository.pull_request.opened",

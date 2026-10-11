@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -67,6 +68,57 @@ func TestInboxRecordIsDurableAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestRawWebhookPayloadExpiresWithoutLosingNormalizedEventOrIdempotency(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	inbox := Inbox{Pool: pool, Policy: transaction.DefaultPolicy()}
+	delivery := githubwebhook.VerifiedDelivery{
+		DeliveryID: "a2b2c3d4-e5f6-4789-8abc-def012345678", Event: "push", Action: "",
+		Payload: []byte(`{"ref":"refs/heads/main","after":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","installation":{"id":44},"repository":{"id":45,"name":"api","owner":{"login":"acme"}},"sender":{"login":"octocat"}}`),
+	}
+	if inserted, err := inbox.Record(ctx, delivery, now); err != nil || !inserted {
+		t.Fatalf("record webhook delivery = inserted %v err=%v", inserted, err)
+	}
+	beforeExpiry, err := PurgeExpiredRawPayloads(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(RawPayloadRetention-time.Second))
+	if err != nil || beforeExpiry != 0 {
+		t.Fatalf("premature raw payload cleanup = %d err=%v", beforeExpiry, err)
+	}
+	purged, err := PurgeExpiredRawPayloads(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(RawPayloadRetention))
+	if err != nil || purged != 1 {
+		t.Fatalf("expired raw payload cleanup = %d err=%v", purged, err)
+	}
+	var payload, payloadHash, normalizedJSON, actor string
+	var purgedAt *time.Time
+	if err := pool.QueryRow(ctx, `SELECT payload_json,payload_sha256,normalized_event_json,actor_login,payload_purged_at
+		FROM github_webhook_deliveries WHERE integration_id='shared' AND delivery_id=$1`, delivery.DeliveryID).
+		Scan(&payload, &payloadHash, &normalizedJSON, &actor, &purgedAt); err != nil {
+		t.Fatal(err)
+	}
+	if payload != "" || payloadHash == "" || purgedAt == nil || actor != "octocat" {
+		t.Fatalf("retained webhook metadata = payload=%q hash=%q actor=%q purged=%v", payload, payloadHash, actor, purgedAt)
+	}
+	var event githubwebhook.RepositoryEvent
+	if err := json.Unmarshal([]byte(normalizedJSON), &event); err != nil || event.Type != "repository.push" || event.Actor != "octocat" || event.CommitSHA != strings.Repeat("a", 40) {
+		t.Fatalf("normalized event was not retained: %+v err=%v", event, err)
+	}
+	if inserted, err := inbox.Record(ctx, delivery, now.Add(RawPayloadRetention+time.Second)); err != nil || inserted {
+		t.Fatalf("duplicate after raw payload purge = inserted %v err=%v", inserted, err)
+	}
+	conflicting := delivery
+	conflicting.Payload = []byte(strings.Replace(string(delivery.Payload), "octocat", "another-user", 1))
+	if _, err := inbox.Record(ctx, conflicting, now.Add(RawPayloadRetention+2*time.Second)); !errors.Is(err, ErrDeliveryIDConflict) {
+		t.Fatalf("purged delivery ID was reused with new content: %v", err)
+	}
+	if again, err := PurgeExpiredRawPayloads(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(2*RawPayloadRetention)); err != nil || again != 0 {
+		t.Fatalf("raw payload purge was not idempotent: count=%d err=%v", again, err)
+	}
+}
+
 func TestProcessInstallationRepositoryDeliveryIsAtomicAndRetryable(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -106,11 +158,43 @@ func TestProcessInstallationRepositoryDeliveryIsAtomicAndRetryable(t *testing.T)
 	if _, err := pool.Exec(ctx, `INSERT INTO github_app_installation_bindings (installation_id, tenant_id, bound_at) VALUES (701, 'tenant_hook_process', $1)`, now); err != nil {
 		t.Fatal(err)
 	}
-	processed, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (bool, error) {
-		return ProcessInstallationRepositoryDelivery(ctx, tx, delivery.DeliveryID, now)
-	})
+	firstTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer firstTx.Rollback(ctx)
+	processed, err := ProcessInstallationRepositoryDelivery(ctx, firstTx, delivery.DeliveryID, now)
 	if err != nil || !processed {
 		t.Fatalf("process delivery = %v, err=%v", processed, err)
+	}
+	secondDone := make(chan struct {
+		processed bool
+		err       error
+	}, 1)
+	var started sync.WaitGroup
+	started.Add(1)
+	go func() {
+		started.Done()
+		processed, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (bool, error) {
+			return ProcessInstallationRepositoryDelivery(ctx, tx, delivery.DeliveryID, now)
+		})
+		secondDone <- struct {
+			processed bool
+			err       error
+		}{processed, err}
+	}()
+	started.Wait()
+	select {
+	case result := <-secondDone:
+		t.Fatalf("concurrent duplicate finished before first delivery transaction committed: %+v", result)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := firstTx.Commit(ctx); err != nil {
+		t.Fatalf("commit first delivery processor: %v", err)
+	}
+	second := <-secondDone
+	if second.err != nil || second.processed {
+		t.Fatalf("concurrent duplicate result = processed %v err=%v; want a fenced no-op", second.processed, second.err)
 	}
 	processed, err = transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (bool, error) {
 		return ProcessInstallationRepositoryDelivery(ctx, tx, delivery.DeliveryID, now)
@@ -344,6 +428,41 @@ func TestTenantWebhookDeliveryGenerationIsRevalidatedBeforeQueueProcessing(t *te
 	}
 	if staleRepo != 0 || currentRepo != 1 {
 		t.Fatalf("stale/current repository mutation counts = %d/%d", staleRepo, currentRepo)
+	}
+	if err := pool.QueryRow(ctx, `UPDATE github_webhook_deliveries SET processing_status='failed'
+		WHERE integration_id=$1 AND delivery_id=$2 RETURNING processing_status`, stale.IntegrationID, stale.DeliveryID).Scan(&staleStatus); err != nil {
+		t.Fatal(err)
+	}
+	if err := RequestTenantDeliveryReplay(ctx, pool, transaction.DefaultPolicy(), "tenant_hook_generation", stale.IntegrationID,
+		stale.DeliveryID, "usr_hook_generation", "retry stale signed event after review", now.Add(2*time.Second)); !errors.Is(err, ErrStaleTenantWebhook) {
+		t.Fatalf("stale-generation delivery replay error = %v", err)
+	}
+	var currentReplayCount int
+	for index := 0; index < MaxWebhookReplaysPerHour; index++ {
+		if _, err := pool.Exec(ctx, `UPDATE github_webhook_deliveries SET processing_status='failed'
+			WHERE integration_id=$1 AND delivery_id=$2`, current.IntegrationID, current.DeliveryID); err != nil {
+			t.Fatal(err)
+		}
+		if err := RequestTenantDeliveryReplay(ctx, pool, transaction.DefaultPolicy(), "tenant_hook_generation", current.IntegrationID,
+			current.DeliveryID, "usr_hook_generation", "retry reviewed transient delivery failure", now.Add(time.Duration(index+3)*time.Second)); err != nil {
+			t.Fatalf("eligible Tenant delivery replay %d: %v", index+1, err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `UPDATE github_webhook_deliveries SET processing_status='failed'
+		WHERE integration_id=$1 AND delivery_id=$2`, current.IntegrationID, current.DeliveryID); err != nil {
+		t.Fatal(err)
+	}
+	if err := RequestTenantDeliveryReplay(ctx, pool, transaction.DefaultPolicy(), "tenant_hook_generation", current.IntegrationID,
+		current.DeliveryID, "usr_hook_generation", "retry reviewed transient delivery failure", now.Add(10*time.Second)); !errors.Is(err, ErrDeliveryReplayRateLimited) {
+		t.Fatalf("Tenant delivery replay rate limit error = %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT replay_count FROM github_webhook_deliveries WHERE integration_id=$1 AND delivery_id=$2`, current.IntegrationID, current.DeliveryID).Scan(&currentReplayCount); err != nil || currentReplayCount != MaxWebhookReplaysPerHour {
+		t.Fatalf("Tenant delivery replay count = %d err=%v", currentReplayCount, err)
+	}
+	var replayAuditCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE tenant_id='tenant_hook_generation' AND actor_user_id='usr_hook_generation'
+		AND action='github.webhook.replay_requested' AND target_id=$1`, current.DeliveryID).Scan(&replayAuditCount); err != nil || replayAuditCount != MaxWebhookReplaysPerHour {
+		t.Fatalf("Tenant delivery replay audit count = %d err=%v", replayAuditCount, err)
 	}
 	// A database failure must leave the delivery retryable, not quarantine it
 	// as if the integration had been revoked.

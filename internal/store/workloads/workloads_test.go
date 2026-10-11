@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/githubwebhook"
 )
 
 func validRun(now time.Time) domain.WorkloadRun {
@@ -50,6 +51,33 @@ func TestWorkloadStateTransitionsAreForwardOnly(t *testing.T) {
 	if transitionAllowed(domain.WorkloadSucceeded, domain.WorkloadRunning) ||
 		transitionAllowed(domain.WorkloadPending, domain.WorkloadSucceeded) || validTransition(domain.WorkloadPending) {
 		t.Fatal("terminal, skipped, or invalid transitions should be rejected")
+	}
+}
+
+func TestWebhookDeliveryIdempotencyIsStableAndIntegrationScoped(t *testing.T) {
+	deliveryID := "f1b2c3d4-e5f6-4789-8abc-def012345678"
+	first := WebhookDeliveryIdempotencyKey("integration_one", deliveryID)
+	if first == "" || len(first) > 128 || first != WebhookDeliveryIdempotencyKey("integration_one", deliveryID) {
+		t.Fatalf("delivery idempotency key is not stable: %q", first)
+	}
+	if first == WebhookDeliveryIdempotencyKey("integration_two", deliveryID) || first == WebhookDeliveryIdempotencyKey("integration_one", "a1b2c3d4-e5f6-4789-8abc-def012345678") {
+		t.Fatal("distinct integration/delivery identities shared an idempotency key")
+	}
+}
+
+func TestEligibleWebhookRunTriggersAreExplicit(t *testing.T) {
+	for _, eventType := range []string{"repository.push", "repository.pull_request.opened", "repository.pull_request.reopened", "repository.pull_request.synchronize", "repository.workflow_job.queued"} {
+		if !eligibleRunTrigger(githubwebhook.RepositoryEvent{Type: eventType}) {
+			t.Errorf("supported trigger %q rejected", eventType)
+		}
+	}
+	for _, eventType := range []string{"repository.pull_request.closed", "repository.pull_request.edited", "repository.workflow_job.completed", "github.installation.deleted", "arbitrary.command"} {
+		if eligibleRunTrigger(githubwebhook.RepositoryEvent{Type: eventType}) {
+			t.Errorf("unsupported trigger %q accepted", eventType)
+		}
+	}
+	if eligibleRunTrigger(githubwebhook.RepositoryEvent{GitHubEvent: "push", Type: "repository.push", Deleted: true}) {
+		t.Fatal("branch deletion push should not create a verification run")
 	}
 }
 

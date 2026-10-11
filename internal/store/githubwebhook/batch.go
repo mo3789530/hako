@@ -20,32 +20,49 @@ type BatchPool interface {
 }
 
 type BatchStats struct {
-	Claimed   int
-	Processed int
-	Deferred  int
+	Claimed             int
+	Processed           int
+	WorkloadRunsCreated int
+	Deferred            int
+	RawPayloadsPurged   int
 }
 
 // ProcessBatch drains a bounded set of pending Installation repository events
 // whose Installation currently has an active Tenant binding. Each delivery is
 // applied and marked processed in its own retryable database transaction.
 func ProcessBatch(ctx context.Context, pool BatchPool, policy transaction.Policy, batchSize int, processedAt time.Time) (BatchStats, error) {
+	return ProcessBatchWithRepositoryTriggers(ctx, pool, policy, batchSize, processedAt, nil)
+}
+
+// ProcessBatchWithRepositoryTriggers additionally drains push/pull-request
+// events. The run creator is injected to keep inbox storage independent of the
+// Workload Run store while allowing both changes to share one DB transaction.
+func ProcessBatchWithRepositoryTriggers(ctx context.Context, pool BatchPool, policy transaction.Policy, batchSize int, processedAt time.Time, createRun RepositoryRunCreator) (BatchStats, error) {
 	var stats BatchStats
 	if pool == nil || batchSize < 1 || batchSize > MaxRepositoryEventBatchSize {
 		return stats, fmt.Errorf("database pool and batch size between 1 and %d are required", MaxRepositoryEventBatchSize)
 	}
+	purged, err := PurgeExpiredRawPayloads(ctx, pool, policy, MaxRawPayloadCleanupBatch, processedAt)
+	if err != nil {
+		return stats, err
+	}
+	stats.RawPayloadsPurged = purged
 	rows, err := pool.Query(ctx, `SELECT d.integration_id, d.delivery_id, d.event_type
 		FROM github_webhook_deliveries d
 		WHERE d.processing_status = 'received'
 		  AND d.event_schema_version = $2
-		  AND ((d.event_type = 'installation' AND d.action IN ('created', 'deleted', 'suspend', 'unsuspend'))
+		  AND (
+		    (d.event_type = 'installation' AND d.action IN ('created', 'deleted', 'suspend', 'unsuspend'))
 		    OR (d.event_type = 'installation_repositories' AND d.installation_id IS NOT NULL
 		      AND EXISTS (
 		        SELECT 1 FROM github_app_installation_bindings b
 		        JOIN tenant_github_installations i ON i.tenant_id = b.tenant_id AND i.installation_id = b.installation_id
 		        WHERE b.installation_id = d.installation_id AND i.status = 'active' AND i.suspended_at IS NULL
-		      )))
+		      ))
+		    OR ($3 AND d.event_type IN ('push', 'pull_request'))
+		  )
 		ORDER BY d.received_at, d.delivery_id
-		LIMIT $1`, batchSize, githubwebhook.RepositoryEventSchemaVersion)
+		LIMIT $1`, batchSize, githubwebhook.RepositoryEventSchemaVersion, createRun != nil)
 	if err != nil {
 		return stats, fmt.Errorf("select pending GitHub repository events: %w", err)
 	}
@@ -67,11 +84,26 @@ func ProcessBatch(ctx context.Context, pool BatchPool, policy transaction.Policy
 
 	for _, delivery := range pending {
 		stats.Claimed++
-		processed, err := transaction.Within(ctx, pool, policy, func(ctx context.Context, tx pgx.Tx) (bool, error) {
-			if delivery.eventType == "installation" {
-				return ProcessInstallationLifecycleDeliveryForIntegration(ctx, tx, delivery.integrationID, delivery.id, processedAt)
+		type deliveryResult struct{ processed, runCreated bool }
+		result, err := transaction.Within(ctx, pool, policy, func(ctx context.Context, tx pgx.Tx) (deliveryResult, error) {
+			if delivery.eventType == "push" || delivery.eventType == "pull_request" {
+				if createRun == nil {
+					return deliveryResult{}, nil
+				}
+				done, created, err := ProcessRepositoryTriggerDelivery(ctx, tx, delivery.integrationID, delivery.id, processedAt, createRun)
+				if err != nil {
+					return deliveryResult{}, err
+				}
+				return deliveryResult{processed: done, runCreated: created}, nil
 			}
-			return ProcessInstallationRepositoryDeliveryForIntegration(ctx, tx, delivery.integrationID, delivery.id, processedAt)
+			var processed bool
+			var err error
+			if delivery.eventType == "installation" {
+				processed, err = ProcessInstallationLifecycleDeliveryForIntegration(ctx, tx, delivery.integrationID, delivery.id, processedAt)
+			} else {
+				processed, err = ProcessInstallationRepositoryDeliveryForIntegration(ctx, tx, delivery.integrationID, delivery.id, processedAt)
+			}
+			return deliveryResult{processed: processed}, err
 		})
 		if errors.Is(err, githubregistry.ErrInstallationNotActive) {
 			stats.Deferred++
@@ -80,7 +112,10 @@ func ProcessBatch(ctx context.Context, pool BatchPool, policy transaction.Policy
 		if err != nil {
 			return stats, fmt.Errorf("process GitHub webhook delivery %s: %w", delivery.id, err)
 		}
-		if processed {
+		if result.runCreated {
+			stats.WorkloadRunsCreated++
+		}
+		if result.processed {
 			stats.Processed++
 		}
 	}

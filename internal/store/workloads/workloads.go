@@ -161,6 +161,9 @@ func CreateOrGet(ctx context.Context, tx pgx.Tx, run domain.WorkloadRun) (domain
 		if err := appendEvent(ctx, tx, stored, "workload.pending", run.CreatedAt); err != nil {
 			return domain.WorkloadRun{}, false, err
 		}
+		if err := syncGitHubCheck(ctx, tx, stored, run.CreatedAt); err != nil {
+			return domain.WorkloadRun{}, false, err
+		}
 	}
 	return stored, created, nil
 }
@@ -350,6 +353,9 @@ func Transition(ctx context.Context, tx pgx.Tx, input TransitionInput) (domain.W
 		return domain.WorkloadRun{}, fmt.Errorf("transition Workload Run: %w", err)
 	}
 	if err := appendEvent(ctx, tx, current, "workload."+string(input.NextState), input.OccurredAt); err != nil {
+		return domain.WorkloadRun{}, err
+	}
+	if err := syncGitHubCheck(ctx, tx, current, input.OccurredAt); err != nil {
 		return domain.WorkloadRun{}, err
 	}
 	return current, nil

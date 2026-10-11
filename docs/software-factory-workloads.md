@@ -1,5 +1,46 @@
 # Software Factory Workload Runs
 
+## Repository webhook verification Jobs
+
+An explicitly enabled Tenant repository can create a fixed, untrusted
+verification Job from authenticated `push` and pull-request
+`opened`/`reopened`/`synchronize` webhook deliveries. The repository setting is
+default-off and is managed by a Tenant Owner/Admin through the GitHub repository
+factory API/CLI. The server selects `kind=job`, `trust=untrusted`,
+`runtime_class=standard`, and a 30-minute timeout; event SHA/ref are read from
+the normalized, signature-verified inbox record. The Run, queued Check,
+Outbox request and delivery `processed` transition commit atomically. A
+repository opt-in timestamp suppresses pre-opt-in queued deliveries. Branch
+deletion pushes and unsupported pull-request actions are consumed without
+creating a Run.
+
+This trigger path is separate from GitHub Actions `workflow_job` handling and
+does not run arbitrary repository workflow steps. It remains feature-flagged
+off until the Check consumer and Lambda MicroVM-backed Workload executor are
+deployed and monitored. See [GitHub Webhook Processor](github-webhook-processor.md)
+for enablement and remaining operations work.
+
+## Webhook delivery idempotency
+
+`workloads.CreateOrGetFromWebhookDelivery` is the durable persistence boundary
+for an already-authorized repository trigger. It reloads the normalized event
+from the integration-scoped inbox, rechecks the current Tenant App and
+Installation authorization, and derives Installation, Repository, ref, and
+commit SHA from that stored event rather than caller-supplied queue fields.
+Only push, pull-request opened/reopened/synchronize, and
+`workflow_job.queued` event types are eligible. The caller must still perform
+trigger, workflow provenance, Tenant trust/runtime and capacity policy checks
+before invoking it.
+
+The idempotency key is `github-delivery-` plus the SHA-256 digest of the
+integration ID, a NUL separator, and the original GitHub Delivery ID. Run
+creation, initial GitHub Check metadata and its Outbox event remain in the same
+transaction. Replaying a delivery with identical policy returns the same Run;
+changing the trust/runtime/request fingerprint for that Delivery ID conflicts.
+This helper does not schedule a runner or make `workflow_job` execution
+available by itself. Task 52 must bind authoritative workflow/job provenance
+and pass policy before any runtime is provisioned.
+
 `Workspace` is a long-lived interactive environment. A Software Factory
 execution is a separate, short-lived `WorkloadRun` with kind `job`, `agent`, or
 `preview`; it does not reuse the Workspace `operations` table, whose foreign
