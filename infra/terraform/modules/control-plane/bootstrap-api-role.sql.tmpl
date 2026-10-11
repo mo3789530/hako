@@ -35,14 +35,29 @@ AWS IAM GRANT hako_dispatcher TO 'REPLACE_WITH_OUTBOX_DISPATCHER_ROLE_ARN';
 GRANT USAGE ON SCHEMA public TO hako_dispatcher;
 GRANT SELECT, UPDATE ON TABLE outbox_events TO hako_dispatcher;
 
--- The webhook processor only reads pending delivery/binding state, updates
--- inbox delivery status, and synchronizes the Tenant's repository registry.
+-- The webhook processor reads normalized pending deliveries, purges original
+-- payloads after their retention deadline, updates inbox status, and syncs the
+-- Tenant's repository registry. The optional repository-trigger path may
+-- create an untrusted Job and its Check/outbox in the same transaction. It
+-- never reads secrets or calls GitHub.
 CREATE ROLE hako_webhook_processor WITH LOGIN;
 AWS IAM GRANT hako_webhook_processor TO 'REPLACE_WITH_GITHUB_WEBHOOK_PROCESSOR_ROLE_ARN';
 GRANT USAGE ON SCHEMA public TO hako_webhook_processor;
 GRANT SELECT ON TABLE github_webhook_deliveries, github_app_installation_bindings, tenant_github_installations,
     github_app_registrations, tenant_github_integrations, github_credential_bindings,
     tenant_github_app_installation_bindings TO hako_webhook_processor;
-GRANT UPDATE (processing_status) ON TABLE github_webhook_deliveries TO hako_webhook_processor;
+GRANT UPDATE (processing_status, payload_json, payload_purged_at) ON TABLE github_webhook_deliveries TO hako_webhook_processor;
 GRANT UPDATE (status, suspended_at, updated_at) ON TABLE tenant_github_installations TO hako_webhook_processor;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE tenant_github_repositories TO hako_webhook_processor;
+GRANT SELECT, INSERT ON TABLE workload_runs, workload_run_events TO hako_webhook_processor;
+GRANT SELECT, INSERT, UPDATE ON TABLE workload_github_checks TO hako_webhook_processor;
+GRANT INSERT ON TABLE outbox_events TO hako_webhook_processor;
+
+-- The Fargate GitHub Checks consumer only reads immutable Run/desired Check
+-- state and persists the remote Check Run ID after a successful API request.
+-- It does not mutate Workload state or access credential-bearing tables.
+CREATE ROLE hako_checks_consumer WITH LOGIN;
+AWS IAM GRANT hako_checks_consumer TO 'REPLACE_WITH_GITHUB_CHECKS_CONSUMER_TASK_ROLE_ARN';
+GRANT USAGE ON SCHEMA public TO hako_checks_consumer;
+GRANT SELECT ON TABLE workload_runs, workload_github_checks TO hako_checks_consumer;
+GRANT UPDATE (check_run_id, updated_at) ON TABLE workload_github_checks TO hako_checks_consumer;

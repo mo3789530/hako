@@ -26,6 +26,9 @@ locals {
     )
   ]
   dispatcher_workload_queue_arns = var.enable_outbox_dispatcher ? [aws_sqs_queue.workload_scheduler[0].arn] : []
+  dispatcher_github_checks_queue_arns = var.enable_github_checks_delivery ? [
+    aws_sqs_queue.github_checks[0].arn
+  ] : []
 
   dispatcher_iam_statements = concat(
     [
@@ -56,6 +59,14 @@ locals {
         Effect   = "Allow"
         Action   = ["sqs:SendMessage"]
         Resource = local.dispatcher_workload_queue_arns
+      }
+    ] : [],
+    length(local.dispatcher_github_checks_queue_arns) > 0 ? [
+      {
+        Sid      = "PublishGitHubChecks"
+        Effect   = "Allow"
+        Action   = ["sqs:SendMessage"]
+        Resource = local.dispatcher_github_checks_queue_arns
       }
     ] : []
   )
@@ -95,6 +106,330 @@ resource "aws_sqs_queue" "workload_scheduler" {
     deadLetterTargetArn = aws_sqs_queue.workload_scheduler_dlq[0].arn
     maxReceiveCount     = 5
   })
+  tags = local.common_tags
+}
+
+resource "aws_sqs_queue" "github_checks_dlq" {
+  count = var.enable_github_checks_delivery ? 1 : 0
+
+  name                      = "${var.api_name}-github-checks-dlq"
+  message_retention_seconds = 1209600
+  sqs_managed_sse_enabled   = true
+  tags                      = merge(local.common_tags, { "hako:queue-role" = "github-checks-dlq" })
+}
+
+resource "aws_sqs_queue" "github_checks" {
+  count = var.enable_github_checks_delivery ? 1 : 0
+
+  name                       = "${var.api_name}-github-checks"
+  visibility_timeout_seconds = var.github_checks_queue_visibility_timeout_seconds
+  message_retention_seconds  = 345600
+  receive_wait_time_seconds  = 20
+  sqs_managed_sse_enabled    = true
+  tags                       = merge(local.common_tags, { "hako:queue-role" = "github-checks" })
+}
+
+resource "aws_sqs_queue_redrive_policy" "github_checks" {
+  count = var.enable_github_checks_delivery ? 1 : 0
+
+  queue_url = aws_sqs_queue.github_checks[0].id
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.github_checks_dlq[0].arn
+    maxReceiveCount     = 5
+  })
+}
+
+resource "aws_sqs_queue_redrive_allow_policy" "github_checks_dlq" {
+  count = var.enable_github_checks_delivery ? 1 : 0
+
+  queue_url = aws_sqs_queue.github_checks_dlq[0].id
+  redrive_allow_policy = jsonencode({
+    redrivePermission = "byQueue"
+    sourceQueueArns   = [aws_sqs_queue.github_checks[0].arn]
+  })
+}
+
+resource "aws_iam_policy" "github_checks_consumer" {
+  count = var.enable_github_checks_delivery ? 1 : 0
+
+  name        = "${var.api_name}-github-checks-consumer"
+  description = "Receive and acknowledge Hako GitHub Checks messages from only the dedicated queue."
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "sqs:ChangeMessageVisibility",
+        "sqs:DeleteMessage",
+        "sqs:GetQueueAttributes",
+        "sqs:GetQueueUrl",
+        "sqs:ReceiveMessage",
+      ]
+      Resource = aws_sqs_queue.github_checks[0].arn
+    }]
+  })
+  tags = local.common_tags
+}
+
+resource "aws_iam_role" "github_checks_consumer" {
+  name = "${var.api_name}-github-checks-consumer"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "ecs-tasks.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+      Condition = {
+        ArnLike      = { "aws:SourceArn" = "arn:${data.aws_partition.current.partition}:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*" }
+        StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
+      }
+    }]
+  })
+  tags = merge(local.common_tags, { "hako:role-purpose" = "github-checks-consumer-task" })
+}
+
+resource "aws_iam_policy" "github_checks_dsql" {
+  count = var.enable_github_checks_delivery ? 1 : 0
+
+  name        = "${var.api_name}-github-checks-dsql"
+  description = "Connect the Hako GitHub Checks consumer to the Control Plane DSQL cluster."
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["dsql:DbConnect"]
+      Resource = aws_dsql_cluster.control_plane.arn
+    }]
+  })
+  tags = local.common_tags
+}
+
+resource "aws_iam_role_policy_attachment" "github_checks_consumer_queue" {
+  count = var.enable_github_checks_delivery ? 1 : 0
+
+  role       = aws_iam_role.github_checks_consumer.name
+  policy_arn = aws_iam_policy.github_checks_consumer[0].arn
+}
+
+resource "aws_iam_role_policy_attachment" "github_checks_consumer_dsql" {
+  count = var.enable_github_checks_delivery ? 1 : 0
+
+  role       = aws_iam_role.github_checks_consumer.name
+  policy_arn = aws_iam_policy.github_checks_dsql[0].arn
+}
+
+resource "aws_cloudwatch_metric_alarm" "github_checks_queue_age" {
+  count = var.enable_github_checks_delivery ? 1 : 0
+
+  alarm_name          = "${var.api_name}-github-checks-queue-age"
+  alarm_description   = "GitHub Checks deliveries are waiting too long for a consumer."
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateAgeOfOldestMessage"
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 2
+  threshold           = var.github_checks_queue_age_alarm_threshold_seconds
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = var.github_checks_alarm_actions
+  ok_actions          = var.github_checks_alarm_actions
+  dimensions          = { QueueName = aws_sqs_queue.github_checks[0].name }
+  tags                = local.common_tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "github_checks_queue_depth" {
+  count = var.enable_github_checks_delivery ? 1 : 0
+
+  alarm_name          = "${var.api_name}-github-checks-queue-depth"
+  alarm_description   = "The number of visible GitHub Checks deliveries exceeds the configured threshold."
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 2
+  threshold           = var.github_checks_queue_depth_alarm_threshold
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = var.github_checks_alarm_actions
+  ok_actions          = var.github_checks_alarm_actions
+  dimensions          = { QueueName = aws_sqs_queue.github_checks[0].name }
+  tags                = local.common_tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "github_checks_dlq_messages" {
+  count = var.enable_github_checks_delivery ? 1 : 0
+
+  alarm_name          = "${var.api_name}-github-checks-dlq-messages"
+  alarm_description   = "One or more GitHub Checks deliveries reached the dead-letter queue."
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = var.github_checks_alarm_actions
+  ok_actions          = var.github_checks_alarm_actions
+  dimensions          = { QueueName = aws_sqs_queue.github_checks_dlq[0].name }
+  tags                = local.common_tags
+}
+
+resource "aws_iam_role" "github_checks_consumer_execution" {
+  count = var.enable_github_checks_consumer_service ? 1 : 0
+
+  name = "${var.api_name}-github-checks-execution"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "ecs-tasks.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+      Condition = {
+        ArnLike      = { "aws:SourceArn" = "arn:${data.aws_partition.current.partition}:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*" }
+        StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
+      }
+    }]
+  })
+  tags = merge(local.common_tags, { "hako:role-purpose" = "github-checks-task-execution" })
+}
+
+resource "aws_iam_role_policy" "github_checks_consumer_execution_permissions" {
+  count = var.enable_github_checks_consumer_service ? 1 : 0
+
+  name = "${var.api_name}-github-checks-execution"
+  role = aws_iam_role.github_checks_consumer_execution[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = concat([
+      {
+        Sid      = "AuthenticateToECR"
+        Effect   = "Allow"
+        Action   = ["ecr:GetAuthorizationToken"]
+        Resource = "*"
+      },
+      {
+        Sid    = "PullOnlyChecksConsumerImage"
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:BatchGetImage",
+          "ecr:GetDownloadUrlForLayer",
+        ]
+        Resource = var.github_checks_consumer_ecr_repository_arn
+      },
+      {
+        Sid      = "WriteOnlyChecksConsumerLogs"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "${aws_cloudwatch_log_group.github_checks_consumer[0].arn}:*"
+      },
+      {
+        Sid      = "ReadOnlyBrokerMTLSSecrets"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = [var.github_checks_broker_client_cert_secret_arn, var.github_checks_broker_client_key_secret_arn, var.github_checks_broker_ca_secret_arn]
+      }
+      ], var.github_checks_broker_kms_key_arn == "" ? [] : [{
+        Sid      = "DecryptBrokerMTLSSecrets"
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt"]
+        Resource = var.github_checks_broker_kms_key_arn
+        Condition = {
+          StringEquals = {
+            "kms:ViaService" = "secretsmanager.${var.aws_region}.${data.aws_partition.current.dns_suffix}"
+            "kms:EncryptionContext:SecretARN" = [
+              var.github_checks_broker_client_cert_secret_arn,
+              var.github_checks_broker_client_key_secret_arn,
+              var.github_checks_broker_ca_secret_arn,
+            ]
+          }
+        }
+    }])
+  })
+}
+
+resource "aws_cloudwatch_log_group" "github_checks_consumer" {
+  count = var.enable_github_checks_consumer_service ? 1 : 0
+
+  name              = "/ecs/${var.api_name}-github-checks-consumer"
+  retention_in_days = var.lambda_log_retention_days
+  tags              = local.common_tags
+}
+
+resource "aws_ecs_task_definition" "github_checks_consumer" {
+  count = var.enable_github_checks_consumer_service ? 1 : 0
+
+  family                   = "${var.api_name}-github-checks-consumer"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = tostring(var.github_checks_consumer_cpu)
+  memory                   = tostring(var.github_checks_consumer_memory)
+  execution_role_arn       = aws_iam_role.github_checks_consumer_execution[0].arn
+  task_role_arn            = aws_iam_role.github_checks_consumer.arn
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "ARM64"
+  }
+  container_definitions = jsonencode([{
+    name                   = "github-checks-consumer"
+    image                  = var.github_checks_consumer_image_uri
+    essential              = true
+    readonlyRootFilesystem = true
+    stopTimeout            = 60
+    environment = [
+      { name = "AWS_REGION", value = var.aws_region },
+      { name = "HAKO_GITHUB_CHECKS_QUEUE_URL", value = aws_sqs_queue.github_checks[0].url },
+      { name = "HAKO_GITHUB_CHECKS_QUEUE_REGION", value = var.aws_region },
+      { name = "HAKO_GITHUB_CHECKS_VISIBILITY_TIMEOUT_SECONDS", value = tostring(var.github_checks_queue_visibility_timeout_seconds) },
+      { name = "HAKO_GITHUB_CHECKS_BROKER_URL", value = var.github_checks_broker_url },
+      { name = "HAKO_DSQL_HOST", value = "${aws_dsql_cluster.control_plane.identifier}.dsql.${var.aws_region}.on.aws" },
+      { name = "HAKO_DSQL_USER", value = "hako_checks_consumer" },
+      { name = "HAKO_DSQL_DATABASE", value = var.github_checks_dsql_database },
+    ]
+    secrets = [
+      { name = "HAKO_GITHUB_CHECKS_BROKER_CLIENT_CERT_PEM", valueFrom = var.github_checks_broker_client_cert_secret_arn },
+      { name = "HAKO_GITHUB_CHECKS_BROKER_CLIENT_KEY_PEM", valueFrom = var.github_checks_broker_client_key_secret_arn },
+      { name = "HAKO_GITHUB_CHECKS_BROKER_CA_PEM", valueFrom = var.github_checks_broker_ca_secret_arn },
+    ]
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = aws_cloudwatch_log_group.github_checks_consumer[0].name
+        "awslogs-region"        = var.aws_region
+        "awslogs-stream-prefix" = "consumer"
+      }
+    }
+  }])
+  tags = local.common_tags
+}
+
+resource "aws_ecs_service" "github_checks_consumer" {
+  count = var.enable_github_checks_consumer_service ? 1 : 0
+
+  name                               = "${var.api_name}-github-checks-consumer"
+  cluster                            = var.github_checks_consumer_cluster_arn
+  task_definition                    = aws_ecs_task_definition.github_checks_consumer[0].arn
+  desired_count                      = var.github_checks_consumer_desired_count
+  launch_type                        = "FARGATE"
+  platform_version                   = "LATEST"
+  enable_execute_command             = false
+  enable_ecs_managed_tags            = true
+  propagate_tags                     = "SERVICE"
+  deployment_maximum_percent         = 200
+  deployment_minimum_healthy_percent = 50
+
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
+  network_configuration {
+    subnets          = var.github_checks_consumer_subnet_ids
+    security_groups  = var.github_checks_consumer_security_group_ids
+    assign_public_ip = false
+  }
+
   tags = local.common_tags
 }
 
@@ -229,21 +564,23 @@ resource "aws_lambda_function" "api" {
 
   environment {
     variables = {
-      HAKO_COGNITO_ISSUER                  = var.cognito_issuer_url
-      HAKO_COGNITO_CLIENT_ID               = aws_cognito_user_pool_client.cli.id
-      HAKO_DSQL_HOST                       = "${aws_dsql_cluster.control_plane.identifier}.dsql.${var.aws_region}.on.aws"
-      HAKO_DSQL_USER                       = "hako_api"
-      HAKO_DSQL_DATABASE                   = "postgres"
-      HAKO_DEFAULT_WORKSPACE_IMAGE         = var.default_workspace_image
-      HAKO_DEFAULT_WORKSPACE_RUNTIME_CLASS = var.default_workspace_runtime_class
-      HAKO_WORKLOAD_RUNS_ENABLED           = tostring(var.enable_workload_run_creation)
-      HAKO_GITHUB_WEBHOOK_SECRET_ARN       = var.github_webhook_secret_arn
-      HAKO_TENANT_GITHUB_WEBHOOK_ENABLED   = tostring(var.tenant_github_webhook_enabled)
-      HAKO_GITHUB_APP_SLUG                 = var.github_app_setup_enabled ? var.github_app_slug : ""
-      HAKO_GITHUB_APP_ID                   = var.github_app_setup_enabled ? tostring(var.github_app_id) : ""
-      HAKO_GITHUB_APP_CLIENT_ID            = var.github_app_setup_enabled ? var.github_app_client_id : ""
-      HAKO_GITHUB_APP_CLIENT_SECRET_ARN    = var.github_app_setup_enabled ? var.github_app_client_secret_arn : ""
-      HAKO_GITHUB_APP_CALLBACK_URL         = var.github_app_setup_enabled ? var.github_app_callback_url : ""
+      HAKO_COGNITO_ISSUER                    = var.cognito_issuer_url
+      HAKO_COGNITO_CLIENT_ID                 = aws_cognito_user_pool_client.cli.id
+      HAKO_DSQL_HOST                         = "${aws_dsql_cluster.control_plane.identifier}.dsql.${var.aws_region}.on.aws"
+      HAKO_DSQL_USER                         = "hako_api"
+      HAKO_DSQL_DATABASE                     = "postgres"
+      HAKO_DEFAULT_WORKSPACE_IMAGE           = var.default_workspace_image
+      HAKO_DEFAULT_WORKSPACE_RUNTIME_CLASS   = var.default_workspace_runtime_class
+      HAKO_WORKLOAD_RUNS_ENABLED             = tostring(var.enable_workload_run_creation)
+      HAKO_WEBHOOK_WORKLOAD_TRIGGERS_ENABLED = tostring(var.enable_webhook_workload_triggers)
+      HAKO_GITHUB_APP_MANAGEMENT_ENABLED     = tostring(var.enable_webhook_workload_triggers)
+      HAKO_GITHUB_WEBHOOK_SECRET_ARN         = var.github_webhook_secret_arn
+      HAKO_TENANT_GITHUB_WEBHOOK_ENABLED     = tostring(var.tenant_github_webhook_enabled)
+      HAKO_GITHUB_APP_SLUG                   = var.github_app_setup_enabled ? var.github_app_slug : ""
+      HAKO_GITHUB_APP_ID                     = var.github_app_setup_enabled ? tostring(var.github_app_id) : ""
+      HAKO_GITHUB_APP_CLIENT_ID              = var.github_app_setup_enabled ? var.github_app_client_id : ""
+      HAKO_GITHUB_APP_CLIENT_SECRET_ARN      = var.github_app_setup_enabled ? var.github_app_client_secret_arn : ""
+      HAKO_GITHUB_APP_CALLBACK_URL           = var.github_app_setup_enabled ? var.github_app_callback_url : ""
     }
   }
 
@@ -269,22 +606,24 @@ resource "aws_lambda_function" "api_image" {
 
   environment {
     variables = {
-      HAKO_COGNITO_ISSUER                  = var.cognito_issuer_url
-      HAKO_COGNITO_CLIENT_ID               = aws_cognito_user_pool_client.cli.id
-      HAKO_DSQL_HOST                       = "${aws_dsql_cluster.control_plane.identifier}.dsql.${var.aws_region}.on.aws"
-      HAKO_DSQL_USER                       = "hako_api"
-      HAKO_DSQL_DATABASE                   = "postgres"
-      HAKO_DEFAULT_WORKSPACE_IMAGE         = var.default_workspace_image
-      HAKO_DEFAULT_WORKSPACE_RUNTIME_CLASS = var.default_workspace_runtime_class
-      HAKO_WORKLOAD_RUNS_ENABLED           = tostring(var.enable_workload_run_creation)
-      HAKO_API_HTTP_MODE                   = "true"
-      HAKO_GITHUB_WEBHOOK_SECRET_ARN       = var.github_webhook_secret_arn
-      HAKO_TENANT_GITHUB_WEBHOOK_ENABLED   = tostring(var.tenant_github_webhook_enabled)
-      HAKO_GITHUB_APP_SLUG                 = var.github_app_setup_enabled ? var.github_app_slug : ""
-      HAKO_GITHUB_APP_ID                   = var.github_app_setup_enabled ? tostring(var.github_app_id) : ""
-      HAKO_GITHUB_APP_CLIENT_ID            = var.github_app_setup_enabled ? var.github_app_client_id : ""
-      HAKO_GITHUB_APP_CLIENT_SECRET_ARN    = var.github_app_setup_enabled ? var.github_app_client_secret_arn : ""
-      HAKO_GITHUB_APP_CALLBACK_URL         = var.github_app_setup_enabled ? var.github_app_callback_url : ""
+      HAKO_COGNITO_ISSUER                    = var.cognito_issuer_url
+      HAKO_COGNITO_CLIENT_ID                 = aws_cognito_user_pool_client.cli.id
+      HAKO_DSQL_HOST                         = "${aws_dsql_cluster.control_plane.identifier}.dsql.${var.aws_region}.on.aws"
+      HAKO_DSQL_USER                         = "hako_api"
+      HAKO_DSQL_DATABASE                     = "postgres"
+      HAKO_DEFAULT_WORKSPACE_IMAGE           = var.default_workspace_image
+      HAKO_DEFAULT_WORKSPACE_RUNTIME_CLASS   = var.default_workspace_runtime_class
+      HAKO_WORKLOAD_RUNS_ENABLED             = tostring(var.enable_workload_run_creation)
+      HAKO_WEBHOOK_WORKLOAD_TRIGGERS_ENABLED = tostring(var.enable_webhook_workload_triggers)
+      HAKO_GITHUB_APP_MANAGEMENT_ENABLED     = tostring(var.enable_webhook_workload_triggers)
+      HAKO_API_HTTP_MODE                     = "true"
+      HAKO_GITHUB_WEBHOOK_SECRET_ARN         = var.github_webhook_secret_arn
+      HAKO_TENANT_GITHUB_WEBHOOK_ENABLED     = tostring(var.tenant_github_webhook_enabled)
+      HAKO_GITHUB_APP_SLUG                   = var.github_app_setup_enabled ? var.github_app_slug : ""
+      HAKO_GITHUB_APP_ID                     = var.github_app_setup_enabled ? tostring(var.github_app_id) : ""
+      HAKO_GITHUB_APP_CLIENT_ID              = var.github_app_setup_enabled ? var.github_app_client_id : ""
+      HAKO_GITHUB_APP_CLIENT_SECRET_ARN      = var.github_app_setup_enabled ? var.github_app_client_secret_arn : ""
+      HAKO_GITHUB_APP_CALLBACK_URL           = var.github_app_setup_enabled ? var.github_app_callback_url : ""
     }
   }
 
@@ -366,6 +705,7 @@ resource "aws_lambda_function" "outbox_dispatcher" {
       HAKO_DSQL_DATABASE                = "postgres"
       HAKO_RESOURCE_PLANE_MANIFEST_JSON = var.resource_plane_manifest_json
       HAKO_WORKLOAD_SCHEDULER_QUEUE_URL = aws_sqs_queue.workload_scheduler[0].url
+      HAKO_GITHUB_CHECKS_QUEUE_URL      = var.enable_github_checks_delivery ? aws_sqs_queue.github_checks[0].url : ""
     }
   }
 
@@ -487,9 +827,10 @@ resource "aws_lambda_function" "github_webhook_processor" {
 
   environment {
     variables = {
-      HAKO_DSQL_HOST     = "${aws_dsql_cluster.control_plane.identifier}.dsql.${var.aws_region}.on.aws"
-      HAKO_DSQL_USER     = "hako_webhook_processor"
-      HAKO_DSQL_DATABASE = "postgres"
+      HAKO_DSQL_HOST                         = "${aws_dsql_cluster.control_plane.identifier}.dsql.${var.aws_region}.on.aws"
+      HAKO_DSQL_USER                         = "hako_webhook_processor"
+      HAKO_DSQL_DATABASE                     = "postgres"
+      HAKO_WEBHOOK_WORKLOAD_TRIGGERS_ENABLED = tostring(var.enable_webhook_workload_triggers)
     }
   }
 

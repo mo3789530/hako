@@ -198,6 +198,220 @@ variable "enable_outbox_dispatcher" {
   default     = false
 }
 
+variable "enable_github_checks_delivery" {
+  description = "Provision the dedicated encrypted GitHub Checks queue/DLQ, Dispatcher send access, consumer policy, and queue alarms."
+  type        = bool
+  default     = false
+
+  validation {
+    condition     = !var.enable_github_checks_delivery || var.enable_outbox_dispatcher
+    error_message = "GitHub Checks delivery requires the Outbox Dispatcher to be enabled."
+  }
+}
+
+variable "github_checks_queue_visibility_timeout_seconds" {
+  description = "Visibility timeout for the dedicated GitHub Checks queue; must be between 1 and 43200 seconds."
+  type        = number
+  default     = 900
+
+  validation {
+    condition     = var.github_checks_queue_visibility_timeout_seconds >= 1 && var.github_checks_queue_visibility_timeout_seconds <= 43200 && floor(var.github_checks_queue_visibility_timeout_seconds) == var.github_checks_queue_visibility_timeout_seconds
+    error_message = "github_checks_queue_visibility_timeout_seconds must be a whole number from 1 to 43200."
+  }
+}
+
+variable "github_checks_queue_age_alarm_threshold_seconds" {
+  description = "Alert when the oldest visible GitHub Checks message exceeds this age for two periods."
+  type        = number
+  default     = 300
+
+  validation {
+    condition     = var.github_checks_queue_age_alarm_threshold_seconds >= 60 && floor(var.github_checks_queue_age_alarm_threshold_seconds) == var.github_checks_queue_age_alarm_threshold_seconds
+    error_message = "github_checks_queue_age_alarm_threshold_seconds must be a whole number of at least 60."
+  }
+}
+
+variable "github_checks_queue_depth_alarm_threshold" {
+  description = "Alert when visible GitHub Checks messages exceed this queue depth for two periods."
+  type        = number
+  default     = 100
+
+  validation {
+    condition     = var.github_checks_queue_depth_alarm_threshold >= 0 && floor(var.github_checks_queue_depth_alarm_threshold) == var.github_checks_queue_depth_alarm_threshold
+    error_message = "github_checks_queue_depth_alarm_threshold must be a non-negative whole number."
+  }
+}
+
+variable "github_checks_alarm_actions" {
+  description = "Optional SNS topic ARNs notified by GitHub Checks queue age, depth, and DLQ alarms."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for arn in var.github_checks_alarm_actions : can(regex("^arn:[^:]+:sns:[^:]+:[0-9]{12}:.+$", arn))])
+    error_message = "github_checks_alarm_actions entries must be SNS topic ARNs."
+  }
+}
+
+variable "enable_github_checks_consumer_service" {
+  description = "Deploy the long-running GitHub Checks consumer as an ECS/Fargate service. Requires explicit private-network, digest-pinned image, broker URL, and mTLS Secret inputs."
+  type        = bool
+  default     = false
+
+  validation {
+    condition = !var.enable_github_checks_consumer_service || (
+      var.enable_github_checks_delivery &&
+      can(regex("^arn:[^:]+:ecs:[^:]+:[0-9]{12}:cluster/.+$", var.github_checks_consumer_cluster_arn)) &&
+      length(var.github_checks_consumer_subnet_ids) > 0 &&
+      length(var.github_checks_consumer_security_group_ids) > 0 &&
+      can(regex("^([0-9]{12})\\.dkr\\.ecr\\.([a-z0-9-]+)\\.amazonaws\\.com/(.+)@sha256:[0-9a-f]{64}$", var.github_checks_consumer_image_uri)) &&
+      try(
+        split(":", var.github_checks_consumer_ecr_repository_arn)[0] == "arn" &&
+        split(":", var.github_checks_consumer_ecr_repository_arn)[2] == "ecr" &&
+        split(":", var.github_checks_consumer_ecr_repository_arn)[3] == regex("^([0-9]{12})\\.dkr\\.ecr\\.([a-z0-9-]+)\\.amazonaws\\.com/(.+)@sha256:[0-9a-f]{64}$", var.github_checks_consumer_image_uri)[1] &&
+        split(":", var.github_checks_consumer_ecr_repository_arn)[4] == regex("^([0-9]{12})\\.dkr\\.ecr\\.([a-z0-9-]+)\\.amazonaws\\.com/(.+)@sha256:[0-9a-f]{64}$", var.github_checks_consumer_image_uri)[0] &&
+        split(":", var.github_checks_consumer_ecr_repository_arn)[5] == "repository/${regex("^([0-9]{12})\\.dkr\\.ecr\\.([a-z0-9-]+)\\.amazonaws\\.com/(.+)@sha256:[0-9a-f]{64}$", var.github_checks_consumer_image_uri)[2]}",
+        false
+      ) &&
+      can(regex("^https://[^?#]+$", var.github_checks_broker_url)) &&
+      var.github_checks_broker_client_cert_secret_arn != "" &&
+      var.github_checks_broker_client_key_secret_arn != "" &&
+      var.github_checks_broker_ca_secret_arn != ""
+    )
+    error_message = "The Checks consumer service requires Checks delivery, an ECS cluster, private subnets/security groups, a digest-pinned image, HTTPS broker URL, and three mTLS Secret ARNs."
+  }
+}
+
+variable "github_checks_consumer_cluster_arn" {
+  description = "Pre-created ECS cluster ARN used only when the Checks Fargate service is enabled."
+  type        = string
+  default     = ""
+}
+
+variable "github_checks_consumer_subnet_ids" {
+  description = "Private subnet IDs for the Checks Fargate service; public IP assignment is always disabled."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for id in var.github_checks_consumer_subnet_ids : can(regex("^subnet-[A-Za-z0-9]+$", id))])
+    error_message = "github_checks_consumer_subnet_ids must contain subnet IDs."
+  }
+}
+
+variable "github_checks_consumer_security_group_ids" {
+  description = "Pre-created security groups for the Checks consumer's restricted outbound broker/AWS/API access."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for id in var.github_checks_consumer_security_group_ids : can(regex("^sg-[A-Za-z0-9]+$", id))])
+    error_message = "github_checks_consumer_security_group_ids must contain security group IDs."
+  }
+}
+
+variable "github_checks_consumer_image_uri" {
+  description = "ARM64 Checks consumer image URI pinned by sha256 digest."
+  type        = string
+  default     = ""
+}
+
+variable "github_checks_consumer_ecr_repository_arn" {
+  description = "Exact private ECR repository ARN from which the Fargate execution role may pull the Checks consumer image."
+  type        = string
+  default     = ""
+}
+
+variable "github_checks_broker_url" {
+  description = "HTTPS URL for the private/mTLS GitHub Checks credential broker."
+  type        = string
+  default     = ""
+}
+
+variable "github_checks_broker_client_cert_secret_arn" {
+  description = "Secrets Manager ARN containing the PEM client certificate injected only into the Checks consumer task."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.github_checks_broker_client_cert_secret_arn == "" || can(regex("^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+$", var.github_checks_broker_client_cert_secret_arn))
+    error_message = "github_checks_broker_client_cert_secret_arn must be empty or a Secrets Manager secret ARN."
+  }
+}
+
+variable "github_checks_broker_client_key_secret_arn" {
+  description = "Secrets Manager ARN containing the PEM private key injected only into the Checks consumer task."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.github_checks_broker_client_key_secret_arn == "" || can(regex("^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+$", var.github_checks_broker_client_key_secret_arn))
+    error_message = "github_checks_broker_client_key_secret_arn must be empty or a Secrets Manager secret ARN."
+  }
+}
+
+variable "github_checks_broker_ca_secret_arn" {
+  description = "Secrets Manager ARN containing the broker CA PEM injected only into the Checks consumer task."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.github_checks_broker_ca_secret_arn == "" || can(regex("^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+$", var.github_checks_broker_ca_secret_arn))
+    error_message = "github_checks_broker_ca_secret_arn must be empty or a Secrets Manager secret ARN."
+  }
+}
+
+variable "github_checks_broker_kms_key_arn" {
+  description = "Optional customer-managed KMS key ARN used to encrypt the mTLS Secrets."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.github_checks_broker_kms_key_arn == "" || can(regex("^arn:[^:]+:kms:[^:]+:[0-9]{12}:key/.+$", var.github_checks_broker_kms_key_arn))
+    error_message = "github_checks_broker_kms_key_arn must be empty or a KMS key ARN."
+  }
+}
+
+variable "github_checks_consumer_desired_count" {
+  description = "Desired number of stateless Fargate Checks consumers."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.github_checks_consumer_desired_count >= 1 && var.github_checks_consumer_desired_count <= 10 && floor(var.github_checks_consumer_desired_count) == var.github_checks_consumer_desired_count
+    error_message = "github_checks_consumer_desired_count must be a whole number between 1 and 10."
+  }
+}
+
+variable "github_checks_consumer_cpu" {
+  description = "Fargate task CPU units for the Checks consumer."
+  type        = number
+  default     = 512
+
+  validation {
+    condition = contains([256, 512, 1024, 2048, 4096], var.github_checks_consumer_cpu) && (
+      var.github_checks_consumer_cpu == 256 ? contains([512, 1024, 2048], var.github_checks_consumer_memory) :
+      var.github_checks_consumer_cpu == 512 ? var.github_checks_consumer_memory >= 1024 && var.github_checks_consumer_memory <= 4096 && var.github_checks_consumer_memory % 1024 == 0 :
+      var.github_checks_consumer_cpu == 1024 ? var.github_checks_consumer_memory >= 2048 && var.github_checks_consumer_memory <= 8192 && var.github_checks_consumer_memory % 1024 == 0 :
+      var.github_checks_consumer_cpu == 2048 ? var.github_checks_consumer_memory >= 4096 && var.github_checks_consumer_memory <= 16384 && var.github_checks_consumer_memory % 1024 == 0 :
+      var.github_checks_consumer_memory >= 8192 && var.github_checks_consumer_memory <= 30720 && var.github_checks_consumer_memory % 1024 == 0
+    )
+    error_message = "Checks consumer CPU/memory must be a valid Fargate task size combination."
+  }
+}
+
+variable "github_checks_consumer_memory" {
+  description = "Fargate task memory in MiB for the Checks consumer."
+  type        = number
+  default     = 1024
+}
+
+variable "github_checks_dsql_database" {
+  description = "Aurora DSQL database name used by the Checks consumer."
+  type        = string
+  default     = "postgres"
+}
+
 variable "enable_workload_run_creation" {
   description = "Expose Workload Run creation. Enable only after the Workload scheduler consumer and runtime are deployed."
   type        = bool
@@ -206,6 +420,22 @@ variable "enable_workload_run_creation" {
   validation {
     condition     = !var.enable_workload_run_creation || var.enable_outbox_dispatcher
     error_message = "Workload Run creation requires the Outbox Dispatcher and scheduler queue to be enabled."
+  }
+}
+
+variable "enable_webhook_workload_triggers" {
+  description = "Opt in to per-repository push/pull_request verification Jobs; requires the webhook processor, Workload Runs, Checks delivery, and Dispatcher."
+  type        = bool
+  default     = false
+
+  validation {
+    condition = !var.enable_webhook_workload_triggers || (
+      var.enable_github_webhook_processor &&
+      var.enable_workload_run_creation &&
+      var.enable_github_checks_delivery &&
+      var.enable_outbox_dispatcher
+    )
+    error_message = "Webhook Workload triggers require the webhook processor, Workload Run creation, GitHub Checks delivery, and Outbox Dispatcher."
   }
 }
 

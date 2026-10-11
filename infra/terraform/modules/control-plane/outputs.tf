@@ -68,6 +68,56 @@ output "workload_scheduler_dlq_url" {
   value       = try(aws_sqs_queue.workload_scheduler_dlq[0].url, null)
 }
 
+output "github_checks_queue_url" {
+  description = "URL of the optional dedicated GitHub Checks delivery queue; null unless enabled."
+  value       = try(aws_sqs_queue.github_checks[0].url, null)
+}
+
+output "github_checks_dlq_url" {
+  description = "URL of the optional GitHub Checks dead-letter queue; null unless enabled."
+  value       = try(aws_sqs_queue.github_checks_dlq[0].url, null)
+}
+
+output "github_checks_consumer_policy_arn" {
+  description = "Least-privilege policy ARN for the dedicated GitHub Checks consumer runtime; attach only to that runtime's role."
+  value       = try(aws_iam_policy.github_checks_consumer[0].arn, null)
+}
+
+output "github_checks_consumer_task_role_arn" {
+  description = "Stable ECS task role ARN for the Checks consumer; queue/DSQL permissions attach only when Checks delivery is enabled."
+  value       = aws_iam_role.github_checks_consumer.arn
+}
+
+output "github_checks_consumer_execution_role_arn" {
+  description = "ECS task execution role; Secret-read permissions exist only when the Fargate consumer service is enabled."
+  value       = try(aws_iam_role.github_checks_consumer_execution[0].arn, null)
+}
+
+output "github_checks_consumer_service_arn" {
+  description = "ARN of the optional ECS/Fargate GitHub Checks consumer service."
+  value       = try(aws_ecs_service.github_checks_consumer[0].id, null)
+}
+
+output "github_checks_consumer_task_definition_arn" {
+  description = "ARN of the optional ARM64 GitHub Checks consumer task definition."
+  value       = try(aws_ecs_task_definition.github_checks_consumer[0].arn, null)
+}
+
+output "github_checks_queue_age_alarm_name" {
+  description = "Name of the GitHub Checks queue age alarm; null unless delivery is enabled."
+  value       = try(aws_cloudwatch_metric_alarm.github_checks_queue_age[0].alarm_name, null)
+}
+
+output "github_checks_queue_depth_alarm_name" {
+  description = "Name of the GitHub Checks queue depth alarm; null unless delivery is enabled."
+  value       = try(aws_cloudwatch_metric_alarm.github_checks_queue_depth[0].alarm_name, null)
+}
+
+output "github_checks_dlq_alarm_name" {
+  description = "Name of the GitHub Checks DLQ alarm; null unless delivery is enabled."
+  value       = try(aws_cloudwatch_metric_alarm.github_checks_dlq_messages[0].alarm_name, null)
+}
+
 output "github_webhook_processor_role_arn" {
   description = "IAM role ARN to map to the least-privilege hako_webhook_processor DSQL user."
   value       = aws_iam_role.github_webhook_processor.arn

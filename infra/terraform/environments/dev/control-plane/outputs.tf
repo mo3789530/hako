@@ -89,3 +89,43 @@ output "github_webhook_processor_schedule_arn" {
 output "github_webhook_processor_error_alarm_name" {
   value = module.control_plane.github_webhook_processor_error_alarm_name
 }
+
+output "github_checks_queue_url" {
+  value = module.control_plane.github_checks_queue_url
+}
+
+output "github_checks_dlq_url" {
+  value = module.control_plane.github_checks_dlq_url
+}
+
+output "github_checks_consumer_policy_arn" {
+  value = module.control_plane.github_checks_consumer_policy_arn
+}
+
+output "github_checks_consumer_task_role_arn" {
+  value = module.control_plane.github_checks_consumer_task_role_arn
+}
+
+output "github_checks_consumer_execution_role_arn" {
+  value = module.control_plane.github_checks_consumer_execution_role_arn
+}
+
+output "github_checks_consumer_service_arn" {
+  value = module.control_plane.github_checks_consumer_service_arn
+}
+
+output "github_checks_consumer_task_definition_arn" {
+  value = module.control_plane.github_checks_consumer_task_definition_arn
+}
+
+output "github_checks_queue_age_alarm_name" {
+  value = module.control_plane.github_checks_queue_age_alarm_name
+}
+
+output "github_checks_queue_depth_alarm_name" {
+  value = module.control_plane.github_checks_queue_depth_alarm_name
+}
+
+output "github_checks_dlq_alarm_name" {
+  value = module.control_plane.github_checks_dlq_alarm_name
+}
