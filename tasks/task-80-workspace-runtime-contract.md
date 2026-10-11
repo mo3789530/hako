@@ -1,6 +1,6 @@
 # Task 80: Workspace Runtime Contract and Capability ADR
 
-Status: Todo. Priority: P1. Parent: Task 43. Depends on: Task 61 runtime evidence.
+Status: Complete (AWS API/SDK contract documented; real AWS lifecycle PoC remains unverified). Priority: P1. Parent: Task 43. Depends on: Task 61 runtime evidence.
 
 ## Goal
 
@@ -28,3 +28,15 @@ Workspaces and which remain unsupported.
 - Lifecycle/state mapping and idempotency requirements are precise enough for
   the journal and adapter subtasks.
 - No AWS apply or real Workspace launch is required for completion.
+
+## Result
+
+- [Workspace Lambda MicroVM contract](../docs/workspace-lambda-microvm.md) and
+  [ADR 0009](../docs/adr/0009-workspace-lambda-microvm-lifecycle.md) document
+  the operations, state mapping, 8-hour allocation ceiling, terminal-loss
+  behavior, durable-data/recovery gate, and no-tag-discovery limitation.
+- The checked-in AWS SDK v2 `lambdamicrovms.Client` includes Run/Get/Suspend/
+  Resume/Terminate/List/Tag methods. Official API docs confirm the lifecycle
+  contract; this is not evidence of a real AWS PoC.
+- Task 81 is the next implementation unit. Tasks 44/45 must complete before
+  automatic replacement can be enabled.
