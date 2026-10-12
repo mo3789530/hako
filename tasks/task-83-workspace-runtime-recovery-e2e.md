@@ -1,6 +1,6 @@
 # Task 83: Workspace Runtime Reconciliation and Local API E2E
 
-Status: In Progress (AWS SDK HTTP fake provider lifecycle E2E, process-restart retry with frozen request, foreign provider ID fail-closed tests, cleanup failure/retry fencing, concurrent duplicate ensure, and Resource Controller→result-consumer→PostgreSQL binding E2E implemented; provider HTTP timeout/retry expansion remains). Priority: P1. Parent: Task 43. Depends on: Tasks 80–82.
+Status: Implemented locally (AWS SDK HTTP fake provider lifecycle E2E, process-restart retry with frozen request, foreign provider ID fail-closed tests, cleanup failure/retry fencing, concurrent duplicate ensure, provider timeout recovery, and Resource Controller→result-consumer→PostgreSQL binding E2E pass). Production AWS lifecycle/resource ownership PoC remains unverified. Priority: P1. Parent: Task 43. Depends on: Tasks 80–82.
 
 ## Goal
 
@@ -32,11 +32,9 @@ and proof that a mismatched provider ID is rejected without deletion. The
 operator boundaries are recorded in
 [`docs/workspace-runtime-operations.md`](../docs/workspace-runtime-operations.md).
 
-The Task 83 suite is not complete yet: provider HTTP timeout/retry expansion
-remains. The current command/result queue is an in-process test double, not
-live SQS; local concurrent duplicate delivery and journal CAS tests cover the
-fencing path. Production AWS lifecycle and resource ownership remain
-unverified.
+The local Task 83 acceptance suite is complete. Its command/result queue is an
+in-process test double, not live SQS. Production AWS lifecycle and resource
+ownership remain unverified and must not be inferred from the local suite.
 
 ## Acceptance criteria
 

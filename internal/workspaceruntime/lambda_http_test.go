@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/lambdamicrovms/types"
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/resourcecontroller"
+	"github.com/mo3789530/hako/internal/workspacejournal"
 )
 
 func TestLocalHTTPProviderLifecycleE2E(t *testing.T) {
@@ -162,6 +163,67 @@ func TestHTTPProviderIdentityMismatchIsNeverAdoptedOrMutated(t *testing.T) {
 	}
 	if creates != 1 || gets != 1 || deletes != 0 {
 		t.Fatalf("foreign provider identity was adopted or mutated: creates=%d gets=%d deletes=%d", creates, gets, deletes)
+	}
+}
+
+func TestHTTPProviderTimeoutKeepsJournalForRestartRetry(t *testing.T) {
+	var mu sync.Mutex
+	getBlocked := true
+	runCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case req.Method == http.MethodPost && req.URL.Path == "/2025-09-09/microvms":
+			mu.Lock()
+			runCount++
+			mu.Unlock()
+			writeProviderJSON(w, map[string]any{"microvmId": "microvm-timeout", "state": "PENDING", "endpoint": "https://microvm.invalid", "imageArn": validSpec().ImageIdentifier, "imageVersion": "3", "executionRoleArn": validSpec().ExecutionRoleARN, "maximumDurationInSeconds": 3600, "startedAt": 1791763200, "egressNetworkConnectors": validSpec().EgressNetworkConnectors, "ingressNetworkConnectors": validSpec().IngressNetworkConnectors})
+		case req.Method == http.MethodGet && req.URL.Path == "/2025-09-09/microvms/microvm-timeout":
+			mu.Lock()
+			blocked := getBlocked
+			mu.Unlock()
+			if blocked {
+				<-req.Context().Done()
+				return
+			}
+			writeHTTPMicroVMWithID(w, "microvm-timeout", types.MicrovmStateRunning)
+		default:
+			http.Error(w, "unexpected provider route", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	client := lambdamicrovms.NewFromConfig(aws.Config{Region: "us-east-1", BaseEndpoint: aws.String(server.URL),
+		Credentials: aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider("local-test", "local-test-only", "")), HTTPClient: server.Client(),
+		Retryer: func() aws.Retryer { return aws.NopRetryer{} }})
+	store := newMemoryStore()
+	command := testCommand(domain.OperationEnsureRunning, 1, "op_http_timeout")
+	resolver := resolverFunc(func(context.Context, resourcecontroller.Command) (LaunchSpec, error) { return validSpec(), nil })
+	newAdapter := func(specResolver resolverFunc, timeout time.Duration) *LambdaMicroVM {
+		runtime, err := NewLambdaMicroVM(client, store, specResolver, Config{SupportedRuntimeClasses: map[string]bool{"standard": true}, PollInterval: 10 * time.Millisecond, PollTimeout: timeout}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	if _, err := newAdapter(resolver, 30*time.Millisecond).Execute(context.Background(), command); err == nil {
+		t.Fatal("blocked provider Get did not honor the polling deadline")
+	}
+	pinned, err := store.Get(context.Background(), command.TenantID, command.WorkspaceID, command.ResourcePlaneID)
+	if err != nil || pinned.Journal.ProviderID != "microvm-timeout" || pinned.Journal.State != workspacejournal.Provisioning {
+		t.Fatalf("provider timeout lost durable allocation identity: %+v, %v", pinned.Journal, err)
+	}
+	mu.Lock()
+	getBlocked = false
+	mu.Unlock()
+	changed := validSpec()
+	changed.ImageVersion = "42"
+	if observed, err := newAdapter(func(context.Context, resourcecontroller.Command) (LaunchSpec, error) { return changed, nil }, time.Second).Execute(context.Background(), command); err != nil || observed != domain.ObservedWorkspaceRunning {
+		t.Fatalf("retry after provider timeout = %q, %v", observed, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if runCount != 1 {
+		t.Fatalf("provider timeout retry allocated more than once: Run calls=%d", runCount)
 	}
 }
 

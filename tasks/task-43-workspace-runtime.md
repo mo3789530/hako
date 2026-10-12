@@ -1,6 +1,6 @@
 # Task 43: Production Workspace Runtime
 
-Status: In Progress (decomposed into Tasks 80–83; no Workspace production runtime is implemented yet). Priority: P1.
+Status: Implemented locally through Tasks 80–83 (contract, durable journal, Lambda MicroVM adapter, SDK HTTP/recovery and PostgreSQL result/binding E2E). Production controller wiring, real AWS image/network/lifecycle PoC, EFS/agent recovery, and deployment remain unverified. Priority: P1.
 
 ## Goal
 
