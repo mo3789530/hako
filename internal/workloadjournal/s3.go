@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
 )
@@ -14,6 +15,10 @@ import (
 type s3API interface {
 	GetObject(context.Context, *s3.GetObjectInput, ...func(*s3.Options)) (*s3.GetObjectOutput, error)
 	PutObject(context.Context, *s3.PutObjectInput, ...func(*s3.Options)) (*s3.PutObjectOutput, error)
+}
+
+type s3Lister interface {
+	ListObjectsV2(context.Context, *s3.ListObjectsV2Input, ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
 }
 
 type S3Store struct {
@@ -111,6 +116,78 @@ func (s *S3Store) CompareAndSwap(ctx context.Context, current Snapshot, next Jou
 		return Snapshot{}, errors.New("S3 did not return a Workload journal ETag")
 	}
 	return Snapshot{Journal: next, ETag: *output.ETag}, nil
+}
+
+// ListRecoveryPage returns a bounded page of valid attempt journals that may
+// need reconciliation. Listing is deliberately available only below an
+// explicit journal prefix, so a recovery worker cannot scan unrelated bucket
+// objects. Callers should start a fresh scan on each scheduled invocation;
+// continuation tokens are for pagination within one bounded invocation.
+func (s *S3Store) ListRecoveryPage(ctx context.Context, continuationToken string, limit int32) ([]Snapshot, string, error) {
+	lister, ok := s.client.(s3Lister)
+	if !ok || s.prefix == "" || limit < 1 || limit > 1000 || len(continuationToken) > 4096 {
+		return nil, "", errors.New("Workload journal recovery listing is not configured")
+	}
+	prefix := s.prefix + "/"
+	input := &s3.ListObjectsV2Input{Bucket: &s.bucket, Prefix: &prefix, MaxKeys: &limit}
+	if continuationToken != "" {
+		input.ContinuationToken = &continuationToken
+	}
+	output, err := lister.ListObjectsV2(ctx, input)
+	if err != nil {
+		return nil, "", fmt.Errorf("list Workload recovery journals: %w", err)
+	}
+	if output == nil {
+		return nil, "", errors.New("S3 returned an empty Workload recovery listing")
+	}
+	items := make([]Snapshot, 0, len(output.Contents))
+	for _, object := range output.Contents {
+		if object.Key == nil {
+			return nil, "", errors.New("S3 returned a Workload journal without a key")
+		}
+		tenantID, runID, attemptID, err := s.identityFromKey(*object.Key)
+		if err != nil {
+			return nil, "", err
+		}
+		snapshot, err := s.Get(ctx, tenantID, runID, attemptID)
+		if err != nil {
+			return nil, "", err
+		}
+		if recoverable(snapshot.Journal) {
+			items = append(items, snapshot)
+		}
+	}
+	var next string
+	if aws.ToBool(output.IsTruncated) {
+		if output.NextContinuationToken == nil || *output.NextContinuationToken == "" {
+			return nil, "", errors.New("truncated S3 Workload recovery listing has no continuation token")
+		}
+		next = *output.NextContinuationToken
+	}
+	return items, next, nil
+}
+
+func (s *S3Store) identityFromKey(key string) (string, string, string, error) {
+	prefix := s.prefix + "/"
+	if !strings.HasPrefix(key, prefix) {
+		return "", "", "", errors.New("S3 Workload recovery key is outside the configured prefix")
+	}
+	parts := strings.Split(strings.TrimPrefix(key, prefix), "/")
+	if len(parts) != 3 || !strings.HasSuffix(parts[2], ".json") {
+		return "", "", "", errors.New("S3 returned a malformed Workload recovery key")
+	}
+	attemptID := strings.TrimSuffix(parts[2], ".json")
+	if _, err := s.key(parts[0], parts[1], attemptID); err != nil {
+		return "", "", "", err
+	}
+	return parts[0], parts[1], attemptID, nil
+}
+
+func recoverable(j Journal) bool {
+	if !terminal(j.ExecutionState) {
+		return true
+	}
+	return !j.ResultPublished || j.CleanupState != CleanupConfirmed
 }
 
 func (s *S3Store) key(tenantID, runID, attemptID string) (string, error) {

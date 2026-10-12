@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -20,9 +21,13 @@ const FreshnessTTL = 5 * time.Minute
 const MaxReasonLength = 500
 
 var (
-	ErrNotFound = errors.New("Resource Plane not found")
-	ErrInvalid  = errors.New("invalid Resource Plane health report")
+	ErrNotFound       = errors.New("Resource Plane not found")
+	ErrInvalid        = errors.New("invalid Resource Plane health report")
+	ErrReplayConflict = errors.New("Resource Plane health report ID was reused with different content")
+	ErrStaleReport    = errors.New("Resource Plane health report is stale or out of order")
 )
+
+var reportIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
 type Status string
 
@@ -127,7 +132,7 @@ func Put(ctx context.Context, tx pgx.Tx, resourcePlaneID domain.ResourcePlaneID,
 	if err != nil {
 		return Health{}, fmt.Errorf("generate health report event ID: %w", err)
 	}
-	if err := insertReportEvent(ctx, tx, reportEventID, resourcePlaneID, status, cleanReason, OperatorReport, now); err != nil {
+	if err := insertReportEvent(ctx, tx, reportEventID, resourcePlaneID, "", status, cleanReason, OperatorReport, now); err != nil {
 		return Health{}, err
 	}
 	auditEventID, err := idgen.New("paud_")
@@ -163,10 +168,63 @@ func PutAutomated(ctx context.Context, tx pgx.Tx, resourcePlaneID domain.Resourc
 	if err != nil {
 		return Health{}, fmt.Errorf("generate automated health report ID: %w", err)
 	}
-	if err := insertReportEvent(ctx, tx, eventID, resourcePlaneID, status, cleanReason, AutomatedReport, now); err != nil {
+	if err := insertReportEvent(ctx, tx, eventID, resourcePlaneID, "", status, cleanReason, AutomatedReport, now); err != nil {
 		return Health{}, err
 	}
 	return Get(ctx, tx, resourcePlaneID, now)
+}
+
+// PutAutomatedReport records one authenticated producer observation. The
+// caller must authenticate the Reporter identity before invoking this method.
+// Replaying the same ID and content is idempotent; reuse with different
+// content, an out-of-window timestamp, or out-of-order observations fail.
+func PutAutomatedReport(ctx context.Context, tx pgx.Tx, resourcePlaneID domain.ResourcePlaneID, reportID string,
+	status Status, reason string, observedAt, now time.Time) (Health, bool, error) {
+	if tx == nil || resourcePlaneID == "" || !reportIDPattern.MatchString(reportID) || observedAt.IsZero() || now.IsZero() {
+		return Health{}, false, ErrInvalid
+	}
+	cleanReason, err := Validate(status, reason)
+	if err != nil {
+		return Health{}, false, err
+	}
+	observedAt, now = observedAt.UTC().Truncate(time.Microsecond), now.UTC()
+	var existingStatus, existingReason string
+	var existingAt time.Time
+	err = tx.QueryRow(ctx, `SELECT status, reason, reported_at FROM resource_plane_health_events
+		WHERE resource_plane_id=$1 AND report_id=$2`, resourcePlaneID, reportID).Scan(&existingStatus, &existingReason, &existingAt)
+	if err == nil {
+		if Status(existingStatus) != status || existingReason != cleanReason || !existingAt.Equal(observedAt) {
+			return Health{}, false, ErrReplayConflict
+		}
+		health, err := Get(ctx, tx, resourcePlaneID, now)
+		return health, false, err
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return Health{}, false, fmt.Errorf("check Resource Plane health report replay: %w", err)
+	}
+	if observedAt.Before(now.Add(-FreshnessTTL)) || observedAt.After(now.Add(30*time.Second)) {
+		return Health{}, false, ErrStaleReport
+	}
+	var latestAutomated sql.NullTime
+	if err := tx.QueryRow(ctx, `SELECT MAX(reported_at) FROM resource_plane_health_events
+		WHERE resource_plane_id=$1 AND report_source='automated'`, resourcePlaneID).Scan(&latestAutomated); err != nil {
+		return Health{}, false, fmt.Errorf("read latest automated Resource Plane health report: %w", err)
+	}
+	if latestAutomated.Valid && !observedAt.After(latestAutomated.Time) {
+		return Health{}, false, ErrStaleReport
+	}
+	if err := saveReport(ctx, tx, resourcePlaneID, status, cleanReason, AutomatedReport, observedAt); err != nil {
+		return Health{}, false, err
+	}
+	eventID, err := idgen.New("rph_")
+	if err != nil {
+		return Health{}, false, fmt.Errorf("generate automated health event ID: %w", err)
+	}
+	if err := insertReportEvent(ctx, tx, eventID, resourcePlaneID, reportID, status, cleanReason, AutomatedReport, observedAt); err != nil {
+		return Health{}, false, err
+	}
+	health, err := Get(ctx, tx, resourcePlaneID, now)
+	return health, true, err
 }
 
 func saveReport(ctx context.Context, tx pgx.Tx, resourcePlaneID domain.ResourcePlaneID, status Status, reason string, source ReportSource, now time.Time) error {
@@ -182,10 +240,10 @@ func saveReport(ctx context.Context, tx pgx.Tx, resourcePlaneID domain.ResourceP
 	return nil
 }
 
-func insertReportEvent(ctx context.Context, tx pgx.Tx, id string, resourcePlaneID domain.ResourcePlaneID, status Status, reason string, source ReportSource, now time.Time) error {
+func insertReportEvent(ctx context.Context, tx pgx.Tx, id string, resourcePlaneID domain.ResourcePlaneID, reportID string, status Status, reason string, source ReportSource, now time.Time) error {
 	if _, err := tx.Exec(ctx, `INSERT INTO resource_plane_health_events
-		(id, resource_plane_id, status, report_source, reason, reported_at)
-		VALUES ($1, $2, $3, $4, $5, $6)`, id, resourcePlaneID, status, source, reason, now); err != nil {
+		(id, resource_plane_id, report_id, status, report_source, reason, reported_at)
+		VALUES ($1, $2, NULLIF($3,''), $4, $5, $6, $7)`, id, resourcePlaneID, reportID, status, source, reason, now); err != nil {
 		return fmt.Errorf("append Resource Plane health report event: %w", err)
 	}
 	return nil

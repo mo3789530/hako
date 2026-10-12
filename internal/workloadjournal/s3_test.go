@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 )
 
@@ -17,6 +19,9 @@ type s3Stub struct {
 	getInput *s3.GetObjectInput
 	putOut   *s3.PutObjectOutput
 	getOut   *s3.GetObjectOutput
+	listIn   *s3.ListObjectsV2Input
+	listOut  *s3.ListObjectsV2Output
+	objects  map[string][]byte
 	putErr   error
 	getErr   error
 }
@@ -28,7 +33,15 @@ func (s *s3Stub) PutObject(_ context.Context, input *s3.PutObjectInput, _ ...fun
 
 func (s *s3Stub) GetObject(_ context.Context, input *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
 	s.getInput = input
+	if body, ok := s.objects[aws.ToString(input.Key)]; ok {
+		return &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader(string(body))), ETag: s3StringPtr(`"etag-listed"`)}, nil
+	}
 	return s.getOut, s.getErr
+}
+
+func (s *s3Stub) ListObjectsV2(_ context.Context, input *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
+	s.listIn = input
+	return s.listOut, nil
 }
 
 func TestS3StoreUsesConditionalCreateAndCompareAndSwap(t *testing.T) {
@@ -167,6 +180,52 @@ func TestS3StoreRejectsInvalidConfigurationAndMapsFailures(t *testing.T) {
 	client.putOut = &s3.PutObjectOutput{}
 	if _, err := store.CompareAndSwap(context.Background(), loaded, next); err == nil {
 		t.Fatal("CAS response without ETag accepted")
+	}
+}
+
+func TestS3StoreListsOnlyValidRecoverableJournalsWithinPrefix(t *testing.T) {
+	now := time.Now().UTC()
+	active, err := New(Command{TenantID: "tenant_1", WorkloadRunID: "run_1", AttemptID: "attempt_1",
+		Generation: 1, ResourcePlaneID: "rp_1", IdempotencyToken: "token_1"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := Encode(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation := "next-page"
+	client := &s3Stub{objects: map[string][]byte{"prefix/tenant_1/run_1/attempt_1.json": data},
+		listOut: &s3.ListObjectsV2Output{Contents: []types.Object{{Key: aws.String("prefix/tenant_1/run_1/attempt_1.json")}},
+			IsTruncated: aws.Bool(true), NextContinuationToken: &continuation}}
+	store, err := NewS3Store(client, "bucket", "prefix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, next, err := store.ListRecoveryPage(context.Background(), "prior-page", 50)
+	if err != nil || len(page) != 1 || page[0].Journal.AttemptID != "attempt_1" || next != continuation {
+		t.Fatalf("ListRecoveryPage() = %+v, next %q, err %v", page, next, err)
+	}
+	if aws.ToString(client.listIn.Prefix) != "prefix/" || aws.ToString(client.listIn.ContinuationToken) != "prior-page" || aws.ToInt32(client.listIn.MaxKeys) != 50 {
+		t.Fatalf("recovery listing was not bounded/scoped: %+v", client.listIn)
+	}
+	if client.getInput == nil || aws.ToString(client.getInput.Key) != "prefix/tenant_1/run_1/attempt_1.json" {
+		t.Fatalf("listed journal was not loaded by validated identity: %+v", client.getInput)
+	}
+}
+
+func TestS3StoreRecoveryListingRejectsUnsafeOrUnboundedRequests(t *testing.T) {
+	client := &s3Stub{listOut: &s3.ListObjectsV2Output{Contents: []types.Object{{Key: aws.String("prefix/../escape/run/attempt.json")}}}}
+	store, _ := NewS3Store(client, "bucket", "prefix")
+	if _, _, err := store.ListRecoveryPage(context.Background(), "", 10); err == nil {
+		t.Fatal("unsafe recovery key was accepted")
+	}
+	if _, _, err := store.ListRecoveryPage(context.Background(), "", 1001); err == nil {
+		t.Fatal("unbounded recovery page was accepted")
+	}
+	withoutPrefix, _ := NewS3Store(client, "bucket", "")
+	if _, _, err := withoutPrefix.ListRecoveryPage(context.Background(), "", 10); err == nil {
+		t.Fatal("recovery scan without an explicit prefix was accepted")
 	}
 }
 

@@ -39,3 +39,15 @@ func TestShouldStartLambdaRuntime(t *testing.T) {
 		})
 	}
 }
+
+func TestResourcePlaneWorkspaceSessionKeyResolverIsOptionalAndValidatesARNMap(t *testing.T) {
+	t.Setenv("HAKO_RESOURCE_PLANE_WORKSPACE_SESSION_SECRET_ARNS", "")
+	resolver, err := resourcePlaneWorkspaceSessionKeyResolverFromEnv(context.Background())
+	if err != nil || resolver != nil {
+		t.Fatalf("unset session key map resolver=%v err=%v", resolver, err)
+	}
+	t.Setenv("HAKO_RESOURCE_PLANE_WORKSPACE_SESSION_SECRET_ARNS", `{"rp_a":"not-an-arn"}`)
+	if _, err := resourcePlaneWorkspaceSessionKeyResolverFromEnv(context.Background()); err == nil {
+		t.Fatal("invalid Resource Plane session Secret map was accepted")
+	}
+}

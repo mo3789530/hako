@@ -38,6 +38,30 @@ variable "tenant_github_webhook_reader_role_arns" {
   default     = []
 }
 
+variable "resource_plane_health_report_secret_arns" {
+  description = "Exact Resource Plane ID to HMAC Secret ARN map. Empty disables the unauthenticated-by-Cognito but HMAC-authenticated health ingress."
+  type        = map(string)
+  default     = {}
+}
+
+variable "resource_plane_workload_spec_secret_arns" {
+  description = "Exact Resource Plane ID to dedicated execution-spec HMAC Secret ARN map. Empty keeps the internal route disabled."
+  type        = map(string)
+  default     = {}
+}
+
+variable "resource_plane_health_report_throttle_rate" {
+  description = "API Gateway requests per second for Resource Plane health reports."
+  type        = number
+  default     = 10
+}
+
+variable "resource_plane_health_report_throttle_burst" {
+  description = "API Gateway burst capacity for Resource Plane health reports."
+  type        = number
+  default     = 20
+}
+
 variable "github_app_slug" {
   description = "GitHub App slug for its installation setup URL."
   type        = string

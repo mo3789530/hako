@@ -91,7 +91,7 @@ func TestRunGoTestIsolatedAndCachesRedactedResult(t *testing.T) {
 		t.Fatalf("unexpected commands: %+v", runner.commands)
 	}
 	args := strings.Join(runner.commands[1].args, " ")
-	for _, required := range []string{"--network=none", "--read-only", "--cap-drop=ALL", "no-new-privileges", "--user=65532:65532", "ro=true", "go test ./..."} {
+	for _, required := range []string{"--network=none", "--read-only", "--cap-drop=ALL", "no-new-privileges", "--userns=keep-id:uid=65532,gid=65532", "--user=65532:65532", "ro=true,relabel=private", "go test ./..."} {
 		if !strings.Contains(args, required) {
 			t.Errorf("Podman arguments missing %q: %s", required, args)
 		}

@@ -7,7 +7,7 @@ Status: Local executable and HTTP composition implemented; production certificat
 `cmd/hako-github-broker` is the trusted boundary for Tenant-owned GitHub OAuth credentials and App private keys. The public API, CLI, queue messages, Resource Plane and Job VM do not receive AWS credentials or App private keys. The broker resolves the authoritative Tenant/App/Run identity from PostgreSQL/Aurora DSQL and reads only the purpose-specific approved Secret version through its dedicated AWS role.
 
 ```text
-Control Plane checkout worker/API
+Control Plane API / GitHub Checks worker
         │ TLS 1.3 + mTLS, SPIFFE URI SAN
         ▼
 Hako GitHub Credential Broker
@@ -18,7 +18,7 @@ Hako GitHub Credential Broker
         └── short-lived, repository-scoped Installation token
 ```
 
-The broker's TLS listener requires a trusted client certificate. The HTTP handler then requires the exact client URI SAN `spiffe://hako/control-plane` before it invokes an OAuth resolver or checkout service. Use a private service endpoint; this listener is not a public API or SSH/data-plane gateway.
+The broker's TLS listener requires a trusted client certificate. OAuth setup and GitHub Checks endpoints require the exact `spiffe://hako/control-plane` URI SAN. The checkout endpoint accepts that identity plus only Resource Plane identities explicitly listed in `HAKO_GITHUB_BROKER_CHECKOUT_RESOURCE_PLANE_IDS` (comma-separated stable Plane IDs); it does not grant those callers OAuth or Checks access. The Resource Plane worker uses `spiffe://hako/resource-plane/<resource-plane-id>` and a client constructor that checks the same exact identity. The broker's checkout service authorizer repeats the allowlist check before reading the canonical Run or minting a token. Use a private service endpoint; this listener is not a public API or SSH/data-plane gateway.
 
 ## Endpoints
 
@@ -48,9 +48,10 @@ The executable accepts these environment variables:
 | `HAKO_GITHUB_BROKER_TLS_CERT_FILE` | Broker HTTPS server certificate PEM |
 | `HAKO_GITHUB_BROKER_TLS_KEY_FILE` | Matching server key PEM |
 | `HAKO_GITHUB_BROKER_CLIENT_CA_FILE` | CA bundle used to verify Control Plane client certificates |
+| `HAKO_GITHUB_BROKER_CHECKOUT_RESOURCE_PLANE_IDS` | Optional comma-separated Resource Plane IDs permitted to call only `/v1/checkout/token`; defaults to none |
 | `HAKO_GITHUB_BROKER_LISTEN_ADDR` | Listener address; defaults to `:8443` |
 
-TLS certificate, private key, and client CA must be configured together. TLS is at least 1.3, and the server requires a verified client certificate. Broker clients must present the Control Plane URI SAN, use the broker trust root, and refuse redirects. The checkout client has a bounded 50-second HTTP timeout; the OAuth client has a shorter timeout. Server read/header/write/idle limits are bounded.
+TLS certificate, private key, and client CA must be configured together. TLS is at least 1.3, and the server requires a verified client certificate. API/OAuth/Checks clients must present the Control Plane URI SAN. Checkout clients may use the Control Plane URI or an explicitly allowlisted Resource Plane URI, use the broker trust root, and refuse redirects. The checkout client has a bounded 50-second HTTP timeout; the OAuth client has a shorter timeout. Server read/header/write/idle limits are bounded.
 
 Local run example (uses the development PostgreSQL service and does not apply migrations or contact GitHub/AWS unless the respective operations are invoked):
 

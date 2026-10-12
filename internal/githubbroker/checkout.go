@@ -122,7 +122,7 @@ func NewAWSCheckoutTokenMinter(config aws.Config, pool transaction.Beginner, pol
 }
 
 func (s *CheckoutService) Issue(ctx context.Context, caller string, tenant domain.TenantID, runID domain.WorkloadRunID) (CheckoutGrant, error) {
-	if s == nil || ctx == nil || caller != controlPlaneURI || tenant == "" || !validCheckoutRunID(runID) {
+	if s == nil || ctx == nil || !validCheckoutCaller(caller) || tenant == "" || !validCheckoutRunID(runID) {
 		return CheckoutGrant{}, ErrCheckoutDenied
 	}
 	if err := s.authorize(ctx, caller, tenant, runID); err != nil {
@@ -146,6 +146,17 @@ func (s *CheckoutService) Issue(ctx context.Context, caller string, tenant domai
 		return CheckoutGrant{}, ErrCheckoutDenied
 	}
 	return CheckoutGrant{token: token, expiresAt: expiresAt}, nil
+}
+
+func validCheckoutCaller(caller string) bool {
+	if caller == controlPlaneURI {
+		return true
+	}
+	if !strings.HasPrefix(caller, resourcePlaneURIPrefix) {
+		return false
+	}
+	_, err := ResourcePlaneCallerID(strings.TrimPrefix(caller, resourcePlaneURIPrefix))
+	return err == nil
 }
 
 func eligibleTenantCheckoutRun(run domain.WorkloadRun, tenant domain.TenantID, now time.Time) bool {

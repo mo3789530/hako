@@ -40,13 +40,21 @@ jobs:
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
       - name: Test
         run: go test ./...
+      - name: Package Lambda MicroVM Agent artifact (test key only)
+        run: make build-workload-microvm-artifact HAKO_AGENT_TRUSTED_KEYS_FILE=images/workload-agent/trusted-keys.example.json
       - name: Focused GitHub Webhook lifecycle E2E
         env:
           HAKO_TEST_DATABASE_URL: postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable
         run: make test-webhook-lifecycle-integration
+      - name: Install Podman and pull isolated Go test image
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes podman
+          podman pull docker.io/library/golang:1.27.2-alpine
       - name: PostgreSQL integration tests and coverage
         env:
           HAKO_TEST_DATABASE_URL: postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable
+          HAKO_E2E_REQUIRE_PODMAN: "1"
         run: go test -tags=integration -coverpkg=./... -coverprofile=coverage.out ./... -count=1
 
   terraform:
@@ -67,3 +75,7 @@ jobs:
             terraform -chdir="$root" init -backend=false -input=false
             terraform -chdir="$root" validate
           done
+      - name: Test Resource Plane Worker deployment contract
+        run: |
+          terraform -chdir=infra/terraform/modules/resource-plane init -backend=false -input=false
+          terraform -chdir=infra/terraform/modules/resource-plane test

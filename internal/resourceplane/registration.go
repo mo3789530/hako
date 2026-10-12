@@ -40,6 +40,10 @@ type Registration struct {
 	Capabilities    []string `json:"capabilities"`
 	CommandQueueURL string   `json:"command_queue_url"`
 	ResultQueueURL  string   `json:"result_queue_url"`
+	// Workload queues are optional during staged rollout. When present, they
+	// keep Workload attempt messages/results away from Workspace Operations.
+	WorkloadCommandQueueURL string `json:"workload_command_queue_url,omitempty"`
+	WorkloadResultQueueURL  string `json:"workload_result_queue_url,omitempty"`
 }
 
 var supportedCapabilities = map[string]struct{}{
@@ -110,6 +114,28 @@ func (manifest Manifest) ResultQueueURLs() map[string]string {
 	return queueURLs
 }
 
+// WorkloadCommandQueueURLs returns the optional Workload dispatch routing table.
+func (manifest Manifest) WorkloadCommandQueueURLs() map[string]string {
+	queueURLs := make(map[string]string, len(manifest.ResourcePlanes))
+	for _, registration := range manifest.ResourcePlanes {
+		if registration.WorkloadCommandQueueURL != "" {
+			queueURLs[registration.ID] = registration.WorkloadCommandQueueURL
+		}
+	}
+	return queueURLs
+}
+
+// WorkloadResultQueueURLs returns the optional Workload result consumer table.
+func (manifest Manifest) WorkloadResultQueueURLs() map[string]string {
+	queueURLs := make(map[string]string, len(manifest.ResourcePlanes))
+	for _, registration := range manifest.ResourcePlanes {
+		if registration.WorkloadResultQueueURL != "" {
+			queueURLs[registration.ID] = registration.WorkloadResultQueueURL
+		}
+	}
+	return queueURLs
+}
+
 // Validate checks stable IDs, AWS placement metadata, endpoints, and the
 // version-1 capability vocabulary. Capabilities are normalized in place.
 func (manifest *Manifest) Validate() error {
@@ -169,10 +195,31 @@ func (manifest *Manifest) Validate() error {
 		if registration.CommandQueueURL == registration.ResultQueueURL {
 			return fmt.Errorf("resource_planes[%d] command and result queues must be different", i)
 		}
-		for _, queue := range []struct{ role, url string }{
+		if (registration.WorkloadCommandQueueURL == "") != (registration.WorkloadResultQueueURL == "") {
+			return fmt.Errorf("resource_planes[%d] workload command and result queue URLs must be configured together", i)
+		}
+		queues := []struct{ role, url string }{
 			{role: "command", url: registration.CommandQueueURL},
 			{role: "result", url: registration.ResultQueueURL},
-		} {
+		}
+		if registration.WorkloadCommandQueueURL != "" {
+			if err := validateQueueURL(registration.WorkloadCommandQueueURL, registration.Region, registration.AccountID); err != nil {
+				return fmt.Errorf("resource_planes[%d].workload_command_queue_url: %w", i, err)
+			}
+			if err := validateQueueURL(registration.WorkloadResultQueueURL, registration.Region, registration.AccountID); err != nil {
+				return fmt.Errorf("resource_planes[%d].workload_result_queue_url: %w", i, err)
+			}
+			queues = append(queues,
+				struct{ role, url string }{role: "workload command", url: registration.WorkloadCommandQueueURL},
+				struct{ role, url string }{role: "workload result", url: registration.WorkloadResultQueueURL},
+			)
+		}
+		seenPlaneQueueURLs := make(map[string]struct{}, len(queues))
+		for _, queue := range queues {
+			if _, exists := seenPlaneQueueURLs[queue.url]; exists {
+				return fmt.Errorf("resource_planes[%d] %s queue URL duplicates another queue", i, queue.role)
+			}
+			seenPlaneQueueURLs[queue.url] = struct{}{}
 			if prior, exists := seenQueueURLs[queue.url]; exists {
 				return fmt.Errorf("resource_planes[%d] %s queue URL is already assigned to %s", i, queue.role, prior)
 			}

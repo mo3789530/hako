@@ -38,9 +38,10 @@ the same ID and payload are acknowledged as duplicates; ID reuse with
 different content is rejected. Terraform grants the API Lambda read access
 only to the configured Secrets Manager ARN and creates an unauthenticated API
 Gateway route only when enabled. No GitHub App is registered automatically.
-The shared-App processor handles Installation lifecycle and repository-
-membership events; push, pull-request, and workflow-job events remain pending
-and are not dispatched to workloads. Tenant owners/admins can
+The webhook processor handles Installation lifecycle and repository-membership
+events, and supports versioned push/pull-request normalization with a
+default-off, per-Repository verification trigger. `workflow_job` remains
+normalized but is not dispatched to an Actions runner. Tenant owners/admins can
 submit inert installation claims through the tenant API; those claims remain
 `pending`. A separate opt-in setup flow redirects through the GitHub App
 Installation setup URL and then GitHub OAuth authorization. Hako exchanges the
@@ -56,17 +57,23 @@ EventBridge Lambda drains batches of at most 10 eligible schema-v1
 dedicated `hako_webhook_processor` DSQL role. Installation `suspend` blocks
 Repository access; `unsuspend` restores it only for an already-active claim;
 `deleted` revokes the claim and removes synchronized Repository rows. Webhooks
-cannot create or reactivate a Tenant binding. Other event types remain pending.
-App private-key and Installation-token management, additional event
-processors, and operational replay/retention tooling remain outstanding. See
+cannot create or reactivate a Tenant binding. Unsupported event types remain
+pending. See
 `docs/github-installation-setup.md`, `docs/github-webhook-processor.md`, and
 the relevant integration tests. A separate Workload Run domain/store models
 Job/Agent/Preview lifecycle, Tenant-scoped idempotency, revision-guarded
 transitions, timeout/cancellation, and redacted artifact references. A local
 Fake Runtime can run an immutable Go test commit in isolated Podman, persist
 terminal state/artifact metadata, and write logs through an S3 backend using
-SSE-S3 or optional SSE-KMS. No worker/dispatcher connects webhook events to
-this path yet. See `docs/software-factory-workloads.md`.
+SSE-S3 or optional SSE-KMS. A local PostgreSQL E2E composes verified-delivery
+inbox processing, fixed untrusted Run creation, Podman execution, redacted
+artifact metadata, the durable Check outbox/dispatcher, and a fake GitHub
+Checks API. CI installs Podman and requires the Go image for this E2E; it uses
+no public GitHub credentials or AWS resources. Scheduler-to-Lambda MicroVM
+worker dispatch, signature ingress in this combined scenario, and the broader
+failure/cleanup matrix remain incomplete. Passing this local E2E does not
+mean a production worker is deployed. See
+`docs/software-factory-workloads.md` and Task 42.
 
 ## Integration model
 

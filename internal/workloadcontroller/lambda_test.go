@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/lambdamicrovms"
 	"github.com/aws/aws-sdk-go-v2/service/lambdamicrovms/types"
+	"github.com/mo3789530/hako/internal/workloadagent"
 	"github.com/mo3789530/hako/internal/workloadjobs"
 	"github.com/mo3789530/hako/internal/workloadjournal"
 )
@@ -24,6 +25,38 @@ type lambdaStub struct {
 	terminatePending bool
 	role             string
 	endpoint         string
+	token            map[string]string
+	tokenInputs      []*lambdamicrovms.CreateMicrovmAuthTokenInput
+}
+
+type recordingTicketIssuer struct {
+	issued []struct {
+		microVMID string
+		identity  workloadjournal.Command
+		operation workloadagent.Operation
+		execution *workloadagent.ExecutionBinding
+	}
+	err error
+}
+
+func (i *recordingTicketIssuer) Issue(vm string, id workloadjournal.Command, op workloadagent.Operation) (string, error) {
+	i.issued = append(i.issued, struct {
+		microVMID string
+		identity  workloadjournal.Command
+		operation workloadagent.Operation
+		execution *workloadagent.ExecutionBinding
+	}{vm, id, op, nil})
+	return "signed-agent-ticket", i.err
+}
+
+func (i *recordingTicketIssuer) IssueExecution(vm string, id workloadjournal.Command, op workloadagent.Operation, execution workloadagent.ExecutionBinding) (string, error) {
+	i.issued = append(i.issued, struct {
+		microVMID string
+		identity  workloadjournal.Command
+		operation workloadagent.Operation
+		execution *workloadagent.ExecutionBinding
+	}{vm, id, op, &execution})
+	return "signed-agent-ticket", i.err
 }
 
 func (a *lambdaStub) RunMicrovm(_ context.Context, in *lambdamicrovms.RunMicrovmInput, _ ...func(*lambdamicrovms.Options)) (*lambdamicrovms.RunMicrovmOutput, error) {
@@ -38,6 +71,10 @@ func (a *lambdaStub) GetMicrovm(_ context.Context, in *lambdamicrovms.GetMicrovm
 	return &lambdamicrovms.GetMicrovmOutput{MicrovmId: in.MicrovmIdentifier, ImageArn: aws.String(a.config.ImageIdentifier), ImageVersion: aws.String(a.config.ImageVersion),
 		State: a.state, Endpoint: aws.String(a.endpoint), ExecutionRoleArn: aws.String(a.role)}, nil
 }
+func (a *lambdaStub) CreateMicrovmAuthToken(_ context.Context, in *lambdamicrovms.CreateMicrovmAuthTokenInput, _ ...func(*lambdamicrovms.Options)) (*lambdamicrovms.CreateMicrovmAuthTokenOutput, error) {
+	a.tokenInputs = append(a.tokenInputs, in)
+	return &lambdamicrovms.CreateMicrovmAuthTokenOutput{AuthToken: a.token}, nil
+}
 func (a *lambdaStub) TerminateMicrovm(context.Context, *lambdamicrovms.TerminateMicrovmInput, ...func(*lambdamicrovms.Options)) (*lambdamicrovms.TerminateMicrovmOutput, error) {
 	if a.terminateErr != nil {
 		return nil, a.terminateErr
@@ -51,24 +88,28 @@ func (a *lambdaStub) TerminateMicrovm(context.Context, *lambdamicrovms.Terminate
 }
 
 type agentStub struct {
-	startErr error
-	starts   int
-	handle   string
-	result   workloadjobs.WorkloadResult
+	startErr   error
+	starts     int
+	handle     string
+	result     workloadjobs.WorkloadResult
+	connection AgentConnection
 }
 
-func (a *agentStub) Start(_ context.Context, handle, endpoint string, s Specification) error {
+func (a *agentStub) Start(_ context.Context, connection AgentConnection, s Specification) error {
 	a.starts++
-	a.handle = handle
+	a.handle = connection.MicroVMID
+	a.connection = connection
 	return a.startErr
 }
-func (a *agentStub) GetStatus(context.Context, workloadjournal.Command) (workloadjournal.ExecutionState, error) {
+func (a *agentStub) GetStatus(_ context.Context, connection AgentConnection, _ workloadjournal.Command) (workloadjournal.ExecutionState, error) {
+	a.connection = connection
 	if a.result.Status == "" {
 		return workloadjournal.Running, nil
 	}
 	return workloadjournal.ExecutionState(a.result.Status), nil
 }
-func (a *agentStub) CollectResult(context.Context, workloadjournal.Command) (workloadjobs.WorkloadResult, error) {
+func (a *agentStub) CollectResult(_ context.Context, connection AgentConnection, _ workloadjournal.Command) (workloadjobs.WorkloadResult, error) {
+	a.connection = connection
 	return a.result, nil
 }
 
@@ -76,7 +117,8 @@ func setupLambda(t *testing.T) (*Controller, *LambdaMicroVM, *lambdaStub, *agent
 	t.Helper()
 	c, _, _, now := setupController(t)
 	config := LambdaConfig{ImageIdentifier: "arn:aws:lambda:ap-northeast-1:123456789012:microvm-image:hako-job", ImageVersion: "1", ImageDigest: strings.Repeat("a", 64),
-		VPCEgressConnector: "arn:aws:lambda:ap-northeast-1:123456789012:network-connector:restricted", IngressConnector: "arn:aws:lambda:ap-northeast-1:aws:network-connector:aws-network-connector:ALL_INGRESS"}
+		VPCEgressConnector: "arn:aws:lambda:ap-northeast-1:123456789012:network-connector:restricted", IngressConnector: "arn:aws:lambda:ap-northeast-1:aws:network-connector:aws-network-connector:ALL_INGRESS",
+		AgentTicketIssuer: &recordingTicketIssuer{}}
 	old := c.resolver
 	c.resolver = resolveFunc(func(ctx context.Context, id workloadjournal.Command) (Specification, error) {
 		s, err := old.Resolve(ctx, id)
@@ -87,7 +129,7 @@ func setupLambda(t *testing.T) (*Controller, *LambdaMicroVM, *lambdaStub, *agent
 		s.EgressNetworkConnectors = []string{config.VPCEgressConnector}
 		return s, err
 	})
-	api := &lambdaStub{config: config, state: types.MicrovmStateRunning, endpoint: "https://microvm_1.lambda-microvm.ap-northeast-1.on.aws"}
+	api := &lambdaStub{config: config, state: types.MicrovmStateRunning, endpoint: "https://microvm_1.lambda-microvm.ap-northeast-1.on.aws", token: map[string]string{"X-aws-proxy-auth": "short-lived-test-token"}}
 	agent := &agentStub{}
 	r, err := NewLambdaMicroVM(api, c.acceptor.store, c.resolver, agent, config, func() time.Time { return *now })
 	if err != nil {
@@ -118,6 +160,73 @@ func TestLambdaRetriesExactRunParameters(t *testing.T) {
 	}
 	if s.Journal.RuntimeHandle != "microvm_1" || agent.handle != "microvm_1" || agent.starts != 1 {
 		t.Fatal("allocation binding missing")
+	}
+	if agent.connection.Endpoint != api.endpoint || agent.connection.AuthToken != "short-lived-test-token" || agent.connection.AgentTicket != "signed-agent-ticket" || agent.connection.SourceTicket != "signed-agent-ticket" || len(api.tokenInputs) != 1 {
+		t.Fatal("agent connection did not receive the short-lived endpoint credential")
+	}
+	tokenInput := api.tokenInputs[0]
+	if aws.ToString(tokenInput.MicrovmIdentifier) != "microvm_1" || aws.ToInt32(tokenInput.ExpirationInMinutes) != WorkloadAgentTokenMinutes || len(tokenInput.AllowedPorts) != 1 {
+		t.Fatal("auth token was not scoped to the expected VM and lifetime")
+	}
+	port, ok := tokenInput.AllowedPorts[0].(*types.PortSpecificationMemberPort)
+	if !ok || port.Value != WorkloadAgentPort {
+		t.Fatal("auth token was not restricted to the hako-agent port")
+	}
+}
+
+func TestLambdaRejectsMissingOrMalformedAgentToken(t *testing.T) {
+	for name, token := range map[string]map[string]string{
+		"missing":      nil,
+		"wrong header": {"Authorization": "not-an-aws-proxy-token"},
+		"newline":      {"X-aws-proxy-auth": "token\r\ninjected: yes"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, _, api, _, _ := setupLambda(t)
+			api.token = token
+			if _, err := c.Ensure(context.Background(), envelope(t, nil)); !errors.Is(err, ErrMicroVMNotReady) {
+				t.Fatalf("unsafe token accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestLambdaStatusAndResultUseFreshScopedAgentConnections(t *testing.T) {
+	c, runtime, api, agent, _ := setupLambda(t)
+	data := envelope(t, nil)
+	if _, err := c.Ensure(context.Background(), data); err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := c.acceptor.Accept(context.Background(), data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := identity(accepted.Journal)
+	if _, err := runtime.GetStatus(context.Background(), command); err != nil {
+		t.Fatal(err)
+	}
+	statusToken := agent.connection.AuthToken
+	if _, err := runtime.CollectResult(context.Background(), command); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.tokenInputs) != 3 || agent.connection.AuthToken == "" || agent.connection.AuthToken != statusToken {
+		// The fake token provider is deterministic; every operation must still
+		// request a new token instead of persisting one in the journal.
+		t.Fatal("agent status/result bypassed short-lived token issuance")
+	}
+	for _, in := range api.tokenInputs[1:] {
+		port, ok := in.AllowedPorts[0].(*types.PortSpecificationMemberPort)
+		if !ok || port.Value != WorkloadAgentPort || aws.ToInt32(in.ExpirationInMinutes) != WorkloadAgentTokenMinutes {
+			t.Fatal("status/result token exceeded the agent port or lifetime scope")
+		}
+	}
+	issuer := runtime.config.AgentTicketIssuer.(*recordingTicketIssuer)
+	if len(issuer.issued) != 5 || issuer.issued[0].operation != workloadagent.OperationStart || issuer.issued[1].operation != workloadagent.OperationSource ||
+		issuer.issued[2].operation != workloadagent.OperationStatus || issuer.issued[3].operation != workloadagent.OperationResult || issuer.issued[4].operation != workloadagent.OperationLogs {
+		t.Fatal("application tickets were not operation-scoped")
+	}
+	if issuer.issued[0].execution == nil || issuer.issued[1].execution == nil || *issuer.issued[0].execution != *issuer.issued[1].execution ||
+		issuer.issued[2].execution != nil || issuer.issued[3].execution != nil || issuer.issued[4].execution != nil {
+		t.Fatal("Start/Source tickets did not share the frozen execution binding or read tickets carried one")
 	}
 }
 
@@ -197,6 +306,15 @@ func TestLambdaRejectsUnsupportedDurationAndUnsafeNetwork(t *testing.T) {
 				t.Fatal("unsafe/unsupported request launched", err)
 			}
 		})
+	}
+}
+
+func TestLambdaRequiresAgentTicketIssuer(t *testing.T) {
+	_, runtime, api, agent, _ := setupLambda(t)
+	config := runtime.config
+	config.AgentTicketIssuer = nil
+	if _, err := NewLambdaMicroVM(api, runtime.store, runtime.resolver, agent, config, nil); !errors.Is(err, ErrSpecification) {
+		t.Fatalf("runtime accepted missing app-layer agent credential issuer: %v", err)
 	}
 }
 

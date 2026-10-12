@@ -9,6 +9,10 @@ module "control_plane" {
   github_webhook_secret_arn                       = var.github_webhook_secret_arn
   tenant_github_webhook_enabled                   = var.tenant_github_webhook_enabled
   tenant_github_webhook_reader_role_arns          = var.tenant_github_webhook_reader_role_arns
+  resource_plane_health_report_secret_arns        = var.resource_plane_health_report_secret_arns
+  resource_plane_workload_spec_secret_arns        = var.resource_plane_workload_spec_secret_arns
+  resource_plane_health_report_throttle_rate      = var.resource_plane_health_report_throttle_rate
+  resource_plane_health_report_throttle_burst     = var.resource_plane_health_report_throttle_burst
   github_app_slug                                 = var.github_app_slug
   github_app_id                                   = var.github_app_id
   github_app_client_id                            = var.github_app_client_id

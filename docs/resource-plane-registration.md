@@ -19,12 +19,15 @@ Each registration contains:
 | `capabilities` | Unique supported capabilities; `microvm` is required. |
 | `command_queue_url` | SQS queue URL for Dispatcher commands. |
 | `result_queue_url` | SQS queue URL for Resource Plane results. |
+| `workload_command_queue_url` | Optional SQS queue URL dedicated to Workload attempt dispatch/cancel. Must be configured together with `workload_result_queue_url`. |
+| `workload_result_queue_url` | Optional SQS queue URL dedicated to Workload execution results. |
 
 The v1 capability vocabulary is `microvm`, `container`, `private-network`, and
 `persistent-volume`. Capability strings are trimmed and lowercased during
 validation; duplicate or unknown capabilities fail closed. Queue URLs must be
 HTTPS, use the registered Region's SQS hostname, identify the registered AWS
-account in the URL path, and be different for commands and results. Unknown
+account in the URL path, and be distinct across all configured queues. The
+optional Workload queue URLs must either both be present or both absent. Unknown
 JSON fields, unsupported schema versions, duplicate Plane IDs, oversized
 manifests, and trailing JSON values are rejected.
 
@@ -33,9 +36,13 @@ The Scheduler persists Plane ID, provider, region, and capability JSON in the
 `resource_plane_status` row using the SQL procedure in
 [Scheduler Placement](scheduler-placement.md). The Outbox Dispatcher and
 Result Consumer both load this file via `HAKO_RESOURCE_PLANE_MANIFEST`.
-Dispatcher routes commands to each registered queue with a Region-specific
-SQS client, and the Result Consumer concurrently polls each registered result
-queue, also using the corresponding Region. For a migration, the Dispatcher
+Dispatcher routes Workspace commands to `command_queue_url` and Workload
+attempt dispatch/cancel to the dedicated Workload queue when configured. It
+does not fall back to a Workspace queue for Workload messages; missing routing
+leaves the Outbox item retryable. Both use Region-specific SQS clients. The
+Operation Result Consumer concurrently polls each registered `result_queue_url`.
+The Workload result consumer uses `workload_result_queue_url` when deployed.
+For a migration, the Dispatcher
 still accepts the older `HAKO_RESOURCE_PLANE_QUEUE_URLS` map; the Result
 Consumer accepts either `HAKO_OPERATION_RESULT_QUEUE_URLS` or the original
 single `HAKO_OPERATION_RESULT_QUEUE_URL`. These legacy queue settings cannot

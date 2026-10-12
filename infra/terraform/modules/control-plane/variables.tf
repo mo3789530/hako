@@ -66,6 +66,61 @@ variable "tenant_github_webhook_reader_role_arns" {
   }
 }
 
+variable "resource_plane_health_report_secret_arns" {
+  description = "Exact per-Resource-Plane HMAC Secret ARNs used by the opt-in signed health ingress. Values are ARNs only; secret contents are never Terraform inputs. Empty keeps the reporter route disabled."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition = length(var.resource_plane_health_report_secret_arns) <= 100 && length(distinct(values(var.resource_plane_health_report_secret_arns))) == length(var.resource_plane_health_report_secret_arns) && alltrue([
+      for plane_id, secret_arn in var.resource_plane_health_report_secret_arns :
+      can(regex("^[a-z0-9][a-z0-9-]{0,31}$", plane_id)) && can(regex("^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+$", secret_arn))
+    ])
+    error_message = "Resource Plane health reporter configuration must map up to 100 valid Plane IDs to exact Secrets Manager ARNs."
+  }
+}
+
+variable "resource_plane_workload_spec_secret_arns" {
+  description = "Exact Resource Plane ID to dedicated HMAC Secret ARN map for the internal Workload execution-spec API. Empty disables the route. Do not reuse health-report Secrets."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition = (
+      length(var.resource_plane_workload_spec_secret_arns) <= 100 &&
+      length(distinct(values(var.resource_plane_workload_spec_secret_arns))) == length(var.resource_plane_workload_spec_secret_arns) &&
+      length(setintersection(toset(values(var.resource_plane_workload_spec_secret_arns)), toset(values(var.resource_plane_health_report_secret_arns)))) == 0 &&
+      alltrue([
+        for plane_id, secret_arn in var.resource_plane_workload_spec_secret_arns :
+        can(regex("^[a-z0-9][a-z0-9-]{0,31}$", plane_id)) && can(regex("^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+$", secret_arn))
+      ])
+    )
+    error_message = "Workload specification authentication must map up to 100 valid Plane IDs to distinct exact Secret ARNs, separate from health-report Secrets."
+  }
+}
+
+variable "resource_plane_health_report_throttle_rate" {
+  description = "API Gateway request rate for the signed Resource Plane health report ingress."
+  type        = number
+  default     = 10
+
+  validation {
+    condition     = var.resource_plane_health_report_throttle_rate > 0 && var.resource_plane_health_report_throttle_rate <= 1000
+    error_message = "Resource Plane health report throttle rate must be between 0 and 1000 requests per second."
+  }
+}
+
+variable "resource_plane_health_report_throttle_burst" {
+  description = "API Gateway burst capacity for the signed Resource Plane health report ingress."
+  type        = number
+  default     = 20
+
+  validation {
+    condition     = var.resource_plane_health_report_throttle_burst >= 1 && var.resource_plane_health_report_throttle_burst <= 5000
+    error_message = "Resource Plane health report throttle burst must be between 1 and 5000 requests."
+  }
+}
+
 variable "github_app_slug" {
   description = "GitHub App slug used to generate the tenant Installation setup URL."
   type        = string
@@ -477,9 +532,14 @@ variable "resource_plane_manifest_json" {
       length(var.resource_plane_manifest_json) > 0 &&
       length(var.resource_plane_manifest_json) <= 2500 &&
       can(jsondecode(var.resource_plane_manifest_json).schema_version == 1) &&
-      can(length(jsondecode(var.resource_plane_manifest_json).resource_planes) > 0)
+      can(length(jsondecode(var.resource_plane_manifest_json).resource_planes) > 0) &&
+      try(alltrue([
+        for plane in jsondecode(var.resource_plane_manifest_json).resource_planes :
+        (try(trimspace(plane.workload_command_queue_url), "") == "") ==
+        (try(trimspace(plane.workload_result_queue_url), "") == "")
+      ]), false)
     )
-    error_message = "When enabled, the Dispatcher needs a valid non-empty version-1 manifest no larger than 2500 bytes."
+    error_message = "When enabled, the Dispatcher needs a valid non-empty version-1 manifest no larger than 2500 bytes; Workload command/result queue URLs must be configured together."
   }
 }
 

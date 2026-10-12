@@ -25,6 +25,15 @@ locals {
       element(split("/", plane.command_queue_url), length(split("/", plane.command_queue_url)) - 1)
     )
   ]
+  dispatcher_workload_command_queue_arns = [
+    for plane in local.dispatcher_resource_planes : format(
+      "arn:%s:sqs:%s:%s:%s",
+      data.aws_partition.current.partition,
+      plane.region,
+      plane.account_id,
+      element(split("/", plane.workload_command_queue_url), length(split("/", plane.workload_command_queue_url)) - 1)
+    ) if try(trimspace(plane.workload_command_queue_url), "") != ""
+  ]
   dispatcher_workload_queue_arns = var.enable_outbox_dispatcher ? [aws_sqs_queue.workload_scheduler[0].arn] : []
   dispatcher_github_checks_queue_arns = var.enable_github_checks_delivery ? [
     aws_sqs_queue.github_checks[0].arn
@@ -51,6 +60,14 @@ locals {
         Effect   = "Allow"
         Action   = ["sqs:SendMessage"]
         Resource = local.dispatcher_command_queue_arns
+      }
+    ] : [],
+    length(local.dispatcher_workload_command_queue_arns) > 0 ? [
+      {
+        Sid      = "PublishWorkloadCommandsToRegisteredPlanes"
+        Effect   = "Allow"
+        Action   = ["sqs:SendMessage"]
+        Resource = local.dispatcher_workload_command_queue_arns
       }
     ] : [],
     length(local.dispatcher_workload_queue_arns) > 0 ? [
@@ -547,6 +564,16 @@ resource "aws_iam_role_policy" "api_lambda" {
         Effect   = "Allow"
         Action   = ["sts:AssumeRole"]
         Resource = sort(tolist(var.tenant_github_webhook_reader_role_arns))
+        }], length(var.resource_plane_health_report_secret_arns) == 0 ? [] : [{
+        Sid      = "ReadConfiguredResourcePlaneHealthReportSecrets"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = sort(values(var.resource_plane_health_report_secret_arns))
+        }], length(var.resource_plane_workload_spec_secret_arns) == 0 ? [] : [{
+        Sid      = "ReadConfiguredResourcePlaneWorkloadSpecSecrets"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = sort(values(var.resource_plane_workload_spec_secret_arns))
     }])
   })
 }
@@ -564,23 +591,25 @@ resource "aws_lambda_function" "api" {
 
   environment {
     variables = {
-      HAKO_COGNITO_ISSUER                    = var.cognito_issuer_url
-      HAKO_COGNITO_CLIENT_ID                 = aws_cognito_user_pool_client.cli.id
-      HAKO_DSQL_HOST                         = "${aws_dsql_cluster.control_plane.identifier}.dsql.${var.aws_region}.on.aws"
-      HAKO_DSQL_USER                         = "hako_api"
-      HAKO_DSQL_DATABASE                     = "postgres"
-      HAKO_DEFAULT_WORKSPACE_IMAGE           = var.default_workspace_image
-      HAKO_DEFAULT_WORKSPACE_RUNTIME_CLASS   = var.default_workspace_runtime_class
-      HAKO_WORKLOAD_RUNS_ENABLED             = tostring(var.enable_workload_run_creation)
-      HAKO_WEBHOOK_WORKLOAD_TRIGGERS_ENABLED = tostring(var.enable_webhook_workload_triggers)
-      HAKO_GITHUB_APP_MANAGEMENT_ENABLED     = tostring(var.enable_webhook_workload_triggers)
-      HAKO_GITHUB_WEBHOOK_SECRET_ARN         = var.github_webhook_secret_arn
-      HAKO_TENANT_GITHUB_WEBHOOK_ENABLED     = tostring(var.tenant_github_webhook_enabled)
-      HAKO_GITHUB_APP_SLUG                   = var.github_app_setup_enabled ? var.github_app_slug : ""
-      HAKO_GITHUB_APP_ID                     = var.github_app_setup_enabled ? tostring(var.github_app_id) : ""
-      HAKO_GITHUB_APP_CLIENT_ID              = var.github_app_setup_enabled ? var.github_app_client_id : ""
-      HAKO_GITHUB_APP_CLIENT_SECRET_ARN      = var.github_app_setup_enabled ? var.github_app_client_secret_arn : ""
-      HAKO_GITHUB_APP_CALLBACK_URL           = var.github_app_setup_enabled ? var.github_app_callback_url : ""
+      HAKO_COGNITO_ISSUER                           = var.cognito_issuer_url
+      HAKO_COGNITO_CLIENT_ID                        = aws_cognito_user_pool_client.cli.id
+      HAKO_DSQL_HOST                                = "${aws_dsql_cluster.control_plane.identifier}.dsql.${var.aws_region}.on.aws"
+      HAKO_DSQL_USER                                = "hako_api"
+      HAKO_DSQL_DATABASE                            = "postgres"
+      HAKO_DEFAULT_WORKSPACE_IMAGE                  = var.default_workspace_image
+      HAKO_DEFAULT_WORKSPACE_RUNTIME_CLASS          = var.default_workspace_runtime_class
+      HAKO_WORKLOAD_RUNS_ENABLED                    = tostring(var.enable_workload_run_creation)
+      HAKO_WEBHOOK_WORKLOAD_TRIGGERS_ENABLED        = tostring(var.enable_webhook_workload_triggers)
+      HAKO_GITHUB_APP_MANAGEMENT_ENABLED            = tostring(var.enable_webhook_workload_triggers)
+      HAKO_GITHUB_WEBHOOK_SECRET_ARN                = var.github_webhook_secret_arn
+      HAKO_TENANT_GITHUB_WEBHOOK_ENABLED            = tostring(var.tenant_github_webhook_enabled)
+      HAKO_GITHUB_APP_SLUG                          = var.github_app_setup_enabled ? var.github_app_slug : ""
+      HAKO_GITHUB_APP_ID                            = var.github_app_setup_enabled ? tostring(var.github_app_id) : ""
+      HAKO_GITHUB_APP_CLIENT_ID                     = var.github_app_setup_enabled ? var.github_app_client_id : ""
+      HAKO_GITHUB_APP_CLIENT_SECRET_ARN             = var.github_app_setup_enabled ? var.github_app_client_secret_arn : ""
+      HAKO_GITHUB_APP_CALLBACK_URL                  = var.github_app_setup_enabled ? var.github_app_callback_url : ""
+      HAKO_RESOURCE_PLANE_HEALTH_REPORT_SECRET_ARNS = jsonencode(var.resource_plane_health_report_secret_arns)
+      HAKO_RESOURCE_PLANE_WORKLOAD_SPEC_SECRET_ARNS = jsonencode(var.resource_plane_workload_spec_secret_arns)
     }
   }
 
@@ -606,24 +635,26 @@ resource "aws_lambda_function" "api_image" {
 
   environment {
     variables = {
-      HAKO_COGNITO_ISSUER                    = var.cognito_issuer_url
-      HAKO_COGNITO_CLIENT_ID                 = aws_cognito_user_pool_client.cli.id
-      HAKO_DSQL_HOST                         = "${aws_dsql_cluster.control_plane.identifier}.dsql.${var.aws_region}.on.aws"
-      HAKO_DSQL_USER                         = "hako_api"
-      HAKO_DSQL_DATABASE                     = "postgres"
-      HAKO_DEFAULT_WORKSPACE_IMAGE           = var.default_workspace_image
-      HAKO_DEFAULT_WORKSPACE_RUNTIME_CLASS   = var.default_workspace_runtime_class
-      HAKO_WORKLOAD_RUNS_ENABLED             = tostring(var.enable_workload_run_creation)
-      HAKO_WEBHOOK_WORKLOAD_TRIGGERS_ENABLED = tostring(var.enable_webhook_workload_triggers)
-      HAKO_GITHUB_APP_MANAGEMENT_ENABLED     = tostring(var.enable_webhook_workload_triggers)
-      HAKO_API_HTTP_MODE                     = "true"
-      HAKO_GITHUB_WEBHOOK_SECRET_ARN         = var.github_webhook_secret_arn
-      HAKO_TENANT_GITHUB_WEBHOOK_ENABLED     = tostring(var.tenant_github_webhook_enabled)
-      HAKO_GITHUB_APP_SLUG                   = var.github_app_setup_enabled ? var.github_app_slug : ""
-      HAKO_GITHUB_APP_ID                     = var.github_app_setup_enabled ? tostring(var.github_app_id) : ""
-      HAKO_GITHUB_APP_CLIENT_ID              = var.github_app_setup_enabled ? var.github_app_client_id : ""
-      HAKO_GITHUB_APP_CLIENT_SECRET_ARN      = var.github_app_setup_enabled ? var.github_app_client_secret_arn : ""
-      HAKO_GITHUB_APP_CALLBACK_URL           = var.github_app_setup_enabled ? var.github_app_callback_url : ""
+      HAKO_COGNITO_ISSUER                           = var.cognito_issuer_url
+      HAKO_COGNITO_CLIENT_ID                        = aws_cognito_user_pool_client.cli.id
+      HAKO_DSQL_HOST                                = "${aws_dsql_cluster.control_plane.identifier}.dsql.${var.aws_region}.on.aws"
+      HAKO_DSQL_USER                                = "hako_api"
+      HAKO_DSQL_DATABASE                            = "postgres"
+      HAKO_DEFAULT_WORKSPACE_IMAGE                  = var.default_workspace_image
+      HAKO_DEFAULT_WORKSPACE_RUNTIME_CLASS          = var.default_workspace_runtime_class
+      HAKO_WORKLOAD_RUNS_ENABLED                    = tostring(var.enable_workload_run_creation)
+      HAKO_WEBHOOK_WORKLOAD_TRIGGERS_ENABLED        = tostring(var.enable_webhook_workload_triggers)
+      HAKO_GITHUB_APP_MANAGEMENT_ENABLED            = tostring(var.enable_webhook_workload_triggers)
+      HAKO_API_HTTP_MODE                            = "true"
+      HAKO_GITHUB_WEBHOOK_SECRET_ARN                = var.github_webhook_secret_arn
+      HAKO_TENANT_GITHUB_WEBHOOK_ENABLED            = tostring(var.tenant_github_webhook_enabled)
+      HAKO_GITHUB_APP_SLUG                          = var.github_app_setup_enabled ? var.github_app_slug : ""
+      HAKO_GITHUB_APP_ID                            = var.github_app_setup_enabled ? tostring(var.github_app_id) : ""
+      HAKO_GITHUB_APP_CLIENT_ID                     = var.github_app_setup_enabled ? var.github_app_client_id : ""
+      HAKO_GITHUB_APP_CLIENT_SECRET_ARN             = var.github_app_setup_enabled ? var.github_app_client_secret_arn : ""
+      HAKO_GITHUB_APP_CALLBACK_URL                  = var.github_app_setup_enabled ? var.github_app_callback_url : ""
+      HAKO_RESOURCE_PLANE_HEALTH_REPORT_SECRET_ARNS = jsonencode(var.resource_plane_health_report_secret_arns)
+      HAKO_RESOURCE_PLANE_WORKLOAD_SPEC_SECRET_ARNS = jsonencode(var.resource_plane_workload_spec_secret_arns)
     }
   }
 
@@ -960,6 +991,29 @@ resource "aws_apigatewayv2_route" "tenant_github_webhook" {
   authorization_type = "NONE"
 }
 
+# This route intentionally bypasses Cognito only when a finite, exact
+# Resource Plane ID -> HMAC Secret ARN map is configured. The API still
+# authenticates every request using that Plane-specific signature.
+resource "aws_apigatewayv2_route" "resource_plane_health_report" {
+  count = length(var.resource_plane_health_report_secret_arns) == 0 ? 0 : 1
+
+  api_id             = aws_apigatewayv2_api.control_plane.id
+  route_key          = "POST /v1/internal/resource-planes/{resource_plane_id}/health"
+  target             = "integrations/${aws_apigatewayv2_integration.api_lambda.id}"
+  authorization_type = "NONE"
+}
+
+# Resource Plane execution metadata is returned only after a dedicated
+# per-Plane HMAC signature and live Run/attempt/Installation checks.
+resource "aws_apigatewayv2_route" "resource_plane_workload_spec" {
+  count = length(var.resource_plane_workload_spec_secret_arns) == 0 ? 0 : 1
+
+  api_id             = aws_apigatewayv2_api.control_plane.id
+  route_key          = "GET /v1/internal/resource-planes/{resource_plane_id}/tenants/{tenant_id}/workloads/{workload_run_id}/attempts/{attempt_id}/generations/{generation}/specification"
+  target             = "integrations/${aws_apigatewayv2_integration.api_lambda.id}"
+  authorization_type = "NONE"
+}
+
 # GitHub's setup redirect carries an OAuth code plus our one-time state. Hako
 # exchanges the code and verifies the installing user before binding a Tenant.
 resource "aws_apigatewayv2_route" "github_setup_callback" {
@@ -981,6 +1035,24 @@ resource "aws_apigatewayv2_stage" "default" {
       route_key              = "POST /v1/integrations/github/apps/{integration_id}/webhook"
       throttling_rate_limit  = var.tenant_github_webhook_throttle_rate
       throttling_burst_limit = var.tenant_github_webhook_throttle_burst
+    }
+  }
+
+  dynamic "route_settings" {
+    for_each = length(var.resource_plane_health_report_secret_arns) > 0 ? [true] : []
+    content {
+      route_key              = "POST /v1/internal/resource-planes/{resource_plane_id}/health"
+      throttling_rate_limit  = var.resource_plane_health_report_throttle_rate
+      throttling_burst_limit = var.resource_plane_health_report_throttle_burst
+    }
+  }
+
+  dynamic "route_settings" {
+    for_each = length(var.resource_plane_workload_spec_secret_arns) > 0 ? [true] : []
+    content {
+      route_key              = "GET /v1/internal/resource-planes/{resource_plane_id}/tenants/{tenant_id}/workloads/{workload_run_id}/attempts/{attempt_id}/generations/{generation}/specification"
+      throttling_rate_limit  = var.resource_plane_health_report_throttle_rate
+      throttling_burst_limit = var.resource_plane_health_report_throttle_burst
     }
   }
 }

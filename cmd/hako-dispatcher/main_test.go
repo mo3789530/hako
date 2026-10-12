@@ -49,7 +49,7 @@ func TestConfiguredQueueURLsReadsManifest(t *testing.T) {
 		t.Fatalf("manifest command queue mapping = %#v", got)
 	}
 	queues, err := configuredQueues()
-	if err != nil || queues["rp-tokyo-01"].Region != "ap-northeast-1" {
+	if err != nil || queues["rp-tokyo-01"].Region != "ap-northeast-1" || queues["rp-tokyo-01"].WorkloadURL != "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-workload-commands" {
 		t.Fatalf("manifest queue region = %+v, %v", queues, err)
 	}
 	t.Setenv("HAKO_RESOURCE_PLANE_QUEUE_URLS", `{"rp-other":"https://sqs.example/commands"}`)

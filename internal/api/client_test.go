@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"github.com/mo3789530/hako/internal/workspacesession"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -168,6 +169,56 @@ func TestGetWorkspaceUsesTenantScopedPath(t *testing.T) {
 	}
 	if view.Workspace.ID != "ws_1" || view.Workspace.Name != "api-dev" || view.Status.ObservedState != "running" {
 		t.Fatalf("unexpected Workspace view: %+v", view)
+	}
+}
+
+func TestWorkspaceSessionClientIssueAndRevoke(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-access-token" {
+			t.Errorf("unexpected Authorization header")
+		}
+		switch r.Method {
+		case http.MethodPost:
+			if r.URL.Path != "/v1/tenants/tenant_123/workspaces/ws_1/sessions" {
+				t.Errorf("issue path = %q", r.URL.Path)
+			}
+			var body struct {
+				Permissions []string `json:"permissions"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Permissions) != 1 || body.Permissions[0] != "shell" {
+				t.Errorf("issue body = %+v, error=%v", body, err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"session_id":"0123456789abcdef0123456789abcdef0123456789abcdef","ticket":"key.payload.signature","expires_at":"2026-10-12T05:00:00Z","permissions":["shell"]}`))
+		case http.MethodDelete:
+			if r.URL.Path != "/v1/tenants/tenant_123/workspaces/ws_1/sessions/0123456789abcdef0123456789abcdef0123456789abcdef" {
+				t.Errorf("revoke path = %q", r.URL.Path)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected method %s", r.Method)
+		}
+	}))
+	defer server.Close()
+	session, err := CreateWorkspaceSession(context.Background(), server.URL, "test-access-token", "tenant_123", "ws_1", []workspacesession.Permission{workspacesession.PermissionShell}, server.Client())
+	if err != nil || session.SessionID == "" || session.Ticket == "" {
+		t.Fatalf("create session: %+v error=%v", session, err)
+	}
+	if err := RevokeWorkspaceSession(context.Background(), server.URL, "test-access-token", "tenant_123", "ws_1", string(session.SessionID), server.Client()); err != nil {
+		t.Fatalf("revoke session: %v", err)
+	}
+}
+
+func TestWorkspaceSessionClientRejectsInvalidPermissionAndIDs(t *testing.T) {
+	if _, err := CreateWorkspaceSession(context.Background(), "https://api.example.test", "token", "tenant_123", "ws_1", []workspacesession.Permission{"admin"}, nil); err == nil {
+		t.Fatal("unknown session permission accepted")
+	}
+	if _, err := CreateWorkspaceSession(context.Background(), "https://api.example.test", "token", "tenant/other", "ws_1", nil, nil); err == nil {
+		t.Fatal("unsafe Tenant ID accepted")
+	}
+	if err := RevokeWorkspaceSession(context.Background(), "https://api.example.test", "token", "tenant_123", "ws_1", "short", nil); err == nil {
+		t.Fatal("invalid session ID accepted")
 	}
 }
 

@@ -31,6 +31,10 @@ type Config struct {
 	// WorkloadSchedulerQueueURL routes workload_run.schedule_requested events.
 	// It is optional until the Workload scheduler queue is provisioned.
 	WorkloadSchedulerQueueURL string
+	// WorkloadCommandQueueURLs routes attempt dispatch/cancel events to the
+	// dedicated Workload worker queue. There is deliberately no Workspace
+	// command-queue fallback when this entry is absent.
+	WorkloadCommandQueueURLs map[string]string
 	// GitHubChecksQueueURL routes durable Workload Run Check updates. It is
 	// optional until the trusted Checks result worker is deployed.
 	GitHubChecksQueueURL string
@@ -119,6 +123,14 @@ func New(store Store, publisher Publisher, queueURLs map[string]string, config C
 	for id, value := range queueURLs {
 		copyURLs[id] = value
 	}
+	workloadURLs := make(map[string]string, len(config.WorkloadCommandQueueURLs))
+	for id, value := range config.WorkloadCommandQueueURLs {
+		if id == "" || value == "" {
+			return nil, errors.New("Workload Resource Plane IDs and command queue URLs must not be empty")
+		}
+		workloadURLs[id] = value
+	}
+	config.WorkloadCommandQueueURLs = workloadURLs
 	return &Dispatcher{store: store, publish: publisher, queues: copyURLs, config: config}, nil
 }
 
@@ -196,9 +208,9 @@ func (d *Dispatcher) route(event outbox.Event) (string, error) {
 			command.ResourcePlaneID == "" || command.IdempotencyToken == "" {
 			return "", errors.New("Workload dispatch command has an unsupported or inconsistent envelope")
 		}
-		queueURL := d.queues[command.ResourcePlaneID]
+		queueURL := d.config.WorkloadCommandQueueURLs[command.ResourcePlaneID]
 		if queueURL == "" {
-			return "", fmt.Errorf("no Resource Plane queue configured for %q", command.ResourcePlaneID)
+			return "", fmt.Errorf("no Workload command queue configured for Resource Plane %q", command.ResourcePlaneID)
 		}
 		return queueURL, nil
 	}

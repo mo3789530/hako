@@ -75,6 +75,26 @@ func TestResultRetryUsesDurablePayload(t *testing.T) {
 	}
 }
 
+func TestPollUsesFrozenSpecificationAfterResolverRevoked(t *testing.T) {
+	c, _, runtime, _ := setupController(t)
+	data := envelope(t, nil)
+	if _, err := c.Ensure(context.Background(), data); err != nil {
+		t.Fatal(err)
+	}
+	runtime.result = successfulResult(t, c)
+	c.resolver = resolveFunc(func(context.Context, workloadjournal.Command) (Specification, error) {
+		return Specification{}, errors.New("repository binding revoked")
+	})
+	var published int
+	report, err := c.Poll(context.Background(), data, publishFunc(func(context.Context, workloadjobs.WorkloadResult) error {
+		published++
+		return nil
+	}))
+	if err != nil || !report.Journal.ResultPublished || report.Journal.CleanupState != workloadjournal.CleanupConfirmed || published != 1 {
+		t.Fatalf("frozen specification did not finish recovery after revocation: report=%+v published=%d err=%v", report, published, err)
+	}
+}
+
 func TestCrashAfterSendReplaysSameResult(t *testing.T) {
 	c, db, r, _ := setupController(t)
 	data := envelope(t, nil)

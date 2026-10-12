@@ -51,6 +51,15 @@ func run() error {
 	if callbackURL == "" {
 		return errors.New("HAKO_GITHUB_BROKER_CALLBACK_URL is required")
 	}
+	checkoutCallers, err := configuredCheckoutCallers(os.Getenv("HAKO_GITHUB_BROKER_CHECKOUT_RESOURCE_PLANE_IDS"))
+	if err != nil {
+		return err
+	}
+	allowedCheckoutCallers := make(map[string]struct{}, len(checkoutCallers)+1)
+	allowedCheckoutCallers["spiffe://hako/control-plane"] = struct{}{}
+	for _, caller := range checkoutCallers {
+		allowedCheckoutCallers[caller] = struct{}{}
+	}
 	policy := transaction.DefaultPolicy()
 	oauth, err := githubbroker.NewOAuthService(func(ctx context.Context, pin githubregistry.SetupAppPin) error {
 		caller, ok := githubbroker.CallerFromContext(ctx)
@@ -82,7 +91,7 @@ func run() error {
 		return errors.New("configure checkout broker token minter")
 	}
 	checkout, err := githubbroker.NewCheckoutService(func(_ context.Context, caller string, _ domain.TenantID, _ domain.WorkloadRunID) error {
-		if caller != "spiffe://hako/control-plane" {
+		if _, ok := allowedCheckoutCallers[caller]; !ok {
 			return githubbroker.ErrUnavailable
 		}
 		return nil
@@ -112,7 +121,7 @@ func run() error {
 	if addr == "" {
 		addr = defaultListenAddr
 	}
-	server := &http.Server{Addr: addr, Handler: githubbroker.HandlerWithServices(oauth, checkout, checks), TLSConfig: tlsConfig,
+	server := &http.Server{Addr: addr, Handler: githubbroker.HandlerWithServicesAndCheckoutCallers(oauth, checkout, checks, checkoutCallers), TLSConfig: tlsConfig,
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 60 * time.Second,
 		IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
 	go func() {
@@ -125,6 +134,27 @@ func run() error {
 		return fmt.Errorf("serve GitHub broker: %w", err)
 	}
 	return nil
+}
+
+func configuredCheckoutCallers(raw string) ([]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	seen := make(map[string]struct{})
+	callers := make([]string, 0)
+	for _, rawID := range strings.Split(raw, ",") {
+		id := strings.TrimSpace(rawID)
+		caller, err := githubbroker.ResourcePlaneCallerID(id)
+		if err != nil {
+			return nil, errors.New("HAKO_GITHUB_BROKER_CHECKOUT_RESOURCE_PLANE_IDS contains an invalid Resource Plane ID")
+		}
+		if _, exists := seen[caller]; exists {
+			return nil, errors.New("HAKO_GITHUB_BROKER_CHECKOUT_RESOURCE_PLANE_IDS contains duplicates")
+		}
+		seen[caller] = struct{}{}
+		callers = append(callers, caller)
+	}
+	return callers, nil
 }
 
 func openDatabase(ctx context.Context) (*pgxpool.Pool, error) {

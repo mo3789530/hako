@@ -81,8 +81,82 @@ func TestHealthReportDefaultsFreshnessAndAuditAreTransactional(t *testing.T) {
 	if err != nil || automated.Status != Degraded || automated.ReportSource != AutomatedReport || automated.Reason != "controller queue check failed" {
 		t.Fatalf("automated health report = %+v, %v", automated, err)
 	}
+	observedAt := now.Add(3 * time.Minute)
+	accepted, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (struct {
+		health  Health
+		created bool
+	}, error) {
+		health, created, err := PutAutomatedReport(ctx, tx, "rp-health", "probe-report-001", Healthy, "provider reachable", observedAt, observedAt.Add(5*time.Second))
+		return struct {
+			health  Health
+			created bool
+		}{health, created}, err
+	})
+	if err != nil || !accepted.created || accepted.health.Status != Healthy || accepted.health.ReportSource != AutomatedReport || !accepted.health.ReportedAt.Equal(observedAt) {
+		t.Fatalf("idempotent automated report = %+v, inserted=%t err=%v", accepted.health, accepted.created, err)
+	}
+	var duplicateCreated bool
+	duplicate, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (Health, error) {
+		health, created, err := PutAutomatedReport(ctx, tx, "rp-health", "probe-report-001", Healthy, "provider reachable", observedAt, observedAt.Add(6*time.Second))
+		if err != nil {
+			return Health{}, err
+		}
+		duplicateCreated = created
+		return health, nil
+	})
+	if err != nil || duplicateCreated || duplicate.ReportedAt == nil || !duplicate.ReportedAt.Equal(observedAt) {
+		t.Fatalf("same automated report retry = %+v, created=%t err=%v", duplicate, duplicateCreated, err)
+	}
+	if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (struct {
+		health  Health
+		created bool
+	}, error) {
+		health, created, err := PutAutomatedReport(ctx, tx, "rp-health", "probe-report-001", Unhealthy, "different content", observedAt, observedAt.Add(6*time.Second))
+		return struct {
+			health  Health
+			created bool
+		}{health, created}, err
+	}); !errors.Is(err, ErrReplayConflict) {
+		t.Fatalf("reused report ID with changed contents error = %v", err)
+	}
+	if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (struct {
+		health  Health
+		created bool
+	}, error) {
+		health, created, err := PutAutomatedReport(ctx, tx, "rp-health", "probe-report-old", Degraded, "late delivery", observedAt.Add(-time.Second), observedAt.Add(6*time.Second))
+		return struct {
+			health  Health
+			created bool
+		}{health, created}, err
+	}); !errors.Is(err, ErrStaleReport) {
+		t.Fatalf("out-of-order automated report error = %v", err)
+	}
+	if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (struct {
+		health  Health
+		created bool
+	}, error) {
+		health, created, err := PutAutomatedReport(ctx, tx, "rp-health", "probe-report-too-old", Degraded, "stale", now.Add(-6*time.Minute), now)
+		return struct {
+			health  Health
+			created bool
+		}{health, created}, err
+	}); !errors.Is(err, ErrStaleReport) {
+		t.Fatalf("expired automated report error = %v", err)
+	}
+	if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (struct {
+		health  Health
+		created bool
+	}, error) {
+		health, created, err := PutAutomatedReport(ctx, tx, "rp-health", "probe-report-future", Healthy, "future observation", now.Add(31*time.Second), now)
+		return struct {
+			health  Health
+			created bool
+		}{health, created}, err
+	}); !errors.Is(err, ErrStaleReport) {
+		t.Fatalf("future automated report error = %v", err)
+	}
 	var automatedEvents int
-	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM resource_plane_health_events WHERE resource_plane_id = 'rp-health' AND report_source = 'automated'`).Scan(&automatedEvents); err != nil || automatedEvents != 1 {
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM resource_plane_health_events WHERE resource_plane_id = 'rp-health' AND report_source = 'automated'`).Scan(&automatedEvents); err != nil || automatedEvents != 2 {
 		t.Fatalf("automated health report events = %d, error=%v", automatedEvents, err)
 	}
 	if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (Health, error) {

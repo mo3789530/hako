@@ -5,13 +5,17 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -428,6 +432,45 @@ func TestResourcePlaneHealthRequiresPlatformAdminAndAuditsUpdates(t *testing.T) 
 	missing := requestForResourcePlane(t, handler, http.MethodGet, admin, "rp-missing", "")
 	if missing.Code != http.StatusNotFound {
 		t.Fatalf("missing Resource Plane returned HTTP %d: %s", missing.Code, missing.Body.String())
+	}
+
+	sharedKey := []byte("0123456789abcdef0123456789abcdef")
+	reporter := NewHandler(nil, pool, WorkspaceCreateConfig{
+		ResourcePlaneHealthReportKeyResolver: func(_ context.Context, id domain.ResourcePlaneID) ([]byte, error) {
+			if id != "rp-health-api" {
+				return nil, fmt.Errorf("unknown Resource Plane")
+			}
+			return sharedKey, nil
+		},
+	})
+	observedAt := time.Now().UTC().Truncate(time.Second)
+	reportBody := fmt.Sprintf(`{"status":"unhealthy","reason":"provider probe failed","observed_at":%q}`, observedAt.Format(time.RFC3339Nano))
+	postReport := func(id, key string) *httptest.ResponseRecorder {
+		timestamp := strconv.FormatInt(time.Now().UTC().Unix(), 10)
+		request := httptest.NewRequest(http.MethodPost, "/v1/internal/resource-planes/rp-health-api/health", strings.NewReader(reportBody))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set(healthReportTimestampHeader, timestamp)
+		request.Header.Set(healthReportIDHeader, id)
+		bodyHash := sha256.Sum256([]byte(reportBody))
+		message := fmt.Sprintf("POST\n%s\n%s\n%s\n%s", request.URL.EscapedPath(), timestamp, id, hex.EncodeToString(bodyHash[:]))
+		mac := hmac.New(sha256.New, []byte(key))
+		_, _ = mac.Write([]byte(message))
+		request.Header.Set(healthReportSignatureHeader, hex.EncodeToString(mac.Sum(nil)))
+		recorder := httptest.NewRecorder()
+		reporter.ServeHTTP(recorder, request)
+		return recorder
+	}
+	forged := postReport("probe-api-001", "wrong-key-012345678901234567890123")
+	if forged.Code != http.StatusUnauthorized {
+		t.Fatalf("forged machine report returned HTTP %d: %s", forged.Code, forged.Body.String())
+	}
+	firstReport := postReport("probe-api-001", string(sharedKey))
+	if firstReport.Code != http.StatusOK || !strings.Contains(firstReport.Body.String(), `"accepted":true`) {
+		t.Fatalf("valid machine report = %d %s", firstReport.Code, firstReport.Body.String())
+	}
+	duplicateReport := postReport("probe-api-001", string(sharedKey))
+	if duplicateReport.Code != http.StatusOK || !strings.Contains(duplicateReport.Body.String(), `"accepted":false`) {
+		t.Fatalf("duplicate machine report = %d %s", duplicateReport.Code, duplicateReport.Body.String())
 	}
 }
 

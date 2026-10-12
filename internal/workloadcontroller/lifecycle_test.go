@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-lambda-go/events"
 	"github.com/mo3789530/hako/internal/workloadjobs"
 	"github.com/mo3789530/hako/internal/workloadjournal"
 )
@@ -344,6 +345,183 @@ func TestLaunchCheckpointCrashRecoversSameAllocation(t *testing.T) {
 	}
 	if _, err := c.Ensure(context.Background(), data); err != nil || r.launches != 1 {
 		t.Fatal("crash recovery created duplicate", err)
+	}
+}
+
+type recoveryPageStub struct {
+	page []workloadjournal.Snapshot
+	next string
+	err  error
+}
+
+type recoveryPagesStub struct {
+	pages map[string]recoveryPageStub
+	calls []string
+}
+
+func (s *recoveryPagesStub) ListRecoveryPage(_ context.Context, token string, _ int32) ([]workloadjournal.Snapshot, string, error) {
+	s.calls = append(s.calls, token)
+	page, ok := s.pages[token]
+	if !ok {
+		return nil, "", errors.New("unexpected recovery continuation token")
+	}
+	return page.page, page.next, page.err
+}
+
+func (s recoveryPageStub) ListRecoveryPage(_ context.Context, _ string, _ int32) ([]workloadjournal.Snapshot, string, error) {
+	return s.page, s.next, s.err
+}
+
+type recoveryLeaseStub struct {
+	acquireErr error
+	renewErr   error
+	acquired   int
+	renewed    int
+	released   int
+}
+
+func (s *recoveryLeaseStub) Acquire(_ context.Context, owner string, now time.Time, ttl time.Duration) (workloadjournal.RecoveryLease, error) {
+	s.acquired++
+	if s.acquireErr != nil {
+		return workloadjournal.RecoveryLease{}, s.acquireErr
+	}
+	return workloadjournal.RecoveryLease{Owner: owner, ExpiresAt: now.Add(ttl), ETag: "lease-1"}, nil
+}
+
+func (s *recoveryLeaseStub) Renew(_ context.Context, lease workloadjournal.RecoveryLease, now time.Time, ttl time.Duration) (workloadjournal.RecoveryLease, error) {
+	s.renewed++
+	if s.renewErr != nil {
+		return workloadjournal.RecoveryLease{}, s.renewErr
+	}
+	lease.ExpiresAt, lease.ETag = now.Add(ttl), fmt.Sprintf("lease-%d", s.renewed+1)
+	return lease, nil
+}
+
+func (s *recoveryLeaseStub) Release(_ context.Context, _ workloadjournal.RecoveryLease, _ time.Time) error {
+	s.released++
+	return nil
+}
+
+type blockingRecoveryLister struct{}
+
+func (blockingRecoveryLister) ListRecoveryPage(ctx context.Context, _ string, _ int32) ([]workloadjournal.Snapshot, string, error) {
+	<-ctx.Done()
+	return nil, "", ctx.Err()
+}
+
+func TestRecoverPageReplaysDurableAcceptedAttemptThroughPoll(t *testing.T) {
+	c, db, runtime, _ := setupController(t)
+	data := envelope(t, nil)
+	accepted, err := c.acceptor.Accept(context.Background(), data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var published int
+	report, err := c.RecoverPage(context.Background(), recoveryPageStub{page: []workloadjournal.Snapshot{accepted}, next: "next"}, "", 10,
+		publishFunc(func(context.Context, workloadjobs.WorkloadResult) error { published++; return nil }))
+	if err != nil || report.Scanned != 1 || report.Handled != 1 || len(report.Failed) != 0 || report.Next != "next" {
+		t.Fatalf("RecoverPage() = %+v, %v", report, err)
+	}
+	if runtime.launches != 1 || published != 0 {
+		t.Fatalf("recovery launches=%d published=%d; accepted attempt should launch once", runtime.launches, published)
+	}
+	if got, err := db.Get(context.Background(), "tenant_1", "run_1", "attempt_1"); err != nil || got.Journal.ExecutionState != workloadjournal.Running {
+		t.Fatalf("recovered journal = %+v, %v", got.Journal, err)
+	}
+}
+
+func TestRecoverPageIsBoundedAndReportsPerAttemptFailure(t *testing.T) {
+	c, _, _, _ := setupController(t)
+	if _, err := c.RecoverPage(context.Background(), recoveryPageStub{}, "", 1001, publishFunc(func(context.Context, workloadjobs.WorkloadResult) error { return nil })); err == nil {
+		t.Fatal("unbounded recovery page accepted")
+	}
+	bad := workloadjournal.Snapshot{Journal: workloadjournal.Journal{TenantID: "tenant_1"}}
+	report, err := c.RecoverPage(context.Background(), recoveryPageStub{page: []workloadjournal.Snapshot{bad}}, "", 10,
+		publishFunc(func(context.Context, workloadjobs.WorkloadResult) error { return nil }))
+	if err != nil || report.Scanned != 1 || report.Handled != 0 || len(report.Failed) != 1 || !errors.Is(report.Failed[0].Err, workloadjournal.ErrConflict) {
+		t.Fatalf("invalid recovery record was not isolated: %+v, %v", report, err)
+	}
+}
+
+func TestRecoverSweepPaginatesAndIsolatesAttemptFailures(t *testing.T) {
+	c, _, runtime, _ := setupController(t)
+	accepted, err := c.acceptor.Accept(context.Background(), envelope(t, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := workloadjournal.Snapshot{Journal: workloadjournal.Journal{TenantID: "tenant_1"}}
+	lister := &recoveryPagesStub{pages: map[string]recoveryPageStub{
+		"":       {page: []workloadjournal.Snapshot{accepted}, next: "page-2"},
+		"page-2": {page: []workloadjournal.Snapshot{bad}},
+	}}
+	report, err := c.RecoverSweep(context.Background(), lister, 25, 10,
+		publishFunc(func(context.Context, workloadjobs.WorkloadResult) error { return nil }))
+	if err != nil || !report.Complete || report.Pages != 2 || report.Scanned != 2 || report.Handled != 1 || report.FailedCount != 1 || len(report.Failed) != 1 {
+		t.Fatalf("RecoverSweep() = %+v, %v", report, err)
+	}
+	if len(lister.calls) != 2 || lister.calls[0] != "" || lister.calls[1] != "page-2" || runtime.launches != 1 {
+		t.Fatalf("sweep calls=%v launches=%d", lister.calls, runtime.launches)
+	}
+}
+
+func TestRecoverSweepReturnsContinuationAtBoundAndRejectsLoop(t *testing.T) {
+	c, _, _, _ := setupController(t)
+	publisher := publishFunc(func(context.Context, workloadjobs.WorkloadResult) error { return nil })
+	lister := &recoveryPagesStub{pages: map[string]recoveryPageStub{
+		"":       {next: "page-2"},
+		"page-2": {next: "page-3"},
+	}}
+	report, err := c.RecoverSweep(context.Background(), lister, 10, 1, publisher)
+	if err != nil || report.Complete || report.Pages != 1 || report.ContinuationToken != "page-2" {
+		t.Fatalf("bounded sweep = %+v, %v", report, err)
+	}
+	repeated := &recoveryPagesStub{pages: map[string]recoveryPageStub{"": {next: "page-2"}, "page-2": {next: "page-2"}}}
+	report, err = c.RecoverSweep(context.Background(), repeated, 10, 10, publisher)
+	if !errors.Is(err, ErrInvalidCommand) || report.Pages != 2 {
+		t.Fatalf("repeated continuation should fail safely: report=%+v error=%v", report, err)
+	}
+}
+
+func TestRecoverSweepWithLeaseSkipsHeldLeaseAndReleasesOwnedLease(t *testing.T) {
+	c, _, _, _ := setupController(t)
+	publisher := publishFunc(func(context.Context, workloadjobs.WorkloadResult) error { return nil })
+	held := &recoveryLeaseStub{acquireErr: workloadjournal.ErrRecoveryLeaseHeld}
+	report, err := c.RecoverSweepWithLease(context.Background(), recoveryPageStub{}, held, 10, 1, time.Minute, publisher)
+	if err != nil || report.LeaseAcquired || held.acquired != 1 || held.released != 0 {
+		t.Fatalf("held recovery lease result = %+v, err=%v, lease=%+v", report, err, held)
+	}
+	owned := &recoveryLeaseStub{}
+	report, err = c.RecoverSweepWithLease(context.Background(), recoveryPageStub{}, owned, 10, 1, time.Minute, publisher)
+	if err != nil || !report.LeaseAcquired || !report.Complete || owned.acquired != 1 || owned.released != 1 {
+		t.Fatalf("owned recovery lease result = %+v, err=%v, lease=%+v", report, err, owned)
+	}
+}
+
+func TestRecoverSweepWithLeaseCancelsWhenRenewalFails(t *testing.T) {
+	c, _, _, _ := setupController(t)
+	leases := &recoveryLeaseStub{renewErr: errors.New("lease CAS failed")}
+	publisher := publishFunc(func(context.Context, workloadjobs.WorkloadResult) error { return nil })
+	report, err := c.RecoverSweepWithLease(context.Background(), blockingRecoveryLister{}, leases, 10, 1, time.Second, publisher)
+	if err == nil || !strings.Contains(err.Error(), "lease CAS failed") || !report.LeaseAcquired || leases.renewed != 1 || leases.released != 1 {
+		t.Fatalf("lease loss did not cancel/release recovery sweep: report=%+v err=%v lease=%+v", report, err, leases)
+	}
+}
+
+func TestRecoveryLambdaHandlerValidatesLimitsAndRunsBoundedSweep(t *testing.T) {
+	c, _, _, _ := setupController(t)
+	publisher := publishFunc(func(context.Context, workloadjobs.WorkloadResult) error { return nil })
+	leases := &recoveryLeaseStub{}
+	if _, err := NewRecoveryLambdaHandler(c, recoveryPageStub{}, leases, publisher, RecoveryLambdaConfig{}); err == nil {
+		t.Fatal("unbounded recovery Lambda configuration accepted")
+	}
+	handler, err := NewRecoveryLambdaHandler(c, recoveryPageStub{}, leases, publisher,
+		RecoveryLambdaConfig{PageSize: 10, MaxPages: 2, LeaseTTL: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := handler.Handle(context.Background(), events.CloudWatchEvent{})
+	if err != nil || !report.LeaseAcquired || !report.Complete || leases.acquired != 1 || leases.released != 1 {
+		t.Fatalf("scheduled recovery Lambda = %+v, err=%v, lease=%+v", report, err, leases)
 	}
 }
 

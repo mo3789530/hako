@@ -85,3 +85,38 @@ func TestManifestRejectsQueueURLReuseAcrossPlanes(t *testing.T) {
 		t.Fatal("a queue URL must not be shared by multiple Resource Planes")
 	}
 }
+
+func TestManifestAcceptsSeparateWorkloadQueues(t *testing.T) {
+	data := strings.Replace(validManifest,
+		`"result_queue_url": "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-results"`,
+		`"result_queue_url": "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-results",
+    "workload_command_queue_url": "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-workload-commands",
+    "workload_result_queue_url": "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-workload-results"`, 1)
+	manifest, err := Parse([]byte(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := manifest.WorkloadCommandQueueURLs()["rp-tokyo-01"]; got != "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-workload-commands" {
+		t.Fatalf("Workload command queue = %q", got)
+	}
+	if got := manifest.WorkloadResultQueueURLs()["rp-tokyo-01"]; got != "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-workload-results" {
+		t.Fatalf("Workload result queue = %q", got)
+	}
+}
+
+func TestManifestRequiresDistinctPairedWorkloadQueues(t *testing.T) {
+	withCommand := strings.Replace(validManifest,
+		`"result_queue_url": "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-results"`,
+		`"result_queue_url": "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-results",
+    "workload_command_queue_url": "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-workload-commands"`, 1)
+	if _, err := Parse([]byte(withCommand)); err == nil || !strings.Contains(err.Error(), "configured together") {
+		t.Fatalf("one-sided Workload queue config should be rejected, err=%v", err)
+	}
+	withBoth := strings.Replace(withCommand,
+		`"workload_command_queue_url": "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-workload-commands"`,
+		`"workload_command_queue_url": "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-workload-commands",
+    "workload_result_queue_url": "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-workload-commands"`, 1)
+	if _, err := Parse([]byte(withBoth)); err == nil || !strings.Contains(err.Error(), "duplicates another queue") {
+		t.Fatalf("reused Workload queue URL should be rejected, err=%v", err)
+	}
+}

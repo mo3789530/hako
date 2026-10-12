@@ -30,8 +30,60 @@ output "results_dlq_arn" {
   value = module.resource_plane.results_dlq_arn
 }
 
+output "workload_results_queue_url" {
+  value = module.resource_plane.workload_results_queue_url
+}
+
+output "workload_results_queue_arn" {
+  value = module.resource_plane.workload_results_queue_arn
+}
+
+output "workload_results_dlq_url" {
+  value = module.resource_plane.workload_results_dlq_url
+}
+
+output "workload_results_dlq_arn" {
+  value = module.resource_plane.workload_results_dlq_arn
+}
+
+output "workload_commands_queue_url" {
+  value = module.resource_plane.workload_commands_queue_url
+}
+
+output "workload_commands_queue_arn" {
+  value = module.resource_plane.workload_commands_queue_arn
+}
+
+output "workload_commands_dlq_url" {
+  value = module.resource_plane.workload_commands_dlq_url
+}
+
+output "workload_commands_dlq_arn" {
+  value = module.resource_plane.workload_commands_dlq_arn
+}
+
+output "workload_controller_lambda_arn" {
+  value = module.resource_plane.workload_controller_lambda_arn
+}
+
+output "workload_controller_event_source_mapping_uuid" {
+  value = module.resource_plane.workload_controller_event_source_mapping_uuid
+}
+
+output "workload_recovery_schedule_arn" {
+  value = module.resource_plane.workload_recovery_schedule_arn
+}
+
 output "resource_controller_role_arn" {
   value = module.resource_plane.resource_controller_role_arn
+}
+
+output "workload_controller_role_arn" {
+  value = module.resource_plane.workload_controller_role_arn
+}
+
+output "workload_controller_log_group_name" {
+  value = module.resource_plane.workload_controller_log_group_name
 }
 
 output "resource_controller_log_group_name" {

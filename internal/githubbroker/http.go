@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -19,7 +20,10 @@ import (
 )
 
 const controlPlaneURI = "spiffe://hako/control-plane"
+const resourcePlaneURIPrefix = "spiffe://hako/resource-plane/"
 const brokerMaxBody = 16 << 10
+
+var resourcePlaneIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 
 type request struct {
 	Pin            githubregistry.SetupAppPin `json:"pin"`
@@ -61,27 +65,38 @@ func ServerTLSConfig(clientCAs *x509.CertPool) (*tls.Config, error) {
 // NewMTLSClient creates the client used by the API adapter. The supplied
 // certificate is a workload certificate whose URI SAN must be controlPlaneURI.
 func NewMTLSClient(certificate tls.Certificate, brokerRoots *x509.CertPool) (*http.Client, error) {
-	return newMTLSClient(certificate, brokerRoots, 6*time.Second)
+	return newMTLSClient(certificate, brokerRoots, 6*time.Second, controlPlaneURI)
 }
 
 // NewCheckoutMTLSClient allows the broker's bounded GitHub API exchange while
 // retaining the same TLS identity, trust root, TLS version and no-redirect
 // behavior as the shorter OAuth control-plane client.
 func NewCheckoutMTLSClient(certificate tls.Certificate, brokerRoots *x509.CertPool) (*http.Client, error) {
-	return newMTLSClient(certificate, brokerRoots, 50*time.Second)
+	return newMTLSClient(certificate, brokerRoots, 50*time.Second, controlPlaneURI)
+}
+
+// NewResourcePlaneCheckoutMTLSClient creates the checkout-only client for one
+// explicitly named Resource Plane identity. It cannot be used for OAuth or
+// GitHub Checks APIs, which remain Control Plane-only.
+func NewResourcePlaneCheckoutMTLSClient(resourcePlaneID string, certificate tls.Certificate, brokerRoots *x509.CertPool) (*http.Client, error) {
+	caller, err := ResourcePlaneCallerID(resourcePlaneID)
+	if err != nil {
+		return nil, err
+	}
+	return newMTLSClient(certificate, brokerRoots, 50*time.Second, caller)
 }
 
 func NewChecksMTLSClient(certificate tls.Certificate, brokerRoots *x509.CertPool) (*http.Client, error) {
-	return newMTLSClient(certificate, brokerRoots, 50*time.Second)
+	return newMTLSClient(certificate, brokerRoots, 50*time.Second, controlPlaneURI)
 }
 
-func newMTLSClient(certificate tls.Certificate, brokerRoots *x509.CertPool, timeout time.Duration) (*http.Client, error) {
+func newMTLSClient(certificate tls.Certificate, brokerRoots *x509.CertPool, timeout time.Duration, expectedCaller string) (*http.Client, error) {
 	if len(certificate.Certificate) == 0 || brokerRoots == nil || certificate.Leaf == nil {
 		return nil, ErrUnavailable
 	}
 	validIdentity := false
 	for _, uri := range certificate.Leaf.URIs {
-		if uri.String() == controlPlaneURI {
+		if uri.String() == expectedCaller {
 			validIdentity = true
 		}
 	}
@@ -94,6 +109,15 @@ func newMTLSClient(certificate tls.Certificate, brokerRoots *x509.CertPool, time
 	}}, nil
 }
 
+// ResourcePlaneCallerID returns the SPIFFE identity admitted for the
+// checkout-only Resource Plane client.
+func ResourcePlaneCallerID(resourcePlaneID string) (string, error) {
+	if !resourcePlaneIDPattern.MatchString(resourcePlaneID) {
+		return "", ErrUnavailable
+	}
+	return resourcePlaneURIPrefix + resourcePlaneID, nil
+}
+
 func Handler(service *OAuthService) http.Handler {
 	return HandlerWithCheckout(service, nil)
 }
@@ -103,6 +127,26 @@ func HandlerWithCheckout(service *OAuthService, checkout *CheckoutService) http.
 }
 
 func HandlerWithServices(service *OAuthService, checkout *CheckoutService, checks *ChecksService) http.Handler {
+	return HandlerWithServicesAndCheckoutCallers(service, checkout, checks, nil)
+}
+
+// HandlerWithServicesAndCheckoutCallers keeps OAuth/Checks Control
+// Plane-only while allowing explicitly enumerated Resource Plane identities
+// to use the narrowly scoped Tenant/Run checkout endpoint.
+func HandlerWithServicesAndCheckoutCallers(service *OAuthService, checkout *CheckoutService, checks *ChecksService, checkoutCallers []string) http.Handler {
+	allowedCheckoutCallers := map[string]struct{}{controlPlaneURI: {}}
+	for _, caller := range checkoutCallers {
+		if caller != controlPlaneURI && !strings.HasPrefix(caller, resourcePlaneURIPrefix) {
+			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusServiceUnavailable) })
+		}
+		if caller != controlPlaneURI {
+			id := strings.TrimPrefix(caller, resourcePlaneURIPrefix)
+			if _, err := ResourcePlaneCallerID(id); err != nil {
+				return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusServiceUnavailable) })
+			}
+		}
+		allowedCheckoutCallers[caller] = struct{}{}
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/oauth/setup-url", func(w http.ResponseWriter, r *http.Request) {
 		caller, err := authenticatedCaller(r)
@@ -170,7 +214,7 @@ func HandlerWithServices(service *OAuthService, checkout *CheckoutService, check
 	})
 	if checkout != nil {
 		mux.HandleFunc("POST /v1/checkout/token", func(w http.ResponseWriter, r *http.Request) {
-			caller, err := authenticatedCaller(r)
+			caller, err := authenticatedCheckoutCaller(r, allowedCheckoutCallers)
 			if err != nil {
 				writeError(w, http.StatusUnauthorized)
 				return
@@ -219,6 +263,19 @@ func authenticatedCaller(r *http.Request) (string, error) {
 	for _, uri := range r.TLS.PeerCertificates[0].URIs {
 		if uri.String() == controlPlaneURI {
 			return controlPlaneURI, nil
+		}
+	}
+	return "", ErrUnavailable
+}
+
+func authenticatedCheckoutCaller(r *http.Request, allowed map[string]struct{}) (string, error) {
+	if r == nil || r.TLS == nil || len(r.TLS.PeerCertificates) == 0 || len(r.TLS.VerifiedChains) == 0 || len(allowed) == 0 {
+		return "", ErrUnavailable
+	}
+	for _, uri := range r.TLS.PeerCertificates[0].URIs {
+		caller := uri.String()
+		if _, ok := allowed[caller]; ok {
+			return caller, nil
 		}
 	}
 	return "", ErrUnavailable

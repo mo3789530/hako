@@ -92,6 +92,15 @@ duration, not the derived timestamp, participates in the idempotency
 fingerprint so retries with the same key remain stable. Tenant quotas and
 per-kind policy limits remain the responsibility of the future API/scheduler.
 
+The local Go-test execution service handles the expected in-flight cancellation
+revision change: after the executor confirms it has stopped, it reads the latest
+Run revision and transitions a still-running Run with desired state `cancelled`
+to terminal `cancelled`, without attempting to persist a success artifact. A
+different unexpected revision change remains an OCC conflict. This local
+PostgreSQL test does not prove that a deployed Worker receives the cancel
+command, stops the Lambda MicroVM allocation, or completes cleanup; API
+cancellation remains asynchronous until those worker lifecycle gates pass.
+
 `CreateOrGet` scopes idempotency to a Tenant and compares a normalized request
 fingerprint. Reusing a key for a different request is a conflict. Repository
 runs require an exact lowercase 40- or 64-character commit SHA; mutable branch
@@ -172,23 +181,51 @@ transiently failed deliveries remain for retry/DLQ. It is not yet wired into a
 deployed service or queue configuration, and physical runtime cleanup remains
 a separate unfinished protocol.
 
+The Resource Plane dispatch envelope contains identity only
+(`tenant_id`, `workload_run_id`, `attempt_id`, `generation`,
+`resource_plane_id`, and `idempotency_token`). It intentionally omits
+`timeout_at` and execution parameters: these must be resolved from a trusted
+Control Plane source before launch. A wire-contract test verifies that the
+Control Plane marshalled command is accepted by the Resource Plane's strict
+decoder.
+
 `internal/workloadjournal` provides a Resource Plane S3 journal primitive.
 Creation uses `If-None-Match: *`; updates require the previously observed ETag
 with `If-Match`, and S3 409/412 conflicts map to a retryable journal conflict.
 The journal keeps immutable attempt identity and independent execution and
 cleanup state, and rejects advancing to launch/run after cancellation. It is a
 storage/state-machine foundation: the Task 62 command Acceptor now uses it,
-and Tasks 63–65 add a controller/official AWS SDK adapter, but no production agent/command queue/recovery scheduler is wired.
-A successful conditional write is not an atomic transaction with a runtime API.
+and Tasks 63–65 add a controller/official AWS SDK adapter. `ListRecoveryPage`
+can scan a bounded page under an explicit journal prefix, validate each key
+and payload, and return only attempts that may need reconciliation. The
+controller's `RecoverPage` replays those identities through the same Poll path
+used by normal delivery and isolates per-attempt failures. These are recovery
+primitives, not a production recovery scheduler: no distributed lease,
+schedule, alarm, IAM policy, or runtime composition is wired. A scheduled sweep
+must restart at page one periodically so transient failures are retried; a
+continuation token is only for finishing the current bounded scan. A successful
+conditional write is not an atomic transaction with a runtime API.
 
 `internal/workloadcontroller.Acceptor` validates the versioned identity-only
 dispatch envelope and configured Resource Plane before conditionally creating
 the journal. Duplicate deliveries reload the saved checkpoint and require an
 exact Tenant/Run/attempt/generation/placement/token match and a valid ETag.
 They preserve cancellation and cleanup state. Storage errors are returned for
-retry rather than reported as success. Acceptance does not execute a Job:
-Task 40 must deploy durable recovery for accepted journals before this becomes
-an acknowledgement boundary in a deployed command consumer.
+retry rather than reported as success. Acceptance does not execute a Job.
+The local recovery-page primitive can replay an accepted journal, but Task 40
+must deploy and monitor durable recovery before this becomes an acknowledgement
+boundary in a deployed command consumer.
+
+`internal/workloadcontroller.LambdaHandler` is the SQS-triggered Lambda
+adapter for this command path. It reads `HakoEventType` only from the trusted
+Dispatcher message attribute, passes the body to the controller's strict
+identity decoder, and reports individual failures through Lambda's partial
+batch response. A malformed/unsupported command or transient journal/provider
+failure is retried; a command is not acknowledged merely because JSON decoded.
+This adapter is unit-tested but is not yet composed with production resolver,
+agent, runtime, IAM, or event-source mapping, so workload creation remains
+disabled pending Task 40 readiness.
+
 The local Fake Runtime also has an explicit Go test Job entry point for an
 already-checked-out repository and immutable commit. It verifies `HEAD` before
 execution and invokes `go test ./...` only inside a one-shot Podman container
@@ -207,7 +244,25 @@ or non-pending run, checks the commit against the persisted run, uses the
 remaining immutable run timeout, and atomically records the terminal state and
 redacted-log metadata after an `ArtifactWriter` stores the bytes. PostgreSQL
 integration tests cover successful/failed completion, metadata, commit
-mismatch, and cancellation-before-start.
+mismatch, cancellation-before-start, timeout completion, and artifact-store
+failure (which records a safe terminal failure without creating metadata for
+an upload that did not succeed). The Task 42 Factory E2E additionally runs
+both a successful and a failing Go test from signed Tenant webhook ingress,
+checks redaction and success/failure GitHub conclusions, and retries a
+synthetic GitHub 503 without re-running either Job. The Worker remains a local
+Fake Runtime path; this E2E is not evidence of Lambda MicroVM execution.
+The same E2E sends a third signed delivery, persists a pre-dispatch cancellation,
+and passes the scheduler message through `DispatchHandler`; it verifies no
+placement or attempt is created and GitHub receives a cancelled Check. A
+fourth signed delivery starts a local executor, persists an in-flight cancel,
+waits for executor stop, and delivers the resulting cancelled Check through
+the fake GitHub consumer. This validates the local database/OCC and Check path,
+not delivery of a cancellation command to a deployed Worker, MicroVM stop, or
+physical cleanup. Fifth and sixth signed deliveries inject a timeout and an
+artifact-store outage through the same Run/Check path and verify the `timed_out`
+and `failure` conclusions. The artifact outage remains fail-closed and creates
+no artifact metadata. These two cases use deterministic fake executor/storage
+results; they do not simulate a real Lambda MicroVM deadline or S3 outage.
 
 The artifact byte store is still an injected interface; a concrete S3 writer
 is available as `S3ArtifactWriter`. It stores content-addressed objects under

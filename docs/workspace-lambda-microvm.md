@@ -108,6 +108,16 @@ approved connector and separately verified VPC deny-by-default controls.
 Never pass AWS credentials, GitHub App private keys, or secret values in the
 launch command or `/run` payload. Runtime IAM stays in the Resource Plane.
 
+An egress connector routes MicroVM outbound traffic into its configured VPC; it
+is not itself a NAT gateway. VPC-local and VPC-endpoint traffic use VPC routes.
+Internet-bound IPv4 traffic traverses a NAT gateway only when the connector's
+subnet route table directs `0.0.0.0/0` to that NAT gateway. Without that route,
+Internet access fails; without an egress connector, Lambda MicroVMs retain the
+service's default public Internet egress. A NAT gateway does not enforce an
+FQDN allowlist, so untrusted Workload egress additionally needs a separately
+verified firewall or egress proxy policy. Hako has not deployed or tested the
+connector, route table, NAT gateway, or filtering path.
+
 The API/SDK exposes suspend, resume, terminate, tags, and list calls locally,
 but actual isolation, endpoint/auth behavior, hook behavior, quota, costs,
 tag compatibility, client-token retention, and state-race behavior still need

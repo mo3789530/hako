@@ -204,11 +204,12 @@ func (r *JobRuntime) RunGoTest(ctx context.Context, spec JobSpec) (JobResult, er
 func (r *JobRuntime) podmanArgs(repositoryPath string) []string {
 	args := []string{"run", "--rm", "--pull=never", "--network=none", "--read-only", "--cap-drop=ALL",
 		"--security-opt=no-new-privileges", "--pids-limit=256", "--memory=2g", "--cpus=2",
+		"--userns=keep-id:uid=65532,gid=65532",
 		"--user=65532:65532", "--stop-timeout=5", "--tmpfs", "/tmp:rw,nosuid,nodev,size=1g,mode=1777",
-		"--mount", "type=bind,src=" + repositoryPath + ",dst=/workspace,ro=true",
+		"--mount", "type=bind,src=" + repositoryPath + ",dst=/workspace,ro=true,relabel=private",
 		"--workdir=/workspace", "--env=HOME=/tmp", "--env=GOCACHE=/tmp/go-cache", "--env=GOPROXY=off", "--env=GOSUMDB=off"}
 	if r.config.ModuleCache != "" {
-		args = append(args, "--mount", "type=bind,src="+r.config.ModuleCache+",dst=/go/pkg/mod,ro=true", "--env=GOMODCACHE=/go/pkg/mod")
+		args = append(args, "--mount", "type=bind,src="+r.config.ModuleCache+",dst=/go/pkg/mod,ro=true,relabel=shared", "--env=GOMODCACHE=/go/pkg/mod")
 	} else {
 		args = append(args, "--env=GOMODCACHE=/tmp/go-mod-cache")
 	}

@@ -39,13 +39,20 @@ func main() {
 		log.Fatalf("load AWS SDK configuration: %v", err)
 	}
 	queueURLs := make(map[string]string, len(queues))
+	workloadQueueURLs := make(map[string]string, len(queues))
 	regionalClients := make(map[string]dispatcher.SQSAPI, len(queues))
 	for resourcePlaneID, queue := range queues {
 		queueURLs[resourcePlaneID] = queue.URL
+		if queue.WorkloadURL != "" {
+			workloadQueueURLs[resourcePlaneID] = queue.WorkloadURL
+		}
 		if queue.Region != "" {
 			regionalConfig := awsCfg
 			regionalConfig.Region = queue.Region
 			regionalClients[queue.URL] = sqs.NewFromConfig(regionalConfig)
+			if queue.WorkloadURL != "" {
+				regionalClients[queue.WorkloadURL] = sqs.NewFromConfig(regionalConfig)
+			}
 		}
 	}
 	publisher, err := dispatcher.NewRegionalSQSPublisher(sqs.NewFromConfig(awsCfg), regionalClients)
@@ -55,6 +62,7 @@ func main() {
 	engine, err := dispatcher.New(dispatcher.StoreAdapter{Pool: pool, Policy: transaction.DefaultPolicy()}, publisher, queueURLs, dispatcher.Config{
 		BatchSize: 10, LeaseDuration: 30 * time.Second, BaseBackoff: time.Second, MaxBackoff: time.Minute,
 		WorkloadSchedulerQueueURL: strings.TrimSpace(os.Getenv("HAKO_WORKLOAD_SCHEDULER_QUEUE_URL")),
+		WorkloadCommandQueueURLs:  workloadQueueURLs,
 		GitHubChecksQueueURL:      strings.TrimSpace(os.Getenv("HAKO_GITHUB_CHECKS_QUEUE_URL")),
 	})
 	if err != nil {
@@ -80,8 +88,9 @@ func main() {
 }
 
 type queueConfiguration struct {
-	URL    string
-	Region string
+	URL         string
+	WorkloadURL string
+	Region      string
 }
 
 func configuredQueueURLs() (map[string]string, error) {
@@ -122,7 +131,7 @@ func configuredQueues() (map[string]queueConfiguration, error) {
 		}
 		queues := make(map[string]queueConfiguration, len(manifest.ResourcePlanes))
 		for _, registration := range manifest.ResourcePlanes {
-			queues[registration.ID] = queueConfiguration{URL: registration.CommandQueueURL, Region: registration.Region}
+			queues[registration.ID] = queueConfiguration{URL: registration.CommandQueueURL, WorkloadURL: registration.WorkloadCommandQueueURL, Region: registration.Region}
 		}
 		return queues, nil
 	}

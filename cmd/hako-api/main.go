@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -20,6 +22,7 @@ import (
 	"github.com/mo3789530/hako/internal/api"
 	"github.com/mo3789530/hako/internal/apigwlambda"
 	"github.com/mo3789530/hako/internal/auth"
+	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/githubapp"
 	"github.com/mo3789530/hako/internal/githubwebhook"
 	"github.com/mo3789530/hako/internal/store/dsql"
@@ -56,6 +59,21 @@ func main() {
 		WebhookWorkloadTriggersEnabled: strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_WEBHOOK_WORKLOAD_TRIGGERS_ENABLED")), "true"),
 		GitHubAppManagementEnabled:     strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_GITHUB_APP_MANAGEMENT_ENABLED")), "true"),
 	}
+	healthReportKeyResolver, err := resourcePlaneHealthReportKeyResolverFromEnv(ctx)
+	if err != nil {
+		log.Fatal("configure Resource Plane health report credentials")
+	}
+	createConfig.ResourcePlaneHealthReportKeyResolver = healthReportKeyResolver
+	workloadSpecKeyResolver, err := resourcePlaneWorkloadSpecKeyResolverFromEnv(ctx)
+	if err != nil {
+		log.Fatal("configure Resource Plane Workload specification credentials")
+	}
+	createConfig.ResourcePlaneWorkloadSpecKeyResolver = workloadSpecKeyResolver
+	workspaceSessionKeyResolver, err := resourcePlaneWorkspaceSessionKeyResolverFromEnv(ctx)
+	if err != nil {
+		log.Fatal("configure Resource Plane Workspace Session credentials")
+	}
+	createConfig.ResourcePlaneWorkspaceSessionKeyResolver = workspaceSessionKeyResolver
 	if createConfig.WebhookWorkloadTriggersEnabled && !createConfig.WorkloadRunsEnabled {
 		log.Fatal("Webhook-triggered Workload Runs require HAKO_WORKLOAD_RUNS_ENABLED=true")
 	}
@@ -161,6 +179,121 @@ func main() {
 			log.Printf("shutdown Hako API: %v", err)
 		}
 	}
+}
+
+var resourcePlaneSecretARNPattern = regexp.MustCompile(`^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+$`)
+var resourcePlaneIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+
+func resourcePlaneHealthReportKeyResolverFromEnv(ctx context.Context) (api.ResourcePlaneHealthReportKeyResolver, error) {
+	raw := strings.TrimSpace(os.Getenv("HAKO_RESOURCE_PLANE_HEALTH_REPORT_SECRET_ARNS"))
+	if raw == "" {
+		return nil, nil
+	}
+	secretARNs, err := parseResourcePlaneHealthSecretARNMap(raw)
+	if err != nil {
+		return nil, err
+	}
+	if len(secretARNs) == 0 {
+		return nil, nil
+	}
+	awsConfig, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
+		return nil, errors.New("configure Resource Plane health report Secret reader")
+	}
+	secretClient := secretsmanager.NewFromConfig(awsConfig)
+	return func(ctx context.Context, resourcePlaneID domain.ResourcePlaneID) ([]byte, error) {
+		secretARN, ok := secretARNs[string(resourcePlaneID)]
+		if !ok {
+			return nil, errors.New("health report identity is not configured")
+		}
+		output, err := secretClient.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: &secretARN})
+		if err != nil || output.SecretString == nil || len(*output.SecretString) < 32 {
+			return nil, errors.New("health report key is unavailable")
+		}
+		return []byte(*output.SecretString), nil
+	}, nil
+}
+
+func parseResourcePlaneHealthSecretARNMap(raw string) (map[string]string, error) {
+	return parseResourcePlaneSecretARNMap(raw)
+}
+
+func parseResourcePlaneSecretARNMap(raw string) (map[string]string, error) {
+	secretARNs := make(map[string]string)
+	if err := json.Unmarshal([]byte(raw), &secretARNs); err != nil || len(secretARNs) > 100 {
+		return nil, errors.New("Resource Plane Secret configuration must be a JSON object with up to 100 entries")
+	}
+	seenARNs := make(map[string]struct{}, len(secretARNs))
+	for resourcePlaneID, secretARN := range secretARNs {
+		if !resourcePlaneIDPattern.MatchString(resourcePlaneID) || !resourcePlaneSecretARNPattern.MatchString(secretARN) {
+			return nil, errors.New("Resource Plane Secret configuration contains an invalid ID or ARN")
+		}
+		if _, exists := seenARNs[secretARN]; exists {
+			return nil, errors.New("Resource Plane Secret ARNs must be distinct")
+		}
+		seenARNs[secretARN] = struct{}{}
+	}
+	return secretARNs, nil
+}
+
+func resourcePlaneWorkloadSpecKeyResolverFromEnv(ctx context.Context) (api.ResourcePlaneWorkloadSpecKeyResolver, error) {
+	raw := strings.TrimSpace(os.Getenv("HAKO_RESOURCE_PLANE_WORKLOAD_SPEC_SECRET_ARNS"))
+	if raw == "" {
+		return nil, nil
+	}
+	secretARNs, err := parseResourcePlaneSecretARNMap(raw)
+	if err != nil {
+		return nil, errors.New("Resource Plane Workload specification Secret map is invalid")
+	}
+	if len(secretARNs) == 0 {
+		return nil, nil
+	}
+	awsConfig, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
+		return nil, errors.New("configure Resource Plane Workload specification Secret reader")
+	}
+	secretClient := secretsmanager.NewFromConfig(awsConfig)
+	return func(ctx context.Context, resourcePlaneID domain.ResourcePlaneID) ([]byte, error) {
+		secretARN, ok := secretARNs[string(resourcePlaneID)]
+		if !ok {
+			return nil, errors.New("Workload specification identity is not configured")
+		}
+		output, err := secretClient.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: &secretARN})
+		if err != nil || output == nil || output.SecretString == nil || len(*output.SecretString) < 32 {
+			return nil, errors.New("Workload specification key is unavailable")
+		}
+		return []byte(*output.SecretString), nil
+	}, nil
+}
+
+func resourcePlaneWorkspaceSessionKeyResolverFromEnv(ctx context.Context) (api.ResourcePlaneWorkspaceSessionKeyResolver, error) {
+	raw := strings.TrimSpace(os.Getenv("HAKO_RESOURCE_PLANE_WORKSPACE_SESSION_SECRET_ARNS"))
+	if raw == "" {
+		return nil, nil
+	}
+	secretARNs, err := parseResourcePlaneSecretARNMap(raw)
+	if err != nil {
+		return nil, errors.New("Resource Plane Workspace Session Secret map is invalid")
+	}
+	if len(secretARNs) == 0 {
+		return nil, nil
+	}
+	awsConfig, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
+		return nil, errors.New("configure Resource Plane Workspace Session Secret reader")
+	}
+	secretClient := secretsmanager.NewFromConfig(awsConfig)
+	return func(ctx context.Context, resourcePlaneID domain.ResourcePlaneID) ([]byte, error) {
+		secretARN, ok := secretARNs[string(resourcePlaneID)]
+		if !ok {
+			return nil, errors.New("Workspace Session identity is not configured")
+		}
+		output, err := secretClient.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: &secretARN})
+		if err != nil || output == nil || output.SecretString == nil || len(*output.SecretString) < 32 || len(*output.SecretString) > 4096 {
+			return nil, errors.New("Workspace Session key is unavailable")
+		}
+		return []byte(*output.SecretString), nil
+	}, nil
 }
 
 func loadGitHubWebhookSecret(ctx context.Context, secretARN string) ([]byte, error) {

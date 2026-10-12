@@ -1,4 +1,4 @@
-.PHONY: fmt lint test test-integration test-integration-local test-webhook-lifecycle-integration test-workload-runtime test-workload-runtime-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-github-checks-consumer-image terraform-fmt terraform-validate
+.PHONY: fmt lint test test-integration test-integration-local test-webhook-lifecycle-integration test-software-factory-e2e test-workload-runtime test-workload-runtime-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-health-reporter-lambda build-workload-controller-lambda build-workload-microvm-artifact build-github-checks-consumer-image terraform-fmt terraform-validate terraform-test
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -not -path './.git/*')
@@ -19,6 +19,10 @@ test-integration-local:
 # Uses an isolated schema in the already-running local PostgreSQL database.
 test-webhook-lifecycle-integration:
 	HAKO_TEST_DATABASE_URL="$${HAKO_TEST_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" go test -tags=integration ./internal/api -run '^TestWebhookLifecycleE2E$$' -count=1
+
+# Requires the cached pinned Go image and the already-running local PostgreSQL.
+test-software-factory-e2e:
+	HAKO_TEST_DATABASE_URL="$${HAKO_TEST_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" HAKO_E2E_REQUIRE_PODMAN=1 go test -tags=integration ./internal/workloadjobs -run '^TestSoftwareFactoryPodmanPostgresAndGitHubCheck$$' -count=1
 
 test-workload-runtime:
 	go test -race ./internal/workloadcontroller ./internal/workloadjournal ./internal/dispatcher
@@ -61,6 +65,26 @@ build-resource-controller-lambda:
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o build/resource-controller-lambda/bootstrap ./cmd/hako-resource-controller-lambda
 	cd build/resource-controller-lambda && zip -q ../resource-controller-lambda.zip bootstrap
 
+build-health-reporter-lambda:
+	mkdir -p build/health-reporter-lambda
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o build/health-reporter-lambda/bootstrap ./cmd/hako-health-reporter-lambda
+	cd build/health-reporter-lambda && zip -q ../hako-health-reporter.zip bootstrap
+
+build-workload-controller-lambda:
+	mkdir -p build/workload-controller-lambda
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o build/workload-controller-lambda/bootstrap ./cmd/hako-workload-controller-lambda
+	cd build/workload-controller-lambda && zip -q ../hako-workload-controller.zip bootstrap
+
+# Packages a Lambda MicroVM code artifact; the supplied file must contain public verification keys only.
+build-workload-microvm-artifact:
+	@test -n "$(HAKO_AGENT_TRUSTED_KEYS_FILE)" || (echo "set HAKO_AGENT_TRUSTED_KEYS_FILE to a public-key JSON file" >&2; exit 1)
+	@test -s "$(HAKO_AGENT_TRUSTED_KEYS_FILE)" || (echo "trusted public-key JSON file is missing or empty" >&2; exit 1)
+	mkdir -p build/workload-microvm
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o build/workload-microvm/hako-agent ./cmd/hako-agent
+	cp images/workload-agent/Dockerfile build/workload-microvm/Dockerfile
+	install -m 0644 "$(HAKO_AGENT_TRUSTED_KEYS_FILE)" build/workload-microvm/trusted-keys.json
+	zip -q -j -FS build/hako-workload-microvm.zip build/workload-microvm/Dockerfile build/workload-microvm/hako-agent build/workload-microvm/trusted-keys.json
+
 # Builds an ARM64 ECS/Fargate image locally; publishing to ECR is a separate authorized step.
 build-github-checks-consumer-image:
 	podman build --arch arm64 --tag hako-checks-consumer:local -f cmd/hako-checks-consumer/Dockerfile .
@@ -74,3 +98,7 @@ terraform-validate:
 		terraform -chdir=$$root init -backend=false -input=false; \
 		terraform -chdir=$$root validate; \
 	done
+
+terraform-test:
+	terraform -chdir=infra/terraform/modules/resource-plane init -backend=false -input=false
+	terraform -chdir=infra/terraform/modules/resource-plane test

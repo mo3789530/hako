@@ -2,20 +2,29 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"runtime"
 	"strconv"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/mo3789530/hako/internal/api"
 	"github.com/mo3789530/hako/internal/auth"
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/idgen"
+	"github.com/mo3789530/hako/internal/workspacegateway"
+	"github.com/mo3789530/hako/internal/workspacesession"
 )
 
 var cliCredentialStore auth.CredentialStore = auth.OSKeyring{}
@@ -53,6 +62,21 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Fprintln(os.Stdout, "Hako API is healthy.")
+	case len(os.Args) == 4 && os.Args[1] == "shell":
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		fmt.Fprintf(os.Stderr, "Connecting to Workspace %s. Press Ctrl-C to disconnect.\n", os.Args[3])
+		if err := workspaceShell(ctx, os.Args[2], os.Args[3], os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "hako shell: %v\n", err)
+			os.Exit(1)
+		}
+	case (len(os.Args) == 5 || len(os.Args) == 6) && os.Args[1] == "forward":
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		if err := workspaceForward(ctx, os.Args[2], os.Args[3], os.Args[4], optionalArg(os.Args, 5), os.Stderr); err != nil {
+			fmt.Fprintf(os.Stderr, "hako forward: %v\n", err)
+			os.Exit(1)
+		}
 	case len(os.Args) == 4 && os.Args[1] == "tenant" && os.Args[2] == "membership":
 		membership, err := tenantMembership(os.Args[3])
 		if err != nil {
@@ -187,9 +211,189 @@ func main() {
 		}
 		fmt.Fprintf(os.Stdout, "Workspace %s accepted: desired=%s observed=%s (operation=%s state=%s, request-key=%s)\n", result.Workspace.Workspace.ID, result.Workspace.Status.DesiredState, result.Workspace.Status.ObservedState, result.OperationID, result.OperationState, idempotencyKey)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: hako login | hako api health | hako tenant membership <tenant-id> | hako tenant placement-policy get <tenant-id> | hako tenant placement-policy set <tenant-id> '<policy-json>' | hako create <tenant-id> <workspace-name> [--idempotency-key <key>] | hako list <tenant-id> [limit] [offset] | hako get <tenant-id> <workspace-id> | hako suspend|resume|delete <tenant-id> <workspace-id> [--idempotency-key <key>] | hako workload create --tenant <id> --installation <id> --repository <id> --commit <sha> [--ref <ref>] [--timeout-seconds <seconds>] [--idempotency-key <key>] | hako workload list <tenant-id> [limit] [offset] | hako workload show <tenant-id> <run-id> | hako workload cancel <tenant-id> <run-id>")
+		fmt.Fprintln(os.Stderr, "usage: hako login | hako api health | hako tenant membership <tenant-id> | hako tenant placement-policy get <tenant-id> | hako tenant placement-policy set <tenant-id> '<policy-json>' | hako create <tenant-id> <workspace-name> [--idempotency-key <key>] | hako list <tenant-id> [limit] [offset] | hako get <tenant-id> <workspace-id> | hako shell <tenant-id> <workspace-id> | hako forward <tenant-id> <workspace-id> <remote-port> [local-port] | hako suspend|resume|delete <tenant-id> <workspace-id> [--idempotency-key <key>] | hako workload create --tenant <id> --installation <id> --repository <id> --commit <sha> [--ref <ref>] [--timeout-seconds <seconds>] [--idempotency-key <key>] | hako workload list <tenant-id> [limit] [offset] | hako workload show <tenant-id> <run-id> | hako workload cancel <tenant-id> <run-id>")
 		os.Exit(2)
 	}
+}
+
+func optionalArg(args []string, index int) string {
+	if index >= 0 && index < len(args) {
+		return args[index]
+	}
+	return ""
+}
+
+func workspaceForward(ctx context.Context, tenantID, workspaceID, remotePortText, localPortText string, stderr io.Writer) error {
+	if ctx == nil || stderr == nil {
+		return errors.New("forward context and status output are required")
+	}
+	remotePort, err := strconv.ParseUint(remotePortText, 10, 16)
+	if err != nil || remotePort == 0 {
+		return errors.New("remote port must be between 1 and 65535")
+	}
+	localPort := remotePort
+	if localPortText != "" {
+		parsed, parseErr := strconv.ParseUint(localPortText, 10, 16)
+		if parseErr != nil {
+			return errors.New("local port must be between 0 and 65535")
+		}
+		localPort = parsed
+	}
+	accessToken, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
+	if err != nil {
+		return err
+	}
+	apiURL, gatewayURL := os.Getenv("HAKO_API_URL"), os.Getenv("HAKO_GATEWAY_URL")
+	if apiURL == "" {
+		return errors.New("HAKO_API_URL is required")
+	}
+	if gatewayURL == "" {
+		return errors.New("HAKO_GATEWAY_URL is required")
+	}
+	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.FormatUint(localPort, 10)))
+	if err != nil {
+		return fmt.Errorf("listen on local loopback port: %w", err)
+	}
+	defer listener.Close()
+	fmt.Fprintf(stderr, "Forwarding 127.0.0.1:%d to Workspace %s:%d. Press Ctrl-C to stop.\n", listener.Addr().(*net.TCPAddr).Port, workspaceID, remotePort)
+	return serveWorkspaceForward(ctx, listener, tenantID, workspaceID, uint16(remotePort), apiURL, gatewayURL, accessToken, stderr, nil, nil)
+}
+
+func serveWorkspaceForward(ctx context.Context, listener net.Listener, tenantID, workspaceID string, remotePort uint16, apiURL, gatewayURL, accessToken string,
+	stderr io.Writer, apiHTTPClient *http.Client, gatewayTLSConfig *tls.Config) error {
+	if ctx == nil || listener == nil || stderr == nil || remotePort == 0 {
+		return errors.New("forward listener, context, output, and remote port are required")
+	}
+	stopClose := context.AfterFunc(ctx, func() { _ = listener.Close() })
+	defer stopClose()
+	const maxForwardConnections = 16
+	semaphore := make(chan struct{}, maxForwardConnections)
+	var workers sync.WaitGroup
+	var stderrMu sync.Mutex
+	for {
+		localConn, err := listener.Accept()
+		if err != nil {
+			if ctx.Err() != nil {
+				workers.Wait()
+				return nil
+			}
+			return fmt.Errorf("accept local forwarded connection: %w", err)
+		}
+		select {
+		case semaphore <- struct{}{}:
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				defer func() { <-semaphore }()
+				if err := forwardWorkspaceConnection(ctx, localConn, tenantID, workspaceID, remotePort, apiURL, gatewayURL, accessToken, apiHTTPClient, gatewayTLSConfig); err != nil && ctx.Err() == nil {
+					stderrMu.Lock()
+					fmt.Fprintf(stderr, "forwarded connection failed: %v\n", err)
+					stderrMu.Unlock()
+				}
+			}()
+		case <-ctx.Done():
+			_ = localConn.Close()
+		}
+	}
+}
+
+func forwardWorkspaceConnection(ctx context.Context, localConn net.Conn, tenantID, workspaceID string, remotePort uint16,
+	apiURL, gatewayURL, accessToken string, apiHTTPClient *http.Client, gatewayTLSConfig *tls.Config) (returnErr error) {
+	defer localConn.Close()
+	session, err := api.CreateWorkspaceSession(ctx, apiURL, accessToken, tenantID, workspaceID,
+		[]workspacesession.Permission{workspacesession.PermissionPortForward}, apiHTTPClient)
+	if err != nil {
+		return fmt.Errorf("request port-forward session: %w", err)
+	}
+	defer func() {
+		revokeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := api.RevokeWorkspaceSession(revokeCtx, apiURL, accessToken, tenantID, workspaceID, string(session.SessionID), apiHTTPClient); err != nil && returnErr == nil {
+			returnErr = fmt.Errorf("revoke port-forward session: %w", err)
+		}
+	}()
+	stream, err := workspacegateway.Dial(ctx, gatewayURL, domain.WorkspaceID(workspaceID), workspacesession.PermissionPortForward, remotePort,
+		session.Ticket, gatewayTLSConfig)
+	if err != nil {
+		return err
+	}
+	defer stream.Close()
+	stopClose := context.AfterFunc(ctx, func() {
+		_ = localConn.Close()
+		_ = stream.Close()
+	})
+	defer stopClose()
+	finished := make(chan error, 2)
+	go func() { _, err := io.Copy(stream, localConn); finished <- err }()
+	go func() { _, err := io.Copy(localConn, stream); finished <- err }()
+	if err := <-finished; err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.EOF) && ctx.Err() == nil {
+		_ = localConn.Close()
+		_ = stream.Close()
+		<-finished
+		return fmt.Errorf("relay port-forward stream: %w", err)
+	}
+	_ = localConn.Close()
+	_ = stream.Close()
+	<-finished
+	return nil
+}
+
+func workspaceShell(ctx context.Context, tenantID, workspaceID string, stdin io.Reader, stdout io.Writer) error {
+	return workspaceShellWith(ctx, tenantID, workspaceID, stdin, stdout, nil, nil)
+}
+
+func workspaceShellWith(ctx context.Context, tenantID, workspaceID string, stdin io.Reader, stdout io.Writer, apiHTTPClient *http.Client, gatewayTLSConfig *tls.Config) (returnErr error) {
+	if ctx == nil || stdin == nil || stdout == nil {
+		return errors.New("shell input, output, and context are required")
+	}
+	accessToken, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
+	if err != nil {
+		return err
+	}
+	apiURL := os.Getenv("HAKO_API_URL")
+	if apiURL == "" {
+		return errors.New("HAKO_API_URL is required")
+	}
+	gatewayURL := os.Getenv("HAKO_GATEWAY_URL")
+	if gatewayURL == "" {
+		return errors.New("HAKO_GATEWAY_URL is required")
+	}
+	session, err := api.CreateWorkspaceSession(ctx, apiURL, accessToken, tenantID, workspaceID,
+		[]workspacesession.Permission{workspacesession.PermissionShell}, apiHTTPClient)
+	if err != nil {
+		return fmt.Errorf("request Workspace shell session: %w", err)
+	}
+	defer func() {
+		revokeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := api.RevokeWorkspaceSession(revokeCtx, apiURL, accessToken, tenantID, workspaceID, string(session.SessionID), apiHTTPClient); err != nil && returnErr == nil {
+			returnErr = fmt.Errorf("revoke Workspace shell session: %w", err)
+		}
+	}()
+	connection, err := workspacegateway.Dial(ctx, gatewayURL, domain.WorkspaceID(workspaceID), workspacesession.PermissionShell, 0,
+		session.Ticket, gatewayTLSConfig)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return err
+	}
+	defer connection.Close()
+	stopClose := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	defer stopClose()
+	go func() {
+		if _, err := io.Copy(connection, stdin); err != nil {
+			_ = connection.Close()
+			return
+		}
+		// A terminal EOF (Ctrl-D) is delivered to the PTY as EOT, letting the
+		// shell exit naturally while its final output still drains to stdout.
+		_, _ = connection.Write([]byte{4})
+	}()
+	if _, err := io.Copy(stdout, connection); err != nil && ctx.Err() == nil && !errors.Is(err, io.EOF) {
+		return fmt.Errorf("Workspace shell stream: %w", err)
+	}
+	return nil
 }
 
 func login() error {

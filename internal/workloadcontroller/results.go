@@ -31,7 +31,7 @@ func (c *Controller) Poll(ctx context.Context, data []byte, publisher ResultPubl
 	}
 	if !s.Journal.ResultPublished && len(s.Journal.ResultPayload) == 0 {
 		id := identity(s.Journal)
-		spec, err := c.resolver.Resolve(ctx, id)
+		spec, err := c.resolveSpecification(ctx, id, s.Journal)
 		if err != nil {
 			return s, err
 		}

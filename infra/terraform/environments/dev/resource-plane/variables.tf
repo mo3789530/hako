@@ -20,6 +20,68 @@ variable "control_plane_result_consumer_role_arn" {
   type        = string
 }
 
+variable "enable_workload_result_queue" {
+  description = "Opt in to a separate Workload Run result queue/DLQ and alarms."
+  type        = bool
+  default     = false
+}
+
+variable "control_plane_workload_result_consumer_role_arn" {
+  description = "Exact Control Plane role allowed to consume Workload Run results; required when the queue is enabled."
+  type        = string
+  default     = ""
+}
+
+variable "workload_controller_secret_arns" {
+  description = "Exact Workload Controller Secret ARNs for policy wiring; keep empty until a reviewed worker deployment. Never provide Secret values."
+  type        = list(string)
+  default     = []
+}
+
+variable "workload_controller_runtime" {
+  description = "Optional exact Lambda MicroVM/S3 runtime IAM scope; null keeps runtime API and artifact permissions disabled. It does not create AWS resources."
+  type = object({
+    microvm_image_arn         = string
+    ingress_connector_arn     = string
+    egress_connector_arn      = string
+    journal_bucket_arn        = string
+    journal_prefix            = string
+    recovery_lease_object_arn = string
+    source_bucket_arn         = string
+    source_prefix             = string
+    source_kms_key_arn        = optional(string, "")
+    artifact_bucket_arn       = string
+    artifact_prefix           = string
+    artifact_kms_key_arn      = optional(string, "")
+    secret_kms_key_arns       = optional(list(string), [])
+  })
+  default = null
+}
+
+variable "workload_controller_deployment" {
+  description = "Optional default-off combined Workload Controller Lambda deployment. Only file paths, endpoints, profile data, and exact Secret ARNs are accepted; never provide Secret values."
+  type = object({
+    zip_path                       = string
+    control_plane_endpoint         = string
+    control_plane_hmac_secret_arn  = string
+    broker_url                     = string
+    broker_client_cert_secret_arn  = string
+    broker_client_key_secret_arn   = string
+    broker_ca_secret_arn           = string
+    ticket_key_id                  = string
+    ticket_private_key_secret_arn  = string
+    runtime_profiles_json          = string
+    recovery_page_size             = number
+    recovery_max_pages             = number
+    recovery_lease_ttl             = string
+    recovery_schedule_expression   = string
+    lambda_timeout_seconds         = number
+    lambda_memory_size             = number
+    reserved_concurrent_executions = number
+  })
+  default = null
+}
+
 variable "max_receive_count" {
   description = "Receives before messages move to the corresponding DLQ."
   type        = number
@@ -108,4 +170,76 @@ variable "queue_backlog_alarm_messages" {
   description = "Primary queue visible-message count alarm threshold."
   type        = number
   default     = 100
+}
+
+variable "enable_health_report_alarms" {
+  description = "Create health reporter alarms and its retained log group. Enable only after a reporter emits the documented metrics."
+  type        = bool
+  default     = false
+}
+
+variable "health_report_secret_arn" {
+  description = "Optional exact Secret ARN for the Resource Plane HMAC key. Empty does not create a reporter role."
+  type        = string
+  default     = ""
+}
+
+variable "health_report_microvm_image_arn" {
+  description = "Exact Lambda MicroVM image ARN checked by the optional health reporter."
+  type        = string
+  default     = ""
+}
+
+variable "health_report_microvm_image_version" {
+  description = "Immutable numeric version of the Lambda MicroVM image checked by the optional health reporter."
+  type        = string
+  default     = ""
+}
+
+variable "health_report_vpc_egress_connector_arn" {
+  description = "Exact Lambda Core VPC egress connector ARN checked by the optional health reporter."
+  type        = string
+  default     = ""
+}
+
+variable "health_report_controller_function_arn" {
+  description = "Exact Workload controller Lambda function ARN checked by the optional health reporter."
+  type        = string
+  default     = ""
+}
+
+variable "health_report_workspace_efs_arn" {
+  description = "Exact Workspace EFS file system ARN checked by the optional health reporter."
+  type        = string
+  default     = ""
+}
+
+variable "enable_health_reporter" {
+  description = "Deploy the scheduled, opt-in health reporter Lambda. Requires the paired Plane Secret, Control Plane endpoint, built zip, and alarms."
+  type        = bool
+  default     = false
+}
+
+variable "health_reporter_lambda_zip_path" {
+  description = "Built health reporter artifact path from this Terraform root."
+  type        = string
+  default     = "../../../../../build/hako-health-reporter.zip"
+}
+
+variable "health_report_control_plane_endpoint" {
+  description = "HTTPS origin of the Control Plane API Gateway used for signed reports."
+  type        = string
+  default     = ""
+}
+
+variable "health_report_age_alarm_seconds" {
+  description = "Resource Plane health report staleness threshold in seconds."
+  type        = number
+  default     = 300
+}
+
+variable "health_report_unhealthy_runs_threshold" {
+  description = "Consecutive unhealthy probe runs before alerting."
+  type        = number
+  default     = 3
 }

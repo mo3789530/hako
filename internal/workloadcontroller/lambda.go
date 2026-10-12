@@ -12,27 +12,46 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/lambdamicrovms"
 	"github.com/aws/aws-sdk-go-v2/service/lambdamicrovms/types"
+	"github.com/mo3789530/hako/internal/workloadagent"
 	"github.com/mo3789530/hako/internal/workloadjobs"
 	"github.com/mo3789530/hako/internal/workloadjournal"
 )
 
 const LambdaMicroVMMaxDuration = 8 * time.Hour
 
+// The in-VM agent is the only port exposed through the MicroVM endpoint. The
+// short-lived AWS proxy token is additionally scoped to this single port.
+const WorkloadAgentPort int32 = 8080
+const WorkloadAgentTokenMinutes int32 = 5
+
 var ErrMicroVMNotReady = errors.New("Lambda MicroVM agent is not ready")
 
 type LambdaAPI interface {
 	RunMicrovm(context.Context, *lambdamicrovms.RunMicrovmInput, ...func(*lambdamicrovms.Options)) (*lambdamicrovms.RunMicrovmOutput, error)
 	GetMicrovm(context.Context, *lambdamicrovms.GetMicrovmInput, ...func(*lambdamicrovms.Options)) (*lambdamicrovms.GetMicrovmOutput, error)
+	CreateMicrovmAuthToken(context.Context, *lambdamicrovms.CreateMicrovmAuthTokenInput, ...func(*lambdamicrovms.Options)) (*lambdamicrovms.CreateMicrovmAuthTokenOutput, error)
 	TerminateMicrovm(context.Context, *lambdamicrovms.TerminateMicrovmInput, ...func(*lambdamicrovms.Options)) (*lambdamicrovms.TerminateMicrovmOutput, error)
+}
+
+// AgentConnection is deliberately ephemeral and must never be journaled,
+// logged, or returned to a user-facing API. AWS scopes AuthToken to one VM and
+// WorkloadAgentPort for five minutes.
+type AgentConnection struct {
+	MicroVMID    string `json:"microvm_id"`
+	Endpoint     string `json:"endpoint"`
+	AuthToken    string `json:"-"`
+	AgentTicket  string `json:"-"`
+	SourceTicket string `json:"-"`
+	LogTicket    string `json:"-"`
 }
 
 // AgentRunner must authenticate only to the bound MicroVM, validate source
 // digests, and start each identity once. Its result metadata survives VM cleanup.
 // /run hooks initialize trusted infrastructure; they must not run repository code.
 type AgentRunner interface {
-	Start(context.Context, string, string, Specification) error
-	GetStatus(context.Context, workloadjournal.Command) (workloadjournal.ExecutionState, error)
-	CollectResult(context.Context, workloadjournal.Command) (workloadjobs.WorkloadResult, error)
+	Start(context.Context, AgentConnection, Specification) error
+	GetStatus(context.Context, AgentConnection, workloadjournal.Command) (workloadjournal.ExecutionState, error)
+	CollectResult(context.Context, AgentConnection, workloadjournal.Command) (workloadjobs.WorkloadResult, error)
 }
 
 type LambdaConfig struct {
@@ -41,6 +60,7 @@ type LambdaConfig struct {
 	ImageDigest        string
 	VPCEgressConnector string
 	IngressConnector   string
+	AgentTicketIssuer  workloadagent.TicketIssuer
 }
 
 type LambdaMicroVM struct {
@@ -56,7 +76,7 @@ func NewLambdaMicroVM(api LambdaAPI, store workloadjournal.Store, resolver Resol
 	image, err := awsARN(config.ImageIdentifier)
 	vpc, verr := awsARN(config.VPCEgressConnector)
 	ingress, ierr := awsARN(config.IngressConnector)
-	if api == nil || store == nil || resolver == nil || agent == nil || err != nil || verr != nil || ierr != nil ||
+	if api == nil || store == nil || resolver == nil || agent == nil || config.AgentTicketIssuer == nil || err != nil || verr != nil || ierr != nil ||
 		!strings.HasPrefix(image[5], "microvm-image:") || !strings.HasPrefix(vpc[5], "network-connector:") ||
 		image[4] != vpc[4] || image[3] != vpc[3] || !regexp.MustCompile(`^[0-9]{12}$`).MatchString(image[4]) ||
 		ingress[3] != image[3] || ingress[4] != "aws" || ingress[5] != "network-connector:aws-network-connector:ALL_INGRESS" ||
@@ -226,16 +246,69 @@ func (r *LambdaMicroVM) EnsureRunning(ctx context.Context, spec Specification) (
 	if out.State == types.MicrovmStateTerminated || out.State == types.MicrovmStateTerminating {
 		return "", ErrCleanupPending
 	}
-	endpoint := aws.ToString(out.Endpoint)
-	u, err := url.Parse(endpoint)
-	image, _ := awsARN(spec.ImageIdentifier)
-	if err != nil || u.Scheme != "https" || !strings.HasSuffix(u.Hostname(), ".lambda-microvm."+image[3]+".on.aws") || u.Port() != "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
-		return "", ErrMicroVMNotReady
+	connection, err := r.agentConnection(ctx, spec, handle, out, workloadagent.OperationStart)
+	if err != nil {
+		return "", err
 	}
-	if err := r.agent.Start(ctx, handle, endpoint, spec); err != nil {
+	if err := r.agent.Start(ctx, connection, spec); err != nil {
 		return "", err
 	}
 	return handle, nil
+}
+
+func (r *LambdaMicroVM) agentConnection(ctx context.Context, spec Specification, handle string, vm *lambdamicrovms.GetMicrovmOutput, operation workloadagent.Operation) (AgentConnection, error) {
+	if vm == nil || aws.ToString(vm.MicrovmId) != handle || aws.ToString(vm.ImageArn) != spec.ImageIdentifier || aws.ToString(vm.ImageVersion) != spec.ImageVersion || vm.State != types.MicrovmStateRunning {
+		return AgentConnection{}, ErrMicroVMNotReady
+	}
+	endpoint := aws.ToString(vm.Endpoint)
+	u, err := url.Parse(endpoint)
+	image, _ := awsARN(spec.ImageIdentifier)
+	if err != nil || u.Scheme != "https" || !strings.HasSuffix(u.Hostname(), ".lambda-microvm."+image[3]+".on.aws") || u.Port() != "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+		return AgentConnection{}, ErrMicroVMNotReady
+	}
+	token, err := r.api.CreateMicrovmAuthToken(ctx, &lambdamicrovms.CreateMicrovmAuthTokenInput{
+		MicrovmIdentifier:   aws.String(handle),
+		AllowedPorts:        []types.PortSpecification{&types.PortSpecificationMemberPort{Value: WorkloadAgentPort}},
+		ExpirationInMinutes: aws.Int32(WorkloadAgentTokenMinutes),
+	})
+	if err != nil {
+		return AgentConnection{}, err
+	}
+	awsToken := ""
+	if token != nil {
+		awsToken = token.AuthToken["X-aws-proxy-auth"]
+	}
+	if len(awsToken) == 0 || len(awsToken) > 8000 || strings.ContainsAny(awsToken, " \t\r\n") {
+		return AgentConnection{}, ErrMicroVMNotReady
+	}
+	var agentTicket string
+	if operation == workloadagent.OperationStart || operation == workloadagent.OperationSource {
+		agentTicket, err = r.config.AgentTicketIssuer.IssueExecution(handle, spec.Identity, operation, workloadagent.ExecutionBinding{
+			SourceDigest: spec.SourceDigest, CommitSHA: spec.CommitSHA, Deadline: spec.Deadline.UTC(),
+		})
+	} else {
+		agentTicket, err = r.config.AgentTicketIssuer.Issue(handle, spec.Identity, operation)
+	}
+	if err != nil || agentTicket == "" || strings.ContainsAny(agentTicket, " \t\r\n") {
+		return AgentConnection{}, ErrMicroVMNotReady
+	}
+	sourceTicket := ""
+	logTicket := ""
+	if operation == workloadagent.OperationStart {
+		sourceTicket, err = r.config.AgentTicketIssuer.IssueExecution(handle, spec.Identity, workloadagent.OperationSource, workloadagent.ExecutionBinding{
+			SourceDigest: spec.SourceDigest, CommitSHA: spec.CommitSHA, Deadline: spec.Deadline.UTC(),
+		})
+		if err != nil || sourceTicket == "" || strings.ContainsAny(sourceTicket, " \t\r\n") {
+			return AgentConnection{}, ErrMicroVMNotReady
+		}
+	}
+	if operation == workloadagent.OperationResult {
+		logTicket, err = r.config.AgentTicketIssuer.Issue(handle, spec.Identity, workloadagent.OperationLogs)
+		if err != nil || logTicket == "" || strings.ContainsAny(logTicket, " \t\r\n") {
+			return AgentConnection{}, ErrMicroVMNotReady
+		}
+	}
+	return AgentConnection{MicroVMID: handle, Endpoint: endpoint, AuthToken: awsToken, AgentTicket: agentTicket, SourceTicket: sourceTicket, LogTicket: logTicket}, nil
 }
 
 func (r *LambdaMicroVM) Cancel(ctx context.Context, id workloadjournal.Command) error {
@@ -287,14 +360,43 @@ func (r *LambdaMicroVM) Cleanup(ctx context.Context, id workloadjournal.Command)
 }
 
 func (r *LambdaMicroVM) GetStatus(ctx context.Context, id workloadjournal.Command) (workloadjournal.ExecutionState, error) {
-	if _, err := r.snapshot(ctx, id); err != nil {
+	s, err := r.snapshot(ctx, id)
+	if err != nil {
 		return "", err
 	}
-	return r.agent.GetStatus(ctx, id)
+	connection, err := r.agentConnectionFor(ctx, s, workloadagent.OperationStatus)
+	if err != nil {
+		return "", err
+	}
+	return r.agent.GetStatus(ctx, connection, id)
 }
 func (r *LambdaMicroVM) CollectResult(ctx context.Context, id workloadjournal.Command) (workloadjobs.WorkloadResult, error) {
-	if _, err := r.snapshot(ctx, id); err != nil {
+	s, err := r.snapshot(ctx, id)
+	if err != nil {
 		return workloadjobs.WorkloadResult{}, err
 	}
-	return r.agent.CollectResult(ctx, id)
+	connection, err := r.agentConnectionFor(ctx, s, workloadagent.OperationResult)
+	if err != nil {
+		return workloadjobs.WorkloadResult{}, err
+	}
+	return r.agent.CollectResult(ctx, connection, id)
+}
+
+func (r *LambdaMicroVM) agentConnectionFor(ctx context.Context, s workloadjournal.Snapshot, operation workloadagent.Operation) (AgentConnection, error) {
+	if s.Journal.RuntimeHandle == "" || len(s.Journal.SpecificationPayload) == 0 {
+		return AgentConnection{}, ErrMicroVMNotReady
+	}
+	var spec Specification
+	if json.Unmarshal(s.Journal.SpecificationPayload, &spec) != nil {
+		return AgentConnection{}, ErrSpecification
+	}
+	hash, err := specificationHash(spec, identity(s.Journal))
+	if err != nil || hash != s.Journal.SpecificationHash {
+		return AgentConnection{}, ErrSpecification
+	}
+	vm, err := r.api.GetMicrovm(ctx, &lambdamicrovms.GetMicrovmInput{MicrovmIdentifier: aws.String(s.Journal.RuntimeHandle)})
+	if err != nil {
+		return AgentConnection{}, err
+	}
+	return r.agentConnection(ctx, spec, s.Journal.RuntimeHandle, vm, operation)
 }

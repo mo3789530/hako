@@ -1,11 +1,13 @@
 package workloadcontroller
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"regexp"
 	"time"
 
@@ -79,6 +81,8 @@ func (c *Controller) Ensure(ctx context.Context, data []byte) (workloadjournal.S
 		return c.cleanup(ctx, s)
 	}
 	id := identity(s.Journal)
+	// Ensure re-resolves even a launching specification so an authorization or
+	// source-binding drift prevents an uncertain/retried launch from proceeding.
 	spec, err := c.resolver.Resolve(ctx, id)
 	if err != nil {
 		return s, err
@@ -275,6 +279,26 @@ func (c *Controller) load(ctx context.Context, id workloadjournal.Command) (work
 		return s, workloadjournal.ErrConflict
 	}
 	return s, nil
+}
+
+// resolveSpecification uses the immutable launch payload for an already
+// frozen attempt. Ensure intentionally keeps using the trusted resolver for
+// launch/relaunch so source or authorization drift fails closed.
+func (c *Controller) resolveSpecification(ctx context.Context, id workloadjournal.Command, journal workloadjournal.Journal) (Specification, error) {
+	if len(journal.SpecificationPayload) == 0 {
+		return c.resolver.Resolve(ctx, id)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(journal.SpecificationPayload))
+	decoder.DisallowUnknownFields()
+	var spec Specification
+	if decoder.Decode(&spec) != nil || decoder.Decode(new(any)) != io.EOF || spec.Identity != id {
+		return Specification{}, ErrSpecification
+	}
+	hash, err := specificationHash(spec, id)
+	if err != nil || hash != journal.SpecificationHash {
+		return Specification{}, ErrSpecification
+	}
+	return spec, nil
 }
 
 func identity(j workloadjournal.Journal) workloadjournal.Command {

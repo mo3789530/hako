@@ -31,6 +31,7 @@ import (
 	"github.com/mo3789530/hako/internal/store/users"
 	"github.com/mo3789530/hako/internal/store/workloads"
 	"github.com/mo3789530/hako/internal/store/workspaces"
+	"github.com/mo3789530/hako/internal/workspacesession"
 )
 
 const (
@@ -50,16 +51,20 @@ type tenantMembershipResponse struct {
 }
 
 type WorkspaceCreateConfig struct {
-	Region                         string
-	RequiredCapabilities           []string
-	RuntimeClass                   string
-	Image                          string
-	WorkloadRunsEnabled            bool
-	WebhookWorkloadTriggersEnabled bool
-	GitHubAppManagementEnabled     bool
-	GitHubAppProofVerifier         TenantGitHubAppProofVerifier
-	TenantGitHubWebhookHandler     http.Handler
-	TenantGitHubSetupResolver      TenantGitHubSetupVerifierResolver
+	Region                                   string
+	RequiredCapabilities                     []string
+	RuntimeClass                             string
+	Image                                    string
+	WorkloadRunsEnabled                      bool
+	WebhookWorkloadTriggersEnabled           bool
+	GitHubAppManagementEnabled               bool
+	GitHubAppProofVerifier                   TenantGitHubAppProofVerifier
+	TenantGitHubWebhookHandler               http.Handler
+	TenantGitHubSetupResolver                TenantGitHubSetupVerifierResolver
+	ResourcePlaneHealthReportKeyResolver     ResourcePlaneHealthReportKeyResolver
+	ResourcePlaneWorkloadSpecKeyResolver     ResourcePlaneWorkloadSpecKeyResolver
+	ResourcePlaneWorkspaceSessionKeyResolver ResourcePlaneWorkspaceSessionKeyResolver
+	WorkspaceSessionTicketIssuer             workspacesession.Issuer
 }
 
 type workspaceCreateRequest struct {
@@ -159,6 +164,17 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 			return nil
 		})
 	}
+	if workspaceConfig.ResourcePlaneHealthReportKeyResolver != nil {
+		e.POST("/v1/internal/resource-planes/:resource_plane_id/health", putAutomatedResourcePlaneHealth(pool, workspaceConfig.ResourcePlaneHealthReportKeyResolver))
+	}
+	if workspaceConfig.ResourcePlaneWorkloadSpecKeyResolver != nil {
+		e.GET("/v1/internal/resource-planes/:resource_plane_id/tenants/:tenant_id/workloads/:workload_run_id/attempts/:attempt_id/generations/:generation/specification",
+			getResourcePlaneWorkloadSpecification(pool, workspaceConfig.ResourcePlaneWorkloadSpecKeyResolver))
+	}
+	if workspaceConfig.ResourcePlaneWorkspaceSessionKeyResolver != nil {
+		e.POST("/v1/internal/resource-planes/:resource_plane_id/workspace-sessions/active",
+			getActiveWorkspaceSession(pool, workspaceConfig.ResourcePlaneWorkspaceSessionKeyResolver))
+	}
 	if setupVerifier != nil || workspaceConfig.TenantGitHubSetupResolver != nil {
 		e.GET("/v1/integrations/github/setup/callback", completeGitHubInstallationSetup(pool, setupVerifier, workspaceConfig.TenantGitHubSetupResolver))
 	}
@@ -237,6 +253,12 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 		HakoUserMiddleware(pool),
 		TenantMembershipMiddleware(pool),
 	)
+	if workspaceConfig.WorkspaceSessionTicketIssuer != nil {
+		protected.POST("/v1/tenants/:tenant_id/workspaces/:workspace_id/sessions", createWorkspaceSession(pool, workspaceConfig.WorkspaceSessionTicketIssuer),
+			RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+		protected.DELETE("/v1/tenants/:tenant_id/workspaces/:workspace_id/sessions/:session_id", revokeWorkspaceSession(pool),
+			RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+	}
 	protected.GET("/v1/tenants/:tenant_id/workload-runs", listWorkloadRuns(pool),
 		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
 	protected.POST("/v1/tenants/:tenant_id/workload-runs", createWorkloadRun(pool, workspaceConfig),

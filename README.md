@@ -1092,6 +1092,11 @@ code-serverはHako本体ではなく、**Hakoが管理するIDE Process**とし�
 hako forward api-dev 5432
 ```
 
+これは最終UXの名前指定例です。現行MVPはTenant/Workspace IDを指定し、
+`hako forward <tenant-id> <workspace-id> <remote-port> [local-port]`で
+`127.0.0.1`だけに待受けます。CLIから任意の宛先ホストは指定できません。
+詳細は[Workspace CLI](docs/workspace-cli.md)を参照してください。
+
 すると、
 
 ```text
@@ -1332,7 +1337,7 @@ Private Cloud
 
 ## 41. Hako CLI
 
-最終的なUXは、
+目標とする最終UXは、
 
 ```bash
 hako login
@@ -1357,6 +1362,10 @@ hako resume api-dev
 
 hako delete api-dev
 ```
+
+現行MVPの`hako shell`/`hako forward`はWorkspace名ではなくTenant IDと
+Workspace IDを受け取ります。実装済み範囲と接続方法は
+[Workspace CLI](docs/workspace-cli.md)を参照してください。
 
 程度まで単純化します。
 
@@ -1563,7 +1572,7 @@ Hakoは最初は **Lambda MicroVMを使ったRemote Development Environment** �
 
 - [x] Outbox DispatcherからResource Plane別SQSへOperation commandをat-least-once配送し、opt-inのEventBridge Scheduled Lambda、最小IAM、失敗alarmを追加する。Lease回収、指数backoff、AWS設定・有効化順序は[Outbox Dispatcher](docs/outbox-dispatcher.md)を参照。
 - [x] Schedulerでactive状態・capability・任意region制約を確認してPlacementを選択し、既存Workspace数でtie-breakする。[Scheduler Placement](docs/scheduler-placement.md)。
-- [ ] Tenant別Placement policy、容量reservation、health/cost/isolation条件をSchedulerに追加する（Tenant policy、Resource Plane別Workspace/CPU/RAM予約とRuntime Class別需要設定、Health優先・unhealthy除外・5分freshness TTL、TenantのCost ceiling/Isolation floorを実装済み。Health report source/historyの保存基盤を追加。Resource Plane reporter、AWS probe、安全なingress/queue、scheduleは未実装）。[Tenant Placement Policy](docs/tenant-placement-policy.md)、[Resource Plane Capacity](docs/resource-plane-capacity.md)、[Resource Plane Health](docs/resource-plane-health.md)。
+- [ ] Tenant別Placement policy、容量reservation、health/cost/isolation条件をSchedulerに追加する（Tenant policy、Resource Plane別Workspace/CPU/RAM予約とRuntime Class別需要設定、Health優先・unhealthy除外・5分freshness TTLを実装済み。Task 48でHMAC report API/client、replay protection、queue・固定Lambda MicroVM image version・VPC egress connector・Controller function・EFS metadata probe、EMF metrics、default-off exact-ARN IAM/route/alarmsを実装し、unit/PostgreSQL統合テスト済み。metadata probeは実起動・network isolation・実EFS mountを証明しない。paired Secret provisioning/rotation、実AWS配備・検証は未完了）。[Tenant Placement Policy](docs/tenant-placement-policy.md)、[Resource Plane Capacity](docs/resource-plane-capacity.md)、[Resource Plane Health](docs/resource-plane-health.md)。
 - [x] ReconcilerでDesired/Observed State差分からcorrective Operation、event、Outbox commandを原子的に生成する。競合claim、state mapping、failure cooldownは[Workspace Reconciler](docs/reconciler.md)を参照。
 - [x] Operationを重複受信しても安全なFake Resource ControllerとFake Runtimeを実装する。[Fake Resource Controller](docs/fake-resource-controller.md)。
 - [ ] リトライ、可視性タイムアウト、DLQ、Operation timeout、Cleanupを実装する（Worker retry/backoff・visibility延長・Runtime実行timeout・Control Plane stale Operation回収、queue/DLQ監視alarm、schema v2 Workspace revisionによるControl Plane/Fake Runtime fencing、既定30分を超えた未実行commandの拒否を実装済み。実Runtimeのdurable fencing、部分成功の補償Cleanup、AWS適用・DLQ確認/redriveは未完了）。[Fake Resource Controller](docs/fake-resource-controller.md)、[Resource Plane command/result protocol](docs/resource-plane-command-protocol.md)、[Resource Plane queues and DLQ](docs/resource-plane-queues-and-dlq.md)、[Workspace Reconciler](docs/reconciler.md)。
@@ -1589,17 +1598,17 @@ Hakoは最初は **Lambda MicroVMを使ったRemote Development Environment** �
 ### Phase 5: Workspace永続化とAgent
 
 - [ ] WorkspaceごとのEFS Access Point作成・削除と`/workspace` mountを実装する。
-- [ ] 標準MicroVM Imageとhako-agentの配布・起動方式を定義する。
-- [ ] hako-agentにheartbeat、exec、shell/PTY、プロセス管理を実装する。
+- [ ] 標準MicroVM Imageとhako-agentの配布・起動方式を定義する（protocol/backendと`cmd/hako-agent`のport 8080 listener、image-owned public-key loaderを実装。MicroVM image build/run-hook wiring、production key distribution/rotation、AWS image/network PoCは未完了）。[Lambda MicroVM Workload Controller](docs/lambda-microvm-workloads.md)。
+- [ ] hako-agentにheartbeat、exec、shell/PTY、プロセス管理を実装する（Workspace向けLinux PTY managerとGateway WSS-to-PTY adapterは追加済み。固定`/bin/sh`、session制限/期限、terminal/input上限、process-group cleanupを実装・local race test/E2E済み。heartbeat/exec API、複数Workspace router、MicroVM上の`/dev/pts`検証は未完了）。[Workspace Agent shell and PTY](docs/workspace-agent-shell.md)。
 - [ ] MicroVM再作成後にWorkspace IDとソースデータが維持されることを確認する。
 - [ ] Secret参照をSecrets Managerに接続し、平文Secretをログ・DBに残さない。
 
 ### Phase 6: Gatewayと開発者接続
 
-- [ ] 短命Hako Session Ticketの発行・署名・失効・権限検証を実装する。
-- [ ] GatewayをECS/Fargate上に配置し、HTTPS/WSSでSession検証・ルーティングする。
+- [ ] 短命Hako Session Ticketの発行・署名・失効・権限検証を実装する（Ed25519の5分ticketとRBAC確認付き発行/失効API、HTTPS/HMAC active-session API/clientとPostgreSQL照合、WSS-to-PTY/localhost port-forward local E2Eは実装。production key provisioning/rotation、Gateway client配備、fleet-wide revocationは未完了）。[Workspace Session Ticket](docs/workspace-session-ticket.md)。
+- [ ] Gatewayを常駐サービスとして配置し、HTTPS/WSSでSession検証・ルーティングする（TLS-only WSS coreのshell/VS Code/port route、ticket/active-session検証、path/Origin/port policy、in-process connection/frame limits、実PTY接続、allowlisted `127.0.0.1` port-forward、同一ticketの同時再利用拒否と切断後再接続をlocal E2E済み。production key/Client設定、multi-Workspace Resource Plane router、VS Code adapter、fleet deployment/limits/metricsは未完了）。[Workspace HTTPS/WSS Gateway](docs/workspace-gateway.md)。
 - [ ] CLIの`hako ssh-proxy`とVS Code Remote SSH接続を実装する。
-- [ ] CLIのshell、port forward、file transferを実装する。
+- [ ] CLIのshell、port forward、file transferを実装する（`hako shell <tenant-id> <workspace-id>`のSession API→TLS WSS→PTY relayとcancel時close/revoke、および`hako forward <tenant-id> <workspace-id> <remote-port> [local-port]`の127.0.0.1待受・接続ごとの短命ticket/TLS WSS relay/revokeをlocal実装・race test済み。file transferは未実装）。[Workspace CLI](docs/workspace-cli.md)
 - [ ] 切断後もPTY/processを維持し、Grace Period後にSuspendするLifecycleを実装する。
 - [ ] レート制限、接続上限、監査記録、Gatewayヘルス監視を実装する。
 

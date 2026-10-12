@@ -207,6 +207,16 @@ func TestBrokerMTLSHandshakeAndHTTPResolver(t *testing.T) {
 	if _, err := NewMTLSClient(issue("spiffe://hako/resource-plane"), brokerRoots); err == nil {
 		t.Fatal("client accepted another workload identity")
 	}
+	resourcePlaneClient, err := NewResourcePlaneCheckoutMTLSClient("rp-tokyo-01", issue("spiffe://hako/resource-plane/rp-tokyo-01"), brokerRoots)
+	if err != nil || resourcePlaneClient == nil {
+		t.Fatalf("Resource Plane checkout mTLS client failed: %v", err)
+	}
+	if _, err := NewResourcePlaneCheckoutMTLSClient("rp-tokyo-01", issue(controlPlaneURI), brokerRoots); err == nil {
+		t.Fatal("Resource Plane checkout client accepted a Control Plane certificate")
+	}
+	if _, err := NewResourcePlaneCheckoutMTLSClient("rp-tokyo-01", issue("spiffe://hako/resource-plane/rp-other"), brokerRoots); err == nil {
+		t.Fatal("Resource Plane checkout client accepted another Plane certificate")
+	}
 	wrongTransport := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: brokerRoots, Certificates: []tls.Certificate{issue("spiffe://hako/resource-plane")}}}}
 	wrongResponse, err := wrongTransport.Post(server.URL+"/v1/oauth/setup-url", "application/json", strings.NewReader(`{"pin":{},"state":"state"}`))
 	if err == nil {
@@ -278,6 +288,57 @@ func TestCheckoutEndpointRequiresVerifiedControlPlaneAndNeverAcceptsCredentialPi
 	got := invoke(body, control, true)
 	if got.Code != http.StatusOK || got.Header().Get("Cache-Control") != "no-store" || resolveCalls != 2 || mintCalls != 1 || !strings.Contains(got.Body.String(), "ghs_checkout_token_never_log_this") {
 		t.Fatalf("authorized checkout response status=%d resolve=%d mint=%d body=%s", got.Code, resolveCalls, mintCalls, got.Body.String())
+	}
+}
+
+func TestResourcePlaneIdentityIsCheckoutOnlyAndRequiresExactAllowlist(t *testing.T) {
+	run, access := checkoutFixture()
+	service, err := NewCheckoutService(func(_ context.Context, caller string, _ domain.TenantID, _ domain.WorkloadRunID) error {
+		if caller != controlPlaneURI && caller != resourcePlaneURIPrefix+"rp-tokyo-01" {
+			return ErrCheckoutDenied
+		}
+		return nil
+	}, func(_ context.Context, tenant domain.TenantID, runID domain.WorkloadRunID) (domain.WorkloadRun, githubapp.TenantPrivateKeyAccess, error) {
+		if tenant != run.TenantID || runID != run.ID {
+			return domain.WorkloadRun{}, githubapp.TenantPrivateKeyAccess{}, ErrCheckoutDenied
+		}
+		return run, access, nil
+	}, func(context.Context, domain.WorkloadRun, githubapp.TenantPrivateKeyAccess) (string, time.Time, error) {
+		return "ghs_resource_plane_checkout_token", time.Now().Add(time.Minute), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := ResourcePlaneCallerID("rp-tokyo-01")
+	if err != nil || identity != "spiffe://hako/resource-plane/rp-tokyo-01" {
+		t.Fatalf("ResourcePlaneCallerID = %q, %v", identity, err)
+	}
+	for _, invalid := range []string{"", "RP-TOKYO", "../control-plane", "resource_plane"} {
+		if _, err := ResourcePlaneCallerID(invalid); err == nil {
+			t.Fatalf("invalid Resource Plane identity %q was accepted", invalid)
+		}
+	}
+	handler := HandlerWithServicesAndCheckoutCallers(nil, service, nil, []string{identity})
+	invoke := func(path, caller string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"tenant_id":"tenant_checkout","run_id":"run_checkout"}`))
+		req.Header.Set("Content-Type", "application/json")
+		cert := &x509.Certificate{URIs: []*url.URL{{Scheme: "spiffe", Host: "hako", Path: "/resource-plane/rp-tokyo-01"}}}
+		if caller == "spiffe://hako/resource-plane/rp-other" {
+			cert.URIs[0] = &url.URL{Scheme: "spiffe", Host: "hako", Path: "/resource-plane/rp-other"}
+		}
+		req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}, VerifiedChains: [][]*x509.Certificate{{cert}}}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	if got := invoke("/v1/checkout/token", identity); got.Code != http.StatusOK {
+		t.Fatalf("allowlisted Resource Plane checkout status = %d body=%s", got.Code, got.Body.String())
+	}
+	if got := invoke("/v1/checkout/token", "spiffe://hako/resource-plane/rp-other"); got.Code != http.StatusUnauthorized {
+		t.Fatalf("unregistered Resource Plane checkout status = %d", got.Code)
+	}
+	if got := invoke("/v1/oauth/setup-url", identity); got.Code != http.StatusUnauthorized {
+		t.Fatalf("Resource Plane identity must not access OAuth endpoint: status=%d", got.Code)
 	}
 }
 

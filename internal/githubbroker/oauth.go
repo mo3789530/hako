@@ -1,5 +1,6 @@
-// Package githubbroker owns credential-bearing GitHub operations. Only an
-// authenticated control-plane caller may use it; public API and RP are clients.
+// Package githubbroker owns credential-bearing GitHub operations. OAuth and
+// Checks are Control Plane-only; checkout additionally admits exact
+// allowlisted Resource Plane identities over mTLS. Public API callers are excluded.
 package githubbroker
 
 import (

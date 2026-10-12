@@ -24,7 +24,33 @@ Resource Controller role --SendMessage----------> results queue
                                            results DLQ
 
 Control Plane Result Consumer role --Receive/Delete--> results queue
+
+Control Plane Dispatcher role --SendMessage--> workload-commands queue
+                                                   |
+                                      maxReceiveCount (default 5)
+                                                   v
+                                          workload-commands DLQ
+
+Workload Controller role --Receive/Delete-------> workload-commands queue
+Workload Controller role --SendMessage----------> workload-results queue
+Control Plane Workload Result Consumer --Receive/Delete--> workload-results queue
 ```
+
+The optional `enable_workload_result_queue` (`false` by default) provisions a
+separate encrypted Workload command queue/DLQ and result queue/DLQ, independent
+alarms, and a dedicated queue-only Workload Controller role. The Control Plane
+manifest can include paired `workload_command_queue_url` and
+`workload_result_queue_url` fields. The Dispatcher routes Workload attempt
+dispatch/cancel only to the dedicated command queue and fails closed (leaving
+the Outbox event retryable) when it is absent; Workspace Operation commands
+continue to use `command_queue_url`. The Workload Controller role consumes only
+the dedicated Workload queue and sends results only to its result queue. It
+does not grant access to Workspace queues, Lambda MicroVM APIs, S3, Secrets
+Manager, or GitHub broker. The result queue resource policy permits only the
+configured exact Control Plane Workload result consumer role. No Workload
+Lambda, event source mapping, or Control Plane result consumer is deployed yet.
+The opt-in must not be enabled until consumer identities, queue routing, and
+worker wiring are reviewed.
 
 With `enable_fake_resource_controller = true`, the command queue can trigger
 an optional development-only Lambda using batch size one and
@@ -52,15 +78,19 @@ and [redrive allow policy resource](https://registry.terraform.io/providers/hash
 
 The Resource Controller execution role trusts only `lambda.amazonaws.com`. Its
 inline policy permits receive/delete/change-visibility/get-attributes on the
-command queue, send on the result queue, and writes to its pre-created
-CloudWatch log group. It has no permissions to create AWS runtime resources;
-those permissions will be added only with a concrete runtime implementation.
+Workspace command queue, send on the Workspace result queue, and writes to its
+pre-created CloudWatch log group. When Workload queues are enabled, a distinct
+Workload Controller role consumes only the Workload command queue, sends only
+to the Workload result queue, and writes to its own log group. It has no
+permissions to create AWS runtime resources; those permissions will be added
+only with a concrete runtime implementation.
 
-The command queue resource policy trusts the exact configured Control Plane
-Dispatcher role ARN for `sqs:SendMessage`. The result queue policy trusts the
-exact Result Consumer role ARN for receive/delete/change-visibility/get-
-attributes. The Control Plane roles also need matching identity policies in
-their own account for cross-account SQS access. DLQs have no cross-account
+The command and optional Workload command queue resource policies trust the
+exact configured Control Plane Dispatcher role ARN for `sqs:SendMessage`. The
+result queue policy trusts the exact Operation Result Consumer role; the
+Workload result policy trusts the exact Workload Result Consumer role for
+receive/delete/change-visibility/get-attributes. The Control Plane roles also
+need matching identity policies in their own account for cross-account SQS access. DLQs have no cross-account
 consumer policy yet; they are intentionally operator-only until an audited
 redrive workflow is defined. See the [AWS provider SQS queue policy
 resource](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/sqs_queue_policy).

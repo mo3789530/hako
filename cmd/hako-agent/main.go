@@ -1,0 +1,92 @@
+// hako-agent runs inside a Lambda MicroVM. It reads only image-provisioned
+// public verification keys; ticket signing and all AWS credentials remain in
+// the Resource Plane Controller.
+package main
+
+import (
+	"context"
+	"errors"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/mo3789530/hako/internal/workloadagent"
+)
+
+const agentListenAddress = "0.0.0.0:8080"
+
+func main() {
+	if err := run(); err != nil {
+		log.Fatal("Hako Agent stopped: ", err)
+	}
+}
+
+func run() error {
+	keyPath := strings.TrimSpace(os.Getenv("HAKO_AGENT_TRUSTED_KEYS_FILE"))
+	sourceDirectory := strings.TrimSpace(os.Getenv("HAKO_AGENT_SOURCE_DIRECTORY"))
+	if keyPath == "" || sourceDirectory == "" {
+		return errors.New("HAKO_AGENT_TRUSTED_KEYS_FILE and HAKO_AGENT_SOURCE_DIRECTORY are required")
+	}
+	keyFile, err := os.Open(keyPath)
+	if err != nil {
+		return errors.New("open image-provisioned Hako Agent public keys")
+	}
+	keys, keyErr := workloadagent.LoadTrustedKeys(keyFile)
+	closeErr := keyFile.Close()
+	if keyErr != nil || closeErr != nil {
+		return errors.New("load image-provisioned Hako Agent public keys")
+	}
+	agent, err := workloadagent.NewFilesystemAgent(workloadagent.FilesystemAgentConfig{
+		SourceDirectory:       sourceDirectory,
+		TrustedKeys:           keys,
+		RequireRuntimeBinding: true,
+		ProcessFactory: workloadagent.GoTestProcessFactory{
+			GoBinary:    "/usr/local/go/bin/go",
+			GoCache:     "/tmp/hako-go-cache",
+			ModuleCache: strings.TrimSpace(os.Getenv("HAKO_GO_MODULE_CACHE")),
+		},
+	})
+	if err != nil {
+		return errors.New("configure Hako Agent")
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := agent.Close(ctx); err != nil {
+			log.Printf("Hako Agent process shutdown did not finish cleanly")
+		}
+	}()
+
+	listener, err := net.Listen("tcp", agentListenAddress)
+	if err != nil {
+		return errors.New("listen on the private Lambda MicroVM Agent port")
+	}
+	server := &http.Server{Handler: agent.Handler(), ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
+	serveResult := make(chan error, 1)
+	go func() { serveResult <- server.Serve(listener) }()
+
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	select {
+	case err := <-serveResult:
+		if !errors.Is(err, http.ErrServerClosed) {
+			return errors.New("Hako Agent HTTP listener stopped unexpectedly")
+		}
+		return nil
+	case <-signals:
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			_ = server.Close()
+			return errors.New("shut down Hako Agent HTTP listener")
+		}
+		return nil
+	}
+}

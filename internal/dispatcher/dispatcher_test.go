@@ -157,12 +157,12 @@ func TestRunOnceRoutesWorkloadDispatchToPinnedResourcePlane(t *testing.T) {
 		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_1","attempt_id":"attempt_1","generation":1,"resource_plane_id":"rp_tokyo","idempotency_token":"attempt-fixed"}`),
 	}}}
 	publisher := &fakePublisher{}
-	dispatcher, err := New(store, publisher, map[string]string{"rp_tokyo": "rp-queue"}, Config{})
+	dispatcher, err := New(store, publisher, map[string]string{"rp_tokyo": "rp-queue"}, Config{WorkloadCommandQueueURLs: map[string]string{"rp_tokyo": "rp-workload-queue"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	stats, err := dispatcher.RunOnce(context.Background())
-	if err != nil || stats != (Stats{Claimed: 1, Published: 1}) || len(publisher.queueURLs) != 1 || publisher.queueURLs[0] != "rp-queue" {
+	if err != nil || stats != (Stats{Claimed: 1, Published: 1}) || len(publisher.queueURLs) != 1 || publisher.queueURLs[0] != "rp-workload-queue" {
 		t.Fatalf("Workload dispatch was not routed to its pinned Resource Plane: stats=%+v queues=%v err=%v", stats, publisher.queueURLs, err)
 	}
 }
@@ -171,13 +171,30 @@ func TestRunOnceRoutesWorkloadCancellationToPinnedResourcePlane(t *testing.T) {
 	store := &fakeStore{events: []outbox.Event{{ID: "evt_cancel", AggregateType: "workload_attempt", AggregateID: "attempt_1", EventType: "workload_attempt.cancel", Attempt: 1,
 		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_1","attempt_id":"attempt_1","generation":1,"resource_plane_id":"rp_tokyo","idempotency_token":"attempt-fixed"}`)}}}
 	publisher := &fakePublisher{}
-	d, err := New(store, publisher, map[string]string{"rp_tokyo": "rp-queue"}, Config{})
+	d, err := New(store, publisher, map[string]string{"rp_tokyo": "rp-queue"}, Config{WorkloadCommandQueueURLs: map[string]string{"rp_tokyo": "rp-workload-queue"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	stats, err := d.RunOnce(context.Background())
-	if err != nil || stats.Published != 1 || len(publisher.queueURLs) != 1 || publisher.queueURLs[0] != "rp-queue" {
+	if err != nil || stats.Published != 1 || len(publisher.queueURLs) != 1 || publisher.queueURLs[0] != "rp-workload-queue" {
 		t.Fatal("cancel command was not routed", stats, err)
+	}
+}
+
+func TestRunOnceDoesNotFallbackToWorkspaceCommandQueueForWorkload(t *testing.T) {
+	store := &fakeStore{events: []outbox.Event{{ID: "evt_attempt", AggregateType: "workload_attempt", AggregateID: "attempt_1", EventType: "workload_attempt.dispatch", Attempt: 1,
+		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_1","attempt_id":"attempt_1","generation":1,"resource_plane_id":"rp_tokyo","idempotency_token":"attempt-fixed"}`)}}}
+	publisher := &fakePublisher{}
+	d, err := New(store, publisher, map[string]string{"rp_tokyo": "workspace-commands"}, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := d.RunOnce(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "no Workload command queue configured") || stats != (Stats{Claimed: 1, Failed: 1}) {
+		t.Fatalf("missing dedicated Workload queue should remain retryable: stats=%+v err=%v", stats, err)
+	}
+	if len(publisher.queueURLs) != 0 || len(store.published) != 0 || len(store.retryTimes) != 1 {
+		t.Fatalf("Workload command fell back to Workspace queue: queues=%v published=%v retries=%v", publisher.queueURLs, store.published, store.retryTimes)
 	}
 }
 

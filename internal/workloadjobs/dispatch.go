@@ -48,7 +48,6 @@ type DispatchCommand struct {
 	Generation       int64                  `json:"generation"`
 	ResourcePlane    domain.ResourcePlaneID `json:"resource_plane_id"`
 	IdempotencyToken string                 `json:"idempotency_token"`
-	TimeoutAt        time.Time              `json:"timeout_at"`
 }
 
 // Handle durably hands a scheduler delivery to the Resource Plane. It never
@@ -136,7 +135,7 @@ func (h *DispatchHandler) Handle(ctx context.Context, request ScheduleRequest) e
 			return struct{}{}, fmt.Errorf("persist Workload attempt: %w", err)
 		}
 		command := DispatchCommand{SchemaVersion: 1, TenantID: run.TenantID, WorkloadRunID: run.ID,
-			AttemptID: attemptID, Generation: generation, ResourcePlane: planeID, IdempotencyToken: idempotencyToken, TimeoutAt: run.TimeoutAt}
+			AttemptID: attemptID, Generation: generation, ResourcePlane: planeID, IdempotencyToken: idempotencyToken}
 		payload, err := json.Marshal(command)
 		if err != nil {
 			return struct{}{}, fmt.Errorf("encode Workload dispatch command: %w", err)

@@ -57,7 +57,10 @@ func (s *Service) ExecuteGoTest(ctx context.Context, spec fake.JobSpec) (domain.
 	if s.Now != nil {
 		now = s.Now
 	}
-	startedAt := now().UTC()
+	// PostgreSQL timestamptz persists microsecond precision. Normalize before
+	// comparing the value read back from the database, otherwise a valid
+	// timestamp with sub-microsecond clock bits appears to precede this value.
+	startedAt := now().UTC().Truncate(time.Microsecond)
 	run, err := transaction.Within(ctx, s.Pool, s.Policy, func(ctx context.Context, tx pgx.Tx) (domain.WorkloadRun, error) {
 		current, err := workloads.Get(ctx, tx, spec.TenantID, spec.RunID)
 		if err != nil {
@@ -94,6 +97,9 @@ func (s *Service) ExecuteGoTest(ctx context.Context, spec fake.JobSpec) (domain.
 		finished, finishErr := s.finish(ctx, run, nil, domain.WorkloadFailed, "executor_error", startedAt, now())
 		if finishErr != nil {
 			return domain.WorkloadRun{}, errors.Join(executeErr, finishErr)
+		}
+		if finished.State == domain.WorkloadCancelled {
+			return finished, nil
 		}
 		return finished, fmt.Errorf("execute isolated Go test Job: %w", executeErr)
 	}
@@ -140,7 +146,18 @@ func (s *Service) finish(ctx context.Context, started domain.WorkloadRun, result
 		if err != nil {
 			return domain.WorkloadRun{}, err
 		}
-		if current.State != domain.WorkloadRunning || current.Revision != started.Revision {
+		if current.State != domain.WorkloadRunning {
+			return domain.WorkloadRun{}, workloads.ErrTransitionConflict
+		}
+		// RequestCancel advances the Run revision while leaving an in-flight
+		// attempt in `running` until its executor confirms termination. Accept
+		// that one expected revision change and persist the terminal state from
+		// the current revision, rather than reporting an OCC conflict forever.
+		if current.DesiredState == domain.WorkloadDesiredCancelled {
+			next = domain.WorkloadCancelled
+			errorCode = ""
+			result = nil
+		} else if current.Revision != started.Revision {
 			return domain.WorkloadRun{}, workloads.ErrTransitionConflict
 		}
 		if result != nil {

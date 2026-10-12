@@ -15,6 +15,7 @@ import (
 
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/idempotency"
+	"github.com/mo3789530/hako/internal/workspacesession"
 )
 
 const maxAPIResponseSize = 64 << 10
@@ -77,6 +78,13 @@ type WorkspaceActionResult struct {
 	OperationID    string        `json:"operation_id"`
 	OperationType  string        `json:"operation_type"`
 	OperationState string        `json:"operation_state"`
+}
+
+type WorkspaceSession struct {
+	SessionID   domain.SessionID              `json:"session_id"`
+	Ticket      string                        `json:"ticket"`
+	ExpiresAt   time.Time                     `json:"expires_at"`
+	Permissions []workspacesession.Permission `json:"permissions"`
 }
 
 type WorkloadRunListResult struct {
@@ -417,6 +425,83 @@ func RequestWorkspaceAction(ctx context.Context, baseURL, accessToken, tenantID,
 		return WorkspaceActionResult{}, errors.New("Hako API returned an invalid Workspace action response")
 	}
 	return result, nil
+}
+
+// CreateWorkspaceSession obtains a short-lived Gateway ticket after the API
+// has applied Tenant and Workspace visibility checks. Treat Ticket as a secret
+// and never log it.
+func CreateWorkspaceSession(ctx context.Context, baseURL, accessToken, tenantID, workspaceID string, permissions []workspacesession.Permission, client *http.Client) (WorkspaceSession, error) {
+	var result WorkspaceSession
+	if !validTenantID(tenantID) || !validOpaqueID(workspaceID) {
+		return result, errors.New("Tenant and Workspace IDs must contain only letters, numbers, underscores, or hyphens")
+	}
+	if strings.TrimSpace(accessToken) == "" {
+		return result, errors.New("access token is required")
+	}
+	if len(permissions) > 0 {
+		if err := workspacesession.ValidatePermissions(permissions); err != nil {
+			return result, errors.New("Workspace session permissions are invalid")
+		}
+	}
+	endpoint, err := apiEndpoint(baseURL, "/v1/tenants/"+url.PathEscape(tenantID)+"/workspaces/"+url.PathEscape(workspaceID)+"/sessions")
+	if err != nil {
+		return result, err
+	}
+	body, err := json.Marshal(struct {
+		Permissions []workspacesession.Permission `json:"permissions,omitempty"`
+	}{Permissions: permissions})
+	if err != nil {
+		return result, fmt.Errorf("encode Workspace session request: %w", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return result, fmt.Errorf("create Hako API request: %w", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+accessToken)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := safeAPIClient(client).Do(request)
+	if err != nil {
+		return result, fmt.Errorf("call Hako API: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		return result, readAPIError(response)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil ||
+		!validOpaqueID(string(result.SessionID)) || result.Ticket == "" || len(result.Ticket) > 8192 || result.ExpiresAt.IsZero() ||
+		workspacesession.ValidatePermissions(result.Permissions) != nil {
+		return WorkspaceSession{}, errors.New("Hako API returned an invalid Workspace Session response")
+	}
+	return result, nil
+}
+
+// RevokeWorkspaceSession removes the persisted ticket record. Gateways must
+// check that record at connection establishment and reject revoked sessions.
+func RevokeWorkspaceSession(ctx context.Context, baseURL, accessToken, tenantID, workspaceID, sessionID string, client *http.Client) error {
+	if !validTenantID(tenantID) || !validOpaqueID(workspaceID) || len(sessionID) != 48 {
+		return errors.New("Tenant, Workspace, or Session ID is invalid")
+	}
+	if strings.TrimSpace(accessToken) == "" {
+		return errors.New("access token is required")
+	}
+	endpoint, err := apiEndpoint(baseURL, "/v1/tenants/"+url.PathEscape(tenantID)+"/workspaces/"+url.PathEscape(workspaceID)+"/sessions/"+url.PathEscape(sessionID))
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("create Hako API request: %w", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+accessToken)
+	response, err := safeAPIClient(client).Do(request)
+	if err != nil {
+		return fmt.Errorf("call Hako API: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		return readAPIError(response)
+	}
+	return nil
 }
 
 // CreateWorkloadRun requests an immutable Job Run and its transactional schedule event.
