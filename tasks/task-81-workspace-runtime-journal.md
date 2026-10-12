@@ -1,6 +1,6 @@
 # Task 81: Durable Workspace Runtime Journal and Revision Fence
 
-Status: Implemented locally (Workspace journal model, S3 conditional store, and local restart/concurrency tests; no AWS bucket/IAM deployment). Priority: P1. Parent: Task 43. Depends on: Task 80.
+Status: Implemented locally (Workspace journal model, S3 conditional store, exact launch-request payload pinning, and local restart/concurrency tests; no AWS bucket/IAM deployment). Priority: P1. Parent: Task 43. Depends on: Task 80.
 
 ## Goal
 

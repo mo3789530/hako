@@ -69,6 +69,7 @@ type Journal struct {
 	ProviderID           string                 `json:"provider_id,omitempty"`
 	LaunchToken          string                 `json:"launch_token,omitempty"`
 	LaunchSpecSHA256     string                 `json:"launch_spec_sha256,omitempty"`
+	LaunchSpecPayload    json.RawMessage        `json:"launch_spec_payload,omitempty"`
 	CleanupState         CleanupState           `json:"cleanup_state"`
 	CreatedAt            time.Time              `json:"created_at"`
 	UpdatedAt            time.Time              `json:"updated_at"`
@@ -125,6 +126,21 @@ func New(command Command, launchToken, launchSpecSHA256 string, now time.Time) (
 	return j, nil
 }
 
+// NewWithLaunchSpec persists the exact provider request alongside its digest.
+// This lets a restarted controller retry an ambiguous RunMicrovm call with
+// byte-for-byte identical parameters and the same client token.
+func NewWithLaunchSpec(command Command, launchToken string, payload []byte, now time.Time) (Journal, error) {
+	if err := validateLaunchPayload(payload); err != nil {
+		return Journal{}, err
+	}
+	j, err := New(command, launchToken, DigestLaunchSpec(payload), now)
+	if err != nil {
+		return Journal{}, err
+	}
+	j.LaunchSpecPayload = append(json.RawMessage(nil), payload...)
+	return j, j.Validate()
+}
+
 // ApplyCommand validates a command against the latest checkpoint and returns
 // the next record. The caller must persist it with CompareAndSwap before any
 // external side effect. A duplicate is safe to acknowledge only after loading
@@ -153,7 +169,7 @@ func ApplyCommand(current Snapshot, command Command, launchToken, launchSpecSHA2
 	if old.Tombstone || old.State == Deleted || old.CleanupState == CleanupPending || old.CleanupState == CleanupFailed {
 		return Journal{}, ErrConflict
 	}
-	if !stable(old.State) {
+	if !stable(old.State) && command.Type != domain.OperationDelete {
 		return Journal{}, ErrConflict
 	}
 
@@ -219,6 +235,54 @@ func ApplyCommand(current Snapshot, command Command, launchToken, launchSpecSHA2
 	return next, nil
 }
 
+// ApplyCommandWithLaunchSpec is the payload-preserving variant used by real
+// runtime adapters. Non-launch operations pass nil. An ensure for an existing
+// allocation also passes nil and reuses the immutable payload already pinned.
+func ApplyCommandWithLaunchSpec(current Snapshot, command Command, launchToken string, payload []byte, now time.Time) (Journal, error) {
+	if len(payload) > 0 {
+		if err := validateLaunchPayload(payload); err != nil {
+			return Journal{}, err
+		}
+	}
+	digest := ""
+	if len(payload) > 0 {
+		digest = DigestLaunchSpec(payload)
+	}
+	next, err := ApplyCommand(current, command, launchToken, digest, now)
+	if errors.Is(err, ErrDuplicate) {
+		if len(payload) > 0 && !bytes.Equal(current.Journal.LaunchSpecPayload, payload) {
+			return Journal{}, ErrConflict
+		}
+		return Journal{}, err
+	}
+	if err != nil {
+		return Journal{}, err
+	}
+	if next.State == Provisioning && next.LaunchSpecSHA256 == digest && len(payload) > 0 {
+		next.LaunchSpecPayload = append(json.RawMessage(nil), payload...)
+	}
+	if err := ValidateUpdate(current, next); err != nil {
+		return Journal{}, err
+	}
+	return next, nil
+}
+
+// Advance persists a lifecycle checkpoint after a provider call or observation.
+// The caller must CAS the returned record before acknowledging the command.
+func Advance(current Snapshot, state State, providerID string, cleanup CleanupState, now time.Time) (Journal, error) {
+	if current.ETag == "" || current.Journal.Validate() != nil {
+		return Journal{}, ErrConflict
+	}
+	next := current.Journal
+	next.Revision++
+	next.State, next.ProviderID, next.CleanupState = state, providerID, cleanup
+	next.UpdatedAt = now.UTC()
+	if err := ValidateUpdate(current, next); err != nil {
+		return Journal{}, err
+	}
+	return next, nil
+}
+
 func (j Journal) Validate() error {
 	if j.SchemaVersion != 1 || !idPattern.MatchString(string(j.TenantID)) ||
 		!idPattern.MatchString(string(j.WorkspaceID)) || !idPattern.MatchString(string(j.ResourcePlaneID)) ||
@@ -244,6 +308,11 @@ func (j Journal) Validate() error {
 	}
 	if j.LaunchSpecSHA256 != "" && !hashPattern.MatchString(j.LaunchSpecSHA256) {
 		return errors.New("Workspace runtime launch specification digest is invalid")
+	}
+	if len(j.LaunchSpecPayload) > 0 {
+		if err := validateLaunchPayload(j.LaunchSpecPayload); err != nil || DigestLaunchSpec(j.LaunchSpecPayload) != j.LaunchSpecSHA256 {
+			return errors.New("Workspace runtime launch payload does not match its immutable digest")
+		}
 	}
 	if j.State == Provisioning || j.AllocationGeneration > 0 {
 		if j.AllocationGeneration < 1 || !validLaunch(j.LaunchToken, j.LaunchSpecSHA256) {
@@ -289,7 +358,7 @@ func ValidateUpdate(current Snapshot, next Journal) error {
 		if next.OperationID != old.OperationID || next.OperationType != old.OperationType {
 			return ErrConflict
 		}
-	} else if old.Tombstone || !stable(old.State) {
+	} else if old.Tombstone || (!stable(old.State) && next.OperationType != domain.OperationDelete) {
 		return ErrConflict
 	}
 	if old.Tombstone && (next.OperationID != old.OperationID || next.OperationType != old.OperationType) {
@@ -306,7 +375,7 @@ func ValidateUpdate(current Snapshot, next Journal) error {
 			next.State != Provisioning || next.ProviderID != "" || next.LaunchToken == old.LaunchToken || next.LaunchSpecSHA256 == "" {
 			return ErrConflict
 		}
-	} else if old.LaunchToken != next.LaunchToken || old.LaunchSpecSHA256 != next.LaunchSpecSHA256 {
+	} else if old.LaunchToken != next.LaunchToken || old.LaunchSpecSHA256 != next.LaunchSpecSHA256 || !bytes.Equal(old.LaunchSpecPayload, next.LaunchSpecPayload) {
 		return ErrConflict
 	}
 	if old.CleanupState != next.CleanupState {
@@ -319,6 +388,13 @@ func ValidateUpdate(current Snapshot, next Journal) error {
 	}
 	if err := transition(old, next); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateLaunchPayload(payload []byte) error {
+	if len(payload) == 0 || len(payload) > 16<<10 || !json.Valid(payload) {
+		return errors.New("Workspace runtime launch payload must be valid JSON between 1 and 16 KiB")
 	}
 	return nil
 }

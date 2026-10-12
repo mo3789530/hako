@@ -1,6 +1,7 @@
 package workspacejournal
 
 import (
+	"bytes"
 	"errors"
 	"strings"
 	"testing"
@@ -137,6 +138,49 @@ func TestDeletionCleanupFailureRemainsDurableAndRetryable(t *testing.T) {
 	}
 	if _, err := ApplyCommand(Snapshot{Journal: deleted, ETag: `"deleted"`}, command(domain.OperationEnsureRunning, 3, "op_late"), "token_2", DigestLaunchSpec([]byte("{}")), now.Add(5*time.Second)); !errors.Is(err, ErrConflict) {
 		t.Fatalf("ensure after completed deletion error = %v", err)
+	}
+}
+
+func TestDeleteFencesInFlightProvisioningBeforeTerminationRecovery(t *testing.T) {
+	now := time.Now().UTC()
+	launchHash := DigestLaunchSpec([]byte(`{"image":"image-v1"}`))
+	provisioning, err := New(command(domain.OperationEnsureRunning, 1, "op_1"), "token_1", launchHash, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleting, err := ApplyCommand(Snapshot{Journal: provisioning, ETag: `"provisioning"`}, command(domain.OperationDelete, 2, "op_delete"), "", "", now.Add(time.Second))
+	if err != nil || deleting.State != Deleting || !deleting.Tombstone || deleting.CleanupState != CleanupPending || deleting.LaunchToken != "token_1" {
+		t.Fatalf("delete did not fence in-flight launch: %+v, %v", deleting, err)
+	}
+	if _, err := ApplyCommand(Snapshot{Journal: deleting, ETag: `"deleting"`}, command(domain.OperationEnsureRunning, 3, "op_late"), "token_2", launchHash, now.Add(2*time.Second)); !errors.Is(err, ErrConflict) {
+		t.Fatalf("ensure after in-flight delete tombstone error = %v", err)
+	}
+}
+
+func TestLaunchPayloadIsValidatedAndImmutableAcrossRestartCheckpoint(t *testing.T) {
+	now := time.Now().UTC()
+	payload := []byte(`{"image":"image-v1","connectors":["egress"]}`)
+	created, err := NewWithLaunchSpec(command(domain.OperationEnsureRunning, 1, "op_payload"), "token_payload", payload, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := Encode(created)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := Decode(encoded)
+	if err != nil || !bytes.Equal(restarted.LaunchSpecPayload, payload) {
+		t.Fatalf("launch payload did not survive journal restart: %s, %v", restarted.LaunchSpecPayload, err)
+	}
+	current := Snapshot{Journal: restarted, ETag: `"v1"`}
+	duplicate := command(domain.OperationEnsureRunning, 1, "op_payload")
+	if _, err := ApplyCommandWithLaunchSpec(current, duplicate, "token_payload", []byte(`{"image":"image-v2"}`), now.Add(time.Second)); !errors.Is(err, ErrConflict) {
+		t.Fatalf("duplicate command with changed launch payload error = %v", err)
+	}
+	corrupt := restarted
+	corrupt.LaunchSpecPayload = []byte(`{"image":"tampered"}`)
+	if err := corrupt.Validate(); err == nil {
+		t.Fatal("journal accepted launch payload whose digest does not match")
 	}
 }
 
