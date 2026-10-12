@@ -1,6 +1,6 @@
 # Task 81: Durable Workspace Runtime Journal and Revision Fence
 
-Status: Todo. Priority: P1. Parent: Task 43. Depends on: Task 80.
+Status: Implemented locally (Workspace journal model, S3 conditional store, and local restart/concurrency tests; no AWS bucket/IAM deployment). Priority: P1. Parent: Task 43. Depends on: Task 80.
 
 ## Goal
 
@@ -30,3 +30,20 @@ The Resource Plane must not connect directly to Control Plane DSQL.
 - Store tests cover malformed/mismatched identity, retry after ambiguous write,
   and durable read-after-restart behavior using a local stub.
 - Failed cleanup remains represented durably for retry and operator visibility.
+
+## Result
+
+- Added `internal/workspacejournal` with strict identity/schema validation,
+  launch token/spec pinning, independent Workspace/CAS revisions, allocation
+  generations, operation admission, and irreversible delete tombstones.
+- Added an S3 store using conditional object creation and ETag CAS; object keys
+  are scoped by Resource Plane, Tenant, and Workspace. Runtime store access is
+  read/write only and never deletes journal objects.
+- Unit tests cover duplicate/stale commands, concurrent CAS, delete-then-stale
+  ensure, replacement only after confirmed termination, malformed/foreign
+  payloads, and ambiguous-write recovery after simulated controller restart.
+- [Journal storage/IAM contract](../docs/workspace-runtime-journal.md) records
+  the S3 prefix and least-privilege deployment boundary. Real bucket, role, and
+  AWS conditional-write behavior are not deployed/verified.
+- Next: Task 82, provider adapter. The S3 store is not yet wired into the
+  Resource Controller Lambda, so production execution remains disabled.

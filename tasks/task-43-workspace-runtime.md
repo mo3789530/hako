@@ -11,7 +11,7 @@ Replace the production gap behind the current fake-only Resource Controller with
 Implement in dependency order; do not count this parent together with its child tasks:
 
 1. [Task 80: Runtime contract and capability ADR](task-80-workspace-runtime-contract.md) — complete
-2. [Task 81: Durable journal and revision fence](task-81-workspace-runtime-journal.md)
+2. [Task 81: Durable journal and revision fence](task-81-workspace-runtime-journal.md) — implemented locally
 3. [Task 82: Lambda MicroVM Runtime adapter](task-82-workspace-lambda-microvm-adapter.md)
 4. [Task 83: Reconciliation and local fake-provider E2E](task-83-workspace-runtime-recovery-e2e.md)
 
