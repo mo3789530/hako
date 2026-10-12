@@ -1,6 +1,6 @@
 # Task 83: Workspace Runtime Reconciliation and Local API E2E
 
-Status: Todo. Priority: P1. Parent: Task 43. Depends on: Tasks 80–82.
+Status: In Progress (AWS SDK HTTP fake provider lifecycle E2E, process-restart retry with frozen request, and foreign provider ID fail-closed tests implemented; broader concurrency/cleanup recovery and operations acceptance remain). Priority: P1. Parent: Task 43. Depends on: Tasks 80–82.
 
 ## Goal
 
@@ -12,14 +12,30 @@ unrelated provider resources.
 
 - Add a local fake provider HTTP API and exercise the actual runtime adapter
   through it.
-- Reconcile a journal/provider mismatch using ownership tags and persisted
-  Resource Bindings; never adopt a foreign or ambiguously tagged resource.
+- Reconcile a journal/provider mismatch using the journal's persisted provider
+  ID and verify provider configuration. Never adopt a foreign resource. Task 80
+  found no verified per-MicroVM tag or ownership-list API, so tag discovery and
+  adoption are explicitly unsupported; use the journal as the binding record.
 - Compensate partial provisioning; persist cleanup failures and retry them
   safely. Make delete idempotent.
 - Test duplicate, stale, concurrent, partial-create, retry, tombstone, foreign
   resource, provider timeout, and controller restart scenarios.
 - Document alarms, retry/operator procedures, provider quotas, lifecycle
   limitations, and the boundary between local proof and AWS PoC.
+
+## Local progress
+
+`internal/workspaceruntime/lambda_http_test.go` drives the actual AWS SDK client
+through a loopback HTTP fake. It covers ensure/suspend/resume/delete, duplicate
+ensure, an ambiguous first launch response followed by adapter reconstruction,
+and proof that a mismatched provider ID is rejected without deletion. The
+operator boundaries are recorded in
+[`docs/workspace-runtime-operations.md`](../docs/workspace-runtime-operations.md).
+
+The Task 83 suite is not complete yet: concurrent workers/CAS races, cleanup
+failure persistence/retry, provider timeout, and a PostgreSQL-backed full
+Control Plane result/binding E2E still need coverage. Production AWS lifecycle
+and resource ownership remain unverified.
 
 ## Acceptance criteria
 
