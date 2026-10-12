@@ -3,6 +3,7 @@ package workspaceruntime
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 )
 
 type memoryStore struct {
+	mu   sync.Mutex
 	data map[string]workspacejournal.Snapshot
 	seq  int
 }
@@ -26,6 +28,8 @@ func storeKey(tenant domain.TenantID, workspace domain.WorkspaceID, plane domain
 }
 
 func (s *memoryStore) Create(_ context.Context, journal workspacejournal.Journal) (workspacejournal.Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	key := storeKey(journal.TenantID, journal.WorkspaceID, journal.ResourcePlaneID)
 	if _, exists := s.data[key]; exists {
 		return workspacejournal.Snapshot{}, workspacejournal.ErrConflict
@@ -37,6 +41,8 @@ func (s *memoryStore) Create(_ context.Context, journal workspacejournal.Journal
 }
 
 func (s *memoryStore) Get(_ context.Context, tenant domain.TenantID, workspace domain.WorkspaceID, plane domain.ResourcePlaneID) (workspacejournal.Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	snapshot, ok := s.data[storeKey(tenant, workspace, plane)]
 	if !ok {
 		return workspacejournal.Snapshot{}, workspacejournal.ErrNotFound
@@ -45,6 +51,8 @@ func (s *memoryStore) Get(_ context.Context, tenant domain.TenantID, workspace d
 }
 
 func (s *memoryStore) CompareAndSwap(_ context.Context, current workspacejournal.Snapshot, next workspacejournal.Journal) (workspacejournal.Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	key := storeKey(next.TenantID, next.WorkspaceID, next.ResourcePlaneID)
 	stored, ok := s.data[key]
 	if !ok || stored.ETag != current.ETag {
@@ -68,7 +76,9 @@ func (f resolverFunc) Resolve(ctx context.Context, command resourcecontroller.Co
 }
 
 type apiStub struct {
+	mu             sync.Mutex
 	runCalls       int
+	allocations    map[string]int
 	lastRun        *lambdamicrovms.RunMicrovmInput
 	runErr         error
 	getCalls       int
@@ -81,15 +91,23 @@ type apiStub struct {
 }
 
 func (a *apiStub) RunMicrovm(_ context.Context, input *lambdamicrovms.RunMicrovmInput, _ ...func(*lambdamicrovms.Options)) (*lambdamicrovms.RunMicrovmOutput, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.runCalls++
 	a.lastRun = input
 	if a.runErr != nil {
 		return nil, a.runErr
 	}
+	if a.allocations == nil {
+		a.allocations = map[string]int{}
+	}
+	a.allocations[aws.ToString(input.ClientToken)] = 1
 	return &lambdamicrovms.RunMicrovmOutput{MicrovmId: aws.String("microvm-1"), State: types.MicrovmStatePending}, nil
 }
 
 func (a *apiStub) GetMicrovm(_ context.Context, input *lambdamicrovms.GetMicrovmInput, _ ...func(*lambdamicrovms.Options)) (*lambdamicrovms.GetMicrovmOutput, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.getCalls++
 	if a.getErr != nil {
 		return nil, a.getErr
@@ -102,18 +120,24 @@ func (a *apiStub) GetMicrovm(_ context.Context, input *lambdamicrovms.GetMicrovm
 }
 
 func (a *apiStub) SuspendMicrovm(context.Context, *lambdamicrovms.SuspendMicrovmInput, ...func(*lambdamicrovms.Options)) (*lambdamicrovms.SuspendMicrovmOutput, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.suspendCalls++
 	a.state = types.MicrovmStateSuspended
 	return &lambdamicrovms.SuspendMicrovmOutput{}, nil
 }
 
 func (a *apiStub) ResumeMicrovm(context.Context, *lambdamicrovms.ResumeMicrovmInput, ...func(*lambdamicrovms.Options)) (*lambdamicrovms.ResumeMicrovmOutput, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.resumeCalls++
 	a.state = types.MicrovmStateRunning
 	return &lambdamicrovms.ResumeMicrovmOutput{}, nil
 }
 
 func (a *apiStub) TerminateMicrovm(context.Context, *lambdamicrovms.TerminateMicrovmInput, ...func(*lambdamicrovms.Options)) (*lambdamicrovms.TerminateMicrovmOutput, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.terminateCalls++
 	if a.terminateErr != nil {
 		return nil, a.terminateErr
@@ -185,6 +209,44 @@ func TestAmbiguousLaunchRetryUsesPinnedRequestAfterResolverChanges(t *testing.T)
 	}
 	if api.runCalls != 2 || aws.ToString(api.lastRun.ClientToken) != firstToken || aws.ToString(api.lastRun.ImageIdentifier) != firstImage {
 		t.Fatalf("retry changed idempotent request: calls=%d token=%q image=%q", api.runCalls, aws.ToString(api.lastRun.ClientToken), aws.ToString(api.lastRun.ImageIdentifier))
+	}
+}
+
+func TestConcurrentDuplicateCommandsKeepOneDurableAllocation(t *testing.T) {
+	api, store := &apiStub{state: types.MicrovmStateRunning}, newMemoryStore()
+	runtime := newRuntime(t, api, store, func(context.Context, resourcecontroller.Command) (LaunchSpec, error) { return validSpec(), nil }, time.Second)
+	command := testCommand(domain.OperationEnsureRunning, 1, "op_concurrent")
+	const workers = 12
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			observed, err := runtime.Execute(context.Background(), command)
+			if err == nil && observed != domain.ObservedWorkspaceRunning {
+				err = errors.New("concurrent ensure returned non-running state")
+			}
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	successes := 0
+	for err := range errs {
+		if err == nil {
+			successes++
+		}
+	}
+	if successes == 0 {
+		t.Fatal("all concurrent duplicate deliveries failed")
+	}
+	if observed, err := runtime.Execute(context.Background(), command); err != nil || observed != domain.ObservedWorkspaceRunning {
+		t.Fatalf("final reconciliation = %q, %v", observed, err)
+	}
+	snapshot, err := store.Get(context.Background(), command.TenantID, command.WorkspaceID, command.ResourcePlaneID)
+	if err != nil || snapshot.Journal.State != workspacejournal.Running || snapshot.Journal.AllocationGeneration != 1 || len(api.allocations) != 1 {
+		t.Fatalf("concurrent duplicate created multiple or no allocations: journal=%+v allocations=%v err=%v", snapshot.Journal, api.allocations, err)
 	}
 }
 

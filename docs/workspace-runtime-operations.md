@@ -63,5 +63,8 @@ Workspace ownership query.
 
 Run `GOCACHE=/tmp/hako-go-cache go test ./internal/workspacejournal ./internal/workspaceruntime -count=1`.
 The SDK HTTP fake binds only to loopback and uses local test credentials; it
-does not contact AWS. Real MicroVM launch, network isolation, IAM, container,
-and cleanup remain separate AWS PoC gates.
+does not contact AWS. For the PostgreSQL binding projection E2E, set
+`HAKO_TEST_DATABASE_URL` and run
+`go test -tags=integration ./internal/integration -run TestWorkspaceControllerResultConsumerProjectsBindingEndToEnd -count=1`.
+Real MicroVM launch, network isolation, IAM, container, and cleanup remain
+separate AWS PoC gates.
