@@ -15,7 +15,10 @@ reviewed and separately approved.
   reconciliation from its current revision. Do not overwrite an ETag conflict.
 - A delete writes a tombstone before termination. Retry the same delete until
   the provider reports `TERMINATED` and the journal reaches `deleted` with
-  `cleanup_state=confirmed`. Never remove or recreate a tombstoned journal key.
+  `cleanup_state=confirmed`. A failed cleanup is recorded as `state=failed`,
+  `cleanup_state=failed` while retaining the tombstone; retry the same delete
+  to move back to `deleting/pending`. Never remove or recreate a tombstoned
+  journal key.
 - If provider ID, image, image version, execution role, or network connectors
   do not match the journal, stop reconciliation and investigate. The adapter
   must not mutate or adopt the mismatched resource.

@@ -26,17 +26,19 @@ type TransitionInput struct {
 }
 
 type ResultInput struct {
-	OperationID       domain.OperationID
-	WorkspaceRevision int64
-	TenantID          domain.TenantID
-	WorkspaceID       domain.WorkspaceID
-	ResourcePlaneID   domain.ResourcePlaneID
-	Type              domain.OperationType
-	Status            domain.OperationStatus
-	ObservedState     domain.ObservedWorkspaceState
-	ErrorCode         string
-	Payload           json.RawMessage
-	CompletedAt       time.Time
+	OperationID        domain.OperationID
+	WorkspaceRevision  int64
+	TenantID           domain.TenantID
+	WorkspaceID        domain.WorkspaceID
+	ResourcePlaneID    domain.ResourcePlaneID
+	Type               domain.OperationType
+	Status             domain.OperationStatus
+	ObservedState      domain.ObservedWorkspaceState
+	ErrorCode          string
+	ResourceKind       string
+	ExternalResourceID string
+	Payload            json.RawMessage
+	CompletedAt        time.Time
 }
 
 // ApplyResult atomically validates a Resource Plane result, transitions the
@@ -59,6 +61,11 @@ func ApplyResult(ctx context.Context, pool transaction.Beginner, policy transact
 	}
 	if len(input.Payload) > 0 && !json.Valid(input.Payload) {
 		return false, errors.New("result payload must be valid JSON")
+	}
+	if (input.ResourceKind == "") != (input.ExternalResourceID == "") ||
+		(input.ResourceKind != "" && input.ResourceKind != "lambda_microvm") ||
+		(len(input.ExternalResourceID) > 256 || strings.TrimSpace(input.ExternalResourceID) != input.ExternalResourceID || strings.ContainsAny(input.ExternalResourceID, "\r\n\x00")) {
+		return false, errors.New("Resource Plane result binding is invalid")
 	}
 	if input.CompletedAt.IsZero() {
 		return false, errors.New("result completion time is required")
@@ -115,6 +122,25 @@ func ApplyResult(ctx context.Context, pool transaction.Beginner, policy transact
 		}
 		if tag.RowsAffected() != 1 {
 			return false, errors.New("Workspace status row is missing")
+		}
+		if input.Status == domain.OperationSucceeded && input.ObservedState == domain.ObservedWorkspaceDeleted {
+			if _, err := tx.Exec(ctx, `DELETE FROM resource_bindings WHERE workspace_id = $1 AND resource_plane_id = $2 AND kind = 'lambda_microvm'`, input.WorkspaceID, input.ResourcePlaneID); err != nil {
+				return false, fmt.Errorf("delete Workspace MicroVM resource binding: %w", err)
+			}
+		} else if input.Status == domain.OperationSucceeded && input.ResourceKind != "" {
+			var boundID string
+			err := tx.QueryRow(ctx, `INSERT INTO resource_bindings (workspace_id, resource_plane_id, kind, external_id, created_at)
+				VALUES ($1, $2, $3, $4, $5)
+				ON CONFLICT (workspace_id, kind) DO UPDATE SET
+				resource_plane_id = EXCLUDED.resource_plane_id, external_id = EXCLUDED.external_id, created_at = EXCLUDED.created_at
+				WHERE resource_bindings.resource_plane_id = EXCLUDED.resource_plane_id
+				RETURNING external_id`, input.WorkspaceID, input.ResourcePlaneID, input.ResourceKind, input.ExternalResourceID, input.CompletedAt).Scan(&boundID)
+			if err != nil {
+				return false, fmt.Errorf("persist Workspace Resource Plane binding: %w", err)
+			}
+			if boundID != input.ExternalResourceID {
+				return false, errors.New("persisted Workspace Resource Plane binding does not match result")
+			}
 		}
 		if input.ObservedState == domain.ObservedWorkspaceDeleted {
 			if _, err := tx.Exec(ctx, `DELETE FROM workspace_quota_slots WHERE workspace_id = $1`, input.WorkspaceID); err != nil {

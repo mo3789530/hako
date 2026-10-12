@@ -162,6 +162,19 @@ func (r *LambdaMicroVM) Execute(ctx context.Context, command resourcecontroller.
 	return r.reconcile(ctx, snapshot)
 }
 
+func (r *LambdaMicroVM) ResourceBinding(ctx context.Context, command resourcecontroller.Command) (string, string, error) {
+	snapshot, err := r.store.Get(ctx, command.TenantID, command.WorkspaceID, command.ResourcePlaneID)
+	if err != nil {
+		return "", "", err
+	}
+	j := snapshot.Journal
+	if snapshot.ETag == "" || j.Validate() != nil || j.TenantID != command.TenantID || j.WorkspaceID != command.WorkspaceID ||
+		j.ResourcePlaneID != command.ResourcePlaneID || j.WorkspaceRevision != command.WorkspaceRevision || j.OperationID != command.OperationID || j.OperationType != command.Type || j.ProviderID == "" || j.Tombstone {
+		return "", "", workspacejournal.ErrConflict
+	}
+	return "lambda_microvm", j.ProviderID, nil
+}
+
 func (r *LambdaMicroVM) reconcile(ctx context.Context, snapshot workspacejournal.Snapshot) (domain.ObservedWorkspaceState, error) {
 	j := snapshot.Journal
 	if j.State == workspacejournal.Deleted {
@@ -285,16 +298,20 @@ func (r *LambdaMicroVM) delete(ctx context.Context, snapshot workspacejournal.Sn
 		}
 		j = snapshot.Journal
 	}
-	if j.State == workspacejournal.Deleting || j.State == workspacejournal.Failed {
-		if _, err := r.api.TerminateMicrovm(ctx, &lambdamicrovms.TerminateMicrovmInput{MicrovmIdentifier: aws.String(j.ProviderID)}); err != nil {
+	if j.State == workspacejournal.Failed {
+		var err error
+		snapshot, err = r.advance(ctx, snapshot, workspacejournal.Deleting, j.ProviderID, workspacejournal.CleanupPending)
+		if err != nil {
 			return domain.ObservedWorkspaceFailed, err
 		}
+		j = snapshot.Journal
 	}
 	deadlineCtx, cancel := context.WithTimeout(ctx, r.config.PollTimeout)
 	defer cancel()
 	for {
 		output, err := r.get(deadlineCtx, j)
 		if err != nil {
+			_ = r.markCleanupFailed(ctx, snapshot)
 			return domain.ObservedWorkspaceFailed, err
 		}
 		if output.State == types.MicrovmStateTerminated {
@@ -304,13 +321,32 @@ func (r *LambdaMicroVM) delete(ctx context.Context, snapshot workspacejournal.Sn
 			}
 			return domain.ObservedWorkspaceDeleted, nil
 		}
-		if output.State != types.MicrovmStatePending && output.State != types.MicrovmStateRunning && output.State != types.MicrovmStateSuspending && output.State != types.MicrovmStateSuspended && output.State != types.MicrovmStateTerminating {
+		if output.State == types.MicrovmStatePending || output.State == types.MicrovmStateRunning || output.State == types.MicrovmStateSuspending || output.State == types.MicrovmStateSuspended {
+			if _, err := r.api.TerminateMicrovm(deadlineCtx, &lambdamicrovms.TerminateMicrovmInput{MicrovmIdentifier: aws.String(j.ProviderID)}); err != nil {
+				_ = r.markCleanupFailed(ctx, snapshot)
+				return domain.ObservedWorkspaceFailed, err
+			}
+		} else if output.State != types.MicrovmStateTerminating {
+			_ = r.markCleanupFailed(ctx, snapshot)
 			return domain.ObservedWorkspaceFailed, fmt.Errorf("%w: %q", ErrProviderState, output.State)
 		}
 		if err := r.sleep(deadlineCtx, r.config.PollInterval); err != nil {
+			_ = r.markCleanupFailed(ctx, snapshot)
 			return domain.ObservedWorkspaceDeleting, err
 		}
 	}
+}
+
+func (r *LambdaMicroVM) markCleanupFailed(ctx context.Context, current workspacejournal.Snapshot) error {
+	if current.Journal.Tombstone && current.Journal.CleanupState == workspacejournal.CleanupFailed && current.Journal.State == workspacejournal.Failed {
+		return nil
+	}
+	next, err := workspacejournal.Advance(current, workspacejournal.Failed, current.Journal.ProviderID, workspacejournal.CleanupFailed, r.now())
+	if err != nil {
+		return err
+	}
+	_, err = r.store.CompareAndSwap(ctx, current, next)
+	return err
 }
 
 func (r *LambdaMicroVM) waitFor(ctx context.Context, snapshot workspacejournal.Snapshot, target types.MicrovmState, state workspacejournal.State) (domain.ObservedWorkspaceState, error) {

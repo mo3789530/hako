@@ -24,6 +24,12 @@ func (blockingRuntime) Execute(ctx context.Context, _ Command) (domain.ObservedW
 
 type delayedRuntime struct{ delay time.Duration }
 
+type bindingTestRuntime struct{ testRuntime }
+
+func (*bindingTestRuntime) ResourceBinding(context.Context, Command) (string, string, error) {
+	return "lambda_microvm", "microvm-test-1", nil
+}
+
 func (r delayedRuntime) Execute(ctx context.Context, _ Command) (domain.ObservedWorkspaceState, error) {
 	timer := time.NewTimer(r.delay)
 	defer timer.Stop()
@@ -103,6 +109,22 @@ func TestControllerHandlesDuplicateAndReportsResultAtLeastOnce(t *testing.T) {
 	}
 	if sink.results[0].OperationID != sink.results[1].OperationID || sink.results[0].WorkspaceRevision != 1 || sink.results[0].ObservedState != domain.ObservedWorkspaceRunning || sink.results[0].Status != domain.OperationSucceeded {
 		t.Fatalf("unexpected reported result: %+v %+v", sink.results[0], sink.results[1])
+	}
+}
+
+func TestControllerIncludesDurableProviderBindingInResult(t *testing.T) {
+	runtime := &bindingTestRuntime{}
+	sink := &testSink{}
+	now := time.Now().UTC()
+	controller, err := New("rp_1", runtime, sink, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Handle(context.Background(), encodedCommandAt(t, "rp_1", now)); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.results) != 1 || sink.results[0].ResourceKind != "lambda_microvm" || sink.results[0].ExternalResourceID != "microvm-test-1" {
+		t.Fatalf("result did not carry provider binding: %+v", sink.results)
 	}
 }
 

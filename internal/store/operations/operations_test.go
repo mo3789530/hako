@@ -58,6 +58,11 @@ func TestOperationMutationValidationBeforeDatabaseAccess(t *testing.T) {
 		{"nonterminal status", func(input *ResultInput) { input.Status = domain.OperationRunning }},
 		{"failed result wrong state", func(input *ResultInput) { input.Status = domain.OperationFailed }},
 		{"successful result wrong state", func(input *ResultInput) { input.ObservedState = domain.ObservedWorkspaceFailed }},
+		{"binding kind without resource id", func(input *ResultInput) { input.ResourceKind = "lambda_microvm" }},
+		{"unsupported binding kind", func(input *ResultInput) { input.ResourceKind, input.ExternalResourceID = "unknown", "provider-id" }},
+		{"invalid binding id", func(input *ResultInput) {
+			input.ResourceKind, input.ExternalResourceID = "lambda_microvm", "bad\nresource"
+		}},
 		{"invalid payload", func(input *ResultInput) { input.Payload = json.RawMessage("{") }},
 		{"missing completion timestamp", func(input *ResultInput) { input.CompletedAt = time.Time{} }},
 	}

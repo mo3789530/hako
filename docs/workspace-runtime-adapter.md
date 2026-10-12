@@ -22,6 +22,14 @@ IDs are persisted with compare-and-swap before subsequent lifecycle calls.
 State reads verify the provider ID, image/version, execution role, and network
 connectors against the frozen allocation specification.
 
+After a successful non-delete operation, the Resource Controller obtains the
+provider ID from the durable journal and includes it in the result envelope.
+The Control Plane applies the result and the `lambda_microvm` row in
+`resource_bindings` in one transaction. A successful delete removes that
+binding in the same transaction as the terminal result; failed or stale results
+do not mutate bindings. This projection is a lookup/binding record, not a
+provider discovery mechanism.
+
 Delete writes a tombstone before cleanup. If it races an in-flight launch, the
 controller replays the exact launch request to recover its ID, then terminates
 and polls the allocation. A tombstoned Workspace cannot be recreated. Suspend

@@ -28,17 +28,19 @@ type Command struct {
 }
 
 type Result struct {
-	SchemaVersion     int                           `json:"schema_version"`
-	WorkspaceRevision int64                         `json:"workspace_revision,omitempty"`
-	OperationID       domain.OperationID            `json:"operation_id"`
-	TenantID          domain.TenantID               `json:"tenant_id"`
-	WorkspaceID       domain.WorkspaceID            `json:"workspace_id"`
-	ResourcePlaneID   domain.ResourcePlaneID        `json:"resource_plane_id"`
-	Type              domain.OperationType          `json:"type"`
-	Status            domain.OperationStatus        `json:"status"`
-	ObservedState     domain.ObservedWorkspaceState `json:"observed_state"`
-	ErrorCode         string                        `json:"error_code,omitempty"`
-	CompletedAt       time.Time                     `json:"completed_at"`
+	SchemaVersion      int                           `json:"schema_version"`
+	WorkspaceRevision  int64                         `json:"workspace_revision,omitempty"`
+	OperationID        domain.OperationID            `json:"operation_id"`
+	TenantID           domain.TenantID               `json:"tenant_id"`
+	WorkspaceID        domain.WorkspaceID            `json:"workspace_id"`
+	ResourcePlaneID    domain.ResourcePlaneID        `json:"resource_plane_id"`
+	Type               domain.OperationType          `json:"type"`
+	Status             domain.OperationStatus        `json:"status"`
+	ObservedState      domain.ObservedWorkspaceState `json:"observed_state"`
+	ErrorCode          string                        `json:"error_code,omitempty"`
+	ResourceKind       string                        `json:"resource_kind,omitempty"`
+	ExternalResourceID string                        `json:"external_resource_id,omitempty"`
+	CompletedAt        time.Time                     `json:"completed_at"`
 }
 
 // Runtime applies a Workspace command. Implementations that manage real
@@ -48,6 +50,13 @@ type Result struct {
 // Fake Runtime only models this fence in process memory.
 type Runtime interface {
 	Execute(context.Context, Command) (domain.ObservedWorkspaceState, error)
+}
+
+// ResourceBindingReporter optionally returns the durable provider identity
+// after a Runtime operation. Control Plane applies it atomically with the
+// terminal result; delete results intentionally omit the binding.
+type ResourceBindingReporter interface {
+	ResourceBinding(context.Context, Command) (kind, externalID string, err error)
 }
 
 // ResultSink must durably report a result before Handle returns success. SQS
@@ -117,11 +126,18 @@ func (c *Controller) Handle(ctx context.Context, payload []byte) error {
 	}
 	executionCtx, cancel := context.WithTimeout(ctx, c.executionTimeout)
 	observed, executeErr := c.runtime.Execute(executionCtx, command)
+	resourceKind, externalResourceID := "", ""
+	if executeErr == nil && observed != domain.ObservedWorkspaceDeleted {
+		if reporter, ok := c.runtime.(ResourceBindingReporter); ok {
+			resourceKind, externalResourceID, executeErr = reporter.ResourceBinding(executionCtx, command)
+		}
+	}
 	cancel()
 	result := Result{
 		SchemaVersion: command.SchemaVersion, WorkspaceRevision: command.WorkspaceRevision, OperationID: command.OperationID, TenantID: command.TenantID, WorkspaceID: command.WorkspaceID,
 		ResourcePlaneID: command.ResourcePlaneID, Type: command.Type, Status: domain.OperationSucceeded,
 		ObservedState: observed, CompletedAt: c.now().UTC(),
+		ResourceKind: resourceKind, ExternalResourceID: externalResourceID,
 	}
 	if executeErr != nil {
 		result.Status = domain.OperationFailed

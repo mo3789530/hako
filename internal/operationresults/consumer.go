@@ -176,6 +176,7 @@ func (s StoreAdapter) Apply(ctx context.Context, result resourcecontroller.Resul
 		OperationID: result.OperationID, WorkspaceRevision: result.WorkspaceRevision, TenantID: result.TenantID, WorkspaceID: result.WorkspaceID,
 		ResourcePlaneID: result.ResourcePlaneID, Type: result.Type, Status: result.Status,
 		ObservedState: result.ObservedState, ErrorCode: result.ErrorCode, CompletedAt: result.CompletedAt,
+		ResourceKind: result.ResourceKind, ExternalResourceID: result.ExternalResourceID,
 		Payload: payload,
 	})
 }

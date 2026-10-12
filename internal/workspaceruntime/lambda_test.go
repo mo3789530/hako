@@ -74,6 +74,7 @@ type apiStub struct {
 	getCalls       int
 	state          types.MicrovmState
 	getErr         error
+	terminateErr   error
 	suspendCalls   int
 	resumeCalls    int
 	terminateCalls int
@@ -114,6 +115,9 @@ func (a *apiStub) ResumeMicrovm(context.Context, *lambdamicrovms.ResumeMicrovmIn
 
 func (a *apiStub) TerminateMicrovm(context.Context, *lambdamicrovms.TerminateMicrovmInput, ...func(*lambdamicrovms.Options)) (*lambdamicrovms.TerminateMicrovmOutput, error) {
 	a.terminateCalls++
+	if a.terminateErr != nil {
+		return nil, a.terminateErr
+	}
 	a.state = types.MicrovmStateTerminated
 	return &lambdamicrovms.TerminateMicrovmOutput{}, nil
 }
@@ -247,6 +251,31 @@ func TestPollDeadlineAndSuspendResumeLifecycle(t *testing.T) {
 	}
 	if got, err := runtime.Execute(context.Background(), testCommand(domain.OperationResume, 3, "op_resume")); err != nil || got != domain.ObservedWorkspaceRunning || api.resumeCalls != 1 {
 		t.Fatalf("resume = %q, %v calls=%d", got, err, api.resumeCalls)
+	}
+}
+
+func TestDeletePersistsCleanupFailureAndRetriesIdempotently(t *testing.T) {
+	api, store := &apiStub{state: types.MicrovmStateRunning}, newMemoryStore()
+	runtime := newRuntime(t, api, store, func(context.Context, resourcecontroller.Command) (LaunchSpec, error) { return validSpec(), nil }, time.Second)
+	if _, err := runtime.Execute(context.Background(), testCommand(domain.OperationEnsureRunning, 1, "op_cleanup_ensure")); err != nil {
+		t.Fatal(err)
+	}
+	deleteCommand := testCommand(domain.OperationDelete, 2, "op_cleanup_delete")
+	api.terminateErr = errors.New("temporary provider failure")
+	if _, err := runtime.Execute(context.Background(), deleteCommand); err == nil {
+		t.Fatal("TerminateMicrovm failure was swallowed")
+	}
+	failed, err := store.Get(context.Background(), deleteCommand.TenantID, deleteCommand.WorkspaceID, deleteCommand.ResourcePlaneID)
+	if err != nil || !failed.Journal.Tombstone || failed.Journal.State != workspacejournal.Failed || failed.Journal.CleanupState != workspacejournal.CleanupFailed {
+		t.Fatalf("cleanup failure was not durably recorded: %+v, %v", failed.Journal, err)
+	}
+	api.terminateErr = nil
+	if observed, err := runtime.Execute(context.Background(), deleteCommand); err != nil || observed != domain.ObservedWorkspaceDeleted {
+		t.Fatalf("delete retry = %q, %v", observed, err)
+	}
+	completed, err := store.Get(context.Background(), deleteCommand.TenantID, deleteCommand.WorkspaceID, deleteCommand.ResourcePlaneID)
+	if err != nil || completed.Journal.State != workspacejournal.Deleted || completed.Journal.CleanupState != workspacejournal.CleanupConfirmed || api.terminateCalls != 2 {
+		t.Fatalf("delete retry did not confirm cleanup: %+v, calls=%d, err=%v", completed.Journal, api.terminateCalls, err)
 	}
 }
 
