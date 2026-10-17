@@ -159,8 +159,12 @@ func run() error {
 	}
 	var runnerLaunch *githubbroker.ActionsRunnerLaunchService
 	if len(runnerBindingIDs) > 0 {
-		runnerLaunch, err = githubbroker.NewActionsRunnerLaunchService(runnerBindingIDs,
-			githubbroker.NewPostgresActionsRunnerLaunchStarter(pool, policy))
+		preflight, preflightErr := githubbroker.NewPostgresActionsRunnerLaunchPreflight(pool, policy, awsConfig, nil)
+		if preflightErr != nil {
+			return errors.New("configure GitHub Actions runner provenance preflight")
+		}
+		runnerLaunch, err = githubbroker.NewVerifiedActionsRunnerLaunchService(runnerBindingIDs, preflight,
+			githubbroker.NewPostgresVerifiedActionsRunnerLaunchStarter(pool, policy))
 		if err != nil {
 			return errors.New("configure GitHub Actions runner launch broker")
 		}

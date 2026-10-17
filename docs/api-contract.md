@@ -144,8 +144,11 @@ repository runner opt-in clears this policy. Configure it with
 `hako github repository runner policy --tenant <tenant> --installation <id>
 --repository <id> --policy-file policy.json`.
 
-This allowlist is configuration only: jobs are not eligible until Task 74's
-authoritative Run/Job lookup and pre-MicroVM verification are wired to admission.
+The broker launch path uses this allowlist with authoritative GitHub Run/Job
+metadata before consuming a runner claim. Claim consumption rechecks that the
+policy snapshot has not changed. A configured policy cannot be bypassed by the
+legacy launch path. Full Claude credential handling and Action execution remain
+separate Tasks 75–77.
 
 `POST /v1/tenants/{tenant_id}/github/apps/{integration_id}/deliveries/{delivery_id}/replay`
 is available when Tenant GitHub App management is enabled and requires Tenant

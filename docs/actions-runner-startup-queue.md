@@ -44,7 +44,7 @@ capacity/region placement or persist a selected Plane before dispatch.
 Multi-plane routing must add a durable placement decision and per-Plane queue
 mapping before production use.
 
-## Claude Action workflow provenance (implementation in progress)
+## Claude Action workflow provenance (local launch gate implemented)
 
 Claude Code Action remains a user-authored GitHub Actions workflow; Hako does
 not translate issue or pull-request comments into commands. The local
@@ -55,17 +55,19 @@ commit, run ID/attempt, job ID, event, source repository and required runner
 labels, and rejects fork-originated work. Policy values cannot select a
 command, credential, image, execution role, or network connector.
 
-The trusted Tenant App token client can now mint a repository-only
+The trusted Tenant App token client can mint a repository-only
 `actions:read` Installation token for that lookup (without `contents:read`). The
 repository opt-in is checked both before and after token minting; the token is
 distinct from checkout, runner-registration, and deregistration credentials.
 
 `githubapp.ActionsRunClient` uses that token to fetch the exact run, requested
-attempt's paginated jobs, and workflow path. It rejects foreign repository or
-run identities, absent/duplicate jobs, unexpected run attempts, oversized
-responses, redirects, and malformed workflow paths. This lookup and the pure
-provenance verifier are not yet invoked by the queue consumer or launcher; the
-Task 74 admission integration remains a required fail-closed gate.
+attempt's paginated jobs, and workflow path, including workflow/job names and
+head branches. It rejects foreign repository or run identities, absent/duplicate
+jobs, unexpected run attempts, oversized responses, redirects, and malformed
+workflow paths. The broker launch composition invokes the lookup before claim
+consumption. It verifies the exact persisted queue identity and policy; the
+transactional starter compares the policy JSONB snapshot again while consuming
+the claim, denying policy changes and legacy unverified launch calls.
 
 The data-only policy is stored per Tenant/Installation/Repository through an
 Owner/Admin API and CLI; disabling runner opt-in clears it transactionally.
@@ -80,6 +82,13 @@ Example `policy.json`:
   "allowed_labels": ["self-hosted", "hako", "arm64"]
 }
 ```
+
+The workflow remains authored and maintained in the repository; Hako never
+creates commands from issue/PR text or rewrites `.github/workflows`. See
+[`claude-code-action.md`](claude-code-action.md) for the runner labels, event
+limits, and Action pinning contract. Local launch provenance is implemented;
+Task 75 credential isolation and Task 76/77 actual Action execution and full
+runtime E2E are still required before claiming a supported end-to-end product.
 
 The verifier and metadata lookup are not yet invoked by the queue consumer or
 launcher. Therefore Claude Action workflows must not be considered eligible

@@ -38,7 +38,23 @@ func TestPostgresActionsRunnerLaunchAndBootstrapRequireExactClaimPlaneAndMicroVM
 		}
 	}
 	request := ActionsRunnerRegistrationRequest{IntegrationID: "integration_runner_start", WorkflowJobID: 7130, RunAttempt: 1, ClaimID: "controller-claim-1"}
-	start := NewPostgresActionsRunnerLaunchStarter(pool, transaction.DefaultPolicy())
+	var proof []byte
+	if err := pool.QueryRow(ctx, `UPDATE tenant_github_repositories SET actions_runner_workflow_policy=$1::jsonb
+		WHERE tenant_id='tenant_runner_start' AND installation_id=7121 AND github_repository_id=7122
+		RETURNING actions_runner_workflow_policy`,
+		`{"workflow_path":".github/workflows/claude.yml","allowed_refs":["refs/heads/main"],"allowed_events":["push"],"required_labels":["hako"],"allowed_labels":["self-hosted","hako"]}`).Scan(&proof); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewPostgresActionsRunnerLaunchStarter(pool, transaction.DefaultPolicy())(ctx, "rp-tokyo-01", request); err == nil {
+		t.Fatal("unverified starter consumed a claim with a configured workflow policy")
+	}
+	verifiedStart := NewPostgresVerifiedActionsRunnerLaunchStarter(pool, transaction.DefaultPolicy())
+	if _, err := verifiedStart(ctx, "rp-tokyo-01", request, []byte(`{"workflow_path":".github/workflows/other.yml"}`)); err == nil {
+		t.Fatal("verified starter accepted a policy snapshot that no longer matches the repository")
+	}
+	start := func(ctx context.Context, planeID string, got ActionsRunnerRegistrationRequest) (ActionsRunnerLaunchCommand, error) {
+		return verifiedStart(ctx, planeID, got, proof)
+	}
 	command, err := start(ctx, "rp-tokyo-01", request)
 	if err != nil || command.TenantID != "tenant_runner_start" || command.Installation != 7121 || command.Repository != 7122 || command.Owner != "acme" || command.Name != "runner-api" || command.State != "starting" || command.LeaseExpires.Before(now) {
 		t.Fatalf("start exact claimed Runner job=%+v error=%v", command, err)

@@ -26,14 +26,14 @@ func TestActionsRunClientFetchesExactAuthoritativeRunJobAndWorkflow(t *testing.T
 			if r.Method != http.MethodGet {
 				t.Errorf("run lookup method = %s", r.Method)
 			}
-			_, _ = fmt.Fprintf(w, `{"id":%d,"run_attempt":2,"workflow_id":505,"head_branch":"main","head_sha":"%s","event":"push","repository":{"id":202},"head_repository":{"id":202},"html_url":"ignored-extra-field"}`, runID, strings.Repeat("A", 40))
+			_, _ = fmt.Fprintf(w, `{"id":%d,"run_attempt":2,"workflow_id":505,"name":"Claude","head_branch":"main","head_sha":"%s","event":"push","repository":{"id":202},"head_repository":{"id":202},"html_url":"ignored-extra-field"}`, runID, strings.Repeat("A", 40))
 		case "/repos/acme/api/actions/workflows/505":
 			_, _ = fmt.Fprint(w, `{"id":505,"path":".github/workflows/claude.yml","state":"active"}`)
 		case "/repos/acme/api/actions/runs/303/attempts/2/jobs":
 			if r.URL.Query().Get("per_page") != "100" || r.URL.Query().Get("page") != "1" {
 				t.Errorf("unexpected job pagination query: %s", r.URL.RawQuery)
 			}
-			_, _ = fmt.Fprintf(w, `{"total_count":1,"jobs":[{"id":%d,"run_id":303,"run_attempt":2,"labels":["self-hosted","hako","arm64"],"status":"queued"}]}`, jobID)
+			_, _ = fmt.Fprintf(w, `{"total_count":1,"jobs":[{"id":%d,"run_id":303,"run_attempt":2,"name":"Claude review","head_branch":"main","labels":["self-hosted","hako","arm64"],"status":"queued"}]}`, jobID)
 		default:
 			t.Errorf("unexpected GitHub path %s", r.URL.Path)
 			http.NotFound(w, r)
@@ -50,8 +50,9 @@ func TestActionsRunClientFetchesExactAuthoritativeRunJobAndWorkflow(t *testing.T
 		t.Fatalf("Fetch() error = %v", err)
 	}
 	if snapshot.RepositoryID != 202 || snapshot.HeadRepository != 202 || snapshot.RunID != runID || snapshot.RunAttempt != 2 ||
-		snapshot.WorkflowID != 505 || snapshot.WorkflowPath != ".github/workflows/claude.yml" || snapshot.WorkflowRef != "refs/heads/main" ||
-		snapshot.HeadSHA != strings.Repeat("a", 40) || snapshot.Event != "push" || snapshot.JobID != jobID || len(snapshot.Labels) != 3 {
+		snapshot.WorkflowID != 505 || snapshot.WorkflowPath != ".github/workflows/claude.yml" || snapshot.WorkflowRef != "refs/heads/main" || snapshot.WorkflowName != "Claude" ||
+		snapshot.HeadSHA != strings.Repeat("a", 40) || snapshot.HeadBranch != "main" || snapshot.Event != "push" || snapshot.JobID != jobID ||
+		snapshot.JobName != "Claude review" || snapshot.JobHeadBranch != "main" || len(snapshot.Labels) != 3 {
 		t.Fatalf("Fetch() snapshot = %+v", snapshot)
 	}
 }
@@ -73,7 +74,7 @@ func TestActionsRunClientRejectsIdentityAndAmbiguity(t *testing.T) {
 			case "/repos/acme/api/actions/workflows/505":
 				_, _ = fmt.Fprint(w, `{"id":505,"path":".github/workflows/claude.yml"}`)
 			case "/repos/acme/api/actions/runs/303/attempts/2/jobs":
-				_, _ = fmt.Fprint(w, `{"total_count":2,"jobs":[{"id":404,"run_id":303,"run_attempt":2,"labels":["hako"]},{"id":404,"run_id":303,"run_attempt":2,"labels":["hako"]}]}`)
+				_, _ = fmt.Fprint(w, `{"total_count":2,"jobs":[{"id":404,"run_id":303,"run_attempt":2,"name":"review","head_branch":"main","labels":["hako"]},{"id":404,"run_id":303,"run_attempt":2,"name":"review","head_branch":"main","labels":["hako"]}]}`)
 			default:
 				t.Errorf("unexpected path %s", r.URL.Path)
 			}

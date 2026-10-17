@@ -42,9 +42,11 @@ type ActionsRunnerLaunchCommand struct {
 type ActionsRunnerLaunchStarter func(context.Context, string, ActionsRunnerRegistrationRequest) (ActionsRunnerLaunchCommand, error)
 
 type ActionsRunnerLaunchService struct {
-	allowed map[string]struct{}
-	start   ActionsRunnerLaunchStarter
-	clock   func() time.Time
+	allowed    map[string]struct{}
+	start      ActionsRunnerLaunchStarter
+	preflight  ActionsRunnerLaunchPreflight
+	startProof VerifiedActionsRunnerLaunchStarter
+	clock      func() time.Time
 }
 
 type HTTPActionsRunnerLaunchClient struct {
@@ -115,6 +117,25 @@ func NewActionsRunnerLaunchService(resourcePlaneIDs []string, start ActionsRunne
 	return &ActionsRunnerLaunchService{allowed: allowed, start: start, clock: time.Now}, nil
 }
 
+func NewVerifiedActionsRunnerLaunchService(resourcePlaneIDs []string, preflight ActionsRunnerLaunchPreflight,
+	start VerifiedActionsRunnerLaunchStarter) (*ActionsRunnerLaunchService, error) {
+	if len(resourcePlaneIDs) == 0 || preflight == nil || start == nil {
+		return nil, ErrUnavailable
+	}
+	allowed := make(map[string]struct{}, len(resourcePlaneIDs))
+	for _, planeID := range resourcePlaneIDs {
+		caller, err := ResourcePlaneCallerID(planeID)
+		if err != nil {
+			return nil, ErrUnavailable
+		}
+		if _, duplicate := allowed[caller]; duplicate {
+			return nil, ErrUnavailable
+		}
+		allowed[caller] = struct{}{}
+	}
+	return &ActionsRunnerLaunchService{allowed: allowed, preflight: preflight, startProof: start, clock: time.Now}, nil
+}
+
 func (s *ActionsRunnerLaunchService) Start(ctx context.Context, caller string, request ActionsRunnerRegistrationRequest) (ActionsRunnerLaunchCommand, error) {
 	planeID, err := resourcePlaneIDFromCaller(caller)
 	if s == nil || ctx == nil || err != nil || !validActionsRunnerRegistrationRequest(request) || request.RunAttempt <= 0 {
@@ -123,7 +144,16 @@ func (s *ActionsRunnerLaunchService) Start(ctx context.Context, caller string, r
 	if _, ok := s.allowed[caller]; !ok {
 		return ActionsRunnerLaunchCommand{}, ErrActionsRunnerLaunchDenied
 	}
-	command, err := s.start(ctx, planeID, request)
+	var command ActionsRunnerLaunchCommand
+	if s.preflight != nil {
+		proof, err := s.preflight(ctx, request)
+		if err != nil {
+			return ActionsRunnerLaunchCommand{}, ErrActionsRunnerLaunchDenied
+		}
+		command, err = s.startProof(ctx, planeID, request, proof)
+	} else {
+		command, err = s.start(ctx, planeID, request)
+	}
 	if err != nil || !validActionsRunnerLaunchCommand(command, planeID, request, s.clock()) {
 		return ActionsRunnerLaunchCommand{}, ErrActionsRunnerLaunchDenied
 	}
@@ -139,6 +169,19 @@ func validActionsRunnerLaunchCommand(command ActionsRunnerLaunchCommand, planeID
 }
 
 func NewPostgresActionsRunnerLaunchStarter(pool transaction.Beginner, policy transaction.Policy) ActionsRunnerLaunchStarter {
+	return postgresActionsRunnerLaunchStarter(pool, policy, nil, false)
+}
+
+// NewPostgresVerifiedActionsRunnerLaunchStarter consumes a launch claim only
+// when the exact policy snapshot verified by the provenance preflight is still
+// current. A nil proof is valid only while the repository has no policy.
+func NewPostgresVerifiedActionsRunnerLaunchStarter(pool transaction.Beginner, policy transaction.Policy) VerifiedActionsRunnerLaunchStarter {
+	return func(ctx context.Context, planeID string, request ActionsRunnerRegistrationRequest, proof []byte) (ActionsRunnerLaunchCommand, error) {
+		return postgresActionsRunnerLaunchStarter(pool, policy, proof, true)(ctx, planeID, request)
+	}
+}
+
+func postgresActionsRunnerLaunchStarter(pool transaction.Beginner, policy transaction.Policy, proof []byte, verified bool) ActionsRunnerLaunchStarter {
 	return func(ctx context.Context, planeID string, request ActionsRunnerRegistrationRequest) (ActionsRunnerLaunchCommand, error) {
 		if pool == nil || ctx == nil || !resourcePlaneIDPattern.MatchString(planeID) || request.RunAttempt <= 0 || !validActionsRunnerRegistrationRequest(request) {
 			return ActionsRunnerLaunchCommand{}, ErrActionsRunnerLaunchDenied
@@ -150,9 +193,10 @@ func NewPostgresActionsRunnerLaunchStarter(pool transaction.Beginner, policy tra
 			var state string
 			var currentPlaneID *string
 			var tokenIssuedAt *time.Time
+			var workflowPolicyJSON []byte
 			err := tx.QueryRow(ctx, `SELECT j.integration_id,j.tenant_id,j.installation_id,j.repository_id,j.workflow_job_id,j.workflow_run_id,j.run_attempt,
 				j.workflow_name,j.job_name,j.head_branch,j.head_sha,j.labels,j.claim_id,j.lease_expires_at,r.owner_login,r.repository_name,
-				j.state,j.resource_plane_id,j.registration_token_issued_at
+				j.state,j.resource_plane_id,j.registration_token_issued_at,r.actions_runner_workflow_policy
 				FROM github_actions_runner_jobs j
 				JOIN github_webhook_deliveries d ON d.integration_id=j.integration_id AND d.delivery_id=j.delivery_id
 				JOIN tenant_github_integrations i ON i.id=j.integration_id AND i.tenant_id=j.tenant_id
@@ -168,8 +212,9 @@ func NewPostgresActionsRunnerLaunchStarter(pool transaction.Beginner, policy tra
 				FOR UPDATE OF j`, request.IntegrationID, request.WorkflowJobID, request.RunAttempt, request.ClaimID, now, planeID).
 				Scan(&command.IntegrationID, &command.TenantID, &command.Installation, &command.Repository, &command.WorkflowJobID, &command.WorkflowRunID,
 					&command.RunAttempt, &command.WorkflowName, &command.JobName, &command.HeadBranch, &command.HeadSHA, &labelsJSON, &command.ClaimID,
-					&command.LeaseExpires, &command.Owner, &command.Name, &state, &currentPlaneID, &tokenIssuedAt)
-			if err != nil || json.Unmarshal(labelsJSON, &command.Labels) != nil {
+					&command.LeaseExpires, &command.Owner, &command.Name, &state, &currentPlaneID, &tokenIssuedAt, &workflowPolicyJSON)
+			if err != nil || json.Unmarshal(labelsJSON, &command.Labels) != nil ||
+				(!verified && len(workflowPolicyJSON) != 0) || (verified && !bytes.Equal(workflowPolicyJSON, proof)) {
 				return ActionsRunnerLaunchCommand{}, ErrActionsRunnerLaunchDenied
 			}
 			if state == "claimed" {

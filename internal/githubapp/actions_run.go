@@ -36,9 +36,13 @@ type ActionsRunSnapshot struct {
 	WorkflowID     int64
 	WorkflowPath   string
 	WorkflowRef    string
+	WorkflowName   string
 	HeadSHA        string
+	HeadBranch     string
 	Event          string
 	JobID          int64
+	JobName        string
+	JobHeadBranch  string
 	Labels         []string
 }
 
@@ -49,7 +53,7 @@ type ActionsRunClient struct {
 }
 
 // ActionsRunToken is expected to be a short-lived repository-scoped token
-// with actions:read and contents:read only.
+// with actions:read only.
 type ActionsRunToken interface {
 	Value() string
 	ExpiresAt() time.Time
@@ -82,6 +86,7 @@ func (c *ActionsRunClient) Fetch(ctx context.Context, token ActionsRunToken, rep
 		ID         int64  `json:"id"`
 		RunAttempt int64  `json:"run_attempt"`
 		WorkflowID int64  `json:"workflow_id"`
+		Name       string `json:"name"`
 		HeadBranch string `json:"head_branch"`
 		HeadSHA    string `json:"head_sha"`
 		Event      string `json:"event"`
@@ -119,6 +124,8 @@ func (c *ActionsRunClient) Fetch(ctx context.Context, token ActionsRunToken, rep
 		ID         int64    `json:"id"`
 		RunID      int64    `json:"run_id"`
 		RunAttempt int64    `json:"run_attempt"`
+		Name       string   `json:"name"`
+		HeadBranch string   `json:"head_branch"`
 		Labels     []string `json:"labels"`
 	}
 	for page := 1; page <= maxActionsJobPages; page++ {
@@ -129,6 +136,8 @@ func (c *ActionsRunClient) Fetch(ctx context.Context, token ActionsRunToken, rep
 				ID         int64    `json:"id"`
 				RunID      int64    `json:"run_id"`
 				RunAttempt int64    `json:"run_attempt"`
+				Name       string   `json:"name"`
+				HeadBranch string   `json:"head_branch"`
 				Labels     []string `json:"labels"`
 			} `json:"jobs"`
 		}
@@ -140,15 +149,18 @@ func (c *ActionsRunClient) Fetch(ctx context.Context, token ActionsRunToken, rep
 			if candidate.ID != jobID {
 				continue
 			}
-			if match != nil || candidate.RunID != runID || candidate.RunAttempt != attempt || !validActionsRunLabels(candidate.Labels) {
+			if match != nil || candidate.RunID != runID || candidate.RunAttempt != attempt || candidate.Name == "" ||
+				!validActionsRunRef(candidate.HeadBranch) || !validActionsRunLabels(candidate.Labels) {
 				return ActionsRunSnapshot{}, ErrActionsRunLookup
 			}
 			match = &struct {
 				ID         int64    `json:"id"`
 				RunID      int64    `json:"run_id"`
 				RunAttempt int64    `json:"run_attempt"`
+				Name       string   `json:"name"`
+				HeadBranch string   `json:"head_branch"`
 				Labels     []string `json:"labels"`
-			}{candidate.ID, candidate.RunID, candidate.RunAttempt, append([]string(nil), candidate.Labels...)}
+			}{candidate.ID, candidate.RunID, candidate.RunAttempt, candidate.Name, candidate.HeadBranch, append([]string(nil), candidate.Labels...)}
 		}
 		if len(response.Jobs) < 100 {
 			break
@@ -161,8 +173,9 @@ func (c *ActionsRunClient) Fetch(ctx context.Context, token ActionsRunToken, rep
 		return ActionsRunSnapshot{}, ErrActionsRunLookup
 	}
 	return ActionsRunSnapshot{RepositoryID: run.Repository.ID, HeadRepository: run.HeadRepo.ID, RunID: run.ID, RunAttempt: run.RunAttempt,
-		WorkflowID: run.WorkflowID, WorkflowPath: workflow.Path, WorkflowRef: workflowRef, HeadSHA: strings.ToLower(run.HeadSHA),
-		Event: run.Event, JobID: match.ID, Labels: match.Labels}, nil
+		WorkflowID: run.WorkflowID, WorkflowPath: workflow.Path, WorkflowRef: workflowRef, WorkflowName: run.Name,
+		HeadSHA: strings.ToLower(run.HeadSHA), HeadBranch: run.HeadBranch, Event: run.Event, JobID: match.ID,
+		JobName: match.Name, JobHeadBranch: match.HeadBranch, Labels: match.Labels}, nil
 }
 
 func (c *ActionsRunClient) get(ctx context.Context, token ActionsRunToken, path string, destination any) error {
