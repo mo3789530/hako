@@ -197,14 +197,16 @@ func TestComposedLambdaWorkerResultAndCleanupProjectIntoPostgres(t *testing.T) {
 	issuer := &workloadagent.Ed25519TicketIssuer{KeyID: "rp-v1", PrivateKey: privateKey, Now: func() time.Time { return now }}
 	logs := &compositionLogWriter{}
 	agentTransport := &compositionAgentTransport{handler: agent.Handler()}
-	worker, err := NewLambdaWorkloadHandler(LambdaWorkloadHandlerConfig{ResourcePlaneID: "rp_1", Journal: &journalDB{rows: make(map[string]workloadjournal.Snapshot)},
+	journal := &journalDB{rows: make(map[string]workloadjournal.Snapshot)}
+	workerConfig := LambdaWorkloadHandlerConfig{ResourcePlaneID: "rp_1", Journal: journal,
 		LambdaAPI: api, Resolver: resolveFunc(func(_ context.Context, id workloadjournal.Command) (Specification, error) {
 			spec.Identity = id
 			return spec, nil
 		}),
 		SourceArchives: compositionArchiveReader{archive: archiveBytes}, AttemptLogs: logs, AgentTransport: agentTransport,
 		Runtime: LambdaConfig{ImageIdentifier: image, ImageVersion: version, ImageDigest: digest, VPCEgressConnector: egress,
-			IngressConnector: ingress, AgentTicketIssuer: issuer}, Now: func() time.Time { return now }})
+			IngressConnector: ingress, AgentTicketIssuer: issuer}, Now: func() time.Time { return now }}
+	worker, err := NewLambdaWorkloadHandler(workerConfig)
 	if err != nil {
 		t.Fatalf("compose Lambda MicroVM Worker: %v", err)
 	}
@@ -218,6 +220,19 @@ func TestComposedLambdaWorkerResultAndCleanupProjectIntoPostgres(t *testing.T) {
 	if processFactory.process == nil {
 		t.Fatal("Worker Agent did not retain the running execution")
 	}
+	// Simulate a Lambda Worker process restart while the MicroVM/Agent remains
+	// active. The shared journal is the durable checkpoint; replay must reuse
+	// its provider binding and existing Agent process instead of relaunching.
+	restartedWorker, err := NewLambdaWorkloadHandler(workerConfig)
+	if err != nil {
+		t.Fatalf("recreate Lambda Worker after process restart: %v", err)
+	}
+	restartedResponse, err := restartedWorker.Handle(ctx, events.SQSEvent{Records: []events.SQSMessage{{MessageId: delivery.event.ID + "-retry", Body: string(body),
+		MessageAttributes: map[string]events.SQSMessageAttribute{"HakoEventType": {DataType: "String", StringValue: &eventType}}}}})
+	if err != nil || len(restartedResponse.BatchItemFailures) != 0 || processFactory.starts != 1 || len(api.inputs) != 1 {
+		t.Fatalf("duplicate dispatch after Worker restart relaunched execution: response=%+v starts=%d launches=%d err=%v", restartedResponse, processFactory.starts, len(api.inputs), err)
+	}
+	worker = restartedWorker
 	processFactory.process.finish(0, nil)
 
 	apply := workloadjobs.ResultHandler{Pool: pool, Policy: transaction.DefaultPolicy()}
