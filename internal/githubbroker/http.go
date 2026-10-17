@@ -125,6 +125,14 @@ func NewActionsRunnerBindingMTLSClient(resourcePlaneID string, certificate tls.C
 	return newMTLSClient(certificate, brokerRoots, 6*time.Second, caller)
 }
 
+func NewActionsRunnerBootstrapTokenMTLSClient(resourcePlaneID string, certificate tls.Certificate, brokerRoots *x509.CertPool) (*http.Client, error) {
+	caller, err := ResourcePlaneCallerID(resourcePlaneID)
+	if err != nil {
+		return nil, err
+	}
+	return newMTLSClient(certificate, brokerRoots, 30*time.Second, caller)
+}
+
 func newMTLSClient(certificate tls.Certificate, brokerRoots *x509.CertPool, timeout time.Duration, expectedCaller string) (*http.Client, error) {
 	if len(certificate.Certificate) == 0 || brokerRoots == nil || certificate.Leaf == nil {
 		return nil, ErrUnavailable
@@ -187,6 +195,14 @@ func HandlerWithActionsRunnerAndCleanup(service *OAuthService, checkout *Checkou
 func HandlerWithActionsRunnerLifecycle(service *OAuthService, checkout *CheckoutService, checks *ChecksService, checkoutCallers []string,
 	actionsRunner *ActionsRunnerRegistrationService, runnerCleanup *ActionsRunnerCleanupService, cleanupCallers []string,
 	runnerBinding *ActionsRunnerBindingService, bindingCallers []string) http.Handler {
+	return HandlerWithActionsRunnerBrokerLifecycle(service, checkout, checks, checkoutCallers, actionsRunner, runnerCleanup,
+		cleanupCallers, runnerBinding, bindingCallers, nil, nil)
+}
+
+func HandlerWithActionsRunnerBrokerLifecycle(service *OAuthService, checkout *CheckoutService, checks *ChecksService, checkoutCallers []string,
+	actionsRunner *ActionsRunnerRegistrationService, runnerCleanup *ActionsRunnerCleanupService, cleanupCallers []string,
+	runnerBinding *ActionsRunnerBindingService, bindingCallers []string,
+	runnerBootstrapToken *ActionsRunnerBootstrapTokenService, runnerTokenCallers []string) http.Handler {
 	allowedCheckoutCallers := map[string]struct{}{controlPlaneURI: {}}
 	for _, caller := range checkoutCallers {
 		if caller != controlPlaneURI && !strings.HasPrefix(caller, resourcePlaneURIPrefix) {
@@ -219,6 +235,16 @@ func HandlerWithActionsRunnerLifecycle(service *OAuthService, checkout *Checkout
 			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusServiceUnavailable) })
 		}
 		allowedBindingCallers[caller] = struct{}{}
+	}
+	allowedRunnerTokenCallers := make(map[string]struct{}, len(runnerTokenCallers))
+	for _, caller := range runnerTokenCallers {
+		if !validResourcePlaneCleanupCaller(caller) {
+			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusServiceUnavailable) })
+		}
+		if _, duplicate := allowedRunnerTokenCallers[caller]; duplicate {
+			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusServiceUnavailable) })
+		}
+		allowedRunnerTokenCallers[caller] = struct{}{}
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/oauth/setup-url", func(w http.ResponseWriter, r *http.Request) {
@@ -385,6 +411,29 @@ func HandlerWithActionsRunnerLifecycle(service *OAuthService, checkout *Checkout
 				return
 			}
 			writeResponse(w, struct{}{})
+		})
+	}
+	if runnerBootstrapToken != nil && len(allowedRunnerTokenCallers) > 0 {
+		mux.HandleFunc("POST /v1/actions-runner/bootstrap-token", func(w http.ResponseWriter, r *http.Request) {
+			caller, err := authenticatedCleanupCaller(r, allowedRunnerTokenCallers)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized)
+				return
+			}
+			input, ok := decodeActionsRunnerTokenRequest(r)
+			if !ok {
+				writeError(w, http.StatusBadRequest)
+				return
+			}
+			grant, err := runnerBootstrapToken.Issue(r.Context(), caller, ActionsRunnerRegistrationRequest{
+				IntegrationID: input.IntegrationID, WorkflowJobID: input.WorkflowJobID, RunAttempt: input.RunAttempt, ClaimID: input.ClaimID,
+			})
+			if err != nil {
+				writeError(w, http.StatusForbidden)
+				return
+			}
+			repository := grant.Repository
+			writeResponse(w, response{Token: grant.Token.Value(), ExpiresAt: grant.Token.ExpiresAt(), Repository: &repositoryResponse{Owner: repository.Owner, Name: repository.Name}})
 		})
 	}
 	return mux

@@ -19,29 +19,31 @@ import (
 var ErrActionsRunnerDenied = errors.New("GitHub Actions runner registration denied")
 
 type ActionsRunnerRegistrationRequest struct {
-	IntegrationID string
-	WorkflowJobID int64
-	RunAttempt    int64
-	ClaimID       string
+	IntegrationID string `json:"integration_id"`
+	WorkflowJobID int64  `json:"workflow_job_id"`
+	RunAttempt    int64  `json:"run_attempt"`
+	ClaimID       string `json:"claim_id"`
 }
 
 type ActionsRunnerJobIdentity struct {
-	IntegrationID string
-	DeliveryID    string
-	TenantID      domain.TenantID
-	Installation  int64
-	Repository    int64
-	WorkflowJobID int64
-	WorkflowRunID int64
-	RunAttempt    int64
-	WorkflowName  string
-	JobName       string
-	HeadBranch    string
-	HeadSHA       string
-	Labels        []string
-	ClaimID       string
-	LeaseExpires  time.Time
-	Credential    githubapp.TenantPrivateKeyAccess
+	IntegrationID   string
+	DeliveryID      string
+	TenantID        domain.TenantID
+	Installation    int64
+	Repository      int64
+	WorkflowJobID   int64
+	WorkflowRunID   int64
+	RunAttempt      int64
+	WorkflowName    string
+	JobName         string
+	HeadBranch      string
+	HeadSHA         string
+	Labels          []string
+	ClaimID         string
+	LeaseExpires    time.Time
+	ResourcePlaneID string
+	LambdaMicroVMID string
+	Credential      githubapp.TenantPrivateKeyAccess
 }
 
 type ActionsRunnerJobStarter func(context.Context, ActionsRunnerRegistrationRequest) (ActionsRunnerJobIdentity, error)

@@ -64,6 +64,18 @@ func TestPostgresActionsRunnerStarterRequiresExactClaimActiveAppAndPriorOptIn(t 
 		WorkflowJobID: request.WorkflowJobID, RunAttempt: request.RunAttempt, ClaimID: "different-claim-1", MicroVMID: "another-microvm"}); err != nil || bound {
 		t.Fatalf("different claim replaced the pinned provider identity: bound=%v err=%v", bound, err)
 	}
+	bootstrapStarter := NewPostgresActionsRunnerBootstrapTokenStarter(pool, transaction.DefaultPolicy())
+	bootstrapIdentity, err := bootstrapStarter(ctx, "rp-tokyo-01", request)
+	if err != nil || bootstrapIdentity.ResourcePlaneID != "rp-tokyo-01" || bootstrapIdentity.LambdaMicroVMID != binding.MicroVMID ||
+		bootstrapIdentity.Credential.GitHubAppID != 712 {
+		t.Fatalf("bootstrap token claim was not fenced to the bound MicroVM: identity=%+v err=%v", bootstrapIdentity, err)
+	}
+	if _, err := bootstrapStarter(ctx, "rp-tokyo-01", request); err == nil {
+		t.Fatal("same starting claim issued a second registration token")
+	}
+	if _, err := bootstrapStarter(ctx, "rp-us-01", request); err == nil {
+		t.Fatal("a different Resource Plane obtained the registration token")
+	}
 	var planeID, microVMID string
 	if err := pool.QueryRow(ctx, `SELECT resource_plane_id,lambda_microvm_id FROM github_actions_runner_jobs WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=1`,
 		request.IntegrationID, request.WorkflowJobID).Scan(&planeID, &microVMID); err != nil || planeID != "rp-tokyo-01" || microVMID != binding.MicroVMID {

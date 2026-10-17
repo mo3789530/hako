@@ -169,6 +169,22 @@ func TestBrokerMTLSHandshakeAndHTTPResolver(t *testing.T) {
 		t.Fatal(err)
 	}
 	runnerService.clock = func() time.Time { return runnerNow }
+	bootstrapIdentity := runnerIdentity
+	bootstrapIdentity.ResourcePlaneID = "rp-tokyo-01"
+	bootstrapIdentity.LambdaMicroVMID = "runner-vm-mtls-1"
+	runnerBootstrapTokenService, err := NewActionsRunnerBootstrapTokenService([]string{"rp-tokyo-01"}, func(_ context.Context, planeID string, request ActionsRunnerRegistrationRequest) (ActionsRunnerJobIdentity, error) {
+		if planeID != bootstrapIdentity.ResourcePlaneID || request.IntegrationID != runnerIdentity.IntegrationID || request.ClaimID != runnerIdentity.ClaimID {
+			return ActionsRunnerJobIdentity{}, ErrActionsRunnerBootstrapTokenDenied
+		}
+		return bootstrapIdentity, nil
+	}, func(context.Context, ActionsRunnerJobIdentity) error { return nil }, func(context.Context, ActionsRunnerJobIdentity) (githubapp.RunnerRegistrationToken, githubapp.RepositoryAccess, error) {
+		token, err := githubapp.NewRunnerRegistrationToken("ghr_mtls_bootstrap_token", runnerNow.Add(time.Hour))
+		return token, githubapp.RepositoryAccess{Owner: "acme", Name: "runner-repo"}, err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runnerBootstrapTokenService.clock = func() time.Time { return runnerNow }
 	runnerBindingRequest := ActionsRunnerBindingRequest{IntegrationID: runnerIdentity.IntegrationID, WorkflowJobID: runnerIdentity.WorkflowJobID,
 		RunAttempt: runnerIdentity.RunAttempt, ClaimID: runnerIdentity.ClaimID, MicroVMID: "runner-vm-mtls-1"}
 	bound := 0
@@ -206,8 +222,8 @@ func TestBrokerMTLSHandshakeAndHTTPResolver(t *testing.T) {
 	}
 	runnerCleanup.clock = func() time.Time { return runnerNow }
 	runnerCleanupCallers := []string{"spiffe://hako/resource-plane/rp-tokyo-01"}
-	server := httptest.NewUnstartedServer(HandlerWithActionsRunnerLifecycle(service, checkout, checksService, nil, runnerService, runnerCleanup,
-		runnerCleanupCallers, runnerBinding, runnerCleanupCallers))
+	server := httptest.NewUnstartedServer(HandlerWithActionsRunnerBrokerLifecycle(service, checkout, checksService, nil, runnerService, runnerCleanup,
+		runnerCleanupCallers, runnerBinding, runnerCleanupCallers, runnerBootstrapTokenService, runnerCleanupCallers))
 	serverCAs, _ := ServerTLSConfig(clientRoots)
 	server.TLS = serverCAs
 	server.StartTLS()
@@ -280,6 +296,19 @@ func TestBrokerMTLSHandshakeAndHTTPResolver(t *testing.T) {
 		RunAttempt: runnerIdentity.RunAttempt, State: "starting", ClaimID: runnerIdentity.ClaimID, LeaseExpires: runnerNow.Add(time.Minute)}
 	if err := bindingProvider.Bind(context.Background(), bindingJob, runnerBindingRequest.MicroVMID); err != nil || bound != 1 {
 		t.Fatalf("Resource Plane mTLS runner binding failed: bound=%d err=%v", bound, err)
+	}
+	runnerTokenClient, err := NewActionsRunnerBootstrapTokenMTLSClient("rp-tokyo-01", issue("spiffe://hako/resource-plane/rp-tokyo-01"), brokerRoots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runnerTokenProvider, err := NewHTTPActionsRunnerBootstrapTokenClient(server.URL, runnerTokenClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runnerBootstrapGrant, err := runnerTokenProvider.Issue(context.Background(), ActionsRunnerRegistrationRequest{IntegrationID: runnerIdentity.IntegrationID,
+		WorkflowJobID: runnerIdentity.WorkflowJobID, RunAttempt: runnerIdentity.RunAttempt, ClaimID: runnerIdentity.ClaimID})
+	if err != nil || runnerBootstrapGrant.Token.Value() != "ghr_mtls_bootstrap_token" || runnerBootstrapGrant.Repository != (githubapp.RepositoryAccess{Owner: "acme", Name: "runner-repo"}) {
+		t.Fatalf("Resource Plane mTLS bootstrap token request failed: grant=%v repository=%+v error=%v", runnerBootstrapGrant.Token, runnerBootstrapGrant.Repository, err)
 	}
 	runnerCleanupClient, err := NewActionsRunnerCleanupMTLSClient("rp-tokyo-01", issue(runnerCleanupCallers[0]), brokerRoots)
 	if err != nil {
