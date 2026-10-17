@@ -33,8 +33,15 @@ deletes only the exact owned AP, then confirms the journal tombstone. A failed
 cleanup remains retryable.
 
 The guest image still does not implement or acknowledge the mount contract.
-Therefore the current adapter confirms MicroVM `RUNNING`, not that `/workspace`
-is mounted, and this is not production-ready. A failed startup before the
+`internal/workspaceagent` now exposes a strict Workspace-specific `/run` hook
+handler that validates the Access Point contract and responds successfully only
+after an injected `MountAndVerify` executor returns success. It has not yet
+been wired into a guest executable, and there is no concrete `mount.efs`
+executor or Workspace MicroVM image in the repository. Do not use the existing
+`images/workload-agent` for Workspace storage: its lifecycle hook accepts a
+different, Workload-specific schema. Therefore the current Runtime adapter
+confirms MicroVM `RUNNING`, not that `/workspace` is mounted, and this is not
+production-ready. A failed startup before the
 runtime journal is created may leave a tagged AP; `DiscoverManaged` exposes it
 for reconciliation but no automated orphan deletion exists.
 
