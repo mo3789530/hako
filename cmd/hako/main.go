@@ -35,6 +35,11 @@ var cliBrowserOpener auth.BrowserOpener = openBrowser
 
 func main() {
 	switch {
+	case len(os.Args) >= 3 && os.Args[1] == "factory" && os.Args[2] == "validate":
+		if err := validateFactoryManifestCLI(os.Args[3:], os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "hako factory validate: %v\n", err)
+			os.Exit(1)
+		}
 	case len(os.Args) >= 5 && os.Args[1] == "github" && os.Args[2] == "repository" && os.Args[3] == "factory":
 		result, err := manageGitHubRepositoryFactoryCLI(os.Args[4:])
 		if err != nil {

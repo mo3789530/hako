@@ -333,6 +333,16 @@ pipeline. Parser acceptance is not authorization or proof of safe execution:
 the scheduler must still bind Tenant, Repository, commit, trust level, secrets,
 network policy, and runtime limits before creating a Lambda MicroVM workload.
 
+Validate a repository manifest locally with:
+
+```sh
+hako factory validate
+hako factory validate --file path/to/factory.yaml
+```
+
+The command reads at most 64 KiB, prints only sorted pipeline names and the
+manifest version, and does not contact the API or schedule a Workload.
+
 ### Coexistence and rollout
 
 Existing GitHub Actions remain authoritative unless a Tenant explicitly opts

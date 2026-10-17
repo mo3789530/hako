@@ -27,6 +27,9 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   duplicate-key detection, alias/anchor/tag rejection, single-document and
   structure-size limits, fixed catalog step/service allowlists, bounded runtime
   resources, repository-read-only access, and no cloud credential access.
+- Added `hako factory validate [--file path]`, which validates the default
+  `.hako/factory.yaml` or an explicit file locally; output contains only the
+  version and sorted pipeline names.
 - Added malicious YAML/resource-bound tests and documented the schema in
   [`docs/software-factory.md`](../docs/software-factory.md). The parser is not
   wired to scheduling; no workload is created by a manifest yet.
