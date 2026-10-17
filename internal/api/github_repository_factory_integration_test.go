@@ -57,9 +57,9 @@ func TestRepositoryFactorySettingRequiresTenantOwnerAndActiveRegisteredRepositor
 	}
 	handler := NewHandler(verifier, pool, WorkspaceCreateConfig{GitHubAppManagementEnabled: true, WebhookWorkloadTriggersEnabled: true, WorkloadRunsEnabled: true})
 	path := "/v1/tenants/tenant_factory_api/github/installations/7001/repositories/7002/factory"
-	call := func(subject, tenant, body string) *httptest.ResponseRecorder {
+	call := func(route, subject, tenant, body string) *httptest.ResponseRecorder {
 		token := signTenantAPIToken(t, key, issuer, subject, "openid hako/api")
-		request := httptest.NewRequest(http.MethodPut, strings.Replace(path, "tenant_factory_api", tenant, 1), strings.NewReader(body))
+		request := httptest.NewRequest(http.MethodPut, strings.Replace(route, "tenant_factory_api", tenant, 1), strings.NewReader(body))
 		request.Header.Set("Authorization", "Bearer "+token)
 		request.Header.Set("Content-Type", "application/json")
 		response := httptest.NewRecorder()
@@ -77,7 +77,7 @@ func TestRepositoryFactorySettingRequiresTenantOwnerAndActiveRegisteredRepositor
 		{"factory-owner", "tenant_factory_api", `{}`, http.StatusBadRequest},
 		{"factory-owner", "tenant_factory_api", `{"enabled":"true"}`, http.StatusBadRequest},
 	} {
-		response := call(test.subject, test.tenant, test.body)
+		response := call(path, test.subject, test.tenant, test.body)
 		if response.Code != test.want {
 			t.Fatalf("factory setting for %s/%s returned HTTP %d, want %d: %s", test.subject, test.tenant, response.Code, test.want, response.Body.String())
 		}
@@ -89,5 +89,27 @@ func TestRepositoryFactorySettingRequiresTenantOwnerAndActiveRegisteredRepositor
 	var auditCount int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE tenant_id='tenant_factory_api' AND action='tenant.github_repository.factory.configure'`).Scan(&auditCount); err != nil || auditCount != 2 {
 		t.Fatalf("factory configuration audit count = %d, error = %v", auditCount, err)
+	}
+	runnerPath := "/v1/tenants/tenant_factory_api/github/installations/7001/repositories/7002/actions-runner"
+	for _, test := range []struct {
+		subject, tenant, body string
+		want                  int
+	}{
+		{"factory-owner", "tenant_factory_api", `{"enabled":true}`, http.StatusOK},
+		{"factory-admin", "tenant_factory_api", `{"enabled":false}`, http.StatusOK},
+		{"factory-member", "tenant_factory_api", `{"enabled":true}`, http.StatusNotFound},
+		{"factory-owner", "tenant_factory_other", `{"enabled":true}`, http.StatusNotFound},
+		{"factory-owner", "tenant_factory_api", `{}`, http.StatusBadRequest},
+	} {
+		response := call(runnerPath, test.subject, test.tenant, test.body)
+		if response.Code != test.want {
+			t.Fatalf("Actions runner setting for %s/%s returned HTTP %d, want %d: %s", test.subject, test.tenant, response.Code, test.want, response.Body.String())
+		}
+	}
+	if err := pool.QueryRow(ctx, `SELECT actions_runner_enabled FROM tenant_github_repositories WHERE tenant_id='tenant_factory_api' AND installation_id=7001 AND github_repository_id=7002`).Scan(&enabled); err != nil || enabled {
+		t.Fatalf("final Actions runner setting = %v, error = %v", enabled, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE tenant_id='tenant_factory_api' AND action='tenant.github_repository.actions_runner.configure'`).Scan(&auditCount); err != nil || auditCount != 2 {
+		t.Fatalf("Actions runner configuration audit count = %d, error = %v", auditCount, err)
 	}
 }

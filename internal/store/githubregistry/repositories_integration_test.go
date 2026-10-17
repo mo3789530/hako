@@ -88,6 +88,28 @@ func TestRepositorySyncRequiresActiveTenantBindingAndAppliesMembershipEvents(t *
 		_ = tx.Rollback(ctx)
 		t.Fatalf("re-enable repository factory = %+v, err %v", reenabled, err)
 	}
+	runnerEnabledAt := now.Add(3 * time.Second)
+	runnerEnabled, err := SetRepositoryActionsRunnerEnabled(ctx, tx, "tenant_registry", 4401, 8842, true, runnerEnabledAt)
+	if err != nil || !runnerEnabled.ActionsRunnerEnabled || runnerEnabled.FactoryEnabled != reenabled.FactoryEnabled || runnerEnabled.ActionsRunnerEnabledAt == nil || runnerEnabled.ActionsRunnerEnabledAt.Before(runnerEnabledAt.Add(-time.Microsecond)) || runnerEnabled.ActionsRunnerEnabledAt.After(runnerEnabledAt.Add(time.Microsecond)) {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("enable repository Actions runner = %+v, err %v", runnerEnabled, err)
+	}
+	runnerEnabledAgain, err := SetRepositoryActionsRunnerEnabled(ctx, tx, "tenant_registry", 4401, 8842, true, now.Add(4*time.Second))
+	if err != nil || runnerEnabledAgain.ActionsRunnerEnabledAt == nil || !runnerEnabledAgain.ActionsRunnerEnabledAt.Equal(*runnerEnabled.ActionsRunnerEnabledAt) {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("repeated enable changed Actions runner timestamp: first=%+v second=%+v err=%v", runnerEnabled, runnerEnabledAgain, err)
+	}
+	runnerDisabled, err := SetRepositoryActionsRunnerEnabled(ctx, tx, "tenant_registry", 4401, 8842, false, now.Add(5*time.Second))
+	if err != nil || runnerDisabled.ActionsRunnerEnabled || runnerDisabled.ActionsRunnerEnabledAt != nil || !runnerDisabled.FactoryEnabled {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("disable repository Actions runner = %+v, err %v", runnerDisabled, err)
+	}
+	runnerReenabledAt := now.Add(6 * time.Second)
+	runnerReenabled, err := SetRepositoryActionsRunnerEnabled(ctx, tx, "tenant_registry", 4401, 8842, true, runnerReenabledAt)
+	if err != nil || !runnerReenabled.ActionsRunnerEnabled || runnerReenabled.ActionsRunnerEnabledAt == nil || runnerReenabled.ActionsRunnerEnabledAt.Before(runnerReenabledAt.Add(-time.Microsecond)) || runnerReenabled.ActionsRunnerEnabledAt.After(runnerReenabledAt.Add(time.Microsecond)) {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("re-enable repository Actions runner = %+v, err %v", runnerReenabled, err)
+	}
 	removedEvent := addedRepositoriesEvent()
 	removedEvent.Type = "github.installation_repositories.removed"
 	removedEvent.RepositoriesAdded = nil

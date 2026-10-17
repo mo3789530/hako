@@ -195,6 +195,8 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 		apps.POST("/:integration_id/deliveries/:delivery_id/replay", replayTenantGitHubDelivery(pool))
 		protected.PUT("/v1/tenants/:tenant_id/github/installations/:installation_id/repositories/:repository_id/factory", configureGitHubRepositoryFactory(pool, workspaceConfig.WebhookWorkloadTriggersEnabled),
 			RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+		protected.PUT("/v1/tenants/:tenant_id/github/installations/:installation_id/repositories/:repository_id/actions-runner", configureGitHubRepositoryActionsRunner(pool),
+			RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
 	}
 	if setupVerifier != nil {
 		protected.POST("/v1/tenants/:tenant_id/github/installations/setup", beginGitHubInstallationSetup(pool, setupVerifier),
@@ -655,6 +657,54 @@ func configureGitHubRepositoryFactory(pool transaction.Beginner, workloadRunsEna
 				return githubregistry.Repository{}, fmt.Errorf("encode Repository factory audit details: %w", err)
 			}
 			if err := audit.Append(ctx, tx, audit.Event{TenantID: tenantID, ActorID: user.ID, Action: "tenant.github_repository.factory.configure",
+				TargetType: "github_repository", TargetID: fmt.Sprint(repositoryID), Details: details, OccurredAt: now}); err != nil {
+				return githubregistry.Repository{}, err
+			}
+			return updated, nil
+		})
+		if errors.Is(err, authz.ErrTenantAccessDenied) {
+			return tenantNotFound(c)
+		}
+		if errors.Is(err, githubregistry.ErrInstallationNotActive) || errors.Is(err, githubregistry.ErrRepositoryNotFound) {
+			return c.JSON(http.StatusNotFound, errorResponse{Error: errorBody{Code: "not_found", Message: "Active registered GitHub Repository not found"}})
+		}
+		if err != nil {
+			return databaseUnavailable(c)
+		}
+		return c.JSON(http.StatusOK, map[string]any{"repository": repository})
+	}
+}
+
+func configureGitHubRepositoryActionsRunner(pool transaction.Beginner) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		user, ok := HakoUserFromContext(c)
+		if !ok || pool == nil {
+			return databaseUnavailable(c)
+		}
+		tenantID := domain.TenantID(strings.TrimSpace(c.Param("tenant_id")))
+		installationID, installationErr := strconv.ParseInt(strings.TrimSpace(c.Param("installation_id")), 10, 64)
+		repositoryID, repositoryErr := strconv.ParseInt(strings.TrimSpace(c.Param("repository_id")), 10, 64)
+		if tenantID == "" || installationErr != nil || installationID <= 0 || repositoryErr != nil || repositoryID <= 0 {
+			return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_repository", Message: "Valid Installation and Repository IDs are required"}})
+		}
+		var request repositoryFactoryRequest
+		if err := decodeJSONRequest(c, &request); err != nil || request.Enabled == nil {
+			return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_request", Message: "enabled must be explicitly set to true or false"}})
+		}
+		now := time.Now().UTC()
+		repository, err := transaction.Within(c.Request().Context(), pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (githubregistry.Repository, error) {
+			if _, err := authz.RequireTenantRole(ctx, tx, user.ID, tenantID, domain.TenantRoleOwner, domain.TenantRoleAdmin); err != nil {
+				return githubregistry.Repository{}, err
+			}
+			updated, err := githubregistry.SetRepositoryActionsRunnerEnabled(ctx, tx, tenantID, installationID, repositoryID, *request.Enabled, now)
+			if err != nil {
+				return githubregistry.Repository{}, err
+			}
+			details, err := json.Marshal(map[string]any{"installation_id": installationID, "repository_id": repositoryID, "actions_runner_enabled": updated.ActionsRunnerEnabled})
+			if err != nil {
+				return githubregistry.Repository{}, fmt.Errorf("encode Repository Actions runner audit details: %w", err)
+			}
+			if err := audit.Append(ctx, tx, audit.Event{TenantID: tenantID, ActorID: user.ID, Action: "tenant.github_repository.actions_runner.configure",
 				TargetType: "github_repository", TargetID: fmt.Sprint(repositoryID), Details: details, OccurredAt: now}); err != nil {
 				return githubregistry.Repository{}, err
 			}

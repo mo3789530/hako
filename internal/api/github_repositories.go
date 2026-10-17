@@ -18,6 +18,10 @@ type GitHubRepositoryFactoryResult struct {
 	Repository githubregistry.Repository `json:"repository"`
 }
 
+type GitHubRepositoryActionsRunnerResult struct {
+	Repository githubregistry.Repository `json:"repository"`
+}
+
 // SetGitHubRepositoryFactoryEnabled configures the opt-in default webhook
 // verification Job for one Tenant-owned Installation repository.
 func SetGitHubRepositoryFactoryEnabled(ctx context.Context, baseURL, accessToken, tenantID string, installationID, repositoryID int64, enabled bool, client *http.Client) (GitHubRepositoryFactoryResult, error) {
@@ -53,6 +57,45 @@ func SetGitHubRepositoryFactoryEnabled(ctx context.Context, baseURL, accessToken
 		string(result.Repository.TenantID) != tenantID || result.Repository.InstallationID != installationID ||
 		result.Repository.GitHubRepositoryID != repositoryID || result.Repository.FactoryEnabled != enabled {
 		return GitHubRepositoryFactoryResult{}, errors.New("invalid GitHub Repository factory response")
+	}
+	return result, nil
+}
+
+// SetGitHubRepositoryActionsRunnerEnabled configures the explicit per-repository
+// opt-in for ephemeral GitHub Actions runners. It does not start a runner.
+func SetGitHubRepositoryActionsRunnerEnabled(ctx context.Context, baseURL, accessToken, tenantID string, installationID, repositoryID int64, enabled bool, client *http.Client) (GitHubRepositoryActionsRunnerResult, error) {
+	var result GitHubRepositoryActionsRunnerResult
+	if !validTenantID(tenantID) || strings.TrimSpace(accessToken) == "" || installationID <= 0 || repositoryID <= 0 {
+		return result, errors.New("valid Tenant, Installation, Repository, and access token are required")
+	}
+	path := "/v1/tenants/" + url.PathEscape(tenantID) + "/github/installations/" + strconv.FormatInt(installationID, 10) +
+		"/repositories/" + strconv.FormatInt(repositoryID, 10) + "/actions-runner"
+	endpoint, err := apiEndpoint(baseURL, path)
+	if err != nil {
+		return result, err
+	}
+	body, err := json.Marshal(map[string]bool{"enabled": enabled})
+	if err != nil {
+		return result, errors.New("encode GitHub Repository Actions runner request")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return result, errors.New("create GitHub Repository Actions runner request")
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	response, err := safeAPIClient(client).Do(req)
+	if err != nil {
+		return result, errors.New("GitHub Repository Actions runner request failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return result, readAPIError(response)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil ||
+		string(result.Repository.TenantID) != tenantID || result.Repository.InstallationID != installationID ||
+		result.Repository.GitHubRepositoryID != repositoryID || result.Repository.ActionsRunnerEnabled != enabled {
+		return GitHubRepositoryActionsRunnerResult{}, errors.New("invalid GitHub Repository Actions runner response")
 	}
 	return result, nil
 }

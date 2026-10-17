@@ -57,3 +57,35 @@ func TestSetGitHubRepositoryFactoryEnabledRejectsInvalidIdentityAndResponse(t *t
 		t.Fatalf("mismatched response error = %v", err)
 	}
 }
+
+func TestSetGitHubRepositoryActionsRunnerEnabledUsesTenantScopedPut(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/v1/tenants/tenant_factory_api/github/installations/7001/repositories/7002/actions-runner" ||
+			r.Header.Get("Authorization") != "Bearer test-token" {
+			t.Fatalf("request = %s %s, authorization present=%t", r.Method, r.URL.Path, r.Header.Get("Authorization") != "")
+		}
+		var body map[string]bool
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body) != 1 || !body["enabled"] {
+			t.Fatalf("request body = %+v, error = %v", body, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"repository":{"tenant_id":"tenant_factory_api","installation_id":7001,"github_repository_id":7002,"owner_login":"acme","repository_name":"api","default_branch":"main","actions_runner_enabled":true}}`))
+	}))
+	defer server.Close()
+
+	result, err := SetGitHubRepositoryActionsRunnerEnabled(context.Background(), server.URL, "test-token", "tenant_factory_api", 7001, 7002, true, server.Client())
+	if err != nil || !result.Repository.ActionsRunnerEnabled || result.Repository.GitHubRepositoryID != 7002 {
+		t.Fatalf("SetGitHubRepositoryActionsRunnerEnabled() = %+v, error = %v", result, err)
+	}
+}
+
+func TestSetGitHubRepositoryActionsRunnerEnabledRejectsMismatchedResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"repository":{"tenant_id":"tenant_other","installation_id":7001,"github_repository_id":7002,"actions_runner_enabled":true}}`))
+	}))
+	defer server.Close()
+	_, err := SetGitHubRepositoryActionsRunnerEnabled(context.Background(), server.URL, "token", "tenant_factory_api", 7001, 7002, true, server.Client())
+	if err == nil || !strings.Contains(err.Error(), "invalid GitHub Repository Actions runner response") {
+		t.Fatalf("mismatched response error = %v", err)
+	}
+}

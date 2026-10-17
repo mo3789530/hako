@@ -1,6 +1,6 @@
 # Task 52: GitHub Actions Ephemeral Runner Mode
 
-Status: In Progress (2026-10-17: signed `workflow_job.queued` deliveries are retained but excluded from the generic push/PR Go-test trigger. Normalized events now preserve run attempt, workflow name, bounded labels, and optional assigned runner/group identity for matching `in_progress`/`completed` deliveries. Dedicated runner admission must authorize the event before requesting a registration token or creating a MicroVM. Runner lifecycle is not implemented). Priority: P3.
+Status: In Progress (2026-10-17: signed `workflow_job.queued` deliveries are retained but excluded from the generic push/PR Go-test trigger. Normalized events preserve run attempt, workflow name, bounded labels, and optional assigned runner/group identity for matching `in_progress`/`completed` deliveries. A separate Tenant Owner/Admin repository opt-in is stored via the Actions Runner API/CLI and audited; it is admission policy only. Dedicated event authorization must still happen before requesting a registration token or creating a MicroVM. Runner lifecycle is not implemented). Priority: P3.
 
 Claude Code Action support is tracked separately in [Task 73](task-73-claude-code-action.md), including Tenant-scoped model credentials, untrusted PR denial, and action-specific E2E.
 
@@ -11,6 +11,7 @@ Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Action
 ## Work
 
 - Consume only authorized `workflow_job.queued` events and correlate repository, workflow, ref, commit, labels, Tenant policy, and Check state.
+- Keep the per-repository `actions_runner_enabled` policy separate from Factory event triggers; an opt-in must never itself issue a token or create runtime resources.
 - Register one ephemeral runner for one job, wait for the exact assigned job, capture diagnostics, deregister it, and destroy the isolated execution environment on every terminal path.
 - Apply trust policy: fork PR has no secrets/cloud role; privileged labels require explicit policy/approval; no AWS credentials are injected as long-lived keys.
 - Implement bounded runner registration token lifetime, capacity, retry, queue timeout, and GitHub API throttling.

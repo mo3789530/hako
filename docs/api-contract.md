@@ -118,6 +118,18 @@ scheduled. Even with the repository enabled, webhook trigger processing also
 requires `HAKO_WEBHOOK_WORKLOAD_TRIGGERS_ENABLED=true` and Workload Runs to be
 enabled. The feature flag defaults off.
 
+Tenant Owners/Admins can separately enable the per-repository GitHub Actions
+runner admission policy with
+`PUT /v1/tenants/{tenant_id}/github/installations/{installation_id}/repositories/{repository_id}/actions-runner`
+and `{"enabled":true|false}`. It returns `actions_runner_enabled` and, while
+enabled, `actions_runner_enabled_at`. This policy is independent from the
+Factory push/PR verification opt-in. `hako github repository runner
+enable|disable --tenant <tenant> --installation <id> --repository <id>`
+configures it. The default is disabled. Disabling clears the timestamp and a
+subsequent enable records a new one. This setting alone does not request a
+GitHub runner registration token, create a MicroVM, or execute a workflow job;
+the dedicated, authorized ephemeral-runner consumer remains separate work.
+
 `POST /v1/tenants/{tenant_id}/github/apps/{integration_id}/deliveries/{delivery_id}/replay`
 is available when Tenant GitHub App management is enabled and requires Tenant
 Owner/Admin authorization. The body is `{"reason":"..."}` with an 8–500 byte
