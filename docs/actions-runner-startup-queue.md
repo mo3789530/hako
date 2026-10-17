@@ -56,7 +56,7 @@ labels, and rejects fork-originated work. Policy values cannot select a
 command, credential, image, execution role, or network connector.
 
 The trusted Tenant App token client can now mint a repository-only
-`actions:read` + `contents:read` Installation token for that lookup. The
+`actions:read` Installation token for that lookup (without `contents:read`). The
 repository opt-in is checked both before and after token minting; the token is
 distinct from checkout, runner-registration, and deregistration credentials.
 
@@ -67,10 +67,23 @@ responses, redirects, and malformed workflow paths. This lookup and the pure
 provenance verifier are not yet invoked by the queue consumer or launcher; the
 Task 74 admission integration remains a required fail-closed gate.
 
-This verifier is currently a tested library contract only. It is not yet backed
-by DSQL policy storage, GitHub Actions Run/Job API reads, or wired before
-MicroVM launch. Therefore Claude Action workflows must not be considered
-eligible for production runner admission until those checks are integrated.
+The data-only policy is stored per Tenant/Installation/Repository through an
+Owner/Admin API and CLI; disabling runner opt-in clears it transactionally.
+Example `policy.json`:
+
+```json
+{
+  "workflow_path": ".github/workflows/claude.yml",
+  "allowed_refs": ["refs/heads/main"],
+  "allowed_events": ["push", "workflow_dispatch"],
+  "required_labels": ["self-hosted", "hako"],
+  "allowed_labels": ["self-hosted", "hako", "arm64"]
+}
+```
+
+The verifier and metadata lookup are not yet invoked by the queue consumer or
+launcher. Therefore Claude Action workflows must not be considered eligible
+for production runner admission until those checks are integrated.
 
 ## Local verification
 

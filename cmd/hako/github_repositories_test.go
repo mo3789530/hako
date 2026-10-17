@@ -65,3 +65,19 @@ func TestParseGitHubRepositoryActionsRunnerCLIRejectsInvalidInput(t *testing.T) 
 		}
 	}
 }
+
+func TestParseGitHubRepositoryActionsRunnerWorkflowPolicyCLI(t *testing.T) {
+	input, err := parseGitHubRepositoryActionsRunnerWorkflowPolicyCLI([]string{"policy", "--tenant", "tenant_one", "--installation", "123", "--repository", "456", "--policy-file", "policy.json"})
+	if err != nil || input.tenantID != "tenant_one" || input.installationID != 123 || input.repositoryID != 456 || input.policyFile != "policy.json" {
+		t.Fatalf("parseGitHubRepositoryActionsRunnerWorkflowPolicyCLI() = %+v, error = %v", input, err)
+	}
+	for _, args := range [][]string{
+		{}, {"policy", "--tenant", "tenant_one", "--installation", "123", "--repository", "456"},
+		{"policy", "--tenant", "tenant_one", "--installation", "0", "--repository", "456", "--policy-file", "policy.json"},
+		{"policy", "--tenant", "tenant_one", "--installation", "123", "--repository", "456", "--policy-file", "policy.json", "extra"},
+	} {
+		if _, err := parseGitHubRepositoryActionsRunnerWorkflowPolicyCLI(args); err == nil {
+			t.Fatalf("invalid workflow-policy CLI args %q accepted", args)
+		}
+	}
+}

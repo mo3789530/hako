@@ -420,9 +420,9 @@ func (c *TokenClient) ActionsRunnerRegistrationToken(ctx context.Context, tenant
 	return RunnerRegistrationToken{value: response.Token, expiresAt: response.ExpiresAt}, access, nil
 }
 
-// ActionsRunnerProvenanceToken mints a repository-scoped read-only token for
-// authoritative Actions Run/Job and workflow-file metadata lookups. It never
-// grants workflow dispatch, write, administration, or runner registration
+// ActionsRunnerProvenanceToken mints a repository-scoped actions:read token for
+// authoritative Actions Run/Job and workflow metadata lookups. It never grants
+// contents, workflow dispatch, write, administration, or runner registration
 // permissions, and the repository runner opt-in is revalidated on each use.
 func (c *TokenClient) ActionsRunnerProvenanceToken(ctx context.Context, tenant domain.TenantID, installationID, repositoryID int64) (InstallationToken, RepositoryAccess, error) {
 	if c == nil || ctx == nil || c.config.IntegrationID == "" || c.tenantAppAuth == nil || tenant == "" || installationID <= 0 || repositoryID <= 0 {
@@ -451,8 +451,8 @@ func (c *TokenClient) ActionsRunnerProvenanceToken(ctx context.Context, tenant d
 	}
 	key := tokenCacheKey{tenant: tenant, integration: c.config.IntegrationID, appID: c.config.AppID,
 		configRevision: c.config.ConfigRevision, credentialGeneration: c.config.CredentialGeneration,
-		installation: installationID, repository: repositoryID, permissionScope: "actions:read,contents:read"}
-	token, err := c.scopedInstallationToken(ctx, key, map[string]string{"actions": "read", "contents": "read"})
+		installation: installationID, repository: repositoryID, permissionScope: "actions:read"}
+	token, err := c.scopedInstallationToken(ctx, key, map[string]string{"actions": "read"})
 	if err != nil {
 		delete(c.cache, key)
 		return InstallationToken{}, RepositoryAccess{}, err

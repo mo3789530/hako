@@ -112,4 +112,42 @@ func TestRepositoryFactorySettingRequiresTenantOwnerAndActiveRegisteredRepositor
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE tenant_id='tenant_factory_api' AND action='tenant.github_repository.actions_runner.configure'`).Scan(&auditCount); err != nil || auditCount != 2 {
 		t.Fatalf("Actions runner configuration audit count = %d, error = %v", auditCount, err)
 	}
+	if response := call(runnerPath, "factory-owner", "tenant_factory_api", `{"enabled":true}`); response.Code != http.StatusOK {
+		t.Fatalf("enable runner before setting workflow policy returned HTTP %d: %s", response.Code, response.Body.String())
+	}
+	var runnerEnabled, runnerHasEnabledAt bool
+	if err := pool.QueryRow(ctx, `SELECT actions_runner_enabled,actions_runner_enabled_at IS NOT NULL FROM tenant_github_repositories WHERE tenant_id='tenant_factory_api' AND installation_id=7001 AND github_repository_id=7002`).Scan(&runnerEnabled, &runnerHasEnabledAt); err != nil || !runnerEnabled || !runnerHasEnabledAt {
+		t.Fatalf("runner opt-in before policy = enabled:%v timestamp:%v err:%v", runnerEnabled, runnerHasEnabledAt, err)
+	}
+	workflowPolicyPath := runnerPath + "/workflow-policy"
+	workflowPolicyBody := `{"workflow_path":".github/workflows/claude.yml","allowed_refs":["refs/heads/main"],"allowed_events":["push","workflow_dispatch"],"required_labels":["self-hosted","hako"],"allowed_labels":["self-hosted","hako","arm64"]}`
+	for _, test := range []struct {
+		subject, tenant, body string
+		want                  int
+	}{
+		{"factory-owner", "tenant_factory_api", workflowPolicyBody, http.StatusOK},
+		{"factory-member", "tenant_factory_api", workflowPolicyBody, http.StatusNotFound},
+		{"factory-owner", "tenant_factory_other", workflowPolicyBody, http.StatusNotFound},
+		{"factory-owner", "tenant_factory_api", `{"workflow_path":"../../evil.yml"}`, http.StatusBadRequest},
+		{"factory-owner", "tenant_factory_api", `{"workflow_path":".github/workflows/claude.yml","allowed_refs":["refs/heads/main"],"allowed_events":["pull_request_target"],"required_labels":["hako"],"allowed_labels":["hako"]}`, http.StatusBadRequest},
+	} {
+		response := call(workflowPolicyPath, test.subject, test.tenant, test.body)
+		if response.Code != test.want {
+			t.Fatalf("workflow policy for %s/%s returned HTTP %d, want %d: %s", test.subject, test.tenant, response.Code, test.want, response.Body.String())
+		}
+	}
+	var workflowPath string
+	if err := pool.QueryRow(ctx, `SELECT actions_runner_workflow_policy->>'workflow_path' FROM tenant_github_repositories WHERE tenant_id='tenant_factory_api' AND installation_id=7001 AND github_repository_id=7002`).Scan(&workflowPath); err != nil || workflowPath != ".github/workflows/claude.yml" {
+		t.Fatalf("persisted workflow policy path = %q, error = %v", workflowPath, err)
+	}
+	if response := call(runnerPath, "factory-admin", "tenant_factory_api", `{"enabled":false}`); response.Code != http.StatusOK {
+		t.Fatalf("runner opt-out after workflow policy returned HTTP %d: %s", response.Code, response.Body.String())
+	}
+	var policyIsNull bool
+	if err := pool.QueryRow(ctx, `SELECT actions_runner_workflow_policy IS NULL FROM tenant_github_repositories WHERE tenant_id='tenant_factory_api' AND installation_id=7001 AND github_repository_id=7002`).Scan(&policyIsNull); err != nil || !policyIsNull {
+		t.Fatalf("runner workflow policy was not cleared after opt-out (null=%v, err=%v)", policyIsNull, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE tenant_id='tenant_factory_api' AND action='tenant.github_repository.actions_runner.workflow_policy.configure'`).Scan(&auditCount); err != nil || auditCount != 1 {
+		t.Fatalf("workflow policy audit count = %d, error = %v", auditCount, err)
+	}
 }

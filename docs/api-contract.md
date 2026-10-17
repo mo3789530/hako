@@ -130,6 +130,23 @@ subsequent enable records a new one. This setting alone does not request a
 GitHub runner registration token, create a MicroVM, or execute a workflow job;
 the dedicated, authorized ephemeral-runner consumer remains separate work.
 
+An enabled repository can configure the optional Claude Action provenance
+allowlist with
+`PUT /v1/tenants/{tenant_id}/github/installations/{installation_id}/repositories/{repository_id}/actions-runner/workflow-policy`.
+The JSON body contains `workflow_path` (under `.github/workflows/`),
+`allowed_refs` (branch refs only), `allowed_events` (`push`, `pull_request`,
+`workflow_dispatch`, or `schedule`), `required_labels`, and `allowed_labels`.
+Values are bounded and duplicate-free; required labels must be a subset of
+allowed labels. `pull_request_target`, arbitrary commands, credentials,
+image/role/network selectors, and unknown JSON fields are rejected. Only
+Tenant Owners/Admins may configure it, changes are audited, and disabling the
+repository runner opt-in clears this policy. Configure it with
+`hako github repository runner policy --tenant <tenant> --installation <id>
+--repository <id> --policy-file policy.json`.
+
+This allowlist is configuration only: jobs are not eligible until Task 74's
+authoritative Run/Job lookup and pre-MicroVM verification are wired to admission.
+
 `POST /v1/tenants/{tenant_id}/github/apps/{integration_id}/deliveries/{delivery_id}/replay`
 is available when Tenant GitHub App management is enabled and requires Tenant
 Owner/Admin authorization. The body is `{"reason":"..."}` with an 8–500 byte

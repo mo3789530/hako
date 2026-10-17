@@ -197,6 +197,8 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 			RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
 		protected.PUT("/v1/tenants/:tenant_id/github/installations/:installation_id/repositories/:repository_id/actions-runner", configureGitHubRepositoryActionsRunner(pool),
 			RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+		protected.PUT("/v1/tenants/:tenant_id/github/installations/:installation_id/repositories/:repository_id/actions-runner/workflow-policy", configureGitHubRepositoryActionsRunnerWorkflowPolicy(pool),
+			RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
 	}
 	if setupVerifier != nil {
 		protected.POST("/v1/tenants/:tenant_id/github/installations/setup", beginGitHubInstallationSetup(pool, setupVerifier),
@@ -720,6 +722,58 @@ func configureGitHubRepositoryActionsRunner(pool transaction.Beginner) echo.Hand
 			return databaseUnavailable(c)
 		}
 		return c.JSON(http.StatusOK, map[string]any{"repository": repository})
+	}
+}
+
+func configureGitHubRepositoryActionsRunnerWorkflowPolicy(pool transaction.Beginner) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		user, ok := HakoUserFromContext(c)
+		if !ok || pool == nil {
+			return databaseUnavailable(c)
+		}
+		tenantID := domain.TenantID(strings.TrimSpace(c.Param("tenant_id")))
+		installationID, installationErr := strconv.ParseInt(strings.TrimSpace(c.Param("installation_id")), 10, 64)
+		repositoryID, repositoryErr := strconv.ParseInt(strings.TrimSpace(c.Param("repository_id")), 10, 64)
+		if tenantID == "" || installationErr != nil || installationID <= 0 || repositoryErr != nil || repositoryID <= 0 {
+			return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_repository", Message: "Valid Installation and Repository IDs are required"}})
+		}
+		var policy githubregistry.ActionsRunnerWorkflowPolicy
+		if err := decodeJSONRequest(c, &policy); err != nil {
+			return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_workflow_policy", Message: "A valid workflow path, ref/event allowlist, and runner label policy are required"}})
+		}
+		if !githubregistry.ValidActionsRunnerWorkflowPolicy(policy) {
+			return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_workflow_policy", Message: "A valid workflow path, ref/event allowlist, and runner label policy are required"}})
+		}
+		now := time.Now().UTC()
+		stored, err := transaction.Within(c.Request().Context(), pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (githubregistry.ActionsRunnerWorkflowPolicy, error) {
+			if _, err := authz.RequireTenantRole(ctx, tx, user.ID, tenantID, domain.TenantRoleOwner, domain.TenantRoleAdmin); err != nil {
+				return githubregistry.ActionsRunnerWorkflowPolicy{}, err
+			}
+			updated, err := githubregistry.SetRepositoryActionsRunnerWorkflowPolicy(ctx, tx, tenantID, installationID, repositoryID, policy, now)
+			if err != nil {
+				return githubregistry.ActionsRunnerWorkflowPolicy{}, err
+			}
+			details, err := json.Marshal(map[string]any{"installation_id": installationID, "repository_id": repositoryID, "workflow_path": updated.WorkflowPath,
+				"allowed_refs": updated.AllowedRefs, "allowed_events": updated.AllowedEvents, "required_labels": updated.RequiredLabels, "allowed_labels": updated.AllowedLabels})
+			if err != nil {
+				return githubregistry.ActionsRunnerWorkflowPolicy{}, errors.New("encode workflow policy audit details")
+			}
+			if err := audit.Append(ctx, tx, audit.Event{TenantID: tenantID, ActorID: user.ID, Action: "tenant.github_repository.actions_runner.workflow_policy.configure",
+				TargetType: "github_repository", TargetID: fmt.Sprint(repositoryID), Details: details, OccurredAt: now}); err != nil {
+				return githubregistry.ActionsRunnerWorkflowPolicy{}, err
+			}
+			return updated, nil
+		})
+		if errors.Is(err, authz.ErrTenantAccessDenied) {
+			return tenantNotFound(c)
+		}
+		if errors.Is(err, githubregistry.ErrInstallationNotActive) || errors.Is(err, githubregistry.ErrRepositoryNotFound) {
+			return c.JSON(http.StatusNotFound, errorResponse{Error: errorBody{Code: "not_found", Message: "Enabled Tenant GitHub Actions runner repository not found"}})
+		}
+		if err != nil {
+			return databaseUnavailable(c)
+		}
+		return c.JSON(http.StatusOK, map[string]any{"workflow_policy": stored})
 	}
 }
 

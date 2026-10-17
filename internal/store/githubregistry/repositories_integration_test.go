@@ -94,6 +94,24 @@ func TestRepositorySyncRequiresActiveTenantBindingAndAppliesMembershipEvents(t *
 		_ = tx.Rollback(ctx)
 		t.Fatalf("enable repository Actions runner = %+v, err %v", runnerEnabled, err)
 	}
+	policy := ActionsRunnerWorkflowPolicy{WorkflowPath: ".github/workflows/claude.yml", AllowedRefs: []string{"refs/heads/main"},
+		AllowedEvents: []string{"push", "workflow_dispatch"}, RequiredLabels: []string{"self-hosted", "hako"},
+		AllowedLabels: []string{"self-hosted", "hako", "arm64"}}
+	storedPolicy, err := SetRepositoryActionsRunnerWorkflowPolicy(ctx, tx, "tenant_registry", 4401, 8842, policy, runnerEnabledAt)
+	if err != nil || storedPolicy.WorkflowPath != policy.WorkflowPath || len(storedPolicy.AllowedRefs) != 1 {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("store Tenant runner workflow policy = %+v, err %v", storedPolicy, err)
+	}
+	loadedPolicy, err := GetRepositoryActionsRunnerWorkflowPolicy(ctx, tx, "tenant_registry", 4401, 8842)
+	if err != nil || loadedPolicy.WorkflowPath != policy.WorkflowPath || len(loadedPolicy.AllowedEvents) != 2 {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("load Tenant runner workflow policy = %+v, err %v", loadedPolicy, err)
+	}
+	if _, err := SetRepositoryActionsRunnerWorkflowPolicy(ctx, tx, "tenant_registry", 4401, 8842,
+		ActionsRunnerWorkflowPolicy{WorkflowPath: "../../untrusted.yml"}, runnerEnabledAt); !errors.Is(err, ErrRepositoryNotFound) {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("invalid runner workflow policy error = %v", err)
+	}
 	runnerEnabledAgain, err := SetRepositoryActionsRunnerEnabled(ctx, tx, "tenant_registry", 4401, 8842, true, now.Add(4*time.Second))
 	if err != nil || runnerEnabledAgain.ActionsRunnerEnabledAt == nil || !runnerEnabledAgain.ActionsRunnerEnabledAt.Equal(*runnerEnabled.ActionsRunnerEnabledAt) {
 		_ = tx.Rollback(ctx)
@@ -103,6 +121,10 @@ func TestRepositorySyncRequiresActiveTenantBindingAndAppliesMembershipEvents(t *
 	if err != nil || runnerDisabled.ActionsRunnerEnabled || runnerDisabled.ActionsRunnerEnabledAt != nil || !runnerDisabled.FactoryEnabled {
 		_ = tx.Rollback(ctx)
 		t.Fatalf("disable repository Actions runner = %+v, err %v", runnerDisabled, err)
+	}
+	if _, err := GetRepositoryActionsRunnerWorkflowPolicy(ctx, tx, "tenant_registry", 4401, 8842); !errors.Is(err, ErrRepositoryNotFound) {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("workflow policy remained after runner opt-out: %v", err)
 	}
 	runnerReenabledAt := now.Add(6 * time.Second)
 	runnerReenabled, err := SetRepositoryActionsRunnerEnabled(ctx, tx, "tenant_registry", 4401, 8842, true, runnerReenabledAt)

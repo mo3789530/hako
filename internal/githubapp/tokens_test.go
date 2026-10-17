@@ -345,11 +345,11 @@ func TestActionsRunnerProvenanceTokenUsesReadOnlyRepositoryScope(t *testing.T) {
 				Permissions   map[string]string `json:"permissions"`
 			}
 			if r.Method != http.MethodPost || json.NewDecoder(r.Body).Decode(&body) != nil || len(body.RepositoryIDs) != 1 || body.RepositoryIDs[0] != 88 ||
-				len(body.Permissions) != 2 || body.Permissions["actions"] != "read" || body.Permissions["contents"] != "read" {
-				t.Errorf("provenance token was not scoped to Actions/contents read: %+v", body)
+				len(body.Permissions) != 1 || body.Permissions["actions"] != "read" {
+				t.Errorf("provenance token was not scoped to Actions read: %+v", body)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"token": testTokenValue, "expires_at": now.Add(time.Hour),
-				"permissions": map[string]string{"actions": "read", "contents": "read", "metadata": "read"}, "repositories": []map[string]int{{"id": 88}}})
+				"permissions": map[string]string{"actions": "read", "metadata": "read"}, "repositories": []map[string]int{{"id": 88}}})
 		default:
 			t.Errorf("unexpected GitHub endpoint %s", r.URL.Path)
 		}
@@ -373,7 +373,7 @@ func TestActionsRunnerProvenanceTokenUsesReadOnlyRepositoryScope(t *testing.T) {
 		t.Fatalf("ActionsRunnerProvenanceToken() = %v, %+v, error = %v", token, repository, err)
 	}
 	if _, cached := client.cache[tokenCacheKey{tenant: "tenant_one", integration: "integration_one", appID: 12, configRevision: 2,
-		credentialGeneration: 3, installation: 77, repository: 88, permissionScope: "actions:read,contents:read"}]; !cached {
+		credentialGeneration: 3, installation: 77, repository: 88, permissionScope: "actions:read"}]; !cached {
 		t.Fatal("read-only provenance token was not cached under its distinct scope")
 	}
 }

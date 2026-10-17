@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/mo3789530/hako/internal/store/githubregistry"
 )
 
 func TestSetGitHubRepositoryFactoryEnabledUsesTenantScopedPut(t *testing.T) {
@@ -87,5 +89,26 @@ func TestSetGitHubRepositoryActionsRunnerEnabledRejectsMismatchedResponse(t *tes
 	_, err := SetGitHubRepositoryActionsRunnerEnabled(context.Background(), server.URL, "token", "tenant_factory_api", 7001, 7002, true, server.Client())
 	if err == nil || !strings.Contains(err.Error(), "invalid GitHub Repository Actions runner response") {
 		t.Fatalf("mismatched response error = %v", err)
+	}
+}
+
+func TestSetGitHubRepositoryActionsRunnerWorkflowPolicyUsesTenantScopedAPI(t *testing.T) {
+	policy := githubregistry.ActionsRunnerWorkflowPolicy{WorkflowPath: ".github/workflows/claude.yml", AllowedRefs: []string{"refs/heads/main"},
+		AllowedEvents: []string{"push"}, RequiredLabels: []string{"self-hosted", "hako"}, AllowedLabels: []string{"self-hosted", "hako"}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/v1/tenants/tenant_factory_api/github/installations/7001/repositories/7002/actions-runner/workflow-policy" ||
+			r.Header.Get("Authorization") != "Bearer test-token" {
+			t.Errorf("unexpected workflow-policy request: %s %s", r.Method, r.URL.Path)
+		}
+		var received githubregistry.ActionsRunnerWorkflowPolicy
+		if json.NewDecoder(r.Body).Decode(&received) != nil || received.WorkflowPath != policy.WorkflowPath {
+			t.Error("workflow policy was not encoded as expected")
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"workflow_policy": policy})
+	}))
+	defer server.Close()
+	result, err := SetGitHubRepositoryActionsRunnerWorkflowPolicy(context.Background(), server.URL, "test-token", "tenant_factory_api", 7001, 7002, policy, server.Client())
+	if err != nil || result.Policy.WorkflowPath != policy.WorkflowPath {
+		t.Fatalf("SetGitHubRepositoryActionsRunnerWorkflowPolicy() = %+v, error = %v", result, err)
 	}
 }

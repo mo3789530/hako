@@ -2,8 +2,11 @@ package githubregistry
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -14,6 +17,7 @@ import (
 
 var ErrInstallationNotActive = errors.New("GitHub App installation is not active for Tenant")
 var ErrRepositoryNotFound = errors.New("GitHub repository is not registered for Tenant")
+var actionsRunnerBranchRefPattern = regexp.MustCompile(`^refs/heads/[A-Za-z0-9._/-]{1,220}$`)
 
 type Repository struct {
 	TenantID               domain.TenantID `json:"tenant_id"`
@@ -27,6 +31,17 @@ type Repository struct {
 	ActionsRunnerEnabled   bool            `json:"actions_runner_enabled"`
 	ActionsRunnerEnabledAt *time.Time      `json:"actions_runner_enabled_at,omitempty"`
 	SynchronizedAt         time.Time       `json:"synchronized_at"`
+}
+
+// ActionsRunnerWorkflowPolicy contains only an explicit workflow/ref/event and
+// label allowlist. It has no command, Secret, image, IAM role, or network
+// configuration fields.
+type ActionsRunnerWorkflowPolicy struct {
+	WorkflowPath   string   `json:"workflow_path"`
+	AllowedRefs    []string `json:"allowed_refs"`
+	AllowedEvents  []string `json:"allowed_events"`
+	RequiredLabels []string `json:"required_labels"`
+	AllowedLabels  []string `json:"allowed_labels"`
 }
 
 // SyncInstallationRepositories applies one normalized Installation repository
@@ -207,7 +222,123 @@ func SetRepositoryActionsRunnerEnabled(ctx context.Context, tx pgx.Tx, tenantID 
 	if err != nil {
 		return Repository{}, fmt.Errorf("update Tenant GitHub Actions runner setting: %w", err)
 	}
+	if !enabled {
+		if _, err := tx.Exec(ctx, `UPDATE tenant_github_repositories SET actions_runner_workflow_policy=NULL
+			WHERE tenant_id=$1 AND installation_id=$2 AND github_repository_id=$3`, tenantID, installationID, repositoryID); err != nil {
+			return Repository{}, fmt.Errorf("clear disabled Actions runner workflow policy: %w", err)
+		}
+	}
 	return repository, nil
+}
+
+// SetRepositoryActionsRunnerWorkflowPolicy stores a Tenant's explicit,
+// secret-free workflow allowlist only while the registered repository's
+// ephemeral runner opt-in is active.
+func SetRepositoryActionsRunnerWorkflowPolicy(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, installationID, repositoryID int64,
+	policy ActionsRunnerWorkflowPolicy, configuredAt time.Time) (ActionsRunnerWorkflowPolicy, error) {
+	if ctx == nil || tx == nil || tenantID == "" || installationID <= 0 || repositoryID <= 0 || configuredAt.IsZero() || !validActionsRunnerWorkflowPolicy(policy) {
+		return ActionsRunnerWorkflowPolicy{}, ErrRepositoryNotFound
+	}
+	encoded, err := json.Marshal(policy)
+	if err != nil {
+		return ActionsRunnerWorkflowPolicy{}, errors.New("encode Actions runner workflow policy")
+	}
+	var stored []byte
+	err = tx.QueryRow(ctx, `UPDATE tenant_github_repositories r
+		SET actions_runner_workflow_policy=$4::jsonb
+		FROM github_app_installation_bindings b
+		JOIN tenant_github_installations i ON i.tenant_id=b.tenant_id AND i.installation_id=b.installation_id
+		WHERE r.tenant_id=$1 AND r.installation_id=$2 AND r.github_repository_id=$3
+		AND r.actions_runner_enabled=TRUE AND r.actions_runner_enabled_at IS NOT NULL
+		AND b.tenant_id=r.tenant_id AND b.installation_id=r.installation_id AND i.status='active' AND i.suspended_at IS NULL
+		RETURNING r.actions_runner_workflow_policy`, tenantID, installationID, repositoryID, encoded).Scan(&stored)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ActionsRunnerWorkflowPolicy{}, ErrRepositoryNotFound
+	}
+	if err != nil {
+		return ActionsRunnerWorkflowPolicy{}, fmt.Errorf("store Actions runner workflow policy: %w", err)
+	}
+	var result ActionsRunnerWorkflowPolicy
+	if json.Unmarshal(stored, &result) != nil || !validActionsRunnerWorkflowPolicy(result) {
+		return ActionsRunnerWorkflowPolicy{}, errors.New("decode stored Actions runner workflow policy")
+	}
+	return result, nil
+}
+
+func GetRepositoryActionsRunnerWorkflowPolicy(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, installationID, repositoryID int64) (ActionsRunnerWorkflowPolicy, error) {
+	if ctx == nil || tx == nil || tenantID == "" || installationID <= 0 || repositoryID <= 0 {
+		return ActionsRunnerWorkflowPolicy{}, ErrRepositoryNotFound
+	}
+	var stored []byte
+	err := tx.QueryRow(ctx, `SELECT r.actions_runner_workflow_policy
+		FROM tenant_github_repositories r
+		JOIN github_app_installation_bindings b ON b.tenant_id=r.tenant_id AND b.installation_id=r.installation_id
+		JOIN tenant_github_installations i ON i.tenant_id=b.tenant_id AND i.installation_id=b.installation_id
+		WHERE r.tenant_id=$1 AND r.installation_id=$2 AND r.github_repository_id=$3
+		AND r.actions_runner_enabled=TRUE AND i.status='active' AND i.suspended_at IS NULL`, tenantID, installationID, repositoryID).Scan(&stored)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ActionsRunnerWorkflowPolicy{}, ErrRepositoryNotFound
+	}
+	if err != nil {
+		return ActionsRunnerWorkflowPolicy{}, fmt.Errorf("read Actions runner workflow policy: %w", err)
+	}
+	var result ActionsRunnerWorkflowPolicy
+	if len(stored) == 0 || json.Unmarshal(stored, &result) != nil || !validActionsRunnerWorkflowPolicy(result) {
+		return ActionsRunnerWorkflowPolicy{}, ErrRepositoryNotFound
+	}
+	return result, nil
+}
+
+func validActionsRunnerWorkflowPolicy(policy ActionsRunnerWorkflowPolicy) bool {
+	if !regexp.MustCompile(`^\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml$`).MatchString(policy.WorkflowPath) ||
+		!validUniquePolicyValues(policy.AllowedRefs, 32, 255) || !validUniquePolicyEvents(policy.AllowedEvents) ||
+		!validUniquePolicyValues(policy.RequiredLabels, 32, 100) || !validUniquePolicyValues(policy.AllowedLabels, 32, 100) {
+		return false
+	}
+	for _, ref := range policy.AllowedRefs {
+		if !actionsRunnerBranchRefPattern.MatchString(ref) || strings.Contains(ref, "..") || strings.Contains(ref, "//") || strings.HasSuffix(ref, "/") || strings.HasSuffix(ref, ".") {
+			return false
+		}
+	}
+	for _, label := range policy.RequiredLabels {
+		if !slices.Contains(policy.AllowedLabels, label) {
+			return false
+		}
+	}
+	return true
+}
+
+func ValidActionsRunnerWorkflowPolicy(policy ActionsRunnerWorkflowPolicy) bool {
+	return validActionsRunnerWorkflowPolicy(policy)
+}
+
+func validUniquePolicyValues(values []string, maximum, maxLength int) bool {
+	if len(values) == 0 || len(values) > maximum {
+		return false
+	}
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) != value || value == "" || len(value) > maxLength || strings.ContainsAny(value, "\r\n\x00") {
+			return false
+		}
+		if _, duplicate := seen[value]; duplicate {
+			return false
+		}
+		seen[value] = struct{}{}
+	}
+	return true
+}
+
+func validUniquePolicyEvents(values []string) bool {
+	if !validUniquePolicyValues(values, 8, 40) {
+		return false
+	}
+	for _, event := range values {
+		if event != "push" && event != "pull_request" && event != "workflow_dispatch" && event != "schedule" {
+			return false
+		}
+	}
+	return true
 }
 
 func validRepositoryRef(repository githubwebhook.RepositoryRef) bool {
