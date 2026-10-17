@@ -16,6 +16,22 @@ type mountExecutorStub struct {
 	err   error
 }
 
+type mountBinderStub struct {
+	executor *mountExecutorStub
+	microVM  string
+	spec     WorkspaceMountSpec
+}
+
+func (*mountBinderStub) ServeHTTP(http.ResponseWriter, *http.Request) {}
+
+func (s *mountBinderStub) BindWorkspaceRuntime(microVM string, spec WorkspaceMountSpec) error {
+	if s.executor.calls != 1 {
+		return errors.New("runtime bound before successful mount")
+	}
+	s.microVM, s.spec = microVM, spec
+	return nil
+}
+
 func (s *mountExecutorStub) MountAndVerify(_ context.Context, spec WorkspaceMountSpec) error {
 	s.spec = spec
 	s.calls++
@@ -30,7 +46,8 @@ func TestWorkspaceRunHookMountsExactAccessPointBeforeSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec := WorkspaceMountSpec{FileSystemID: "fs-0123456789abcdef0", Region: "us-east-1", AccessPointID: "fsap-0123456789abcdef0",
+	spec := WorkspaceMountSpec{TenantID: "tenant-1", WorkspaceID: "workspace-1", ResourcePlaneID: "rp-1",
+		FileSystemID: "fs-0123456789abcdef0", Region: "us-east-1", AccessPointID: "fsap-0123456789abcdef0",
 		RootPath: "/hako/0123456789abcdef/1123456789abcdef/2123456789abcdef", MountPath: "/workspace", UID: 100123, GID: 100123, TLS: true, IAM: true}
 	payload, err := json.Marshal(struct {
 		Hako struct {
@@ -50,13 +67,39 @@ func TestWorkspaceRunHookMountsExactAccessPointBeforeSuccess(t *testing.T) {
 	}
 }
 
+func TestWorkspaceRunHookBindsAgentAfterMountBeforeAcknowledgement(t *testing.T) {
+	executor := &mountExecutorStub{}
+	agent := &mountBinderStub{executor: executor}
+	handler, err := NewWorkspaceMountLifecycleHandler(agent, executor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := testMountSpec()
+	payload, err := json.Marshal(struct {
+		Hako struct {
+			WorkspaceMount WorkspaceMountSpec `json:"workspace_mount"`
+		} `json:"hako"`
+	}{Hako: struct {
+		WorkspaceMount WorkspaceMountSpec `json:"workspace_mount"`
+	}{WorkspaceMount: spec}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(workspaceRuntimeHookRequest{MicroVMID: "microvm-1", RunHookPayload: string(payload)})
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, workspaceLifecyclePrefix+"run", strings.NewReader(string(body))))
+	if recorder.Code != http.StatusOK || agent.microVM != "microvm-1" || agent.spec != spec {
+		t.Fatalf("run hook/bind = status %d vm %q spec %+v", recorder.Code, agent.microVM, agent.spec)
+	}
+}
+
 func TestWorkspaceRunHookFailsClosedAndDoesNotAcknowledgeFailedMount(t *testing.T) {
 	executor := &mountExecutorStub{err: errors.New("mount unavailable")}
 	handler, err := NewWorkspaceMountLifecycleHandler(http.NotFoundHandler(), executor)
 	if err != nil {
 		t.Fatal(err)
 	}
-	valid := `{"microvmId":"microvm-1","runHookPayload":"{\"hako\":{\"workspace_mount\":{\"file_system_id\":\"fs-0123456789abcdef0\",\"region\":\"us-east-1\",\"access_point_id\":\"fsap-0123456789abcdef0\",\"root_path\":\"/hako/0123456789abcdef/1123456789abcdef/2123456789abcdef\",\"mount_path\":\"/workspace\",\"uid\":100123,\"gid\":100123,\"tls\":true,\"iam\":true}}}"}`
+	valid := `{"microvmId":"microvm-1","runHookPayload":"{\"hako\":{\"workspace_mount\":{\"tenant_id\":\"tenant-1\",\"workspace_id\":\"workspace-1\",\"resource_plane_id\":\"rp-1\",\"file_system_id\":\"fs-0123456789abcdef0\",\"region\":\"us-east-1\",\"access_point_id\":\"fsap-0123456789abcdef0\",\"root_path\":\"/hako/0123456789abcdef/1123456789abcdef/2123456789abcdef\",\"mount_path\":\"/workspace\",\"uid\":100123,\"gid\":100123,\"tls\":true,\"iam\":true}}}"}`
 	for name, body := range map[string]string{
 		"unknown wrapper field": strings.Replace(valid, `"microvmId"`, `"extra":true,"microvmId"`, 1),
 		"TLS disabled":          strings.Replace(valid, `\"tls\":true`, `\"tls\":false`, 1),

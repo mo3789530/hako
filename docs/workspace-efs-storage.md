@@ -32,6 +32,13 @@ silently starting with empty storage. Delete waits for MicroVM termination,
 deletes only the exact owned AP, then confirms the journal tombstone. A failed
 cleanup remains retryable.
 
+The hook also carries Tenant, Workspace, and Resource Plane IDs as non-secret
+identity metadata. `NewWorkspaceMountLifecycleHandler` can bind a
+`WorkspaceRuntimeBinder` after the mount succeeds and before returning HTTP 200;
+the guest shell Agent uses this to pin those IDs together with the provider
+MicroVM ID. The default init executable is not yet composed with that Agent,
+so the hook currently mounts storage but does not start a PTY service.
+
 The dedicated `images/workspace-init` Workspace image runs
 `cmd/hako-workspace-init`, which serves the strict Workspace-specific `/run`
 hook as root and acknowledges only after the mount is verified. The image is

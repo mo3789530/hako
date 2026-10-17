@@ -479,7 +479,7 @@ func (r *LambdaMicroVM) launchRequestForSpec(spec LaunchSpec, command resourceco
 		if err := storageBinding.ValidateFor(storageIdentity(command)); err != nil {
 			return nil, "", err
 		}
-		spec.RunHookPayload, err = workspaceMountHook(spec.RunHookPayload, *storageBinding)
+		spec.RunHookPayload, err = workspaceMountHook(spec.RunHookPayload, *storageBinding, storageIdentity(command))
 		if err != nil {
 			return nil, "", err
 		}
@@ -496,20 +496,23 @@ func (r *LambdaMicroVM) launchRequestForSpec(spec LaunchSpec, command resourceco
 type workspaceMountHookPayload struct {
 	Hako struct {
 		WorkspaceMount struct {
-			FileSystemID  string `json:"file_system_id"`
-			Region        string `json:"region"`
-			AccessPointID string `json:"access_point_id"`
-			RootPath      string `json:"root_path"`
-			MountPath     string `json:"mount_path"`
-			UID           uint32 `json:"uid"`
-			GID           uint32 `json:"gid"`
-			TLS           bool   `json:"tls"`
-			IAM           bool   `json:"iam"`
+			TenantID        string `json:"tenant_id"`
+			WorkspaceID     string `json:"workspace_id"`
+			ResourcePlaneID string `json:"resource_plane_id"`
+			FileSystemID    string `json:"file_system_id"`
+			Region          string `json:"region"`
+			AccessPointID   string `json:"access_point_id"`
+			RootPath        string `json:"root_path"`
+			MountPath       string `json:"mount_path"`
+			UID             uint32 `json:"uid"`
+			GID             uint32 `json:"gid"`
+			TLS             bool   `json:"tls"`
+			IAM             bool   `json:"iam"`
 		} `json:"workspace_mount"`
 	} `json:"hako"`
 }
 
-func workspaceMountHook(existing string, binding workspacestorage.Binding) (string, error) {
+func workspaceMountHook(existing string, binding workspacestorage.Binding, identity workspacestorage.Identity) (string, error) {
 	if !safeRunHookPayload(existing) && existing != "" {
 		return "", ErrSpecification
 	}
@@ -525,6 +528,9 @@ func workspaceMountHook(existing string, binding workspacestorage.Binding) (stri
 		return "", errors.New("Workspace Runtime profile cannot override the reserved Hako run-hook namespace")
 	}
 	var mount workspaceMountHookPayload
+	mount.Hako.WorkspaceMount.TenantID = string(identity.TenantID)
+	mount.Hako.WorkspaceMount.WorkspaceID = string(identity.WorkspaceID)
+	mount.Hako.WorkspaceMount.ResourcePlaneID = string(identity.ResourcePlaneID)
 	mount.Hako.WorkspaceMount.FileSystemID = binding.FileSystemID
 	mount.Hako.WorkspaceMount.Region = binding.Region
 	mount.Hako.WorkspaceMount.AccessPointID = binding.AccessPointID

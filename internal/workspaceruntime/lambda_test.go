@@ -245,15 +245,20 @@ func TestEnsureJournalsEFSBindingAndPassesOnlyMountMetadata(t *testing.T) {
 	}
 	var mount struct {
 		WorkspaceMount struct {
-			FileSystemID  string `json:"file_system_id"`
-			Region        string `json:"region"`
-			AccessPointID string `json:"access_point_id"`
-			MountPath     string `json:"mount_path"`
-			TLS           bool   `json:"tls"`
-			IAM           bool   `json:"iam"`
+			TenantID        string `json:"tenant_id"`
+			WorkspaceID     string `json:"workspace_id"`
+			ResourcePlaneID string `json:"resource_plane_id"`
+			FileSystemID    string `json:"file_system_id"`
+			Region          string `json:"region"`
+			AccessPointID   string `json:"access_point_id"`
+			MountPath       string `json:"mount_path"`
+			TLS             bool   `json:"tls"`
+			IAM             bool   `json:"iam"`
 		} `json:"workspace_mount"`
 	}
 	if err := json.Unmarshal(hako["workspace_mount"], &mount.WorkspaceMount); err != nil ||
+		mount.WorkspaceMount.TenantID != string(command.TenantID) || mount.WorkspaceMount.WorkspaceID != string(command.WorkspaceID) ||
+		mount.WorkspaceMount.ResourcePlaneID != string(command.ResourcePlaneID) ||
 		mount.WorkspaceMount.FileSystemID != storage.binding.FileSystemID || mount.WorkspaceMount.AccessPointID != storage.binding.AccessPointID ||
 		mount.WorkspaceMount.Region != storage.binding.Region || mount.WorkspaceMount.MountPath != "/workspace" ||
 		!mount.WorkspaceMount.TLS || !mount.WorkspaceMount.IAM {

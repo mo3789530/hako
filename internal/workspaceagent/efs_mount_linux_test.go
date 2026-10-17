@@ -168,6 +168,7 @@ func TestWorkspaceMountInfoRejectsWrongFilesystemAtTarget(t *testing.T) {
 }
 
 func testMountSpec() WorkspaceMountSpec {
-	return WorkspaceMountSpec{FileSystemID: "fs-0123456789abcdef0", Region: "us-east-1", AccessPointID: "fsap-0123456789abcdef0",
+	return WorkspaceMountSpec{TenantID: "tenant-1", WorkspaceID: "workspace-1", ResourcePlaneID: "rp-1",
+		FileSystemID: "fs-0123456789abcdef0", Region: "us-east-1", AccessPointID: "fsap-0123456789abcdef0",
 		RootPath: "/hako/0123456789abcdef/1123456789abcdef/2123456789abcdef", MountPath: "/workspace", UID: 100123, GID: 100123, TLS: true, IAM: true}
 }

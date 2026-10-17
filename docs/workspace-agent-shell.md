@@ -37,6 +37,21 @@ additional TCP listener is introduced by this package. The Lambda MicroVM
 remains the isolation boundary; this does not claim filesystem confinement
 inside the guest.
 
+The guest-side shell endpoint contract is now defined at
+`GET /v1/workspaces/{workspace_id}/shell` using the
+`hako.workspace.agent.v1` WebSocket subprotocol. It requires an exact configured
+Gateway Origin and a one-use, two-minute Ed25519 Agent Ticket distinct from the
+browser Session Ticket. The ticket binds user, Tenant, Workspace, Resource
+Plane, MicroVM ID, and `shell` permission. The strict `/run` hook provides the
+Workspace identity and provider MicroVM ID; the agent binds these only after
+the EFS mount succeeds, before `/run` is acknowledged. The handler is covered
+by signed-ticket-to-real-PTY tests, including cross-Workspace/MicroVM, origin,
+and replay rejection. The endpoint library is not yet launched as the
+unprivileged child process by `hako-workspace-init`, and the Resource Plane
+Gateway does not yet dial the Lambda MicroVM endpoint or mint its paired AWS
+port-8080 proxy token. Keep Workspace runtime exposure disabled until that
+process/transport wiring and key distribution are complete.
+
 ## Verification
 
 `GOCACHE=/tmp/hako-go-cache go test -race ./internal/workspaceagent ./internal/workspacegateway -count=1`

@@ -28,19 +28,29 @@ var (
 // Resource Plane. The workspace image must mount this exact EFS Access Point
 // before acknowledging the Lambda MicroVM /run hook.
 type WorkspaceMountSpec struct {
-	FileSystemID  string `json:"file_system_id"`
-	Region        string `json:"region"`
-	AccessPointID string `json:"access_point_id"`
-	RootPath      string `json:"root_path"`
-	MountPath     string `json:"mount_path"`
-	UID           uint32 `json:"uid"`
-	GID           uint32 `json:"gid"`
-	TLS           bool   `json:"tls"`
-	IAM           bool   `json:"iam"`
+	TenantID        string `json:"tenant_id"`
+	WorkspaceID     string `json:"workspace_id"`
+	ResourcePlaneID string `json:"resource_plane_id"`
+	FileSystemID    string `json:"file_system_id"`
+	Region          string `json:"region"`
+	AccessPointID   string `json:"access_point_id"`
+	RootPath        string `json:"root_path"`
+	MountPath       string `json:"mount_path"`
+	UID             uint32 `json:"uid"`
+	GID             uint32 `json:"gid"`
+	TLS             bool   `json:"tls"`
+	IAM             bool   `json:"iam"`
 }
 
 type WorkspaceMountExecutor interface {
 	MountAndVerify(context.Context, WorkspaceMountSpec) error
+}
+
+// WorkspaceRuntimeBinder is called after storage is mounted but before the
+// Lambda MicroVM run hook is acknowledged. Guest Agents use it to pin their
+// immutable Workspace/MicroVM identity before inbound traffic is enabled.
+type WorkspaceRuntimeBinder interface {
+	BindWorkspaceRuntime(string, WorkspaceMountSpec) error
 }
 
 type workspaceMountHookPayload struct {
@@ -67,7 +77,8 @@ func NewWorkspaceMountLifecycleHandler(next http.Handler, executor WorkspaceMoun
 	mux.HandleFunc(workspaceLifecyclePrefix+"ready", workspaceHookReady)
 	mux.HandleFunc(workspaceLifecyclePrefix+"validate", workspaceHookReady)
 	mux.HandleFunc(workspaceLifecyclePrefix+"run", func(w http.ResponseWriter, r *http.Request) {
-		workspaceHookRun(w, r, executor)
+		binder, _ := next.(WorkspaceRuntimeBinder)
+		workspaceHookRun(w, r, executor, binder)
 	})
 	return mux, nil
 }
@@ -85,7 +96,7 @@ func workspaceHookReady(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func workspaceHookRun(w http.ResponseWriter, r *http.Request, executor WorkspaceMountExecutor) {
+func workspaceHookRun(w http.ResponseWriter, r *http.Request, executor WorkspaceMountExecutor, binder WorkspaceRuntimeBinder) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -114,6 +125,12 @@ func workspaceHookRun(w http.ResponseWriter, r *http.Request, executor Workspace
 		http.Error(w, "Workspace storage mount failed", http.StatusInternalServerError)
 		return
 	}
+	if binder != nil {
+		if err := binder.BindWorkspaceRuntime(request.MicroVMID, payload.Hako.WorkspaceMount); err != nil {
+			http.Error(w, "Workspace Agent initialization failed", http.StatusInternalServerError)
+			return
+		}
+	}
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -131,7 +148,8 @@ func validWorkspaceHookVMID(value string) bool {
 }
 
 func validWorkspaceMountSpec(spec WorkspaceMountSpec) bool {
-	return workspaceFileSystemIDPattern.MatchString(spec.FileSystemID) && workspaceRegionPattern.MatchString(spec.Region) &&
+	return workspaceMicroVMIDPattern.MatchString(spec.TenantID) && workspaceMicroVMIDPattern.MatchString(spec.WorkspaceID) &&
+		workspaceMicroVMIDPattern.MatchString(spec.ResourcePlaneID) && workspaceFileSystemIDPattern.MatchString(spec.FileSystemID) && workspaceRegionPattern.MatchString(spec.Region) &&
 		workspaceAccessPointPattern.MatchString(spec.AccessPointID) &&
 		workspaceRootPathPattern.MatchString(spec.RootPath) && spec.MountPath == "/workspace" &&
 		spec.UID >= 100000 && spec.GID == spec.UID && spec.TLS && spec.IAM
