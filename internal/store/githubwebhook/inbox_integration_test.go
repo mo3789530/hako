@@ -266,6 +266,71 @@ func TestProcessBatchDrainsOnlyActiveInstallationRepositoryEvents(t *testing.T) 
 	}
 }
 
+func TestActionsRunnerAdmissionRequiresSeparateRepositoryOptInAndDeduplicatesJob(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	for _, query := range []string{
+		`INSERT INTO tenants (id,name,created_at) VALUES ('tenant_actions_admission','Actions admission',now())`,
+		`INSERT INTO users (id,cognito_subject,email,created_at) VALUES ('usr_actions_admission','actions-admission','',now())`,
+		`INSERT INTO tenant_github_installations (tenant_id,installation_id,account_login,status,requested_by,requested_at,updated_at) VALUES ('tenant_actions_admission',8801,'acme','active','usr_actions_admission',now(),now())`,
+		`INSERT INTO github_app_installation_bindings (installation_id,tenant_id,bound_at) VALUES (8801,'tenant_actions_admission',now())`,
+		`INSERT INTO tenant_github_repositories (tenant_id,installation_id,github_repository_id,owner_login,repository_name,default_branch,synchronized_at,actions_runner_enabled,actions_runner_enabled_at) VALUES ('tenant_actions_admission',8801,8802,'acme','enabled','main',now(),true,now()-interval '1 minute'),('tenant_actions_admission',8801,8803,'acme','disabled','main',now(),false,NULL)`,
+	} {
+		if _, err := pool.Exec(ctx, query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inbox := Inbox{Pool: pool, Policy: transaction.DefaultPolicy()}
+	makeDelivery := func(id string, repositoryID int, name string) githubwebhook.VerifiedDelivery {
+		return githubwebhook.VerifiedDelivery{DeliveryID: id, Event: "workflow_job", Action: "queued", Payload: []byte(fmt.Sprintf(`{"action":"queued","installation":{"id":8801},"repository":{"id":%d,"name":%q,"owner":{"login":"acme"}},"workflow_job":{"id":9901,"run_id":9902,"run_attempt":1,"workflow_name":"CI","name":"test","head_branch":"feature/task","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"queued","labels":["self-hosted","hako"]}}`, repositoryID, name))}
+	}
+	accepted := makeDelivery("a3b2c3d4-e5f6-4789-8abc-def012345678", 8802, "enabled")
+	duplicate := makeDelivery("b3b2c3d4-e5f6-4789-8abc-def012345678", 8802, "enabled")
+	optedOut := makeDelivery("c3b2c3d4-e5f6-4789-8abc-def012345678", 8803, "disabled")
+	preOptIn := makeDelivery("d3b2c3d4-e5f6-4789-8abc-def012345678", 8802, "enabled")
+	for _, item := range []struct {
+		delivery githubwebhook.VerifiedDelivery
+		received time.Time
+	}{{accepted, now}, {duplicate, now}, {optedOut, now}, {preOptIn, now.Add(-2 * time.Minute)}} {
+		if inserted, err := inbox.Record(ctx, item.delivery, item.received); err != nil || !inserted {
+			t.Fatalf("record %s: inserted=%v error=%v", item.delivery.DeliveryID, inserted, err)
+		}
+	}
+	stats, err := ProcessBatchWithActionsRunnerAdmissions(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(time.Second), nil)
+	if err != nil || stats.Claimed != 4 || stats.Processed != 4 || stats.ActionsRunnerJobsAdmitted != 1 {
+		t.Fatalf("Actions runner admission batch = %+v, error=%v", stats, err)
+	}
+	var jobs int
+	var tenantID string
+	var labels []byte
+	var state string
+	if err := pool.QueryRow(ctx, `SELECT count(*),min(tenant_id),min(labels::text),min(state) FROM github_actions_runner_jobs`).Scan(&jobs, &tenantID, &labels, &state); err != nil {
+		t.Fatal(err)
+	}
+	if jobs != 1 || tenantID != "tenant_actions_admission" || string(labels) != `["self-hosted", "hako"]` || state != "admitted" {
+		t.Fatalf("admitted Actions job count=%d tenant=%q labels=%s state=%q", jobs, tenantID, labels, state)
+	}
+	for _, rejected := range []githubwebhook.VerifiedDelivery{optedOut, preOptIn} {
+		var status string
+		if err := pool.QueryRow(ctx, `SELECT processing_status FROM github_webhook_deliveries WHERE delivery_id=$1`, rejected.DeliveryID).Scan(&status); err != nil || status != "failed" {
+			t.Fatalf("ineligible repository delivery %s status=%q error=%v", rejected.DeliveryID, status, err)
+		}
+	}
+	var queuedWorkloadRuns int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM workload_runs`).Scan(&queuedWorkloadRuns); err != nil || queuedWorkloadRuns != 0 {
+		t.Fatalf("admission unexpectedly created Workload/MicroVM request: count=%d error=%v", queuedWorkloadRuns, err)
+	}
+	stats, err = ProcessBatchWithActionsRunnerAdmissions(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(2*time.Second), nil)
+	if err != nil || stats != (BatchStats{}) {
+		t.Fatalf("replayed admission batch = %+v, error=%v", stats, err)
+	}
+}
+
 func TestProcessBatchAppliesInstallationSuspendUnsuspendAndDeleteLifecycle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

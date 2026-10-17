@@ -32,9 +32,9 @@ func handlerFor(run runOnce) func(context.Context, events.CloudWatchEvent) error
 	return func(ctx context.Context, _ events.CloudWatchEvent) error {
 		stats, err := run(ctx)
 		if err != nil {
-			return fmt.Errorf("process GitHub repository event batch (claimed=%d processed=%d workload_runs_created=%d deferred=%d raw_payloads_purged=%d): %w", stats.Claimed, stats.Processed, stats.WorkloadRunsCreated, stats.Deferred, stats.RawPayloadsPurged, err)
+			return fmt.Errorf("process GitHub repository event batch (claimed=%d processed=%d workload_runs_created=%d actions_runner_jobs_admitted=%d deferred=%d raw_payloads_purged=%d): %w", stats.Claimed, stats.Processed, stats.WorkloadRunsCreated, stats.ActionsRunnerJobsAdmitted, stats.Deferred, stats.RawPayloadsPurged, err)
 		}
-		log.Printf("GitHub repository event batch complete (claimed=%d processed=%d workload_runs_created=%d deferred=%d raw_payloads_purged=%d)", stats.Claimed, stats.Processed, stats.WorkloadRunsCreated, stats.Deferred, stats.RawPayloadsPurged)
+		log.Printf("GitHub repository event batch complete (claimed=%d processed=%d workload_runs_created=%d actions_runner_jobs_admitted=%d deferred=%d raw_payloads_purged=%d)", stats.Claimed, stats.Processed, stats.WorkloadRunsCreated, stats.ActionsRunnerJobsAdmitted, stats.Deferred, stats.RawPayloadsPurged)
 		return nil
 	}
 }
@@ -46,7 +46,16 @@ func buildHandler(ctx context.Context) (func(context.Context, events.CloudWatchE
 	}
 	return handlerFor(func(ctx context.Context) (webhookstore.BatchStats, error) {
 		now := time.Now().UTC()
-		if strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_WEBHOOK_WORKLOAD_TRIGGERS_ENABLED")), "true") {
+		workloadTriggersEnabled := strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_WEBHOOK_WORKLOAD_TRIGGERS_ENABLED")), "true")
+		actionsRunnerAdmissionsEnabled := strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_GITHUB_ACTIONS_RUNNER_ADMISSIONS_ENABLED")), "true")
+		if actionsRunnerAdmissionsEnabled {
+			var createRun webhookstore.RepositoryRunCreator
+			if workloadTriggersEnabled {
+				createRun = workloadjobs.CreateWebhookRepositoryRun
+			}
+			return webhookstore.ProcessBatchWithActionsRunnerAdmissions(ctx, pool, transaction.DefaultPolicy(), 10, now, createRun)
+		}
+		if workloadTriggersEnabled {
 			return webhookstore.ProcessBatchWithRepositoryTriggers(ctx, pool, transaction.DefaultPolicy(), 10, now, workloadjobs.CreateWebhookRepositoryRun)
 		}
 		return webhookstore.ProcessBatch(ctx, pool, transaction.DefaultPolicy(), 10, now)

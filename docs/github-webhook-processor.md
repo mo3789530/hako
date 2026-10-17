@@ -18,9 +18,13 @@ explicitly enabled) repository trigger events from that inbox.
 - Normalized `workflow_job` records retain exact job/run IDs, run attempt,
   workflow name, up to 100 bounded labels, and optional assigned runner/group
   identity. These fields are event metadata only: their presence does not
-  authorize a job or launch a runner. The dedicated Task 52 admission path must
-  revalidate Tenant/Repository binding and policy before obtaining a short-lived
-  registration token or creating a Lambda MicroVM.
+  authorize a job or launch a runner. `HAKO_GITHUB_ACTIONS_RUNNER_ADMISSIONS_ENABLED`
+  separately defaults to false. When enabled, queued jobs revalidate the
+  current Tenant integration and Installation binding and require the
+  Repository's `actions_runner_enabled` timestamp to predate delivery receipt.
+  Accepted events create an idempotent `github_actions_runner_jobs` admission
+  row; this does not request a registration token or create a Workload/MicroVM.
+  The runner controller that consumes admitted rows is still pending.
 - Push and pull-request scheduling is opt-in per synchronized Tenant
   repository. A Tenant Owner/Admin uses
   `PUT /v1/tenants/{tenant_id}/github/installations/{installation_id}/repositories/{repository_id}/factory`

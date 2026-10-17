@@ -1,6 +1,6 @@
 # Task 52: GitHub Actions Ephemeral Runner Mode
 
-Status: In Progress (2026-10-17: signed `workflow_job.queued` deliveries are retained but excluded from the generic push/PR Go-test trigger. Normalized events preserve run attempt, workflow name, bounded labels, and optional assigned runner/group identity for matching `in_progress`/`completed` deliveries. A separate Tenant Owner/Admin repository opt-in is stored via the Actions Runner API/CLI and audited; it is admission policy only. Dedicated event authorization must still happen before requesting a registration token or creating a MicroVM. Runner lifecycle is not implemented). Priority: P3.
+Status: In Progress (2026-10-17: signed `workflow_job.queued` deliveries are retained but excluded from the generic push/PR Go-test trigger. Normalized events preserve run attempt, workflow name, bounded labels, and optional assigned runner/group identity. Tenant Owner/Admin repository opt-in is stored via API/CLI and audited. A separate default-off admission flag now revalidates Tenant/Installation/Repository policy and persists deduplicated queued job admissions. Registration-token minting, exact runner assignment, Lambda MicroVM lifecycle, and cleanup remain unimplemented). Priority: P3.
 
 Claude Code Action support is tracked separately in [Task 73](task-73-claude-code-action.md), including Tenant-scoped model credentials, untrusted PR denial, and action-specific E2E.
 
@@ -40,3 +40,8 @@ Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Action
   Queued jobs with null runner assignment remain unassigned; later events can
   be correlated against the exact job and run attempt. Older normalized rows
   remain readable because these fields are additive/optional.
+- `HAKO_GITHUB_ACTIONS_RUNNER_ADMISSIONS_ENABLED` defaults off. When enabled,
+  the webhook processor admits only queued jobs whose current Tenant-owned
+  Installation and Repository opt-in were active before receipt. Admission is
+  idempotent in `github_actions_runner_jobs` and does not issue credentials or
+  launch compute. A dedicated controller is required to drain the table.
