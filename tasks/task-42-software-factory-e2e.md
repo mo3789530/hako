@@ -1,6 +1,6 @@
 # Task 42: Software Factory End-to-End
 
-Status: In Progress (local PostgreSQL → Tenant-specific signed HTTP ingress/HMAC and live Installation-binding authorization → duplicate/conflicting Delivery ID handling → immutable untrusted success, failure, pre-dispatch-cancel, in-flight-cancel, timeout, and artifact-failure Runs → isolated Podman Go tests → redacted artifacts → durable Checks outbox/dispatcher → fake GitHub terminal Check conclusions E2E added and run locally; transient GitHub 503 retry is verified without re-running Jobs. A separate integration test composes the PostgreSQL-backed Scheduler Consumer, placement/attempt Outbox, Resource Plane Dispatcher route, Lambda MicroVM Worker command handler, signed Agent execution, PostgreSQL result apply/replay, and confirmed cleanup. Replacing the Worker handler and replaying the same command against a shared journal reuses the MicroVM and Agent process without relaunch. CI requires Podman and the pinned Go image. Resolver uses a synthetic in-memory credential, never AWS Secrets Manager. S3-backed recovery-schedule restart, integrated cancellation, and AWS smoke remain). Priority: P0.
+Status: In Progress (local PostgreSQL → Tenant-specific signed HTTP ingress/HMAC and live Installation-binding authorization → duplicate/conflicting Delivery ID handling → immutable untrusted success, failure, pre-dispatch-cancel, in-flight-cancel, timeout, and artifact-failure Runs → isolated Podman Go tests → redacted artifacts → durable Checks outbox/dispatcher → fake GitHub terminal Check conclusions E2E added and run locally; transient GitHub 503 retry is verified without re-running Jobs. Integration tests compose the PostgreSQL-backed Scheduler Consumer, placement/attempt Outbox, Resource Plane Dispatcher route, Lambda MicroVM Worker command handler, signed Agent success execution, PostgreSQL result apply/replay, and confirmed cleanup; handler replacement/replay reuses the MicroVM and Agent process. A separate cancellation path verifies Run cancel request→cancel Outbox→Dispatcher→Worker terminate/confirmed cleanup→cancelled result applied to PostgreSQL, using a fake AgentRunner. CI requires Podman and the pinned Go image. Resolver uses a synthetic in-memory credential, never AWS Secrets Manager. S3-backed recovery-schedule restart, cancellation of an actively running signed Agent process, and AWS smoke remain). Priority: P0.
 
 ## Goal
 
@@ -50,3 +50,10 @@ Prove one Tenant-owned GitHub Repository can go from installation through one is
   running, asserting no second MicroVM launch or Agent process start. The
   provider, SQS, Agent process, and source/archive/journal storage are local
   fakes; this does not prove S3-backed scheduled recovery or live AWS behavior.
+- Added `TestComposedLambdaWorkerCancellationOutboxTerminatesAndProjectsIntoPostgres`.
+  It starts one fake Lambda MicroVM, persists cancellation through the normal
+  PostgreSQL Run transition, routes the resulting cancel Outbox through the
+  Resource Plane Dispatcher and Workload Worker SQS handler, confirms provider
+  termination/cleanup, then applies the cancelled result through the production
+  PostgreSQL `ResultHandler`. The AgentRunner is a stub for this cancellation
+  case; active signed-Agent process interruption remains unverified end to end.
