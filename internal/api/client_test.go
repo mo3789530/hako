@@ -4,10 +4,83 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/mo3789530/hako/internal/workspacesession"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
+
+func TestWorkspaceServiceClientListsAndAddsWithTenantScopedPaths(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/tenants/tenant_123/workspaces/ws_123/services/db/actions" && r.Method == http.MethodPost {
+			body, _ := io.ReadAll(r.Body)
+			if string(body) != `{"action":"stop"}` {
+				t.Errorf("unexpected service action body: %s", body)
+			}
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"id":"svc_123","workspace_id":"ws_123","name":"db","desired_state":"stopped","observed_state":"pending"}`))
+			return
+		}
+		if r.URL.Path == "/v1/tenants/tenant_123/workspaces/ws_123/services" && r.Method == http.MethodPost {
+			if r.Header.Get("Authorization") != "Bearer test-access-token" {
+				t.Errorf("service add missing authorization: %q", r.Header.Get("Authorization"))
+			}
+			body, _ := io.ReadAll(r.Body)
+			if string(body) != `{"catalog_name":"postgres","name":"db"}` {
+				t.Errorf("unexpected service create body: %s", body)
+			}
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"id":"svc_123","workspace_id":"ws_123","name":"db","catalog_version":"postgres/1.0.0","desired_state":"running","observed_state":"pending"}`))
+			return
+		}
+		if r.URL.Path == "/v1/tenants/tenant_123/workspaces/ws_123/services" && r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"items":[{"id":"svc_123","workspace_id":"ws_123","name":"db","desired_state":"running","observed_state":"pending"}]}`))
+			return
+		}
+		t.Errorf("unexpected service API request: %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	added, err := AddWorkspaceService(context.Background(), server.URL, "test-access-token", "tenant_123", "ws_123", AddWorkspaceServiceRequest{CatalogName: "postgres", Name: "db"}, server.Client())
+	if err != nil || added.ID != "svc_123" || added.ObservedState != "pending" {
+		t.Fatalf("unexpected add response: %+v error=%v", added, err)
+	}
+	listed, err := ListWorkspaceServices(context.Background(), server.URL, "test-access-token", "tenant_123", "ws_123", server.Client())
+	if err != nil || len(listed.Items) != 1 || listed.Items[0].Name != "db" {
+		t.Fatalf("unexpected service list: %+v error=%v", listed, err)
+	}
+	stopped, err := RequestWorkspaceServiceAction(context.Background(), server.URL, "test-access-token", "tenant_123", "ws_123", "db", "stop", server.Client())
+	if err != nil || stopped.DesiredState != "stopped" || stopped.ObservedState != "pending" {
+		t.Fatalf("unexpected service action result: %+v error=%v", stopped, err)
+	}
+}
+
+func TestAddWorkspaceServiceRejectsUnsafeInputs(t *testing.T) {
+	for _, request := range []AddWorkspaceServiceRequest{{CatalogName: "postgres", Name: "DB"}, {CatalogName: "postgres;rm", Name: "db"}} {
+		if _, err := AddWorkspaceService(context.Background(), "https://api.example.test", "token", "tenant_1", "ws_1", request, nil); err == nil {
+			t.Fatalf("unsafe service request was accepted: %+v", request)
+		}
+	}
+	if _, err := ListWorkspaceServices(context.Background(), "https://api.example.test", "token", "tenant_1", "ws/foreign", nil); err == nil {
+		t.Fatal("unsafe Workspace ID was accepted")
+	}
+}
+
+func TestGetServiceCatalogClient(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/service-catalog" || r.Header.Get("Authorization") != "Bearer token" {
+			t.Errorf("unexpected catalog request: %s %s authorization=%q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
+		}
+		_, _ = io.Copy(w, strings.NewReader(`{"schema_version":1,"items":[]}`))
+	}))
+	defer server.Close()
+	result, err := GetServiceCatalog(context.Background(), server.URL, "token", server.Client())
+	if err != nil || result.SchemaVersion != 1 || result.Items == nil {
+		t.Fatalf("unexpected catalog response: %+v error=%v", result, err)
+	}
+}
 
 func TestHealthClientSendsBearerToken(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -143,6 +143,34 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Fprintf(os.Stdout, "Workload Run %s cancellation accepted (desired=%s observed=%s)\n", run.ID, run.DesiredState, run.State)
+	case (len(os.Args) == 5 || len(os.Args) == 6) && os.Args[1] == "add":
+		name := ""
+		if len(os.Args) == 6 {
+			name = os.Args[5]
+		}
+		service, err := addWorkspaceService(os.Args[2], os.Args[3], os.Args[4], name)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hako add: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stdout, "Service %s accepted (catalog=%s desired=%s observed=%s)\n", service.Name, service.CatalogVersion, service.DesiredState, service.ObservedState)
+	case len(os.Args) == 4 && os.Args[1] == "services":
+		result, err := listWorkspaceServices(os.Args[2], os.Args[3])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hako services: %v\n", err)
+			os.Exit(1)
+		}
+		for _, service := range result.Items {
+			fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%s\n", service.Name, service.CatalogVersion, service.DesiredState, service.ObservedState)
+		}
+		fmt.Fprintf(os.Stdout, "Showing %d services\n", len(result.Items))
+	case len(os.Args) == 6 && os.Args[1] == "service":
+		service, err := requestWorkspaceServiceAction(os.Args[2], os.Args[3], os.Args[4], os.Args[5])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hako service %s: %v\n", os.Args[2], err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stdout, "Service %s %s accepted (desired=%s observed=%s)\n", service.Name, os.Args[2], service.DesiredState, service.ObservedState)
 	case len(os.Args) >= 3 && len(os.Args) <= 5 && os.Args[1] == "list":
 		limit, offset, err := parseCLIPage(os.Args[3:])
 		if err != nil {
@@ -486,6 +514,43 @@ func getWorkspace(tenantID, workspaceID string) (api.WorkspaceView, error) {
 		return api.WorkspaceView{}, errors.New("HAKO_API_URL is required")
 	}
 	return api.GetWorkspace(context.Background(), apiURL, accessToken, tenantID, workspaceID, nil)
+}
+
+func addWorkspaceService(tenantID, workspaceID, catalogName, name string) (domain.Service, error) {
+	accessToken, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
+	if err != nil {
+		return domain.Service{}, err
+	}
+	apiURL := os.Getenv("HAKO_API_URL")
+	if apiURL == "" {
+		return domain.Service{}, errors.New("HAKO_API_URL is required")
+	}
+	return api.AddWorkspaceService(context.Background(), apiURL, accessToken, tenantID, workspaceID,
+		api.AddWorkspaceServiceRequest{CatalogName: catalogName, Name: name}, nil)
+}
+
+func listWorkspaceServices(tenantID, workspaceID string) (api.WorkspaceServiceListResult, error) {
+	accessToken, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
+	if err != nil {
+		return api.WorkspaceServiceListResult{}, err
+	}
+	apiURL := os.Getenv("HAKO_API_URL")
+	if apiURL == "" {
+		return api.WorkspaceServiceListResult{}, errors.New("HAKO_API_URL is required")
+	}
+	return api.ListWorkspaceServices(context.Background(), apiURL, accessToken, tenantID, workspaceID, nil)
+}
+
+func requestWorkspaceServiceAction(action, tenantID, workspaceID, serviceName string) (domain.Service, error) {
+	accessToken, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
+	if err != nil {
+		return domain.Service{}, err
+	}
+	apiURL := os.Getenv("HAKO_API_URL")
+	if apiURL == "" {
+		return domain.Service{}, errors.New("HAKO_API_URL is required")
+	}
+	return api.RequestWorkspaceServiceAction(context.Background(), apiURL, accessToken, tenantID, workspaceID, serviceName, action, nil)
 }
 
 func workspaceAction(action, tenantID, workspaceID, idempotencyKey string) (api.WorkspaceActionResult, error) {

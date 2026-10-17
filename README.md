@@ -704,18 +704,15 @@ Hako独自のService Catalogとも共存します。
 
 ## 20. `hako add`
 
-ユーザーには、
+最終的なUXは名前だけでWorkspaceを解決する形を目指します。現時点のCLIではTenant IDとWorkspace IDを明示します。
 
 ```bash
-hako add postgres
-hako add redis
-hako add mysql
-hako add minio
+hako add <tenant-id> <workspace-id> postgres [instance-name]
+hako add <tenant-id> <workspace-id> redis [instance-name]
+hako services <tenant-id> <workspace-id>
 ```
 
-というUXを提供します。
-
-例えば、
+現時点の`hako add`は認証・認可済みAPIを通じてdesired-state metadataを登録します。Service executorは未接続のため、実コンテナ起動やhealthcheck完了を意味しません。登録直後は`observed_state=pending`です。下図はruntime接続後の目標フローです。
 
 ```bash
 hako add postgres
@@ -735,7 +732,7 @@ containerd
 PostgreSQL
 ```
 
-となります。
+です。初期CatalogはPostgreSQLとRedisに限定し、templateのimage/version、resource limits、private-only ports、volume/healthcheckを固定します。MySQL/MinIOは未提供です。API/CLIの挙動と現在の制約は[Workspace CLI](docs/workspace-cli.md)を参照してください。
 
 ## 21. Service Catalog
 
@@ -1614,9 +1611,9 @@ Hakoは最初は **Lambda MicroVMを使ったRemote Development Environment** �
 
 ### Phase 7: Service Catalogと利用者向けCLI
 
-- [ ] Service CatalogのSchemaとPostgreSQL/Redisなどの初期Templateを定義する。
+- [x] Versioned Service Catalog schemaとPostgreSQL/Redis初期Templateを追加（固定version image、resource limits、private ports、volume/healthcheck policy）。
 - [ ] hako-agent経由でServiceの起動・停止・状態確認を実装する。
-- [ ] `hako add`、`hako services`を実装する。
+- [x] 認証済みWorkspace-scoped APIと`hako add`、`hako services`、desired-stateの`hako service start|stop|remove`を追加（DB登録まで。runtime execution/physical cleanupは未接続）。
 - [ ] `hako create/code/open/shell/forward/suspend/resume/delete`のCLI UXを仕上げる。
 - [ ] Resource Class、Quota、操作確認、利用状況表示を追加する。
 

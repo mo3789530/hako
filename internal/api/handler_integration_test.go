@@ -175,6 +175,93 @@ func TestTenantMembershipRouteResolvesUserAndRejectsNonMembers(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM audit_events WHERE tenant_id = $1 AND actor_user_id = $2 AND action = 'workspace.create' AND target_id = $3`, "tenant_member", "usr_member", createResult.Workspace.ID).Scan(&auditCount); err != nil || auditCount != 1 {
 		t.Fatalf("Workspace create and idempotent replay should produce one actor audit event, count=%d error=%v", auditCount, err)
 	}
+	serviceRequest := func(method, body string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(method, "/v1/tenants/tenant_member/workspaces/"+string(createResult.Workspace.ID)+"/services", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+createToken)
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		return recorder
+	}
+	catalogRequest := httptest.NewRequest(http.MethodGet, "/v1/service-catalog", nil)
+	catalogRequest.Header.Set("Authorization", "Bearer "+createToken)
+	catalogResponse := httptest.NewRecorder()
+	handler.ServeHTTP(catalogResponse, catalogRequest)
+	if catalogResponse.Code != http.StatusOK || !strings.Contains(catalogResponse.Body.String(), `"name":"postgres"`) || !strings.Contains(catalogResponse.Body.String(), `"name":"redis"`) {
+		t.Fatalf("authenticated Service Catalog request = HTTP %d %s", catalogResponse.Code, catalogResponse.Body.String())
+	}
+	addedService := serviceRequest(http.MethodPost, `{"catalog_name":"postgres"}`)
+	var postgresService domain.Service
+	if addedService.Code != http.StatusAccepted || json.Unmarshal(addedService.Body.Bytes(), &postgresService) != nil || postgresService.Name != "postgres" || postgresService.DesiredState != "running" || postgresService.ObservedState != "pending" {
+		t.Fatalf("Workspace Service add = HTTP %d %s", addedService.Code, addedService.Body.String())
+	}
+	replayedService := serviceRequest(http.MethodPost, `{"catalog_name":"postgres"}`)
+	var replayedPostgres domain.Service
+	if replayedService.Code != http.StatusAccepted || json.Unmarshal(replayedService.Body.Bytes(), &replayedPostgres) != nil || replayedPostgres.ID != postgresService.ID {
+		t.Fatalf("identical Service add must return the existing instance: HTTP %d %s", replayedService.Code, replayedService.Body.String())
+	}
+	conflictingService := serviceRequest(http.MethodPost, `{"catalog_name":"redis","name":"postgres"}`)
+	if conflictingService.Code != http.StatusConflict {
+		t.Fatalf("different template must not replace an existing Service: HTTP %d %s", conflictingService.Code, conflictingService.Body.String())
+	}
+	serviceList := serviceRequest(http.MethodGet, "")
+	if serviceList.Code != http.StatusOK || strings.Count(serviceList.Body.String(), `"id":"`+string(postgresService.ID)+`"`) != 1 {
+		t.Fatalf("Workspace Service list = HTTP %d %s", serviceList.Code, serviceList.Body.String())
+	}
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM audit_events WHERE tenant_id = $1 AND actor_user_id = $2 AND action = 'workspace.service.add' AND target_id = $3`, "tenant_member", "usr_member", postgresService.ID).Scan(&auditCount); err != nil || auditCount != 1 {
+		t.Fatalf("Service creation and retry should produce one audit event, count=%d error=%v", auditCount, err)
+	}
+	serviceActionRequest := func(serviceName, action string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/v1/tenants/tenant_member/workspaces/"+string(createResult.Workspace.ID)+"/services/"+serviceName+"/actions", strings.NewReader(`{"action":"`+action+`"}`))
+		request.Header.Set("Authorization", "Bearer "+createToken)
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		return recorder
+	}
+	stoppedService := serviceActionRequest("postgres", "stop")
+	var stoppedPostgres domain.Service
+	if stoppedService.Code != http.StatusAccepted || json.Unmarshal(stoppedService.Body.Bytes(), &stoppedPostgres) != nil || stoppedPostgres.DesiredState != "stopped" || stoppedPostgres.ObservedState != "pending" {
+		t.Fatalf("Workspace Service stop = HTTP %d %s", stoppedService.Code, stoppedService.Body.String())
+	}
+	repeatedStop := serviceActionRequest("postgres", "stop")
+	if repeatedStop.Code != http.StatusAccepted {
+		t.Fatalf("identical Service state request should be idempotent: HTTP %d %s", repeatedStop.Code, repeatedStop.Body.String())
+	}
+	startedService := serviceActionRequest("postgres", "start")
+	if startedService.Code != http.StatusAccepted || !strings.Contains(startedService.Body.String(), `"desired_state":"running"`) {
+		t.Fatalf("Workspace Service start = HTTP %d %s", startedService.Code, startedService.Body.String())
+	}
+	concurrentStops := make(chan *httptest.ResponseRecorder, 2)
+	for range 2 {
+		go func() { concurrentStops <- serviceActionRequest("postgres", "stop") }()
+	}
+	for range 2 {
+		if response := <-concurrentStops; response.Code != http.StatusAccepted {
+			t.Fatalf("concurrent identical Service action should be idempotent: HTTP %d %s", response.Code, response.Body.String())
+		}
+	}
+	if response := serviceActionRequest("postgres", "start"); response.Code != http.StatusAccepted {
+		t.Fatalf("Service should accept start after stop: HTTP %d %s", response.Code, response.Body.String())
+	}
+	removedService := serviceActionRequest("postgres", "remove")
+	if removedService.Code != http.StatusAccepted || !strings.Contains(removedService.Body.String(), `"desired_state":"deleted"`) {
+		t.Fatalf("Workspace Service remove = HTTP %d %s", removedService.Code, removedService.Body.String())
+	}
+	reuseDeletedName := serviceRequest(http.MethodPost, `{"catalog_name":"postgres"}`)
+	if reuseDeletedName.Code != http.StatusConflict {
+		t.Fatalf("removed Service name must remain reserved as an auditable tombstone: HTTP %d %s", reuseDeletedName.Code, reuseDeletedName.Body.String())
+	}
+	for _, action := range []string{"stop", "start", "remove"} {
+		err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM audit_events WHERE tenant_id = $1 AND actor_user_id = $2 AND action = $3 AND target_id = $4`, "tenant_member", "usr_member", "workspace.service."+action, postgresService.ID).Scan(&auditCount)
+		wantAuditCount := 1
+		if action == "stop" || action == "start" {
+			wantAuditCount = 2 // each state is entered once before and once after the opposite transition
+		}
+		if err != nil || auditCount != wantAuditCount {
+			t.Fatalf("service %s should produce one audit event per state transition, count=%d want=%d error=%v", action, auditCount, wantAuditCount, err)
+		}
+	}
 	oversized := requestCreateWorkspace(t, handler, createToken, "tenant_member", `{"name":"`+strings.Repeat("x", maxJSONRequestBytes)+`"}`, "oversized-create")
 	var oversizedError errorResponse
 	if oversized.Code != http.StatusRequestEntityTooLarge || json.Unmarshal(oversized.Body.Bytes(), &oversizedError) != nil || oversizedError.Error.Code != "request_too_large" {
@@ -236,6 +323,13 @@ func TestTenantMembershipRouteResolvesUserAndRejectsNonMembers(t *testing.T) {
 	}, transaction.DefaultPolicy())
 	if err != nil {
 		t.Fatalf("create another member's Workspace: %v", err)
+	}
+	otherMemberServices := httptest.NewRequest(http.MethodGet, "/v1/tenants/tenant_member/workspaces/"+string(otherWorkspace.Workspace.ID)+"/services", nil)
+	otherMemberServices.Header.Set("Authorization", "Bearer "+createToken)
+	otherMemberServicesResponse := httptest.NewRecorder()
+	handler.ServeHTTP(otherMemberServicesResponse, otherMemberServices)
+	if otherMemberServicesResponse.Code != http.StatusNotFound {
+		t.Fatalf("Tenant member read another member's Workspace Services: HTTP %d %s", otherMemberServicesResponse.Code, otherMemberServicesResponse.Body.String())
 	}
 	foreignWorkspace, err := workspaces.Create(ctx, pool, workspaces.CreateInput{
 		TenantID: "tenant_other", OwnerID: "usr_other", Name: "foreign-dev",

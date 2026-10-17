@@ -34,6 +34,36 @@ process allows at most 16 simultaneous forwarded connections. The remote port
 is authorized against trusted Workspace service state; the CLI cannot provide
 a destination host.
 
+Add and inspect Workspace-local catalog Services:
+
+```sh
+hako add <tenant-id> <workspace-id> postgres [instance-name]
+hako add <tenant-id> <workspace-id> redis [instance-name]
+hako services <tenant-id> <workspace-id>
+hako service stop <tenant-id> <workspace-id> <instance-name>
+hako service start <tenant-id> <workspace-id> <instance-name>
+hako service remove <tenant-id> <workspace-id> <instance-name>
+```
+
+`hako add` resolves only a built-in, versioned template and persists a
+Workspace-scoped desired-running Service. Repeating the same catalog/name is
+safe and returns the existing instance; reusing a name for another template
+returns a conflict. `hako services` lists only Services in a Workspace the
+caller is authorized to see. The current API reports `observed_state=pending`:
+this metadata flow does not yet launch or health-check containers in the
+Lambda MicroVM. Do not treat an accepted request as a running database. No
+service port is published publicly; access is intended to go through the
+Workspace Gateway's authorized loopback port-forward path once the runtime
+router consumes Service state.
+
+`hako service start|stop|remove` records `running`, `stopped`, or `deleted` as
+desired state and returns `observed_state=pending`. Repeating the same action
+is idempotent. `remove` leaves a tombstone and reserves the Service name; it is
+not evidence that a container or volume has been physically deleted. A deleted
+Service cannot be restarted or recreated under the same name. Each changed
+state is audit-recorded; repeated no-op requests do not create additional
+audit events.
+
 The Gateway URL must be an HTTPS/WSS origin without a path, query, or embedded
 credentials. TLS verification remains enabled. The client constructs the route
 from the Workspace ID and the fixed `shell` permission; callers cannot choose a
@@ -41,8 +71,9 @@ runtime hostname or destination port.
 
 The shell command is currently a single-stream transport. It does not yet
 provide a reconnectable PTY, terminal resize signaling, SSH ProxyCommand/VS Code
-Remote SSH, file transfer, or the Service Catalog commands (`hako add` /
-`hako services`). The local forwarding CLI and Gateway protocol have a local
+Remote SSH, or file transfer. The Service Catalog API/CLI currently persists
+desired state only; runtime start/health/stop/remove execution and
+persistent-data behavior are not yet implemented. The local forwarding CLI and Gateway protocol have a local
 E2E, but production Resource Plane routing remains unfinished. Deployment
 still needs production ticket signing
 and active-session lookup key configuration, a multi-Workspace runtime router,

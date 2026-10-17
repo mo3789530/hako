@@ -15,6 +15,7 @@ import (
 
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/idempotency"
+	"github.com/mo3789530/hako/internal/servicecatalog"
 	"github.com/mo3789530/hako/internal/workspacesession"
 )
 
@@ -78,6 +79,20 @@ type WorkspaceActionResult struct {
 	OperationID    string        `json:"operation_id"`
 	OperationType  string        `json:"operation_type"`
 	OperationState string        `json:"operation_state"`
+}
+
+type ServiceCatalogResult struct {
+	SchemaVersion int                       `json:"schema_version"`
+	Items         []servicecatalog.Template `json:"items"`
+}
+
+type WorkspaceServiceListResult struct {
+	Items []domain.Service `json:"items"`
+}
+
+type AddWorkspaceServiceRequest struct {
+	CatalogName string `json:"catalog_name"`
+	Name        string `json:"name,omitempty"`
 }
 
 type WorkspaceSession struct {
@@ -369,6 +384,139 @@ func GetWorkspace(ctx context.Context, baseURL, accessToken, tenantID, workspace
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil {
 		return WorkspaceView{}, errors.New("Hako API returned an invalid Workspace response")
+	}
+	return result, nil
+}
+
+// GetServiceCatalog returns the API's currently available built-in service templates.
+func GetServiceCatalog(ctx context.Context, baseURL, accessToken string, client *http.Client) (ServiceCatalogResult, error) {
+	var result ServiceCatalogResult
+	endpoint, err := apiEndpoint(baseURL, "/v1/service-catalog")
+	if err != nil {
+		return result, err
+	}
+	response, err := doAPIRequest(ctx, endpoint, accessToken, client)
+	if err != nil {
+		return result, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return result, readAPIError(response)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil {
+		return ServiceCatalogResult{}, errors.New("Hako API returned an invalid Service Catalog response")
+	}
+	return result, nil
+}
+
+// ListWorkspaceServices returns catalog instances visible to the caller.
+func ListWorkspaceServices(ctx context.Context, baseURL, accessToken, tenantID, workspaceID string, client *http.Client) (WorkspaceServiceListResult, error) {
+	var result WorkspaceServiceListResult
+	if !validTenantID(tenantID) || !validOpaqueID(workspaceID) {
+		return result, errors.New("Tenant and Workspace IDs must contain only letters, numbers, underscores, or hyphens")
+	}
+	endpoint, err := apiEndpoint(baseURL, "/v1/tenants/"+url.PathEscape(tenantID)+"/workspaces/"+url.PathEscape(workspaceID)+"/services")
+	if err != nil {
+		return result, err
+	}
+	response, err := doAPIRequest(ctx, endpoint, accessToken, client)
+	if err != nil {
+		return result, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return result, readAPIError(response)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil {
+		return WorkspaceServiceListResult{}, errors.New("Hako API returned an invalid Workspace Service list response")
+	}
+	return result, nil
+}
+
+// AddWorkspaceService requests a desired-running catalog Service. Retrying
+// the same Workspace/name/template is idempotent; no runtime is launched by
+// this metadata API until the Service executor is enabled.
+func AddWorkspaceService(ctx context.Context, baseURL, accessToken, tenantID, workspaceID string, add AddWorkspaceServiceRequest, client *http.Client) (domain.Service, error) {
+	var result domain.Service
+	if !validTenantID(tenantID) || !validOpaqueID(workspaceID) {
+		return result, errors.New("Tenant and Workspace IDs must contain only letters, numbers, underscores, or hyphens")
+	}
+	if strings.TrimSpace(add.CatalogName) == "" || len(add.CatalogName) > 64 || strings.ContainsAny(add.CatalogName, "\r\n\x00") {
+		return result, errors.New("catalog name is required")
+	}
+	if add.Name != "" && !servicecatalog.ValidateInstanceName(add.Name) {
+		return result, errors.New("service name must start with a lowercase letter and contain only lowercase letters, numbers, or hyphens (max 32 characters)")
+	}
+	endpoint, err := apiEndpoint(baseURL, "/v1/tenants/"+url.PathEscape(tenantID)+"/workspaces/"+url.PathEscape(workspaceID)+"/services")
+	if err != nil {
+		return result, err
+	}
+	body, err := json.Marshal(add)
+	if err != nil {
+		return result, fmt.Errorf("encode Service request: %w", err)
+	}
+	if strings.TrimSpace(accessToken) == "" {
+		return result, errors.New("access token is required")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return result, fmt.Errorf("create Hako API request: %w", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+accessToken)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := safeAPIClient(client).Do(request)
+	if err != nil {
+		return result, fmt.Errorf("call Hako API: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		return result, readAPIError(response)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil {
+		return domain.Service{}, errors.New("Hako API returned an invalid Workspace Service response")
+	}
+	return result, nil
+}
+
+// RequestWorkspaceServiceAction records a desired state transition. A 202
+// response means the request is accepted, not that MicroVM execution finished.
+func RequestWorkspaceServiceAction(ctx context.Context, baseURL, accessToken, tenantID, workspaceID, serviceName, action string, client *http.Client) (domain.Service, error) {
+	var result domain.Service
+	if !validTenantID(tenantID) || !validOpaqueID(workspaceID) || !servicecatalog.ValidateInstanceName(serviceName) {
+		return result, errors.New("Tenant, Workspace, or Service name is invalid")
+	}
+	if action != "start" && action != "stop" && action != "remove" {
+		return result, errors.New("Service action must be start, stop, or remove")
+	}
+	endpoint, err := apiEndpoint(baseURL, "/v1/tenants/"+url.PathEscape(tenantID)+"/workspaces/"+url.PathEscape(workspaceID)+"/services/"+url.PathEscape(serviceName)+"/actions")
+	if err != nil {
+		return result, err
+	}
+	body, err := json.Marshal(struct {
+		Action string `json:"action"`
+	}{Action: action})
+	if err != nil {
+		return result, fmt.Errorf("encode Service action: %w", err)
+	}
+	if strings.TrimSpace(accessToken) == "" {
+		return result, errors.New("access token is required")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return result, fmt.Errorf("create Hako API request: %w", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+accessToken)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := safeAPIClient(client).Do(request)
+	if err != nil {
+		return result, fmt.Errorf("call Hako API: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		return result, readAPIError(response)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil {
+		return domain.Service{}, errors.New("Hako API returned an invalid Workspace Service response")
 	}
 	return result, nil
 }

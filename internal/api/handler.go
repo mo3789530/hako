@@ -201,6 +201,7 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 			RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
 	}
 	protected.GET("/v1/health", health, RequireScopes(auth.HakoAPIScope))
+	protected.GET("/v1/service-catalog", listServiceCatalog, RequireScopes(auth.HakoAPIScope))
 	protected.GET("/v1/tenants/:tenant_id/membership", tenantMembership,
 		RequireScopes(auth.HakoAPIScope),
 		HakoUserMiddleware(pool),
@@ -253,6 +254,12 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 		HakoUserMiddleware(pool),
 		TenantMembershipMiddleware(pool),
 	)
+	protected.GET("/v1/tenants/:tenant_id/workspaces/:workspace_id/services", listWorkspaceServices(pool),
+		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+	protected.POST("/v1/tenants/:tenant_id/workspaces/:workspace_id/services", addWorkspaceService(pool),
+		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+	protected.POST("/v1/tenants/:tenant_id/workspaces/:workspace_id/services/:service_name/actions", requestWorkspaceServiceAction(pool),
+		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
 	if workspaceConfig.WorkspaceSessionTicketIssuer != nil {
 		protected.POST("/v1/tenants/:tenant_id/workspaces/:workspace_id/sessions", createWorkspaceSession(pool, workspaceConfig.WorkspaceSessionTicketIssuer),
 			RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))

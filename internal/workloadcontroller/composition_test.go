@@ -193,7 +193,7 @@ func TestNewLambdaWorkloadRecoveryHandlerRequiresRecoveryCapableJournalAndDepend
 }
 
 func TestLambdaWorkloadHandlerDispatchRunsAuthenticatedAgentWithVerifiedSource(t *testing.T) {
-	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	id := workloadjournal.Command{TenantID: "tenant_1", WorkloadRunID: "run_1", AttemptID: "attempt_1", Generation: 1,
 		ResourcePlaneID: "rp_1", IdempotencyToken: "token_1"}
 	checkout := t.TempDir()

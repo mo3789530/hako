@@ -106,7 +106,7 @@ Claude Code Actionは**現在実装されていない**。Task 73は親の集約
 | 10 | [44 — EFS Workspace保存](task-44-efs-workspace.md) | Access Point、mount、再作成時のデータ維持 | 43 |
 | 11 | [45 — hako-agent](task-45-hako-agent.md) | 起動、heartbeat、exec、PTY、process管理、Secret参照 | 43 |
 | 12 | [46 — Session/Gateway](task-46-session-gateway.md) | 進行中：5分ticket、RBAC API issue/revoke、HTTPS/HMAC active-session API/clientとPostgreSQL identity照合、TLS-only WSS core、PTY/port-forward E2E、同一ticket同時接続拒否と切断後再接続を実装。production key/Client設定、multi-Workspace router、VS Code runtime、fleet limits/metrics/deploymentが残る | 43, 45 |
-| 13 | [47 — 開発者CLI/Service Catalog](task-47-developer-ux.md) | **進行中**：`hako shell` cancellation時のWSS close/session revokeと、loopback限定`hako forward`（TCP接続ごとの短命ticket→TLS WSS→許可済みWorkspace port→revoke）を追加。認可拒否・invalid portを含むCLI/Gateway race test済み。SSH proxy/VS Code、file transfer、Service Catalogとproduction runtime routerが残る | 44–46 |
+| 13 | [47 — 開発者CLI/Service Catalog](task-47-developer-ux.md) | **進行中**：`hako shell`/loopback-only `hako forward`のTLS WSS接続と認可/E2E、およびversioned PostgreSQL/Redis catalog、Tenant/Workspace認可付きcatalog/list/add/action API、idempotent `hako add`/start/stop/remove、`hako services`、監査・tombstoneを実装・PostgreSQL integration検証済み。操作はdesired metadata only（`pending`）でMicroVM executor/physical cleanup未接続。SSH proxy/VS Code、file transfer、runtime health/reconciliation、production routerが残る | 44–46 |
 
 ### P2 — Placementの自動運用、AWS検証、運用準備
 
