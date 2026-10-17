@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/mo3789530/hako/internal/githubwebhook"
 )
 
@@ -190,11 +191,15 @@ func ProcessActionsRunnerStatusDelivery(ctx context.Context, tx pgx.Tx, integrat
 				if job.RunnerID != nil {
 					eventRunnerID = *job.RunnerID
 				}
-				_, err = tx.Exec(ctx, `UPDATE github_actions_runner_jobs SET state=$4,runner_id=COALESCE(runner_id,$5),
+				var changed pgconn.CommandTag
+				changed, err = tx.Exec(ctx, `UPDATE github_actions_runner_jobs SET state=$4,runner_id=COALESCE(runner_id,$5),
 					runner_name=COALESCE(NULLIF($6,''),runner_name),conclusion=$7,completed_at=$8,
 					claim_id=NULL,lease_expires_at=NULL,updated_at=$8
 					WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=$3 AND state IN ('admitted','claimed','starting','assigned','running')`,
 					integrationID, job.ID, job.RunAttempt, terminalState, eventRunnerID, job.RunnerName, job.Conclusion, updatedAt.UTC())
+				if err == nil && changed.RowsAffected() == 1 {
+					err = enqueueActionsRunnerCleanup(ctx, tx, integrationID, job.ID, job.RunAttempt, terminalState, updatedAt)
+				}
 			}
 		}
 		if err != nil {

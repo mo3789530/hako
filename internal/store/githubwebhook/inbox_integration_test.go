@@ -415,6 +415,67 @@ func TestActionsRunnerAdmissionRequiresSeparateRepositoryOptInAndDeduplicatesJob
 	if err := pool.QueryRow(ctx, `SELECT state,runner_id,conclusion,completed_at FROM github_actions_runner_jobs WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`).Scan(&runnerState, &runnerID, &conclusion, &completedAt); err != nil || runnerState != "completed" || runnerID == nil || *runnerID != 9810 || conclusion != "success" || completedAt == nil {
 		t.Fatalf("Actions completion = state=%q runner=%v conclusion=%q at=%v error=%v", runnerState, runnerID, conclusion, completedAt, err)
 	}
+	var cleanupCount int
+	var cleanupState string
+	var cleanupReason string
+	if err := pool.QueryRow(ctx, `SELECT count(*),min(state),min(reason) FROM github_actions_runner_cleanup_outbox
+		WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`).Scan(&cleanupCount, &cleanupState, &cleanupReason); err != nil || cleanupCount != 1 || cleanupState != "pending" || cleanupReason != "completed" {
+		t.Fatalf("terminal Runner job cleanup outbox count=%d state=%q reason=%q error=%v", cleanupCount, cleanupState, cleanupReason, err)
+	}
+	cleanupTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanup, ok, err := ClaimNextActionsRunnerCleanup(ctx, cleanupTx, "cleanup-worker-one", now.Add(48*time.Second), 30*time.Second)
+	if err != nil || !ok || cleanup.State != "claimed" || cleanup.ClaimID != "cleanup-worker-one" || cleanup.AttemptCount != 1 || cleanup.RunnerID == nil || *cleanup.RunnerID != 9810 {
+		_ = cleanupTx.Rollback(ctx)
+		t.Fatalf("claim runner cleanup=%+v ok=%v error=%v", cleanup, ok, err)
+	}
+	if err := cleanupTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cleanupRetryTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := ClaimNextActionsRunnerCleanup(ctx, cleanupRetryTx, "cleanup-worker-two", now.Add(49*time.Second), 30*time.Second); err != nil || ok {
+		_ = cleanupRetryTx.Rollback(ctx)
+		t.Fatalf("live cleanup lease was claimed twice: ok=%v error=%v", ok, err)
+	}
+	if released, err := RetryActionsRunnerCleanup(ctx, cleanupRetryTx, cleanup, now.Add(50*time.Second), now.Add(60*time.Second), "microvm_terminate_failed"); err != nil || !released {
+		_ = cleanupRetryTx.Rollback(ctx)
+		t.Fatalf("schedule runner cleanup retry: released=%v error=%v", released, err)
+	}
+	if err := cleanupRetryTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	staleCleanupTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed, err := CompleteActionsRunnerCleanup(ctx, staleCleanupTx, cleanup, now.Add(55*time.Second)); err != nil || completed {
+		_ = staleCleanupTx.Rollback(ctx)
+		t.Fatalf("stale cleanup worker acknowledged released lease: completed=%v error=%v", completed, err)
+	}
+	if err := staleCleanupTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cleanupRecoveryTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveredCleanup, ok, err := ClaimNextActionsRunnerCleanup(ctx, cleanupRecoveryTx, "cleanup-worker-recovered", now.Add(60*time.Second), 30*time.Second)
+	if err != nil || !ok || recoveredCleanup.AttemptCount != 2 || recoveredCleanup.ClaimID != "cleanup-worker-recovered" {
+		_ = cleanupRecoveryTx.Rollback(ctx)
+		t.Fatalf("recover retried runner cleanup=%+v ok=%v error=%v", recoveredCleanup, ok, err)
+	}
+	if completed, err := CompleteActionsRunnerCleanup(ctx, cleanupRecoveryTx, recoveredCleanup, now.Add(61*time.Second)); err != nil || !completed {
+		_ = cleanupRecoveryTx.Rollback(ctx)
+		t.Fatalf("complete recovered runner cleanup: completed=%v error=%v", completed, err)
+	}
+	if err := cleanupRecoveryTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
 	reordered := makeStatusDelivery("143b2c3d-4e5f-4789-8abc-def012345678", "in_progress", "in_progress", "", strings.Repeat("a", 40))
 	if inserted, err := inbox.Record(ctx, reordered, now.Add(48*time.Second)); err != nil || !inserted {
 		t.Fatalf("record reordered Actions in_progress: inserted=%v error=%v", inserted, err)

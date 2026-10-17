@@ -53,6 +53,13 @@ Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Action
   concurrent races, while status processing quarantines an assignment to a
   second job before updating it. The PostgreSQL E2E covers attempted reuse
   after the original job has completed.
+- A terminal `workflow_job.completed` transition now inserts an idempotent
+  cleanup request in the same PostgreSQL transaction. Cleanup jobs have
+  bounded claim leases, retry scheduling with operator-safe error categories,
+  and stale-worker fencing; tests cover claim exclusion, retry/reclaim,
+  completion, and one outbox row for the terminal job. This is durable queue
+  plumbing only: the Lambda MicroVM cleanup/deregister worker and runtime ID
+  projection still need implementation.
 - `HAKO_GITHUB_ACTIONS_RUNNER_ADMISSIONS_ENABLED` defaults off. When enabled,
   the webhook processor admits only queued jobs whose current Tenant-owned
   Installation and Repository opt-in were active before receipt. Admission is
