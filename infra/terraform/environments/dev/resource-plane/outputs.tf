@@ -105,3 +105,13 @@ output "fake_resource_controller_log_group_name" {
 output "monitoring_alarm_names" {
   value = module.resource_plane.monitoring_alarm_names
 }
+
+output "workspace_storage_file_system_id" {
+  description = "Encrypted Workspace EFS filesystem ID when optional storage is configured; otherwise null."
+  value       = try(module.workspace_storage[0].file_system_id, null)
+}
+
+output "workspace_storage_mount_target_security_group_id" {
+  description = "EFS mount-target security group ID when optional storage is configured; otherwise null."
+  value       = try(module.workspace_storage[0].mount_target_security_group_id, null)
+}

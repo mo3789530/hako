@@ -38,3 +38,17 @@ module "resource_plane" {
   health_report_age_alarm_seconds                 = var.health_report_age_alarm_seconds
   health_report_unhealthy_runs_threshold          = var.health_report_unhealthy_runs_threshold
 }
+
+module "workspace_storage" {
+  count  = var.workspace_storage == null ? 0 : 1
+  source = "../../../modules/workspace-storage"
+
+  resource_plane_id                    = var.resource_plane_id
+  vpc_id                               = var.workspace_storage.vpc_id
+  private_subnet_ids                   = var.workspace_storage.private_subnet_ids
+  microvm_security_group_ids           = var.workspace_storage.microvm_security_group_ids
+  workspace_access_point_role_bindings = var.workspace_storage.workspace_access_point_role_bindings
+  backup_schedule                      = var.workspace_storage.backup_schedule
+  backup_retention_days                = var.workspace_storage.backup_retention_days
+  tags                                 = var.tags
+}

@@ -2,8 +2,9 @@
 
 Status: local Access Point provisioning and ownership discovery are implemented
 as a library and the Lambda MicroVM adapter provisions/reuses and cleans up the
-binding. A dedicated Workspace guest init now handles the `/run` mount contract;
-Resource Plane Terraform does not yet create/configure the filesystem. This is
+binding. A dedicated Workspace guest init handles the `/run` mount contract.
+The dev Resource Plane Terraform root now optionally wires the encrypted EFS
+module, default-off, with exact role-to-Access-Point policy bindings. This is
 not production-ready and no AWS resources were created.
 
 ## Isolation model
@@ -88,9 +89,10 @@ the new `iam` mount option does not yet distinguish one Workspace from another.
 Production must remain disabled until each MicroVM is given a Workspace-scoped
 IAM identity/policy restricted to its exact Access Point, the filesystem
 policy rejects direct or non-TLS access, and private mount-target security
-groups restrict NFS to the reviewed Resource Plane network path. Those policies
-and per-Workspace roles are not implemented here; a shared role must not be
-treated as sufficient Tenant isolation.
+groups restrict NFS to the reviewed Resource Plane network path. The Terraform
+module can express a distinct role/AP pair for each Workspace, but
+per-Workspace role provisioning and policy attachment are not yet implemented;
+a shared role must not be treated as sufficient Tenant isolation.
 
 ## Mount and network requirements
 
@@ -107,12 +109,18 @@ The EFS mount targets must be private in the Resource Plane VPC. Security
 groups must allow NFS/TCP 2049 only from the approved MicroVM connector/security
 group; no public NFS ingress is permitted. The AP's POSIX identity and root
 restriction are defense in depth, not a substitute for network and IAM policy.
-At-rest encryption must be enabled on the filesystem. An opt-in standalone
-Terraform module now describes encrypted EFS, the Access Point IAM/TLS
-resource policy, private mount targets, and connector-SG-scoped NFS. It is not
-wired to the Resource Plane root and has not been applied; caller-provided
-subnet privacy, Lambda MicroVM connector compatibility, IAM Access Point
-isolation, and live mount behavior are not verified. See the
+At-rest encryption must be enabled on the filesystem. An opt-in Terraform
+module describes encrypted EFS, exact role-to-Access-Point IAM/TLS resource
+policy statements, private mount targets, and connector-SG-scoped NFS. The dev
+Resource Plane root exposes it through the nullable `workspace_storage` object;
+the default `null` creates no storage resources. Role/AP bindings must be
+unique and exact. Explicit Deny statements reject unconfigured principals and
+prevent a configured role from using another AP, even if an identity policy is
+broader.
+The Resource Controller still creates APs dynamically, so role provisioning
+and AP binding lifecycle are not automated. The module has not been applied;
+caller-provided subnet privacy, Lambda MicroVM connector compatibility, IAM
+Access Point isolation, and live mount behavior are not verified. See the
 [`workspace-storage` Terraform module](../infra/terraform/modules/workspace-storage/README.md).
 
 ## Backup, restore, quota, and deletion
@@ -153,10 +161,10 @@ build was attempted: cross-compilation succeeded, but the host cannot execute
 the ARM64 AL2023 RPM-install layer, and the MicroVM base image has no amd64
 manifest. No final image was produced; use an ARM64 or explicitly configured
 binfmt/QEMU builder. The real Lambda `/run` hook remains unverified. Test
-suspend/restart/replacement recovery plus orderly unmount. Add Resource Plane
-wiring for the standalone EFS module and dynamic per-Workspace runtime-role /
-Access Point IAM boundaries; add mount failure compensation and orphan
-reconciliation; and verify backup/restore, retention, and quotas.
+suspend/restart/replacement recovery plus orderly unmount. Dynamic per-
+Workspace runtime-role provisioning and AP IAM binding lifecycle, mount failure
+compensation and orphan reconciliation, and backup/restore, retention, and
+quota verification remain open.
 Live AWS validation remains subject to explicit approval.
 
 Authoritative references: [EFS Access Point IAM condition key](https://docs.aws.amazon.com/efs/latest/ug/access-points-iam-policy.html), [AWS Backup for EFS](https://docs.aws.amazon.com/efs/latest/ug/awsbackup.html), and [EFS lifecycle management](https://docs.aws.amazon.com/efs/latest/ug/enable-lifecycle-management.html).

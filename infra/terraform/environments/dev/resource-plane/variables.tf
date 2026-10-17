@@ -91,6 +91,22 @@ variable "workload_controller_deployment" {
   default = null
 }
 
+variable "workspace_storage" {
+  description = "Optional encrypted EFS Workspace storage deployment. Each runtime role must map to exactly one pre-existing Workspace Access Point; null keeps storage disabled."
+  type = object({
+    vpc_id                     = string
+    private_subnet_ids         = list(string)
+    microvm_security_group_ids = list(string)
+    workspace_access_point_role_bindings = list(object({
+      role_arn         = string
+      access_point_arn = string
+    }))
+    backup_schedule       = optional(string, "cron(0 5 * * ? *)")
+    backup_retention_days = optional(number, 35)
+  })
+  default = null
+}
+
 variable "max_receive_count" {
   description = "Receives before messages move to the corresponding DLQ."
   type        = number

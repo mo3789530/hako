@@ -1,13 +1,13 @@
 # Task 44: EFS-Backed Workspace Persistence
 
 Status: In progress (AP provisioner, durable runtime binding, Linux mount hook,
-and dedicated root init image implemented locally. An isolated Workspace
-storage Terraform module now defines encrypted EFS, Access Point IAM/TLS file
-system policy, private mount targets, connector-SG-only NFS, and daily AWS
-Backup retention with mock plan tests. The module is not wired to the dev
-Resource Plane root; Workspace-specific dynamic IAM, verified private subnet /
-connector compatibility, image execution, restore testing, and deployment
-gates remain).
+dedicated root init image, and optional dev Resource Plane Terraform wiring
+implemented locally. EFS policy grants each unique runtime role only through
+its exact configured AP ARN, explicitly denies that role any other AP, and
+rejects unconfigured principals; mock plan tests reject duplicate role/AP reuse.
+The root input is nullable/default-off. Dynamic Workspace role/AP lifecycle,
+verified private subnet/connector compatibility, image execution, restore
+testing, and deployment gates remain).
 Priority: P1.
 
 ## Goal
@@ -47,12 +47,12 @@ The root init process now attempts ownership-checked `/workspace` unmount on
 graceful shutdown and preserves its marker if the unmount fails. Forced Lambda
 MicroVM shutdown behavior remains unverified; controller cleanup still waits
 for provider termination before AP deletion.
-This task is not complete: dynamic Workspace-scoped EFS policies, encrypted
-EFS/private mount target/scoped network Terraform integration, restore,
-automated orphan cleanup, and live isolation checks remain open. No AWS
-changes were made. The standalone Terraform module is
-[`workspace-storage`](../infra/terraform/modules/workspace-storage); it is not
-enabled or instantiated by a Resource Plane environment.
+This task is not complete: automatic Workspace-scoped role/AP provisioning,
+restore, automated orphan cleanup, and live isolation checks remain open. No
+AWS changes were made. The standalone Terraform module is
+[`workspace-storage`](../infra/terraform/modules/workspace-storage); the dev
+Resource Plane root can instantiate it only when the optional
+`workspace_storage` input is explicitly configured. Its default is `null`.
 
 An ARM64 image build was attempted with test-only public keys and the pinned
 `amazon-efs-utils` version. Cross-compiled init/agent binaries built, but the

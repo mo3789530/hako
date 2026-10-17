@@ -10,8 +10,6 @@ terraform {
 }
 
 data "aws_partition" "current" {}
-data "aws_caller_identity" "current" {}
-data "aws_region" "current" {}
 
 locals {
   common_tags = merge(var.tags, {
@@ -31,29 +29,48 @@ locals {
 
   filesystem_policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
-      {
+    Statement = concat(
+      [{
         Sid       = "DenyInsecureTransport"
         Effect    = "Deny"
         Action    = "*"
         Resource  = aws_efs_file_system.workspace.arn
         Principal = { AWS = "*" }
         Condition = { Bool = { "aws:SecureTransport" = "false" } }
-      },
-      {
-        Sid       = "AllowConfiguredRuntimeRoleOverTLS"
+        }, {
+        Sid       = "DenyUnconfiguredWorkspaceRuntimeRole"
+        Effect    = "Deny"
+        Action    = ["elasticfilesystem:ClientMount", "elasticfilesystem:ClientWrite"]
+        Resource  = aws_efs_file_system.workspace.arn
+        Principal = { AWS = "*" }
+        Condition = {
+          ArnNotEquals = {
+            "aws:PrincipalArn" = [for binding in var.workspace_access_point_role_bindings : binding.role_arn]
+          }
+        }
+      }],
+      [for index, binding in var.workspace_access_point_role_bindings : {
+        Sid       = "AllowWorkspaceAccessPoint${index}OverTLS"
         Effect    = "Allow"
         Action    = ["elasticfilesystem:ClientMount", "elasticfilesystem:ClientWrite"]
         Resource  = aws_efs_file_system.workspace.arn
-        Principal = { AWS = var.workspace_runtime_role_arns }
+        Principal = { AWS = binding.role_arn }
         Condition = {
-          Bool = { "aws:SecureTransport" = "true" }
-          StringLike = {
-            "elasticfilesystem:AccessPointArn" = ["arn:${data.aws_partition.current.partition}:elasticfilesystem:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:access-point/*"]
-          }
+          Bool      = { "aws:SecureTransport" = "true" }
+          ArnEquals = { "elasticfilesystem:AccessPointArn" = binding.access_point_arn }
         }
-      }
-    ]
+      }],
+      [for index, binding in var.workspace_access_point_role_bindings : {
+        Sid       = "DenyWorkspaceRoleOutsideAccessPoint${index}"
+        Effect    = "Deny"
+        Action    = ["elasticfilesystem:ClientMount", "elasticfilesystem:ClientWrite"]
+        Resource  = aws_efs_file_system.workspace.arn
+        Principal = { AWS = binding.role_arn }
+        Condition = {
+          ArnNotEquals = { "elasticfilesystem:AccessPointArn" = binding.access_point_arn }
+        }
+      }]
+    )
   })
 }
 

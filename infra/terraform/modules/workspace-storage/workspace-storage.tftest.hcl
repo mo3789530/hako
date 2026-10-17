@@ -4,12 +4,6 @@ mock_provider "aws" {
   mock_data "aws_partition" {
     defaults = { partition = "aws" }
   }
-  mock_data "aws_caller_identity" {
-    defaults = { account_id = "123456789012" }
-  }
-  mock_data "aws_region" {
-    defaults = { name = "ap-northeast-1" }
-  }
   mock_resource "aws_efs_file_system" {
     defaults = {
       id  = "fs-0123456789abcdef0"
@@ -44,11 +38,14 @@ run "workspace_storage_is_encrypted_private_and_backed_up" {
   providers = { aws = aws.mock }
 
   variables {
-    resource_plane_id           = "rp-test"
-    vpc_id                      = "vpc-0123456789abcdef0"
-    private_subnet_ids          = ["subnet-11111111", "subnet-22222222"]
-    microvm_security_group_ids  = ["sg-11111111", "sg-22222222"]
-    workspace_runtime_role_arns = ["arn:aws:iam::123456789012:role/hako-ws-runtime-a"]
+    resource_plane_id          = "rp-test"
+    vpc_id                     = "vpc-0123456789abcdef0"
+    private_subnet_ids         = ["subnet-11111111", "subnet-22222222"]
+    microvm_security_group_ids = ["sg-11111111", "sg-22222222"]
+    workspace_access_point_role_bindings = [{
+      role_arn         = "arn:aws:iam::123456789012:role/hako-ws-runtime-a"
+      access_point_arn = "arn:aws:elasticfilesystem:ap-northeast-1:123456789012:access-point/fsap-11111111"
+    }]
   }
 
   assert {
@@ -79,8 +76,26 @@ run "workspace_storage_is_encrypted_private_and_backed_up" {
 
   assert {
     condition = length([for statement in jsondecode(local.filesystem_policy).Statement : statement
-    if statement.Sid == "AllowConfiguredRuntimeRoleOverTLS" && contains(statement.Principal.AWS, "arn:aws:iam::123456789012:role/hako-ws-runtime-a") && statement.Condition.Bool["aws:SecureTransport"] == "true"]) == 1
-    error_message = "Only the explicitly configured runtime roles may mount through EFS Access Points."
+      if statement.Sid == "AllowWorkspaceAccessPoint0OverTLS" && statement.Principal.AWS == "arn:aws:iam::123456789012:role/hako-ws-runtime-a" &&
+      statement.Condition.Bool["aws:SecureTransport"] == "true" &&
+    statement.Condition.ArnEquals["elasticfilesystem:AccessPointArn"] == "arn:aws:elasticfilesystem:ap-northeast-1:123456789012:access-point/fsap-11111111"]) == 1
+    error_message = "Each runtime role must be limited to its exact EFS Access Point ARN over TLS."
+  }
+
+  assert {
+    condition = length([for statement in jsondecode(local.filesystem_policy).Statement : statement
+      if statement.Sid == "DenyWorkspaceRoleOutsideAccessPoint0" && statement.Effect == "Deny" &&
+      statement.Principal.AWS == "arn:aws:iam::123456789012:role/hako-ws-runtime-a" &&
+    statement.Condition.ArnNotEquals["elasticfilesystem:AccessPointArn"] == "arn:aws:elasticfilesystem:ap-northeast-1:123456789012:access-point/fsap-11111111"]) == 1
+    error_message = "An identity policy must not let a runtime role mount outside its bound Access Point."
+  }
+
+  assert {
+    condition = length([for statement in jsondecode(local.filesystem_policy).Statement : statement
+      if statement.Sid == "DenyUnconfiguredWorkspaceRuntimeRole" && statement.Effect == "Deny" &&
+      statement.Principal.AWS == "*" &&
+    statement.Condition.ArnNotEquals["aws:PrincipalArn"] == ["arn:aws:iam::123456789012:role/hako-ws-runtime-a"]]) == 1
+    error_message = "Unconfigured principals must not mount even if an identity policy grants EFS access."
   }
 
   assert {
@@ -94,16 +109,68 @@ run "workspace_storage_rejects_missing_network_and_shared_identity_inputs" {
   providers = { aws = aws.mock }
 
   variables {
-    resource_plane_id           = "rp-test"
-    vpc_id                      = "vpc-0123456789abcdef0"
-    private_subnet_ids          = ["subnet-11111111"]
-    microvm_security_group_ids  = []
-    workspace_runtime_role_arns = []
+    resource_plane_id                    = "rp-test"
+    vpc_id                               = "vpc-0123456789abcdef0"
+    private_subnet_ids                   = ["subnet-11111111"]
+    microvm_security_group_ids           = []
+    workspace_access_point_role_bindings = []
   }
 
   expect_failures = [
     var.private_subnet_ids,
     var.microvm_security_group_ids,
-    var.workspace_runtime_role_arns,
+    var.workspace_access_point_role_bindings,
+  ]
+}
+
+run "workspace_storage_rejects_reused_role_bindings" {
+  command   = plan
+  providers = { aws = aws.mock }
+
+  variables {
+    resource_plane_id          = "rp-test"
+    vpc_id                     = "vpc-0123456789abcdef0"
+    private_subnet_ids         = ["subnet-11111111", "subnet-22222222"]
+    microvm_security_group_ids = ["sg-11111111"]
+    workspace_access_point_role_bindings = [
+      {
+        role_arn         = "arn:aws:iam::123456789012:role/hako-ws-runtime-a"
+        access_point_arn = "arn:aws:elasticfilesystem:ap-northeast-1:123456789012:access-point/fsap-11111111"
+      },
+      {
+        role_arn         = "arn:aws:iam::123456789012:role/hako-ws-runtime-a"
+        access_point_arn = "arn:aws:elasticfilesystem:ap-northeast-1:123456789012:access-point/fsap-22222222"
+      },
+    ]
+  }
+
+  expect_failures = [
+    var.workspace_access_point_role_bindings,
+  ]
+}
+
+run "workspace_storage_rejects_reused_access_point_bindings" {
+  command   = plan
+  providers = { aws = aws.mock }
+
+  variables {
+    resource_plane_id          = "rp-test"
+    vpc_id                     = "vpc-0123456789abcdef0"
+    private_subnet_ids         = ["subnet-11111111", "subnet-22222222"]
+    microvm_security_group_ids = ["sg-11111111"]
+    workspace_access_point_role_bindings = [
+      {
+        role_arn         = "arn:aws:iam::123456789012:role/hako-ws-runtime-a"
+        access_point_arn = "arn:aws:elasticfilesystem:ap-northeast-1:123456789012:access-point/fsap-11111111"
+      },
+      {
+        role_arn         = "arn:aws:iam::123456789012:role/hako-ws-runtime-b"
+        access_point_arn = "arn:aws:elasticfilesystem:ap-northeast-1:123456789012:access-point/fsap-11111111"
+      },
+    ]
+  }
+
+  expect_failures = [
+    var.workspace_access_point_role_bindings,
   ]
 }

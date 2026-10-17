@@ -46,17 +46,24 @@ variable "microvm_security_group_ids" {
   }
 }
 
-variable "workspace_runtime_role_arns" {
-  description = "Exact IAM role ARNs allowed to mount/write through EFS Access Points. Do not use a shared developer or Control Plane role."
-  type        = list(string)
+variable "workspace_access_point_role_bindings" {
+  description = "Exact one-to-one Workspace IAM role to EFS Access Point ARN bindings. A shared role or wildcard Access Point is forbidden."
+  type = list(object({
+    role_arn         = string
+    access_point_arn = string
+  }))
 
   validation {
     condition = (
-      length(var.workspace_runtime_role_arns) > 0 &&
-      length(var.workspace_runtime_role_arns) == length(distinct(var.workspace_runtime_role_arns)) &&
-      alltrue([for arn in var.workspace_runtime_role_arns : can(regex("^arn:[^:]+:iam::[0-9]{12}:role/.+$", arn))])
+      length(var.workspace_access_point_role_bindings) > 0 &&
+      length(var.workspace_access_point_role_bindings) == length(distinct([for binding in var.workspace_access_point_role_bindings : binding.role_arn])) &&
+      length(var.workspace_access_point_role_bindings) == length(distinct([for binding in var.workspace_access_point_role_bindings : binding.access_point_arn])) &&
+      alltrue([for binding in var.workspace_access_point_role_bindings :
+        can(regex("^arn:[^:]+:iam::[0-9]{12}:role/.+$", binding.role_arn)) &&
+        can(regex("^arn:[^:]+:elasticfilesystem:[^:]+:[0-9]{12}:access-point/fsap-[A-Za-z0-9]+$", binding.access_point_arn))
+      ])
     )
-    error_message = "workspace_runtime_role_arns must contain unique exact IAM role ARNs."
+    error_message = "workspace_access_point_role_bindings must contain unique exact IAM role and EFS Access Point ARN pairs."
   }
 }
 
