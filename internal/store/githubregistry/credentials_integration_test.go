@@ -129,6 +129,49 @@ func TestCredentialAuthorizerRevalidatesTenantAppRevisionAndGeneration(t *testin
 	}
 }
 
+func TestCredentialAuthorizerRequiresTenantAppRepositoryRunnerOptIn(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`INSERT INTO tenants (id,name,created_at) VALUES ('tenant_runner_auth','Runner auth',now())`,
+		`INSERT INTO users (id,cognito_subject,email,created_at) VALUES ('usr_runner_auth','runner-auth','',now())`,
+		`INSERT INTO github_credential_bindings (id,tenant_id,github_app_id,status,private_key_secret_ref,oauth_secret_ref,webhook_secret_ref,approved_at,private_key_reader_role_arn,private_key_secret_version_id) VALUES ('binding_runner_auth','tenant_runner_auth',902,'approved','private','oauth','webhook',now(),'arn:aws:iam::123456789012:role/hako/key-reader','0123456789abcdef0123456789abcdef')`,
+		`INSERT INTO github_app_registrations (id,github_app_id,mode,owner_tenant_id,slug,client_id,created_at) VALUES ('registration_runner_auth',902,'tenant_owned','tenant_runner_auth','runner-app','client',now())`,
+		`INSERT INTO tenant_github_integrations (id,tenant_id,app_registration_id,github_app_id,credential_binding_id,status,config_revision,credential_generation,idempotency_key,request_sha256,created_by,created_at,updated_at) VALUES ('integration_runner_auth','tenant_runner_auth','registration_runner_auth',902,'binding_runner_auth','active',3,7,'runner-auth-key','runner-auth-hash','usr_runner_auth',now(),now())`,
+		`INSERT INTO tenant_github_installations (tenant_id,installation_id,account_login,status,requested_by,requested_at,updated_at) VALUES ('tenant_runner_auth',9202,'acme','active','usr_runner_auth',now(),now())`,
+		`INSERT INTO github_app_installation_bindings (installation_id,tenant_id,bound_at) VALUES (9202,'tenant_runner_auth',now())`,
+		`INSERT INTO tenant_github_app_installation_bindings (tenant_id,integration_id,installation_id,bound_at) VALUES ('tenant_runner_auth','integration_runner_auth',9202,now())`,
+		`INSERT INTO tenant_github_repositories (tenant_id,installation_id,github_repository_id,owner_login,repository_name,default_branch,synchronized_at) VALUES ('tenant_runner_auth',9202,9203,'acme','api','main',now())`,
+	} {
+		if _, err := pool.Exec(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	authorizer := CredentialAuthorizer{Pool: pool}
+	identity := githubapp.TenantAppIdentity{TenantID: "tenant_runner_auth", IntegrationID: "integration_runner_auth", GitHubAppID: 902, ConfigRevision: 3, CredentialGeneration: 7}
+	if _, err := authorizer.AuthorizeActionsRunnerRepository(ctx, identity, 9202, 9203); !errors.Is(err, ErrInstallationNotActive) {
+		t.Fatal("disabled Actions Runner repository policy authorized token minting")
+	}
+	if _, err := pool.Exec(ctx, `UPDATE tenant_github_repositories SET actions_runner_enabled=TRUE,actions_runner_enabled_at=now() WHERE tenant_id='tenant_runner_auth' AND installation_id=9202 AND github_repository_id=9203`); err != nil {
+		t.Fatal(err)
+	}
+	access, err := authorizer.AuthorizeActionsRunnerRepository(ctx, identity, 9202, 9203)
+	if err != nil || access.Owner != "acme" || access.Name != "api" {
+		t.Fatalf("explicit Tenant repository opt-in was not authorized: access=%+v err=%v", access, err)
+	}
+	if _, err := authorizer.AuthorizeActionsRunnerRepository(ctx, identity, 9202, 9204); !errors.Is(err, ErrInstallationNotActive) {
+		t.Fatal("unregistered Tenant Repository was authorized for runner token")
+	}
+	identity.CredentialGeneration++
+	if _, err := authorizer.AuthorizeActionsRunnerRepository(ctx, identity, 9202, 9203); !errors.Is(err, ErrInstallationNotActive) {
+		t.Fatal("stale Tenant App generation was authorized for runner token")
+	}
+}
+
 func TestWebhookCredentialResolverAndAuthorizerAreIntegrationScoped(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

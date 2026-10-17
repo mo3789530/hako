@@ -49,6 +49,33 @@ func (a scopedRepositoryAuthorizer) AuthorizeTenantApp(ctx context.Context, iden
 	return a.check(ctx, identity)
 }
 
+type actionsRunnerRepositoryAuthorizer struct {
+	access  RepositoryAccess
+	allowed bool
+}
+
+func (a actionsRunnerRepositoryAuthorizer) AuthorizeRepository(_ context.Context, tenant domain.TenantID, installation, repository int64) (RepositoryAccess, error) {
+	if tenant != "tenant_one" || installation != 77 || repository != 88 {
+		return RepositoryAccess{}, errors.New("denied")
+	}
+	return a.access, nil
+}
+
+func (a actionsRunnerRepositoryAuthorizer) AuthorizeTenantApp(_ context.Context, identity TenantAppIdentity) error {
+	if identity.TenantID != "tenant_one" || identity.IntegrationID != "integration_one" || identity.ConfigRevision != 2 || identity.CredentialGeneration != 3 {
+		return errors.New("stale App")
+	}
+	return nil
+}
+
+func (a actionsRunnerRepositoryAuthorizer) AuthorizeActionsRunnerRepository(_ context.Context, identity TenantAppIdentity, installation, repository int64) (RepositoryAccess, error) {
+	if !a.allowed || identity.TenantID != "tenant_one" || identity.IntegrationID != "integration_one" || identity.GitHubAppID != 12 ||
+		identity.ConfigRevision != 2 || identity.CredentialGeneration != 3 || installation != 77 || repository != 88 {
+		return RepositoryAccess{}, errors.New("Runner policy denied")
+	}
+	return a.access, nil
+}
+
 type credentialTransportFunc func(*http.Request) (*http.Response, error)
 
 func (f credentialTransportFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
@@ -221,6 +248,87 @@ func TestChecksTokenIsRepositoryScopedAndNeverReusesCheckoutToken(t *testing.T) 
 	}
 	if strings.Contains(fmt.Sprintf("%+v", checks), "synthetic-checks-write-token") {
 		t.Fatal("checks Installation token leaked via formatting")
+	}
+}
+
+func TestActionsRunnerRegistrationTokenRequiresOptInAndUsesRepositoryScopedPermissions(t *testing.T) {
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	registrationToken := "synthetic-runner-registration-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/app/installations/77", "/repos/acme/api/installation":
+			_, _ = io.WriteString(w, `{"id":77,"app_id":12,"suspended_at":null}`)
+		case "/app/installations/77/access_tokens":
+			var body struct {
+				RepositoryIDs []int64           `json:"repository_ids"`
+				Permissions   map[string]string `json:"permissions"`
+			}
+			if json.NewDecoder(r.Body).Decode(&body) != nil || len(body.RepositoryIDs) != 1 || body.RepositoryIDs[0] != 88 ||
+				len(body.Permissions) != 1 || body.Permissions["administration"] != "write" {
+				t.Errorf("runner Installation token was broader than its exact repository scope: %+v", body)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"token": testTokenValue, "expires_at": now.Add(time.Hour),
+				"permissions": map[string]string{"administration": "write", "metadata": "read"}, "repositories": []map[string]int{{"id": 88}}})
+		case "/repos/acme/api/actions/runners/registration-token":
+			if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer "+testTokenValue {
+				t.Errorf("registration token request method/credential = %s / %q", r.Method, r.Header.Get("Authorization"))
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"token": registrationToken, "expires_at": now.Add(time.Hour)})
+		default:
+			t.Errorf("unexpected GitHub endpoint %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	_, privatePEM := newSigningKey(t)
+	secrets := secretAPIFunc(func(_ context.Context, _ *secretsmanager.GetSecretValueInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+		versionID := strings.Repeat("a", 32)
+		return &secretsmanager.GetSecretValueOutput{SecretString: &privatePEM, VersionId: &versionID}, nil
+	})
+	authorizer := actionsRunnerRepositoryAuthorizer{access: RepositoryAccess{Owner: "acme", Name: "api"}, allowed: true}
+	client, err := NewTokenClient(TokenConfig{AppID: 12, PrivateKeySecretARN: testKeyARN, PrivateKeySecretVersionID: strings.Repeat("a", 32),
+		TenantID: "tenant_one", IntegrationID: "integration_one", ConfigRevision: 2, CredentialGeneration: 3}, secrets, authorizer, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.apiURL = server.URL
+	client.now = func() time.Time { return now }
+	client.wait = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	token, repository, err := client.ActionsRunnerRegistrationToken(context.Background(), "tenant_one", 77, 88)
+	if err != nil || token.Value() != registrationToken || !token.ExpiresAt().Equal(now.Add(time.Hour)) || repository.Owner != "acme" || repository.Name != "api" {
+		t.Fatalf("ActionsRunnerRegistrationToken() = %v, %+v, error=%v", token, repository, err)
+	}
+	encoded, err := json.Marshal(token)
+	if err != nil || strings.Contains(string(encoded), registrationToken) || strings.Contains(fmt.Sprintf("%+v", token), registrationToken) {
+		t.Fatalf("runner registration token leaked in formatting/JSON: %s (%v)", encoded, err)
+	}
+	if _, cached := client.cache[tokenCacheKey{tenant: "tenant_one", integration: "integration_one", appID: 12, configRevision: 2,
+		credentialGeneration: 3, installation: 77, repository: 88, permissionScope: "administration:write"}]; cached {
+		t.Fatal("broad Runner Installation token remained cached")
+	}
+}
+
+func TestActionsRunnerRegistrationTokenDeniesRepositoryWithoutRunnerOptInBeforeGitHubCall(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
+	defer server.Close()
+	_, privatePEM := newSigningKey(t)
+	secrets := secretAPIFunc(func(_ context.Context, _ *secretsmanager.GetSecretValueInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+		versionID := strings.Repeat("a", 32)
+		return &secretsmanager.GetSecretValueOutput{SecretString: &privatePEM, VersionId: &versionID}, nil
+	})
+	authorizer := actionsRunnerRepositoryAuthorizer{access: RepositoryAccess{Owner: "acme", Name: "api"}, allowed: false}
+	client, err := NewTokenClient(TokenConfig{AppID: 12, PrivateKeySecretARN: testKeyARN, PrivateKeySecretVersionID: strings.Repeat("a", 32),
+		TenantID: "tenant_one", IntegrationID: "integration_one", ConfigRevision: 2, CredentialGeneration: 3}, secrets, authorizer, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.apiURL = server.URL
+	_, _, err = client.ActionsRunnerRegistrationToken(context.Background(), "tenant_one", 77, 88)
+	requireCredentialCode(t, err, "repository_not_authorized")
+	if called {
+		t.Fatal("GitHub API called for repository without Runner opt-in")
 	}
 }
 

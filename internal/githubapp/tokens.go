@@ -61,6 +61,12 @@ type TenantAppAuthorizer interface {
 	AuthorizeTenantApp(context.Context, TenantAppIdentity) error
 }
 
+// ActionsRunnerRepositoryAuthorizer requires both the active pinned Tenant
+// App and the separate per-repository Actions Runner opt-in.
+type ActionsRunnerRepositoryAuthorizer interface {
+	AuthorizeActionsRunnerRepository(context.Context, TenantAppIdentity, int64, int64) (RepositoryAccess, error)
+}
+
 // ErrRepositoryAuthorizationUnavailable distinguishes a transient CP store
 // failure from a denied binding without carrying database or secret details.
 var ErrRepositoryAuthorizationUnavailable = errors.New("GitHub repository authorization unavailable")
@@ -118,6 +124,21 @@ func (c TokenConfig) valid() bool {
 type InstallationToken struct {
 	value     string
 	expiresAt time.Time
+}
+
+// RunnerRegistrationToken is a short-lived credential accepted only by the
+// GitHub Actions runner configuration command. It is never JSON-serializable.
+type RunnerRegistrationToken struct {
+	value     string
+	expiresAt time.Time
+}
+
+func (t RunnerRegistrationToken) Value() string        { return t.value }
+func (t RunnerRegistrationToken) ExpiresAt() time.Time { return t.expiresAt }
+func (RunnerRegistrationToken) String() string         { return "[REDACTED GitHub runner registration token]" }
+func (t RunnerRegistrationToken) GoString() string     { return t.String() }
+func (RunnerRegistrationToken) MarshalJSON() ([]byte, error) {
+	return []byte(`"[REDACTED GitHub runner registration token]"`), nil
 }
 
 func (t InstallationToken) Value() string                  { return t.value }
@@ -324,6 +345,70 @@ func (c *TokenClient) ChecksToken(ctx context.Context, tenant domain.TenantID, i
 		delete(c.cache, key)
 	}
 	return result, err
+}
+
+// ActionsRunnerRegistrationToken mints one repository-scoped, short-lived
+// runner configuration credential. It is tenant-owned-App only, independently
+// rechecks the current Runner opt-in, and deliberately does not cache either
+// the broad installation token or the registration token.
+func (c *TokenClient) ActionsRunnerRegistrationToken(ctx context.Context, tenant domain.TenantID, installationID, repositoryID int64) (RunnerRegistrationToken, RepositoryAccess, error) {
+	if c == nil || ctx == nil || c.config.IntegrationID == "" || c.tenantAppAuth == nil || tenant == "" || installationID <= 0 || repositoryID <= 0 {
+		return RunnerRegistrationToken{}, RepositoryAccess{}, credentialError("invalid_request")
+	}
+	runnerAuthorizer, ok := c.authorizer.(ActionsRunnerRepositoryAuthorizer)
+	if !ok {
+		return RunnerRegistrationToken{}, RepositoryAccess{}, credentialError("invalid_configuration")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	select {
+	case c.gate <- struct{}{}:
+	case <-ctx.Done():
+		return RunnerRegistrationToken{}, RepositoryAccess{}, ctx.Err()
+	}
+	defer func() { <-c.gate }()
+	identity := TenantAppIdentity{TenantID: c.config.TenantID, IntegrationID: c.config.IntegrationID, GitHubAppID: c.config.AppID,
+		ConfigRevision: c.config.ConfigRevision, CredentialGeneration: c.config.CredentialGeneration}
+	if tenant != identity.TenantID {
+		return RunnerRegistrationToken{}, RepositoryAccess{}, credentialError("repository_not_authorized")
+	}
+	access, err := runnerAuthorizer.AuthorizeActionsRunnerRepository(ctx, identity, installationID, repositoryID)
+	if ctx.Err() != nil {
+		return RunnerRegistrationToken{}, RepositoryAccess{}, ctx.Err()
+	}
+	if err != nil || !validLogin(access.Owner) || !validCredentialRepositoryName(access.Name) {
+		return RunnerRegistrationToken{}, RepositoryAccess{}, credentialError("repository_not_authorized")
+	}
+	key := tokenCacheKey{tenant: tenant, integration: c.config.IntegrationID, appID: c.config.AppID, configRevision: c.config.ConfigRevision,
+		credentialGeneration: c.config.CredentialGeneration, installation: installationID, repository: repositoryID, permissionScope: "administration:write"}
+	defer delete(c.cache, key)
+	installationToken, err := c.scopedInstallationToken(ctx, key, map[string]string{"administration": "write"})
+	if err != nil {
+		return RunnerRegistrationToken{}, RepositoryAccess{}, err
+	}
+	if _, err := runnerAuthorizer.AuthorizeActionsRunnerRepository(ctx, identity, installationID, repositoryID); err != nil {
+		return RunnerRegistrationToken{}, RepositoryAccess{}, credentialError("repository_not_authorized")
+	}
+	var response struct {
+		Token     string    `json:"token"`
+		ExpiresAt time.Time `json:"expires_at"`
+	}
+	path := "/repos/" + url.PathEscape(access.Owner) + "/" + url.PathEscape(access.Name) + "/actions/runners/registration-token"
+	if err := c.request(ctx, http.MethodPost, path, installationToken.Value(), []byte("{}"), &response); err != nil {
+		return RunnerRegistrationToken{}, RepositoryAccess{}, err
+	}
+	now := c.now()
+	if response.Token == "" || len(response.Token) > 4096 || strings.ContainsAny(response.Token, "\r\n\x00 ") ||
+		!response.ExpiresAt.After(now.Add(2*time.Minute)) || response.ExpiresAt.After(now.Add(65*time.Minute)) {
+		return RunnerRegistrationToken{}, RepositoryAccess{}, credentialError("invalid_token_response")
+	}
+	if err := c.tenantAppAuth.AuthorizeTenantApp(ctx, identity); err != nil {
+		return RunnerRegistrationToken{}, RepositoryAccess{}, credentialError("repository_not_authorized")
+	}
+	if _, err := runnerAuthorizer.AuthorizeActionsRunnerRepository(ctx, identity, installationID, repositoryID); err != nil {
+		return RunnerRegistrationToken{}, RepositoryAccess{}, credentialError("repository_not_authorized")
+	}
+	return RunnerRegistrationToken{value: response.Token, expiresAt: response.ExpiresAt}, access, nil
 }
 
 // ChecksRunToken enforces the immutable credential pin captured by a Workload
@@ -648,3 +733,5 @@ func waitTokenRetry(ctx context.Context, ceiling time.Duration) error {
 var _ SecretValueAPI = (*secretsmanager.Client)(nil)
 var _ fmt.Stringer = InstallationToken{}
 var _ json.Marshaler = InstallationToken{}
+var _ fmt.Stringer = RunnerRegistrationToken{}
+var _ json.Marshaler = RunnerRegistrationToken{}

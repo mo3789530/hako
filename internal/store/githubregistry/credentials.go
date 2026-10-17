@@ -42,6 +42,40 @@ func (a CredentialAuthorizer) AuthorizeRepository(ctx context.Context, tenant do
 	return access, nil
 }
 
+// AuthorizeActionsRunnerRepository is stricter than ordinary repository
+// checkout authorization: it requires the exact active Tenant App binding and
+// the separately enabled Actions Runner policy for this Repository.
+func (a CredentialAuthorizer) AuthorizeActionsRunnerRepository(ctx context.Context, identity githubapp.TenantAppIdentity, installationID, repositoryID int64) (githubapp.RepositoryAccess, error) {
+	if a.Pool == nil || identity.TenantID == "" || !validOpaqueMetadata(identity.IntegrationID, 128) || identity.GitHubAppID <= 0 ||
+		identity.ConfigRevision < 1 || identity.CredentialGeneration < 1 || installationID <= 0 || repositoryID <= 0 {
+		return githubapp.RepositoryAccess{}, ErrInstallationNotActive
+	}
+	access, err := transaction.Within(ctx, a.Pool, a.Policy, func(ctx context.Context, tx pgx.Tx) (githubapp.RepositoryAccess, error) {
+		var result githubapp.RepositoryAccess
+		err := tx.QueryRow(ctx, `SELECT r.owner_login,r.repository_name
+			FROM tenant_github_integrations i
+			JOIN github_app_registrations app ON app.id=i.app_registration_id AND app.github_app_id=i.github_app_id
+			JOIN github_credential_bindings c ON c.tenant_id=i.tenant_id AND c.id=i.credential_binding_id AND c.github_app_id=i.github_app_id
+			JOIN tenant_github_app_installation_bindings ib ON ib.tenant_id=i.tenant_id AND ib.integration_id=i.id AND ib.installation_id=$6
+			JOIN tenant_github_installations installation ON installation.tenant_id=ib.tenant_id AND installation.installation_id=ib.installation_id
+			JOIN tenant_github_repositories r ON r.tenant_id=ib.tenant_id AND r.installation_id=ib.installation_id AND r.github_repository_id=$7
+			WHERE i.tenant_id=$1 AND i.id=$2 AND i.github_app_id=$3 AND i.config_revision=$4 AND i.credential_generation=$5
+			AND i.status='active' AND app.mode='tenant_owned' AND app.owner_tenant_id=i.tenant_id AND c.status='approved'
+			AND installation.status='active' AND installation.suspended_at IS NULL
+			AND r.actions_runner_enabled=TRUE AND r.actions_runner_enabled_at IS NOT NULL`,
+			identity.TenantID, identity.IntegrationID, identity.GitHubAppID, identity.ConfigRevision, identity.CredentialGeneration,
+			installationID, repositoryID).Scan(&result.Owner, &result.Name)
+		return result, err
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return githubapp.RepositoryAccess{}, ErrInstallationNotActive
+		}
+		return githubapp.RepositoryAccess{}, githubapp.ErrRepositoryAuthorizationUnavailable
+	}
+	return access, nil
+}
+
 // AuthorizeTenantApp checks the integration's live identity/generation before
 // any GitHub request or cached-token return. A stale in-memory client therefore
 // cannot use the new generation's credential material.
@@ -72,6 +106,7 @@ func (a CredentialAuthorizer) AuthorizeTenantApp(ctx context.Context, identity g
 
 var _ githubapp.RepositoryAuthorizer = CredentialAuthorizer{}
 var _ githubapp.TenantAppAuthorizer = CredentialAuthorizer{}
+var _ githubapp.ActionsRunnerRepositoryAuthorizer = CredentialAuthorizer{}
 
 // AuthorizeWebhookDelivery runs only after route-specific HMAC validation. A
 // signed pre-binding installation.created event may enter the inbox, but only

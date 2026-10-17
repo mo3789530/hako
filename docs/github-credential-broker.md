@@ -31,6 +31,19 @@ The broker's TLS listener requires a trusted client certificate. OAuth setup and
 
 Checkout callers cannot choose App ID, Installation, Repository, Role ARN, Secret ARN, version, revision, generation, or commit. The broker loads the Workload Run and active exact credential pin from the database, mints a read-only repository-scoped token, then rechecks caller authorization, Run state, and the credential pin after GitHub I/O. Cancellation, disable, or rotation during the request fails closed. A failed Tenant-owned request never falls back to the shared App. Shared Runs continue using the existing shared credential provider.
 
+The trusted `githubapp.TokenClient` also has a repository-scoped Actions runner
+registration-token primitive for Tenant-owned Apps. It requires the exact
+active Tenant App revision/generation and the independent per-repository
+`actions_runner_enabled` policy, requests only the `administration:write`
+Installation permission for that one Repository, and rechecks authorization
+after GitHub returns. Neither the temporary Installation token nor the
+one-hour runner registration token is cached; both token types redact common
+formatting and JSON paths. This is not yet exposed as an HTTP endpoint: the
+controller must first resolve a claimed durable Actions job and bind token
+issuance to that job before the primitive is wired into the mTLS broker.
+Installations must grant their Tenant GitHub App `Administration: write` for
+repository runners; installations without it fail closed.
+
 The checkout token is passed only to the trusted fixed-SHA checkout implementation, which supplies it to Git through a private askpass pipe. It is not persisted in the Run, database, queue, artifacts, or logs. The broker response is short-lived transport data, not a credential distribution API for Job VMs.
 
 ## Local configuration contract

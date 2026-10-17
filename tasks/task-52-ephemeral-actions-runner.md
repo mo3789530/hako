@@ -1,6 +1,6 @@
 # Task 52: GitHub Actions Ephemeral Runner Mode
 
-Status: In Progress (2026-10-17: signed `workflow_job.queued` deliveries are retained but excluded from the generic push/PR Go-test trigger. Normalized events preserve run attempt, workflow name, bounded labels, and optional assigned runner/group identity. Tenant Owner/Admin repository opt-in is stored via API/CLI and audited. A separate default-off admission flag revalidates Tenant/Installation/Repository policy and persists deduplicated queued job admissions; worker claims use expiring leases with recovery. Registration-token minting, exact runner assignment, Lambda MicroVM lifecycle, and cleanup remain unimplemented). Priority: P3.
+Status: In Progress (2026-10-17: signed `workflow_job.queued` deliveries are retained but excluded from the generic push/PR Go-test trigger. Normalized events preserve run attempt, workflow name, bounded labels, and optional assigned runner/group identity. Tenant Owner/Admin repository opt-in is stored via API/CLI and audited. A separate default-off admission flag revalidates Tenant/Installation/Repository policy and persists deduplicated queued job admissions; worker claims use expiring leases with recovery. The trusted token client can mint a repository-scoped registration token after current opt-in authorization, but broker exposure bound to a claimed job, exact runner assignment, Lambda MicroVM lifecycle, and cleanup remain unimplemented). Priority: P3.
 
 Claude Code Action support is tracked separately in [Task 73](task-73-claude-code-action.md), including Tenant-scoped model credentials, untrusted PR denial, and action-specific E2E.
 
@@ -47,3 +47,8 @@ Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Action
   row with a bounded lease and another controller can recover it after expiry.
   Admission/claim do not issue credentials or launch compute. A dedicated
   controller is required to execute and transition claimed rows.
+- The trusted GitHub token client has a fake-tested registration-token method
+  that rechecks the exact Tenant App revision/generation and Runner opt-in,
+  requests only repository-scoped `administration:write`, and avoids caching
+  both the broader Installation token and the one-hour runner token. Its
+  mTLS/broker route must still be bound to a claimed job before use.
