@@ -8,6 +8,24 @@ mock_provider "aws" {
     }
   }
 
+  mock_data "aws_partition" {
+    defaults = {
+      partition = "aws"
+    }
+  }
+
+  mock_data "aws_caller_identity" {
+    defaults = {
+      account_id = "123456789012"
+    }
+  }
+
+  mock_data "aws_region" {
+    defaults = {
+      name = "ap-northeast-1"
+    }
+  }
+
   mock_resource "aws_iam_role" {
     defaults = {
       arn = "arn:aws:iam::123456789012:role/rp-test-mock"
@@ -95,6 +113,10 @@ run "workload_controller_wires_only_dedicated_queue_and_recovery" {
       artifact_bucket_arn       = "arn:aws:s3:::hako-artifact-bucket"
       artifact_prefix           = "v1/artifacts"
     }
+    workload_controller_vpc_config = {
+      subnet_ids         = ["subnet-11111111", "subnet-22222222"]
+      security_group_ids = ["sg-11111111"]
+    }
     workload_controller_deployment = {
       # Plan-only test input; no Lambda package is applied by `tofu test`.
       zip_path                       = "workload-controller.tftest.hcl"
@@ -120,6 +142,38 @@ run "workload_controller_wires_only_dedicated_queue_and_recovery" {
   assert {
     condition     = aws_lambda_function.workload_controller[0].environment[0].variables["HAKO_WORKLOAD_LAMBDA_MODE"] == "combined"
     error_message = "Worker Lambda must use the combined command/recovery event handler."
+  }
+
+  assert {
+    condition     = toset(aws_lambda_function.workload_controller[0].vpc_config[0].subnet_ids) == toset(["subnet-11111111", "subnet-22222222"]) && toset(aws_lambda_function.workload_controller[0].vpc_config[0].security_group_ids) == toset(["sg-11111111"])
+    error_message = "Worker Lambda must attach to the explicitly supplied private subnets and security group."
+  }
+
+  assert {
+    condition = anytrue([for statement in jsondecode(aws_iam_role_policy.workload_controller[0].policy).Statement :
+      statement.Sid == "CreateLambdaVpcNetworkInterfaces" && toset(statement.Action) == toset(["ec2:CreateNetworkInterface"]) &&
+      contains(statement.Resource, "arn:aws:ec2:ap-northeast-1:123456789012:subnet/subnet-11111111") &&
+      contains(statement.Resource, "arn:aws:ec2:ap-northeast-1:123456789012:subnet/subnet-22222222") &&
+      contains(statement.Resource, "arn:aws:ec2:ap-northeast-1:123456789012:security-group/sg-11111111") &&
+      !contains(statement.Resource, "*")
+    ])
+    error_message = "ENI creation must be scoped to the exact configured subnets and security groups."
+  }
+
+  assert {
+    condition = anytrue([for statement in jsondecode(aws_iam_role_policy.workload_controller[0].policy).Statement :
+      statement.Sid == "ManageLambdaVpcNetworkInterfaces" &&
+      toset(statement.Action) == toset(["ec2:AssignPrivateIpAddresses", "ec2:DeleteNetworkInterface", "ec2:UnassignPrivateIpAddresses"]) &&
+      statement.Resource == ["arn:aws:ec2:ap-northeast-1:123456789012:network-interface/*"]
+    ])
+    error_message = "ENI lifecycle operations must be limited to network-interface resources."
+  }
+
+  assert {
+    condition = anytrue([for statement in jsondecode(aws_iam_role_policy.workload_controller[0].policy).Statement :
+      statement.Sid == "DescribeLambdaVpcNetworkInterfaces" && toset(statement.Action) == toset(["ec2:DescribeNetworkInterfaces"]) && statement.Resource == ["*"]
+    ])
+    error_message = "Only the read-only DescribeNetworkInterfaces action may retain Resource wildcard scope."
   }
 
   assert {
@@ -174,5 +228,26 @@ run "workload_controller_rejects_traversal_in_recovery_lease_key" {
 
   expect_failures = [
     var.workload_controller_runtime,
+  ]
+}
+
+run "workload_controller_rejects_duplicate_or_malformed_vpc_ids" {
+  command = plan
+  providers = {
+    aws = aws.mock
+  }
+
+  variables {
+    resource_plane_id                      = "rp-test"
+    control_plane_dispatcher_role_arn      = "arn:aws:iam::123456789012:role/hako-cp-dispatcher"
+    control_plane_result_consumer_role_arn = "arn:aws:iam::123456789012:role/hako-cp-result-consumer"
+    workload_controller_vpc_config = {
+      subnet_ids         = ["subnet-11111111", "subnet-11111111"]
+      security_group_ids = ["sg-invalid"]
+    }
+  }
+
+  expect_failures = [
+    var.workload_controller_vpc_config,
   ]
 }

@@ -128,6 +128,27 @@ variable "workload_controller_runtime" {
   }
 }
 
+variable "workload_controller_vpc_config" {
+  description = "Pre-provisioned private subnets and a dedicated security group for the Workload Controller Lambda. Network routes/endpoints remain owned and reviewed by the Resource Plane account."
+  type = object({
+    subnet_ids         = list(string)
+    security_group_ids = list(string)
+  })
+  default = null
+
+  validation {
+    condition = var.workload_controller_vpc_config == null || (
+      length(var.workload_controller_vpc_config.subnet_ids) >= 2 && length(var.workload_controller_vpc_config.subnet_ids) <= 16 &&
+      length(var.workload_controller_vpc_config.subnet_ids) == length(toset(var.workload_controller_vpc_config.subnet_ids)) &&
+      alltrue([for id in var.workload_controller_vpc_config.subnet_ids : can(regex("^subnet-[0-9A-Fa-f]+$", id))]) &&
+      length(var.workload_controller_vpc_config.security_group_ids) >= 1 && length(var.workload_controller_vpc_config.security_group_ids) <= 5 &&
+      length(var.workload_controller_vpc_config.security_group_ids) == length(toset(var.workload_controller_vpc_config.security_group_ids)) &&
+      alltrue([for id in var.workload_controller_vpc_config.security_group_ids : can(regex("^sg-[0-9A-Fa-f]+$", id))])
+    )
+    error_message = "workload_controller_vpc_config requires 2-16 unique subnet IDs and 1-5 unique security group IDs."
+  }
+}
+
 variable "workload_controller_deployment" {
   description = "Optional default-off combined Workload command/recovery Lambda deployment. Requires the dedicated Workload queues, exact runtime policy, and five Secret ARNs; Terraform never receives Secret values."
   type = object({
@@ -153,7 +174,7 @@ variable "workload_controller_deployment" {
 
   validation {
     condition = var.workload_controller_deployment == null || (
-      var.enable_workload_result_queue && var.workload_controller_runtime != null &&
+      var.enable_workload_result_queue && var.workload_controller_runtime != null && var.workload_controller_vpc_config != null &&
       var.workload_controller_deployment.zip_path != "" && fileexists(var.workload_controller_deployment.zip_path) &&
       can(regex("^https://[^/]+", var.workload_controller_deployment.control_plane_endpoint)) &&
       can(regex("^https://[^/]+", var.workload_controller_deployment.broker_url)) &&
@@ -181,7 +202,7 @@ variable "workload_controller_deployment" {
         var.workload_controller_deployment.ticket_private_key_secret_arn
       ]) == toset(var.workload_controller_secret_arns)
     )
-    error_message = "Workload Controller deployment requires existing ZIP, HTTPS endpoints, exact five matching Secret ARNs, enabled dedicated queues/runtime IAM, bounded Lambda/recovery settings, at least two Lambda concurrency slots, and queue visibility at least six times its timeout."
+    error_message = "Workload Controller deployment requires an existing ZIP, HTTPS endpoints, private VPC subnets/security groups, exact five matching Secret ARNs, enabled dedicated queues/runtime IAM, bounded Lambda/recovery settings, at least two Lambda concurrency slots, and queue visibility at least six times its timeout."
   }
 }
 

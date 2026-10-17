@@ -58,6 +58,15 @@ variable "workload_controller_runtime" {
   default = null
 }
 
+variable "workload_controller_vpc_config" {
+  description = "Private subnet and security group IDs for the optional Workload Controller Lambda."
+  type = object({
+    subnet_ids         = list(string)
+    security_group_ids = list(string)
+  })
+  default = null
+}
+
 variable "workload_controller_deployment" {
   description = "Optional default-off combined Workload Controller Lambda deployment. Only file paths, endpoints, profile data, and exact Secret ARNs are accepted; never provide Secret values."
   type = object({

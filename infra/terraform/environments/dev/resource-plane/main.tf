@@ -7,6 +7,7 @@ module "resource_plane" {
   control_plane_workload_result_consumer_role_arn = var.control_plane_workload_result_consumer_role_arn
   workload_controller_secret_arns                 = var.workload_controller_secret_arns
   workload_controller_runtime                     = var.workload_controller_runtime
+  workload_controller_vpc_config                  = var.workload_controller_vpc_config
   workload_controller_deployment                  = var.workload_controller_deployment
   enable_workload_result_queue                    = var.enable_workload_result_queue
   max_receive_count                               = var.max_receive_count

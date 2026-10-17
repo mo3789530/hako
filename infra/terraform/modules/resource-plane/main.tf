@@ -547,7 +547,28 @@ resource "aws_iam_role_policy" "workload_controller" {
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
         Resource = var.workload_controller_secret_arns
-    }])
+        }], var.workload_controller_deployment == null ? [] : tolist([{
+          Sid    = "CreateLambdaVpcNetworkInterfaces"
+          Effect = "Allow"
+          Action = ["ec2:CreateNetworkInterface"]
+          Resource = concat(
+            ["arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:network-interface/*"],
+            [for id in var.workload_controller_vpc_config.subnet_ids : "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:subnet/${id}"],
+            [for id in var.workload_controller_vpc_config.security_group_ids : "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:security-group/${id}"]
+          )
+          }, {
+          Sid    = "ManageLambdaVpcNetworkInterfaces"
+          Effect = "Allow"
+          Action = ["ec2:AssignPrivateIpAddresses", "ec2:DeleteNetworkInterface", "ec2:UnassignPrivateIpAddresses"]
+          Resource = [
+            "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:network-interface/*"
+          ]
+          }, {
+          Sid      = "DescribeLambdaVpcNetworkInterfaces"
+          Effect   = "Allow"
+          Action   = ["ec2:DescribeNetworkInterfaces"]
+          Resource = ["*"]
+    }]))
   })
 }
 
@@ -669,6 +690,14 @@ resource "aws_lambda_function" "workload_controller" {
       HAKO_WORKLOAD_RECOVERY_PAGE_SIZE            = tostring(var.workload_controller_deployment.recovery_page_size)
       HAKO_WORKLOAD_RECOVERY_MAX_PAGES            = tostring(var.workload_controller_deployment.recovery_max_pages)
       HAKO_WORKLOAD_RECOVERY_LEASE_TTL            = var.workload_controller_deployment.recovery_lease_ttl
+    }
+  }
+
+  dynamic "vpc_config" {
+    for_each = var.workload_controller_deployment == null ? [] : [var.workload_controller_vpc_config]
+    content {
+      subnet_ids         = vpc_config.value.subnet_ids
+      security_group_ids = vpc_config.value.security_group_ids
     }
   }
 
