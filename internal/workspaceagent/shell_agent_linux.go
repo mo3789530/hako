@@ -82,11 +82,40 @@ func (a *WorkspaceShellAgent) BindWorkspaceRuntime(microVMID string, spec Worksp
 }
 
 func (a *WorkspaceShellAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/internal/ready" {
+		if r.Method != http.MethodGet || r.URL.RawQuery != "" || r.ContentLength > 0 {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		a.mu.RLock()
+		ready := a.shells != nil && a.identity.WorkspaceID != ""
+		a.mu.RUnlock()
+		if !ready {
+			http.Error(w, "Workspace Agent is not ready", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if r.URL.Path != "/v1/workspaces/"+string(a.workspaceID())+"/shell" {
 		http.NotFound(w, r)
 		return
 	}
 	a.serveShell(w, r)
+}
+
+func (a *WorkspaceShellAgent) Close() error {
+	if a == nil {
+		return nil
+	}
+	a.mu.Lock()
+	shells := a.shells
+	a.shells = nil
+	a.mu.Unlock()
+	if shells == nil {
+		return nil
+	}
+	return shells.Close()
 }
 
 func (a *WorkspaceShellAgent) workspaceID() string {

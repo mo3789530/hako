@@ -27,7 +27,14 @@ func main() {
 }
 
 func run() error {
-	handler, mountExecutor, err := workspaceagent.NewLinuxWorkspaceMountLifecycle(http.NotFoundHandler())
+	supervisor, err := workspaceagent.NewLinuxWorkspaceAgentSupervisor(workspaceagent.WorkspaceAgentSupervisorConfig{
+		TrustedKeysFile: os.Getenv(workspaceagent.WorkspaceAgentTrustedKeysFileEnvironment),
+		GatewayOrigin:   os.Getenv(workspaceagent.WorkspaceGatewayOriginEnvironment),
+	})
+	if err != nil {
+		return errors.New("configure unprivileged Workspace Agent")
+	}
+	handler, mountExecutor, err := workspaceagent.NewLinuxWorkspaceMountLifecycle(supervisor)
 	if err != nil {
 		return errors.New("configure Workspace init")
 	}
@@ -36,6 +43,13 @@ func run() error {
 		defer cancel()
 		if err := mountExecutor.Unmount(ctx); err != nil {
 			log.Printf("Workspace EFS unmount did not finish cleanly")
+		}
+	}()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := supervisor.Stop(ctx); err != nil {
+			log.Printf("Workspace Agent shutdown did not finish cleanly")
 		}
 	}()
 	listener, err := net.Listen("tcp", workspaceInitListenAddress)

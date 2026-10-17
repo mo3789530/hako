@@ -46,11 +46,33 @@ Plane, MicroVM ID, and `shell` permission. The strict `/run` hook provides the
 Workspace identity and provider MicroVM ID; the agent binds these only after
 the EFS mount succeeds, before `/run` is acknowledged. The handler is covered
 by signed-ticket-to-real-PTY tests, including cross-Workspace/MicroVM, origin,
-and replay rejection. The endpoint library is not yet launched as the
-unprivileged child process by `hako-workspace-init`, and the Resource Plane
-Gateway does not yet dial the Lambda MicroVM endpoint or mint its paired AWS
-port-8080 proxy token. Keep Workspace runtime exposure disabled until that
-process/transport wiring and key distribution are complete.
+and replay rejection. After EFS mount succeeds, `hako-workspace-init` now
+launches `hako-workspace-agent` as a separate process with the Access Point
+UID/GID, a minimal environment, no supplementary groups, and no AWS
+credentials. The child receives only strict Workspace/MicroVM hook identity on
+stdin and an inherited listener on a root-owned mode-0600 Unix socket. Root
+init proxies only `/v1/workspaces/...` requests to that socket and waits for an
+internal readiness probe before acknowledging `/run`; orderly shutdown stops
+the child before EFS unmount. The image build now requires a public-key JSON
+file and the pinned EFS RPM. `HAKO_GATEWAY_ORIGIN` remains a required runtime
+configuration value.
+
+The supervisor, readiness, route restriction, socket permissions, binding,
+shutdown, and strict child-payload bounds have local tests. This does not verify
+the actual Lambda MicroVM image build, `/dev/pts`, or run-hook behavior. The
+Resource Plane Gateway still does not dial this Lambda MicroVM endpoint or mint
+its paired AWS port-8080 proxy token, and production key rotation/distribution
+is unresolved. Keep Workspace runtime exposure disabled until those transport
+and deployment gates are complete.
+
+Build the dedicated image with
+`make build-workspace-microvm-image HAKO_EFS_UTILS_RPM_VERSION=<pinned-version> HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE=<public-keys.json>`.
+The JSON contains only key-ID to unpadded base64url Ed25519 public-key values;
+the target fails when the file is absent or empty. Configure
+`HAKO_GATEWAY_ORIGIN` in the trusted Resource Plane MicroVM launch environment
+to the exact HTTPS origin; the guest rejects tickets presented with another
+Origin. The root init does not start when this setting or the image-owned key
+file path is missing. Do not place the Agent signing private key in this image.
 
 ## Verification
 

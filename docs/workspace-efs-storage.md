@@ -138,9 +138,13 @@ filesystem.
 
 ## Remaining Task 44 work
 
-Verify the dedicated Workspace image build, then launch the interactive Agent
-unprivileged after the mount. Test suspend/restart/replacement recovery plus
-orderly unmount. Add a Resource Plane EFS filesystem, encrypted-at-rest policy, private
+The Workspace image now includes the distinct interactive Agent child; the
+root init starts it with the Access Point UID/GID only after mounting EFS,
+waits for readiness, and terminates it before ownership-checked unmount. The
+image build requires a public verification-key JSON file. The Podman image
+build and real Lambda `/run` hook remain unverified. Test
+suspend/restart/replacement recovery plus orderly unmount. Add a Resource
+Plane EFS filesystem, encrypted-at-rest policy, private
 mount targets and least-privilege networking/IAM; add mount failure compensation
 and orphan reconciliation; and verify backup/restore, retention, and quotas.
 Live AWS validation remains subject to explicit approval.
