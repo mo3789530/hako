@@ -87,6 +87,20 @@ func (c *HTTPActionsRunnerBootstrapTokenClient) Issue(ctx context.Context, reque
 	return ActionsRunnerRegistrationGrant{Token: token, Repository: githubapp.RepositoryAccess{Owner: decoded.Repository.Owner, Name: decoded.Repository.Name}}, nil
 }
 
+// IssueModelCredential resolves a model key only after the Lambda MicroVM is
+// bound to the launch claim. The HTTP client uses the same preconfigured mTLS
+// transport as the one-time registration-token broker.
+func (c *HTTPActionsRunnerBootstrapTokenClient) IssueModelCredential(ctx context.Context, request ActionsRunnerRegistrationRequest, microVMID string) ([]byte, error) {
+	if c == nil || c.client == nil {
+		return nil, ErrActionsRunnerBootstrapTokenDenied
+	}
+	client, err := NewHTTPActionsRunnerModelCredentialClient(c.base, c.client)
+	if err != nil {
+		return nil, ErrActionsRunnerBootstrapTokenDenied
+	}
+	return client.IssueModelCredential(ctx, request, microVMID)
+}
+
 func validActionsRunnerRepositoryPart(value string) bool {
 	if len(value) == 0 || len(value) > 100 || strings.TrimSpace(value) != value {
 		return false

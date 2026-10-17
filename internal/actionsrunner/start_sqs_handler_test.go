@@ -30,7 +30,7 @@ func TestRunnerStartupHandlerReturnsOnlyFailedSQSRecords(t *testing.T) {
 	worker, err := NewRunnerStartupWorker(RunnerStartupWorkerConfig{OperationTimeout: time.Minute}, startBrokerStub{command: command, events: &eventsSeen},
 		runnerLauncherStub{instance: instance, events: &eventsSeen}, runnerBinderStub{events: &eventsSeen},
 		runnerTokenIssuerStub{grant: githubbroker.ActionsRunnerRegistrationGrant{Token: token, Repository: githubapp.RepositoryAccess{Owner: "acme", Name: "api"}}, events: &eventsSeen},
-		guestBootstrapStub{events: &eventsSeen}, startupFailureStub{events: &eventsSeen}, command.ResourcePlaneID)
+		&guestBootstrapStub{events: &eventsSeen}, startupFailureStub{events: &eventsSeen}, command.ResourcePlaneID)
 	if err != nil {
 		t.Fatal(err)
 	}

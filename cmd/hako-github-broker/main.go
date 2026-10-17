@@ -20,6 +20,7 @@ import (
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/githubapp"
 	"github.com/mo3789530/hako/internal/githubbroker"
+	"github.com/mo3789530/hako/internal/modelcredentialbroker"
 	"github.com/mo3789530/hako/internal/store/dsql"
 	"github.com/mo3789530/hako/internal/store/githubregistry"
 	"github.com/mo3789530/hako/internal/store/transaction"
@@ -177,6 +178,17 @@ func run() error {
 			return errors.New("configure GitHub Actions runner startup-failure recorder")
 		}
 	}
+	var runnerModelCredential githubbroker.ActionsRunnerModelCredentialIssuer
+	if len(runnerBindingIDs) > 0 {
+		modelSecretReader, readerErr := modelcredentialbroker.NewAWSSecretReader(awsConfig)
+		if readerErr != nil {
+			return errors.New("configure Tenant model credential Secret reader")
+		}
+		runnerModelCredential, err = githubbroker.NewPostgresActionsRunnerModelCredentialService(runnerBindingIDs, pool, policy, modelSecretReader)
+		if err != nil {
+			return errors.New("configure Tenant model credential broker")
+		}
+	}
 	tlsConfig, err := serverTLSConfigFromEnv()
 	if err != nil {
 		return err
@@ -185,7 +197,7 @@ func run() error {
 	if addr == "" {
 		addr = defaultListenAddr
 	}
-	server := &http.Server{Addr: addr, Handler: githubbroker.HandlerWithActionsRunnerExecutionLifecycle(oauth, checkout, checks, checkoutCallers, actionsRunner, runnerCleanup, runnerCleanupCallers, runnerBinding, runnerCleanupCallers, runnerBootstrapToken, runnerCleanupCallers, runnerLaunch, runnerCleanupCallers, runnerStartupFailure, runnerCleanupCallers), TLSConfig: tlsConfig,
+	server := &http.Server{Addr: addr, Handler: githubbroker.HandlerWithActionsRunnerExecutionLifecycle(oauth, checkout, checks, checkoutCallers, actionsRunner, runnerCleanup, runnerCleanupCallers, runnerBinding, runnerCleanupCallers, runnerBootstrapToken, runnerCleanupCallers, runnerLaunch, runnerCleanupCallers, runnerStartupFailure, runnerCleanupCallers, runnerModelCredential), TLSConfig: tlsConfig,
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 60 * time.Second,
 		IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
 	go func() {

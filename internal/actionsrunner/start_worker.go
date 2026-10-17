@@ -21,6 +21,10 @@ type RunnerBootstrapTokenIssuer interface {
 	Issue(context.Context, githubbroker.ActionsRunnerRegistrationRequest) (githubbroker.ActionsRunnerRegistrationGrant, error)
 }
 
+type RunnerModelCredentialIssuer interface {
+	IssueModelCredential(context.Context, githubbroker.ActionsRunnerRegistrationRequest, string) ([]byte, error)
+}
+
 type RunnerMicroVMLauncher interface {
 	Launch(context.Context, githubwebhook.ActionsRunnerJob, RunnerRepository) (LambdaRunnerInstance, error)
 }
@@ -105,7 +109,18 @@ func (w *RunnerStartupWorker) Start(ctx context.Context, request githubbroker.Ac
 		fail()
 		return ErrRunnerStartFailed
 	}
-	if err := w.bootstrap.Deliver(operationCtx, RunnerBootstrapRequest{Instance: instance, Job: job, Repository: repository, Token: grant.Token}); err != nil {
+	var modelCredential []byte
+	if credentialIssuer, ok := w.tokens.(RunnerModelCredentialIssuer); ok {
+		modelCredential, err = credentialIssuer.IssueModelCredential(operationCtx, request, instance.MicroVMID)
+		if err != nil {
+			clear(modelCredential)
+			fail()
+			return ErrRunnerStartFailed
+		}
+	}
+	defer clear(modelCredential)
+	if err := w.bootstrap.Deliver(operationCtx, RunnerBootstrapRequest{Instance: instance, Job: job, Repository: repository, Token: grant.Token,
+		ModelCredential: modelCredential}); err != nil {
 		fail()
 		return ErrRunnerStartFailed
 	}

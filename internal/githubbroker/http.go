@@ -237,7 +237,8 @@ func HandlerWithActionsRunnerExecutionLifecycle(service *OAuthService, checkout 
 	runnerBinding *ActionsRunnerBindingService, bindingCallers []string,
 	runnerBootstrapToken *ActionsRunnerBootstrapTokenService, runnerTokenCallers []string,
 	runnerLaunch *ActionsRunnerLaunchService, runnerLaunchCallers []string,
-	runnerStartupFailure *ActionsRunnerStartupFailureService, failureCallers []string) http.Handler {
+	runnerStartupFailure *ActionsRunnerStartupFailureService, failureCallers []string,
+	modelCredential ...ActionsRunnerModelCredentialIssuer) http.Handler {
 	allowedCheckoutCallers := map[string]struct{}{controlPlaneURI: {}}
 	for _, caller := range checkoutCallers {
 		if caller != controlPlaneURI && !strings.HasPrefix(caller, resourcePlaneURIPrefix) {
@@ -534,7 +535,73 @@ func HandlerWithActionsRunnerExecutionLifecycle(service *OAuthService, checkout 
 			writeResponse(w, struct{}{})
 		})
 	}
+	if len(modelCredential) > 1 {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusServiceUnavailable) })
+	}
+	if len(modelCredential) == 1 && modelCredential[0] != nil && len(allowedRunnerLaunchCallers) > 0 {
+		issuer := modelCredential[0]
+		mux.HandleFunc("POST /v1/actions-runner/model-credential", func(w http.ResponseWriter, r *http.Request) {
+			caller, err := authenticatedCleanupCaller(r, allowedRunnerLaunchCallers)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized)
+				return
+			}
+			input, ok := decodeActionsRunnerModelCredentialRequest(r)
+			if !ok {
+				writeError(w, http.StatusBadRequest)
+				return
+			}
+			credential, configured, err := issuer.Issue(r.Context(), caller, input)
+			if err != nil {
+				clear(credential)
+				writeError(w, http.StatusForbidden)
+				return
+			}
+			w.Header().Set("Cache-Control", "no-store")
+			if !configured {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			defer clear(credential)
+			body, err := json.Marshal(struct {
+				Credential []byte `json:"credential"`
+			}{Credential: credential})
+			if err != nil || len(body) > 12<<10 {
+				clear(body)
+				writeError(w, http.StatusInternalServerError)
+				return
+			}
+			defer clear(body)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(body)
+		})
+	}
 	return mux
+}
+
+func decodeActionsRunnerModelCredentialRequest(r *http.Request) (ActionsRunnerModelCredentialRequest, bool) {
+	var input ActionsRunnerModelCredentialRequest
+	if r == nil || r.Body == nil || r.ContentLength > 2048 || !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		return input, false
+	}
+	data, err := io.ReadAll(io.LimitReader(r.Body, 2049))
+	if err != nil || len(data) > 2048 {
+		return input, false
+	}
+	defer clear(data)
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&input) != nil || !validActionsRunnerRegistrationRequest(ActionsRunnerRegistrationRequest{
+		IntegrationID: input.IntegrationID, WorkflowJobID: input.WorkflowJobID, RunAttempt: input.RunAttempt, ClaimID: input.ClaimID,
+	}) || !microVMIdentityPattern.MatchString(input.LambdaMicroVMID) {
+		return ActionsRunnerModelCredentialRequest{}, false
+	}
+	var trailing any
+	if decoder.Decode(&trailing) != io.EOF {
+		return ActionsRunnerModelCredentialRequest{}, false
+	}
+	return input, true
 }
 
 func authenticatedCaller(r *http.Request) (string, error) {

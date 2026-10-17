@@ -102,9 +102,21 @@ immutable Secret version and updating the Tenant credential with the observed
 generation; never overwrite the pinned version in place. Production alerting
 and IAM revocation automation remain deployment work.
 
-This resolver and its fake-provider tests are local libraries, not yet a
-deployed credential-delivery protocol to the Action process. Task 76 must wire
-that final boundary without putting the credential in SQS, runner registration
-data, API responses, command arguments, logs, or artifacts. Credentials are
-read-only by default; repository write access requires a separate explicit
-capability and is not implied by the model API key.
+The Resource Plane runner worker now requests a configured key through a
+dedicated, allowlisted mTLS broker endpoint only after the Lambda MicroVM is
+launched and bound to its live claim. The broker response is `no-store` and
+exists only on this private broker protocol; it is never returned by the public
+Tenant API. The worker puts the bytes in a separate field of the short-lived,
+signed bootstrap envelope addressed to the exact MicroVM HTTPS endpoint. The
+envelope is bound to that MicroVM and expires within five minutes. No model key
+is added to SQS messages, the GitHub runner registration token, process
+arguments, logs, artifacts, or DSQL. Buffers are cleared in the resolver,
+broker, worker, and bootstrap sender after handoff.
+
+This is the trusted broker-to-guest bootstrap handoff, not proof that the
+guest-side receiver has installed the key into the official Action process.
+That receiver and end-to-end process wiring, plus broker/Resource Plane IAM,
+certificate provisioning, and deployment review, remain gated follow-up work
+(Tasks 52, 75–77). No real Secret was read or provisioned for local tests.
+Credentials are read-only by default; repository write access requires a
+separate explicit capability and is not implied by the model API key.

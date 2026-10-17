@@ -19,11 +19,12 @@ import (
 )
 
 var (
-	ErrCredentialNotFound = errors.New("Tenant model credential not found")
-	ErrCredentialExists   = errors.New("Tenant model credential already exists")
-	ErrCredentialConflict = errors.New("Tenant model credential changed or binding is unavailable")
-	versionIDPattern      = regexp.MustCompile(`^[A-Fa-f0-9]{32}$`)
-	credentialIDPattern   = regexp.MustCompile(`^mcred_[A-Za-z0-9_-]{8,80}$`)
+	ErrCredentialNotFound      = errors.New("Tenant model credential not found")
+	ErrCredentialExists        = errors.New("Tenant model credential already exists")
+	ErrCredentialConflict      = errors.New("Tenant model credential changed or binding is unavailable")
+	ErrCredentialNotConfigured = errors.New("Tenant model credential is not configured")
+	versionIDPattern           = regexp.MustCompile(`^[A-Fa-f0-9]{32}$`)
+	credentialIDPattern        = regexp.MustCompile(`^mcred_[A-Za-z0-9_-]{8,80}$`)
 )
 
 const ProviderAnthropic = "anthropic"
@@ -77,11 +78,10 @@ func ResolveForRunnerClaim(ctx context.Context, tx pgx.Tx, identity RunnerClaimI
 		identity.ClaimID == "" || identity.ResourcePlaneID == "" || identity.LambdaMicroVMID == "" || now.IsZero() {
 		return SecretAccess{}, ErrCredentialNotFound
 	}
-	var access SecretAccess
 	var policyJSON []byte
 	var policyHash string
-	err := tx.QueryRow(ctx, `SELECT c.id,c.tenant_id,c.provider,b.reader_role_arn,b.secret_arn,c.secret_version_id,c.credential_generation,
-		r.actions_runner_workflow_policy,j.provenance_policy_sha256
+	var tenantID domain.TenantID
+	err := tx.QueryRow(ctx, `SELECT j.tenant_id,r.actions_runner_workflow_policy,j.provenance_policy_sha256
 		FROM github_actions_runner_jobs j
 		JOIN tenant_github_integrations i ON i.id=j.integration_id AND i.tenant_id=j.tenant_id AND i.status='active'
 		JOIN github_webhook_deliveries d ON d.integration_id=j.integration_id AND d.delivery_id=j.delivery_id
@@ -89,14 +89,11 @@ func ResolveForRunnerClaim(ctx context.Context, tx pgx.Tx, identity RunnerClaimI
 		JOIN tenant_github_app_installation_bindings ib ON ib.tenant_id=j.tenant_id AND ib.integration_id=j.integration_id AND ib.installation_id=j.installation_id
 		JOIN tenant_github_installations x ON x.tenant_id=ib.tenant_id AND x.installation_id=ib.installation_id AND x.status='active' AND x.suspended_at IS NULL
 		JOIN tenant_github_repositories r ON r.tenant_id=j.tenant_id AND r.installation_id=j.installation_id AND r.github_repository_id=j.repository_id
-		JOIN tenant_model_credentials c ON c.tenant_id=j.tenant_id AND c.provider='anthropic' AND c.status='active'
-		JOIN tenant_model_credential_bindings b ON b.tenant_id=c.tenant_id AND b.id=c.binding_id AND b.provider=c.provider AND b.status='approved'
 		WHERE j.integration_id=$1 AND j.workflow_job_id=$2 AND j.run_attempt=$3 AND j.claim_id=$4 AND j.resource_plane_id=$5
 		AND j.lambda_microvm_id=$6 AND j.state='starting' AND j.lease_expires_at>$7 AND j.provenance_verified_at IS NOT NULL
 		AND j.provenance_policy_sha256 IS NOT NULL AND r.actions_runner_enabled=TRUE AND r.actions_runner_workflow_policy IS NOT NULL`,
 		identity.IntegrationID, identity.WorkflowJobID, identity.RunAttempt, identity.ClaimID, identity.ResourcePlaneID,
-		identity.LambdaMicroVMID, now.UTC()).Scan(&access.CredentialID, &access.TenantID, &access.Provider, &access.ReaderRoleARN,
-		&access.SecretARN, &access.SecretVersionID, &access.CredentialGeneration, &policyJSON, &policyHash)
+		identity.LambdaMicroVMID, now.UTC()).Scan(&tenantID, &policyJSON, &policyHash)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return SecretAccess{}, ErrCredentialNotFound
@@ -108,7 +105,20 @@ func ResolveForRunnerClaim(ctx context.Context, tx pgx.Tx, identity RunnerClaimI
 		return SecretAccess{}, ErrCredentialNotFound
 	}
 	var workflowPolicy githubregistry.ActionsRunnerWorkflowPolicy
-	if json.Unmarshal(policyJSON, &workflowPolicy) != nil || !githubregistry.ValidActionsRunnerWorkflowPolicy(workflowPolicy) || access.Provider != ProviderAnthropic {
+	if json.Unmarshal(policyJSON, &workflowPolicy) != nil || !githubregistry.ValidActionsRunnerWorkflowPolicy(workflowPolicy) {
+		return SecretAccess{}, ErrCredentialNotFound
+	}
+	var access SecretAccess
+	err = tx.QueryRow(ctx, `SELECT c.id,c.tenant_id,c.provider,b.reader_role_arn,b.secret_arn,c.secret_version_id,c.credential_generation
+		FROM tenant_model_credentials c JOIN tenant_model_credential_bindings b
+		ON b.tenant_id=c.tenant_id AND b.id=c.binding_id AND b.provider=c.provider AND b.status='approved'
+		WHERE c.tenant_id=$1 AND c.provider='anthropic' AND c.status='active'`, tenantID).
+		Scan(&access.CredentialID, &access.TenantID, &access.Provider, &access.ReaderRoleARN, &access.SecretARN, &access.SecretVersionID, &access.CredentialGeneration)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SecretAccess{}, ErrCredentialNotConfigured
+	}
+	if err != nil || access.TenantID != tenantID || access.Provider != ProviderAnthropic || access.CredentialGeneration <= 0 ||
+		!versionIDPattern.MatchString(access.SecretVersionID) || access.SecretARN == "" || access.ReaderRoleARN == "" {
 		return SecretAccess{}, ErrCredentialNotFound
 	}
 	return access, nil

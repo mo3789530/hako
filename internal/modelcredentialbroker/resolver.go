@@ -13,7 +13,8 @@ import (
 )
 
 var (
-	ErrUnavailable = errors.New("trusted model credential unavailable")
+	ErrUnavailable   = errors.New("trusted model credential unavailable")
+	ErrNotConfigured = errors.New("Tenant model credential is not configured")
 )
 
 type SecretReader interface {
@@ -46,6 +47,9 @@ func (r *Resolver) WithCredential(ctx context.Context, identity modelcredentials
 	}
 	access, err := r.resolve(ctx, identity)
 	if err != nil {
+		if errors.Is(err, modelcredentials.ErrCredentialNotConfigured) {
+			return ErrNotConfigured
+		}
 		return ErrUnavailable
 	}
 	secret, err := r.reader.ReadSecret(ctx, access)

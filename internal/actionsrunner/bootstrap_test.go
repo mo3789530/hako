@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -62,8 +63,12 @@ func TestRunnerBootstrapperUsesScopedAWSAuthAndSignedJobEnvelope(t *testing.T) {
 		}
 		if envelope.Claims.IntegrationID != "integration_runner" || envelope.Claims.WorkflowJobID != 9901 || envelope.Claims.WorkflowRunID != 9902 ||
 			envelope.Claims.RunAttempt != 1 || envelope.Claims.RepositoryURL != "https://github.com/acme/api" || envelope.Claims.RunnerName != "hako-9901-1" ||
-			envelope.Claims.Token != "synthetic-registration-token" || strings.Join(envelope.Claims.Labels, ",") != "self-hosted,hako,standard" {
+			envelope.Claims.Token != "synthetic-registration-token" || strings.Join(envelope.Claims.Labels, ",") != "self-hosted,hako,standard" ||
+			string(envelope.Claims.ModelCredential) != "sk-ant-synthetic-secret" {
 			t.Fatalf("bootstrap lost exact admitted job identity: %+v", envelope.Claims)
+		}
+		if strings.Contains(fmt.Sprint(envelope), "sk-ant-synthetic-secret") || strings.Contains(fmt.Sprintf("%#v", envelope.Claims), "sk-ant-synthetic-secret") {
+			t.Fatal("signed bootstrap diagnostics exposed the model credential")
 		}
 		return &http.Response{StatusCode: http.StatusAccepted, Header: http.Header{"Cache-Control": []string{"no-store"}}, Body: io.NopCloser(strings.NewReader(`{}`)), ContentLength: 2, Request: req}, nil
 	})}
@@ -78,13 +83,27 @@ func TestRunnerBootstrapperUsesScopedAWSAuthAndSignedJobEnvelope(t *testing.T) {
 	}
 	instance := LambdaRunnerInstance{ResourcePlaneID: "rp-tokyo-01", MicroVMID: "runner-microvm-1",
 		Endpoint: "https://runner-microvm-1.lambda-microvm.ap-northeast-1.on.aws", ImageIdentifier: "arn:aws:lambda:ap-northeast-1:123456789012:microvm-image:runner"}
-	if err := bootstrapper.Deliver(context.Background(), RunnerBootstrapRequest{Instance: instance, Job: lambdaRunnerJob(), Repository: RunnerRepository{Owner: "acme", Name: "api"}, Token: token}); err != nil {
+	if err := bootstrapper.Deliver(context.Background(), RunnerBootstrapRequest{Instance: instance, Job: lambdaRunnerJob(), Repository: RunnerRepository{Owner: "acme", Name: "api"}, Token: token,
+		ModelCredential: []byte("sk-ant-synthetic-secret")}); err != nil {
 		t.Fatalf("Deliver() error = %v", err)
 	}
 	if !requestSeen || api.input == nil || aws.ToString(api.input.MicrovmIdentifier) != instance.MicroVMID || aws.ToInt32(api.input.ExpirationInMinutes) != 1 ||
 		len(api.input.AllowedPorts) != 1 || api.input.AllowedPorts[0].(*types.PortSpecificationMemberPort).Value != runnerBootstrapPort {
 		t.Fatalf("bootstrap did not receive exact port-scoped five-minute auth: seen=%v input=%+v", requestSeen, api.input)
 	}
+}
+
+func TestRunnerBootstrapRejectsOversizedModelCredential(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := RunnerBootstrapClaims{SchemaVersion: 1, MicroVMID: "runner-microvm-1", IntegrationID: "integration_runner", WorkflowJobID: 9901,
+		WorkflowRunID: 9902, RunAttempt: 1, Token: "synthetic-registration-token", ExpiresAt: time.Now().Add(time.Minute).Unix(), ModelCredential: make([]byte, 8193)}
+	if _, err := SignRunnerBootstrap(privateKey, claims); err == nil {
+		t.Fatal("oversized model credential was signed")
+	}
+	clear(claims.ModelCredential)
 }
 
 func TestRunnerBootstrapVerificationRejectsTamperingAndWrongVM(t *testing.T) {
