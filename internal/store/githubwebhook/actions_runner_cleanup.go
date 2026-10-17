@@ -11,19 +11,20 @@ import (
 )
 
 type ActionsRunnerCleanupJob struct {
-	IntegrationID string
-	TenantID      domain.TenantID
-	Installation  int64
-	Repository    int64
-	WorkflowJobID int64
-	RunAttempt    int64
-	RunnerID      *int64
-	Reason        string
-	State         string
-	ClaimID       string
-	LeaseExpires  time.Time
-	AttemptCount  int
-	CreatedAt     time.Time
+	IntegrationID   string
+	TenantID        domain.TenantID
+	Installation    int64
+	Repository      int64
+	WorkflowJobID   int64
+	RunAttempt      int64
+	RunnerID        *int64
+	LambdaMicroVMID *string
+	Reason          string
+	State           string
+	ClaimID         string
+	LeaseExpires    time.Time
+	AttemptCount    int
+	CreatedAt       time.Time
 }
 
 func enqueueActionsRunnerCleanup(ctx context.Context, tx pgx.Tx, integrationID string, workflowJobID, runAttempt int64, reason string, now time.Time) error {
@@ -32,8 +33,8 @@ func enqueueActionsRunnerCleanup(ctx context.Context, tx pgx.Tx, integrationID s
 		return errors.New("valid terminal Actions runner identity and time are required for cleanup")
 	}
 	_, err := tx.Exec(ctx, `INSERT INTO github_actions_runner_cleanup_outbox
-		(integration_id,workflow_job_id,run_attempt,tenant_id,installation_id,repository_id,runner_id,reason,state,available_at,created_at,updated_at)
-		SELECT integration_id,workflow_job_id,run_attempt,tenant_id,installation_id,repository_id,runner_id,$4,'pending',$5,$5,$5
+		(integration_id,workflow_job_id,run_attempt,tenant_id,installation_id,repository_id,runner_id,lambda_microvm_id,reason,state,available_at,created_at,updated_at)
+		SELECT integration_id,workflow_job_id,run_attempt,tenant_id,installation_id,repository_id,runner_id,lambda_microvm_id,$4,'pending',$5,$5,$5
 		FROM github_actions_runner_jobs WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=$3 AND state=$4
 		ON CONFLICT (integration_id,workflow_job_id,run_attempt) DO NOTHING`, integrationID, workflowJobID, runAttempt, reason, now.UTC())
 	if err != nil {
@@ -59,11 +60,11 @@ func ClaimNextActionsRunnerCleanup(ctx context.Context, tx pgx.Tx, claimID strin
 	FROM candidate c
 	WHERE o.integration_id=c.integration_id AND o.workflow_job_id=c.workflow_job_id AND o.run_attempt=c.run_attempt
 	  AND ((o.state='pending' AND o.available_at<=$1) OR (o.state='claimed' AND o.lease_expires_at<=$1))
-	RETURNING o.integration_id,o.tenant_id,o.installation_id,o.repository_id,o.workflow_job_id,o.run_attempt,o.runner_id,
+	RETURNING o.integration_id,o.tenant_id,o.installation_id,o.repository_id,o.workflow_job_id,o.run_attempt,o.runner_id,o.lambda_microvm_id,
 	          o.reason,o.state,o.claim_id,o.lease_expires_at,o.attempt_count,o.created_at`,
 		now.UTC(), claimID, now.Add(lease).UTC()).Scan(
 		&job.IntegrationID, &job.TenantID, &job.Installation, &job.Repository, &job.WorkflowJobID, &job.RunAttempt, &job.RunnerID,
-		&job.Reason, &job.State, &job.ClaimID, &job.LeaseExpires, &job.AttemptCount, &job.CreatedAt)
+		&job.LambdaMicroVMID, &job.Reason, &job.State, &job.ClaimID, &job.LeaseExpires, &job.AttemptCount, &job.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ActionsRunnerCleanupJob{}, false, nil
 	}

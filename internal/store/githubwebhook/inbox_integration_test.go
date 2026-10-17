@@ -374,6 +374,28 @@ func TestActionsRunnerAdmissionRequiresSeparateRepositoryOptInAndDeduplicatesJob
 		WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`, now.Add(41*time.Second), now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
+	bindTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, err := BindActionsRunnerMicroVM(ctx, bindTx, "shared", 9901, 1, "runner-controller", "lambda-microvm-test-01", now.Add(41*time.Second))
+	if err != nil || !bound {
+		_ = bindTx.Rollback(ctx)
+		t.Fatalf("bind Actions runner MicroVM: bound=%v error=%v", bound, err)
+	}
+	repeatedBinding, err := BindActionsRunnerMicroVM(ctx, bindTx, "shared", 9901, 1, "runner-controller", "lambda-microvm-test-01", now.Add(41*time.Second))
+	if err != nil || !repeatedBinding {
+		_ = bindTx.Rollback(ctx)
+		t.Fatalf("repeat Actions runner MicroVM binding: bound=%v error=%v", repeatedBinding, err)
+	}
+	replacedBinding, err := BindActionsRunnerMicroVM(ctx, bindTx, "shared", 9901, 1, "runner-controller", "lambda-microvm-test-02", now.Add(41*time.Second))
+	if err != nil || replacedBinding {
+		_ = bindTx.Rollback(ctx)
+		t.Fatalf("different MicroVM replaced pinned runner allocation: bound=%v error=%v", replacedBinding, err)
+	}
+	if err := bindTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
 	makeStatusDelivery := func(id, action, status, conclusion, sha string) githubwebhook.VerifiedDelivery {
 		payload := fmt.Sprintf(`{"action":%q,"installation":{"id":8801},"repository":{"id":8802,"name":"enabled","owner":{"login":"acme"}},"workflow_job":{"id":9901,"run_id":9902,"run_attempt":1,"workflow_name":"CI","name":"test","head_branch":"feature/task","head_sha":%q,"status":%q,"conclusion":%q,"labels":["self-hosted","hako"],"runner_id":9810,"runner_name":"hako-runner-1"}}`, action, sha, status, conclusion)
 		return githubwebhook.VerifiedDelivery{DeliveryID: id, Event: "workflow_job", Action: action, Payload: []byte(payload)}
@@ -415,19 +437,32 @@ func TestActionsRunnerAdmissionRequiresSeparateRepositoryOptInAndDeduplicatesJob
 	if err := pool.QueryRow(ctx, `SELECT state,runner_id,conclusion,completed_at FROM github_actions_runner_jobs WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`).Scan(&runnerState, &runnerID, &conclusion, &completedAt); err != nil || runnerState != "completed" || runnerID == nil || *runnerID != 9810 || conclusion != "success" || completedAt == nil {
 		t.Fatalf("Actions completion = state=%q runner=%v conclusion=%q at=%v error=%v", runnerState, runnerID, conclusion, completedAt, err)
 	}
+	staleBindTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleBinding, err := BindActionsRunnerMicroVM(ctx, staleBindTx, "shared", 9901, 1, "runner-controller", "lambda-microvm-replacement", now.Add(47*time.Second))
+	if err != nil || staleBinding {
+		_ = staleBindTx.Rollback(ctx)
+		t.Fatalf("terminal Runner claim accepted a late MicroVM binding: bound=%v error=%v", staleBinding, err)
+	}
+	if err := staleBindTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
 	var cleanupCount int
 	var cleanupState string
 	var cleanupReason string
-	if err := pool.QueryRow(ctx, `SELECT count(*),min(state),min(reason) FROM github_actions_runner_cleanup_outbox
-		WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`).Scan(&cleanupCount, &cleanupState, &cleanupReason); err != nil || cleanupCount != 1 || cleanupState != "pending" || cleanupReason != "completed" {
-		t.Fatalf("terminal Runner job cleanup outbox count=%d state=%q reason=%q error=%v", cleanupCount, cleanupState, cleanupReason, err)
+	var cleanupMicroVM *string
+	if err := pool.QueryRow(ctx, `SELECT count(*),min(state),min(reason),min(lambda_microvm_id) FROM github_actions_runner_cleanup_outbox
+		WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`).Scan(&cleanupCount, &cleanupState, &cleanupReason, &cleanupMicroVM); err != nil || cleanupCount != 1 || cleanupState != "pending" || cleanupReason != "completed" || cleanupMicroVM == nil || *cleanupMicroVM != "lambda-microvm-test-01" {
+		t.Fatalf("terminal Runner cleanup outbox count=%d state=%q reason=%q MicroVM=%v error=%v", cleanupCount, cleanupState, cleanupReason, cleanupMicroVM, err)
 	}
 	cleanupTx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cleanup, ok, err := ClaimNextActionsRunnerCleanup(ctx, cleanupTx, "cleanup-worker-one", now.Add(48*time.Second), 30*time.Second)
-	if err != nil || !ok || cleanup.State != "claimed" || cleanup.ClaimID != "cleanup-worker-one" || cleanup.AttemptCount != 1 || cleanup.RunnerID == nil || *cleanup.RunnerID != 9810 {
+	if err != nil || !ok || cleanup.State != "claimed" || cleanup.ClaimID != "cleanup-worker-one" || cleanup.AttemptCount != 1 || cleanup.RunnerID == nil || *cleanup.RunnerID != 9810 || cleanup.LambdaMicroVMID == nil || *cleanup.LambdaMicroVMID != "lambda-microvm-test-01" {
 		_ = cleanupTx.Rollback(ctx)
 		t.Fatalf("claim runner cleanup=%+v ok=%v error=%v", cleanup, ok, err)
 	}
