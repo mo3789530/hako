@@ -28,11 +28,14 @@ MicroVM termination. It fails closed when a replacement has no binding or
 cleanup lacks an EFS provisioner. A strict Workspace-only `/run` hook handler
 and Linux EFS mount executor now validate metadata, run `/bin/mount` with fixed
 TLS/IAM/Access Point/region parameters, and acknowledge only after `/workspace`
-is seen as mounted. The executor is not wired into a guest executable/image
-and `amazon-efs-utils` is not installed; the existing Workload Agent image uses
-an incompatible hook schema. Current Workspaces also share one static execution
-role, so IAM authorization does not yet enforce per-Workspace AP isolation.
-This task is not complete: guest image integration, Workspace-scoped role and
+is seen as mounted. `cmd/hako-workspace-init` and a separate
+`images/workspace-init` image wire this hook; the build requires a pinned
+`amazon-efs-utils` RPM version. The image build and actual Lambda MicroVM hook
+invocation still need verification, and the interactive Agent is not yet
+started by the image. The existing Workload Agent image has an incompatible
+hook schema. Current Workspaces also share one static execution role, so IAM
+authorization does not yet enforce per-Workspace AP isolation.
+This task is not complete: Workspace-scoped role and
 EFS policies, encrypted EFS/private mount target/scoped network Terraform,
 backup/restore, retention, automated orphan cleanup, and live isolation checks
 remain open. No AWS changes were made.
