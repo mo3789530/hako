@@ -184,7 +184,16 @@ Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Action
   `microvmId` plus job/run/attempt/repository/runner-name/labels before
   enabling the bootstrap route. Identical lifecycle retries are idempotent;
   foreign job envelopes and conflicting rebinds fail closed. This remains a
-  tested library handler, not yet an executable or MicroVM image.
+  unit-tested library handler, now composed by the guest executable below.
+
+- `cmd/hako-actions-runner-guest` composes the lifecycle/runtime handler and a
+  fake-tested process consumer. It configures the official Actions runner with
+  `--ephemeral`, passes `ANTHROPIC_API_KEY` only to the runner process (not its
+  registration/configuration command), supplies no inherited AWS environment,
+  and removes runner credential files, diagnostics, temp files and checkout
+  state after exit. The ARM64 image recipe requires a reviewed runner archive,
+  exact version/hash and a public bootstrap key. The image has not been built
+  or published; no real GitHub/AWS calls were made.
 
 - `cmd/hako-actions-runner-lambda` now provides the Resource Plane Lambda
   runtime entrypoint for the SQS startup handler. It requires an HTTPS broker,

@@ -60,7 +60,10 @@ bootstrap route. The signed bootstrap must match that exact launch identity
 before the guest consumer runs. Identical `/run` retries are idempotent;
 conflicting VM or job identities are rejected.
 
-This is a tested library handler, not yet an executable/runner image or an
-official Actions runner process. The process consumer, result/Check connection,
-and cleanup lifecycle remain Task 76. AWS documents the `/run` hook body and
-per-MicroVM payload in [Running and using MicroVMs](https://docs.aws.amazon.com/lambda/latest/dg/microvms-launching.html).
+The guest executable and process consumer are now present. They configure the
+official runner as ephemeral, pass the Tenant model key only in the runner
+process environment, and remove local credentials, diagnostic, temp, and
+checkout state after exit. A pinned ARM64 image recipe is provided, but no
+runner archive/image has been built or published; job completion→Checks and
+durable cleanup are also not yet integrated. AWS documents the `/run` hook body
+and per-MicroVM payload in [Running and using MicroVMs](https://docs.aws.amazon.com/lambda/latest/dg/microvms-launching.html).

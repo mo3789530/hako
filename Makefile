@@ -1,4 +1,4 @@
-.PHONY: fmt lint test test-integration test-integration-local test-webhook-lifecycle-integration test-software-factory-e2e test-workload-runtime test-workload-runtime-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-health-reporter-lambda build-workload-controller-lambda build-actions-runner-lambda build-workload-microvm-artifact build-workspace-microvm-image build-github-checks-consumer-image build-workspace-gateway-image terraform-fmt terraform-validate terraform-test
+.PHONY: fmt lint test test-integration test-integration-local test-webhook-lifecycle-integration test-software-factory-e2e test-workload-runtime test-workload-runtime-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-health-reporter-lambda build-workload-controller-lambda build-actions-runner-lambda build-actions-runner-microvm-image build-workload-microvm-artifact build-workspace-microvm-image build-github-checks-consumer-image build-workspace-gateway-image terraform-fmt terraform-validate terraform-test
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -not -path './.git/*')
@@ -79,6 +79,20 @@ build-actions-runner-lambda:
 	mkdir -p build/actions-runner-lambda
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o build/actions-runner-lambda/bootstrap ./cmd/hako-actions-runner-lambda
 	cd build/actions-runner-lambda && zip -q ../hako-actions-runner.zip bootstrap
+
+# Builds the non-root Lambda MicroVM guest image from a caller-provided, version-pinned GitHub Runner archive and public bootstrap key. It neither downloads runner artifacts nor publishes/applies infrastructure.
+build-actions-runner-microvm-image:
+	@test -n "$(HAKO_ACTIONS_RUNNER_ARCHIVE)" || (echo "set HAKO_ACTIONS_RUNNER_ARCHIVE to the reviewed Linux ARM64 runner tarball" >&2; exit 1)
+	@test -n "$(HAKO_ACTIONS_RUNNER_VERSION)" || (echo "set HAKO_ACTIONS_RUNNER_VERSION to the exact runner release" >&2; exit 1)
+	@test -n "$(HAKO_ACTIONS_RUNNER_SHA256)" || (echo "set HAKO_ACTIONS_RUNNER_SHA256 to the reviewed archive digest" >&2; exit 1)
+	@test -n "$(HAKO_ACTIONS_RUNNER_BOOTSTRAP_PUBLIC_KEY_FILE)" || (echo "set HAKO_ACTIONS_RUNNER_BOOTSTRAP_PUBLIC_KEY_FILE to a PUBLIC KEY PEM" >&2; exit 1)
+	@test -s "$(HAKO_ACTIONS_RUNNER_ARCHIVE)" && test -s "$(HAKO_ACTIONS_RUNNER_BOOTSTRAP_PUBLIC_KEY_FILE)"
+	mkdir -p build/actions-runner-microvm
+	cp "$(HAKO_ACTIONS_RUNNER_ARCHIVE)" build/actions-runner-microvm/actions-runner-linux-arm64.tar.gz
+	cp "$(HAKO_ACTIONS_RUNNER_BOOTSTRAP_PUBLIC_KEY_FILE)" build/actions-runner-microvm/actions-runner-bootstrap.pub
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o build/actions-runner-microvm/hako-actions-runner-guest ./cmd/hako-actions-runner-guest
+	cp images/actions-runner/Dockerfile build/actions-runner-microvm/Dockerfile
+	podman build --arch arm64 --build-arg ACTIONS_RUNNER_VERSION="$(HAKO_ACTIONS_RUNNER_VERSION)" --build-arg ACTIONS_RUNNER_SHA256="$(HAKO_ACTIONS_RUNNER_SHA256)" --tag hako-actions-runner:local -f build/actions-runner-microvm/Dockerfile build/actions-runner-microvm
 
 # Packages a Lambda MicroVM code artifact; the supplied file must contain public verification keys only.
 build-workload-microvm-artifact:
