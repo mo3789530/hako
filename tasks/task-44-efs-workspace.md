@@ -1,6 +1,6 @@
 # Task 44: EFS-Backed Workspace Persistence
 
-Status: Blocked on Task 43. Priority: P1.
+Status: In progress (local AP provisioner/discovery library only). Priority: P1.
 
 ## Goal
 
@@ -12,6 +12,21 @@ Keep `/workspace` source data across MicroVM replacement while isolating Tenant/
 - Bind Access Point metadata to Workspace and provider Runtime; mount before reporting Workspace running and unmount before cleanup.
 - Make creation/deletion idempotent, compensate Access Point on failed Workspace provisioning, and preserve source data through suspend/resume/replacement.
 - Enforce encryption in transit/at rest, security-group scope, backup policy, mount health timeout, and ownership tags.
+
+## Current implementation
+
+`internal/workspacestorage` now creates deterministic, tagged EFS Access Points
+with a Workspace-specific root path, non-root POSIX identity, and `0700`
+permissions. Retries use the same EFS client token. Deletion checks the exact
+filesystem, identity tags, root path, and POSIX settings before calling EFS;
+tagged Access Points can be discovered for operator comparison without
+automatic adoption or deletion. See [Workspace EFS storage](../docs/workspace-efs-storage.md).
+
+This task is not complete: the Resource Plane lifecycle controller does not
+persist/use the binding, the guest does not mount `/workspace`, and Terraform
+does not create the encrypted filesystem, private mount targets, or scoped
+network/IAM rules. Backup/restore, retention, mount health, cleanup compensation,
+and live isolation checks remain open. No AWS changes were made.
 
 ## Acceptance criteria
 
