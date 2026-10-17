@@ -23,8 +23,10 @@ explicitly enabled) repository trigger events from that inbox.
   current Tenant integration and Installation binding and require the
   Repository's `actions_runner_enabled` timestamp to predate delivery receipt.
   Accepted events create an idempotent `github_actions_runner_jobs` admission
-  row; this does not request a registration token or create a Workload/MicroVM.
-  The runner controller that consumes admitted rows is still pending.
+  row; a controller can claim it with a bounded lease, and abandoned claims
+  become claimable after expiry. This does not request a registration token or
+  create a Workload/MicroVM. The runner controller that consumes claimed rows
+  and manages their terminal lifecycle is still pending.
 - Push and pull-request scheduling is opt-in per synchronized Tenant
   repository. A Tenant Owner/Admin uses
   `PUT /v1/tenants/{tenant_id}/github/installations/{installation_id}/repositories/{repository_id}/factory`

@@ -325,6 +325,41 @@ func TestActionsRunnerAdmissionRequiresSeparateRepositoryOptInAndDeduplicatesJob
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM workload_runs`).Scan(&queuedWorkloadRuns); err != nil || queuedWorkloadRuns != 0 {
 		t.Fatalf("admission unexpectedly created Workload/MicroVM request: count=%d error=%v", queuedWorkloadRuns, err)
 	}
+	claimTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := ClaimNextActionsRunnerJob(ctx, claimTx, "controller-one", now.Add(2*time.Second), 30*time.Second)
+	if err != nil || !ok || claimed.State != "claimed" || claimed.ClaimID != "controller-one" || claimed.ClaimAttempts != 1 || claimed.JobID != 9901 || len(claimed.Labels) != 2 {
+		_ = claimTx.Rollback(ctx)
+		t.Fatalf("claim admitted job=%+v ok=%v error=%v", claimed, ok, err)
+	}
+	if err := claimTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	secondClaimTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := ClaimNextActionsRunnerJob(ctx, secondClaimTx, "controller-two", now.Add(3*time.Second), 30*time.Second); err != nil || ok {
+		_ = secondClaimTx.Rollback(ctx)
+		t.Fatalf("live job lease was claimed twice: ok=%v error=%v", ok, err)
+	}
+	if err := secondClaimTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	recoveryTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered, ok, err := ClaimNextActionsRunnerJob(ctx, recoveryTx, "controller-recovery", now.Add(40*time.Second), 30*time.Second)
+	if err != nil || !ok || recovered.ClaimID != "controller-recovery" || recovered.ClaimAttempts != 2 {
+		_ = recoveryTx.Rollback(ctx)
+		t.Fatalf("expired lease recovery=%+v ok=%v error=%v", recovered, ok, err)
+	}
+	if err := recoveryTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
 	stats, err = ProcessBatchWithActionsRunnerAdmissions(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(2*time.Second), nil)
 	if err != nil || stats != (BatchStats{}) {
 		t.Fatalf("replayed admission batch = %+v, error=%v", stats, err)
