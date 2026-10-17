@@ -40,8 +40,10 @@ only to the configured Secrets Manager ARN and creates an unauthenticated API
 Gateway route only when enabled. No GitHub App is registered automatically.
 The webhook processor handles Installation lifecycle and repository-membership
 events, and supports versioned push/pull-request normalization with a
-default-off, per-Repository verification trigger. `workflow_job` remains
-normalized but is not dispatched to an Actions runner. Tenant owners/admins can
+default-off, per-Repository verification trigger. `workflow_job` is normalized
+and has default-off admission, token-broker, status, and cleanup-outbox
+primitives. Lambda MicroVM launch and cleanup consumers are not connected yet.
+Tenant owners/admins can
 submit inert installation claims through the tenant API; those claims remain
 `pending`. A separate opt-in setup flow redirects through the GitHub App
 Installation setup URL and then GitHub OAuth authorization. Hako exchanges the
@@ -288,3 +290,58 @@ E2E, so this remains a future milestone rather than a supported workflow.
 - [Self-hosted runner autoscaling and ephemeral runners](https://docs.github.com/en/actions/reference/runners/self-hosted-runners)
 - [REST API for Checks](https://docs.github.com/en/rest/guides/using-the-rest-api-to-interact-with-checks)
 - [OIDC in cloud providers](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-cloud-providers)
+
+## Native Pipeline Manifest (version 1)
+
+### Version 1
+
+```yaml
+version: 1
+pipelines:
+  verify:
+    steps:
+      - checkout
+      - go-test
+      - go-vet
+    services:
+      - postgres
+    runtime_class: standard
+    timeout_seconds: 1800
+    memory_mb: 2048
+    cpu_millis: 1000
+    network: registry-only
+    repository: read
+    cloud_access: none
+```
+
+Only catalog step names are accepted: `checkout`, `go-test`, `go-vet`,
+`golangci-lint`, `npm-test`, `npm-build`, and `python-test`. `checkout` must be
+first. Services are limited to `postgres` and `redis`. Arbitrary shell commands,
+container images, mounts, write permissions, and cloud credentials are not
+expressible in version 1; unknown fields fail parsing.
+
+Defaults are `standard`, 1800 seconds, 2048 MiB, 1000 CPU millis,
+`registry-only` networking, repository `read`, and no cloud access. Accepted
+bounds are 30–3600 seconds, 256–8192 MiB, and 250–4000 CPU millis. Network is
+either `none` or `registry-only`; public Internet access is not an option in
+this schema.
+
+The parser rejects manifests larger than 64 KiB, multiple YAML documents,
+duplicate keys, aliases, anchors, explicit tags, nesting deeper than 20 levels,
+more than 2048 YAML nodes, more than 16 pipelines, or more than 32 steps per
+pipeline. Parser acceptance is not authorization or proof of safe execution:
+the scheduler must still bind Tenant, Repository, commit, trust level, secrets,
+network policy, and runtime limits before creating a Lambda MicroVM workload.
+
+### Coexistence and rollout
+
+Existing GitHub Actions remain authoritative unless a Tenant explicitly opts
+into a future Hako Native trigger. `workflow_job` deliveries remain isolated
+from the generic Hako `go test ./...` trigger. No pipeline runs merely because
+`.hako/factory.yaml` exists. Disablement must stop new Hako admissions without
+changing GitHub workflow files or deleting historical run/check records.
+
+Issue-to-Agent execution, repository write permissions, human approval, and
+runtime execution are not implemented by this parser. Agent runs must use an
+isolated Lambda MicroVM with no cloud credentials by default and remain
+untrusted proposals requiring human review.
