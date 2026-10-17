@@ -1,6 +1,6 @@
 # Task 42: Software Factory End-to-End
 
-Status: In Progress (local PostgreSQL → Tenant-specific signed HTTP ingress/HMAC and live Installation-binding authorization → duplicate/conflicting Delivery ID handling → immutable untrusted success, failure, pre-dispatch-cancel, in-flight-cancel, timeout, and artifact-failure Runs → isolated Podman Go tests → redacted artifacts → durable Checks outbox/dispatcher → fake GitHub terminal Check conclusions E2E added and run locally; transient GitHub 503 retry is verified without re-running Jobs. A separate integration test composes the Lambda MicroVM Worker command handler, signed Agent execution, PostgreSQL result apply/replay, and confirmed cleanup. CI requires Podman and the pinned Go image. Resolver uses a synthetic in-memory credential, never AWS Secrets Manager. Scheduler/Dispatcher-to-Lambda command routing, Worker restart recovery, integrated cancellation, and AWS smoke remain). Priority: P0.
+Status: In Progress (local PostgreSQL → Tenant-specific signed HTTP ingress/HMAC and live Installation-binding authorization → duplicate/conflicting Delivery ID handling → immutable untrusted success, failure, pre-dispatch-cancel, in-flight-cancel, timeout, and artifact-failure Runs → isolated Podman Go tests → redacted artifacts → durable Checks outbox/dispatcher → fake GitHub terminal Check conclusions E2E added and run locally; transient GitHub 503 retry is verified without re-running Jobs. A separate integration test composes the PostgreSQL-backed Scheduler Consumer, placement/attempt Outbox, Resource Plane Dispatcher route, Lambda MicroVM Worker command handler, signed Agent execution, PostgreSQL result apply/replay, and confirmed cleanup. CI requires Podman and the pinned Go image. Resolver uses a synthetic in-memory credential, never AWS Secrets Manager. Worker restart recovery, integrated cancellation, and AWS smoke remain). Priority: P0.
 
 ## Goal
 
@@ -36,11 +36,14 @@ Prove one Tenant-owned GitHub Repository can go from installation through one is
 - The real local Podman success/failure path now labels each ephemeral container with Hako Tenant/Run metadata and asserts no matching container remains after completion (`--rm`). The E2E constructs a fresh executor to simulate replacement-worker memory loss, redelivers the same Run after its durable terminal commit, and verifies the DB state rejects execution before a second container starts. This validates local retry/cleanup behavior only, not a deployed Lambda MicroVM worker restart.
 - Remaining acceptance includes scheduling/worker wiring on Lambda MicroVM (Tasks 39–41/61/63–65), integrated cancellation/restart/physical cleanup through the actual Lambda worker and MicroVM, and wiring the signed-webhook scenarios to a deployed runtime. Local Podman cleanup and fresh-worker replay rejection are verified above. AWS smoke remains approval-gated.
 - Added `TestComposedLambdaWorkerResultAndCleanupProjectsIntoPostgres` under
-  the `integration` build tag. It sends a trusted command through the composed
-  Lambda Workload handler, launches the fake Lambda MicroVM, authenticates a
-  signed source-install/start/result/log exchange with the Agent, applies the
-  result through the production PostgreSQL `ResultHandler`, simulates a lost
-  publish acknowledgement, and verifies duplicate-result fencing, redacted
-  attempt artifact metadata, terminal Run/attempt state, and confirmed MicroVM
-  cleanup. The provider, Agent process, and source/archive storage are local
-  fakes; this does not prove Scheduler/Dispatcher wiring or live AWS behavior.
+  the `integration` build tag. It consumes a schedule message through the
+  PostgreSQL-backed Scheduler Consumer, creates a placement-pinned attempt and
+  Outbox event, routes that event through the Resource Plane Dispatcher to its
+  dedicated Workload queue, and passes the exact dispatched command to the
+  composed Lambda Workload handler. It then launches the fake Lambda MicroVM,
+  authenticates a signed source-install/start/result/log exchange with the
+  Agent, applies the result through the production PostgreSQL `ResultHandler`,
+  simulates a lost publish acknowledgement, and verifies duplicate-result
+  fencing, redacted attempt artifact metadata, terminal Run/attempt state, and
+  confirmed MicroVM cleanup. The provider, SQS, Agent process, and
+  source/archive storage are local fakes; this does not prove live AWS behavior.
