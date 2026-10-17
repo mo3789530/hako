@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mo3789530/hako/internal/workspaceprotocol"
 	"github.com/mo3789530/hako/internal/workspacesession"
 	"golang.org/x/net/websocket"
 )
@@ -50,12 +51,23 @@ func TestWorkspaceShellAgentRequiresPinnedTicketAndRelaysToPTY(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect with valid single-use Agent ticket: %v", err)
 	}
-	if err := websocket.Message.Send(client, []byte("printf 'hako-agent-pty-ok\\n'; exit\n")); err != nil {
+	resizeFrame, err := workspaceprotocol.EncodeResize(100, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := websocket.Message.Send(client, resizeFrame); err != nil {
+		t.Fatal(err)
+	}
+	dataFrame, err := workspaceprotocol.EncodeData([]byte("stty size; printf 'hako-agent-pty-ok\\n'; exit\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := websocket.Message.Send(client, dataFrame); err != nil {
 		t.Fatal(err)
 	}
 	var output strings.Builder
 	deadline := time.After(3 * time.Second)
-	for !strings.Contains(output.String(), "hako-agent-pty-ok") {
+	for !strings.Contains(output.String(), "32 100\r\n") {
 		select {
 		case <-deadline:
 			t.Fatalf("timed out waiting for PTY output: %q", output.String())
@@ -65,7 +77,16 @@ func TestWorkspaceShellAgentRequiresPinnedTicketAndRelaysToPTY(t *testing.T) {
 		if err := websocket.Message.Receive(client, &frame); err != nil {
 			t.Fatalf("receive PTY frame: %v output=%q", err, output.String())
 		}
-		output.Write(frame)
+		frames, err := new(workspaceprotocol.Decoder).Feed(frame)
+		if err != nil {
+			t.Fatalf("decode PTY frame: %v", err)
+		}
+		for _, decoded := range frames {
+			output.Write(decoded.Data)
+		}
+	}
+	if !strings.Contains(output.String(), "hako-agent-pty-ok") {
+		t.Fatalf("PTY command did not complete after resize: %q", output.String())
 	}
 	_ = client.Close()
 	if replay, err := dialWorkspaceAgent(server.URL, origin, ticket); err == nil {

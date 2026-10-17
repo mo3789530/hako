@@ -24,7 +24,9 @@ import (
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/idgen"
 	"github.com/mo3789530/hako/internal/workspacegateway"
+	"github.com/mo3789530/hako/internal/workspaceprotocol"
 	"github.com/mo3789530/hako/internal/workspacesession"
+	"golang.org/x/net/websocket"
 )
 
 var cliCredentialStore auth.CredentialStore = auth.OSKeyring{}
@@ -436,23 +438,98 @@ func workspaceShellWith(ctx context.Context, tenantID, workspaceID string, stdin
 		}
 		return err
 	}
-	defer connection.Close()
-	stopClose := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	shell := &workspaceShellStream{conn: connection}
+	defer shell.Close()
+	restoreTerminal, err := enableWorkspaceTerminal(stdin, stdout, shell.Resize)
+	if err != nil {
+		return fmt.Errorf("prepare local terminal: %w", err)
+	}
+	defer restoreTerminal()
+	stopClose := context.AfterFunc(ctx, func() { _ = shell.Close() })
 	defer stopClose()
 	go func() {
-		if _, err := io.Copy(connection, stdin); err != nil {
-			_ = connection.Close()
+		if _, err := io.Copy(shell, stdin); err != nil {
+			_ = shell.Close()
 			return
 		}
 		// A terminal EOF (Ctrl-D) is delivered to the PTY as EOT, letting the
 		// shell exit naturally while its final output still drains to stdout.
-		_, _ = connection.Write([]byte{4})
+		_, _ = shell.Write([]byte{4})
 	}()
-	if _, err := io.Copy(stdout, connection); err != nil && ctx.Err() == nil && !errors.Is(err, io.EOF) {
+	if _, err := io.Copy(stdout, shell); err != nil && ctx.Err() == nil && !errors.Is(err, io.EOF) {
 		return fmt.Errorf("Workspace shell stream: %w", err)
 	}
 	return nil
 }
+
+// workspaceShellStream converts byte-oriented CLI reads and writes into
+// bounded, explicitly typed WebSocket messages shared with hako-agent.
+type workspaceShellStream struct {
+	conn    *websocket.Conn
+	mu      sync.Mutex
+	decoder workspaceprotocol.Decoder
+	read    []byte
+}
+
+func (s *workspaceShellStream) Write(data []byte) (int, error) {
+	written := 0
+	for len(data) > 0 {
+		size := len(data)
+		if limit := workspaceprotocol.MaxFrame - workspaceprotocol.HeaderSize; size > limit {
+			size = limit
+		}
+		frame, err := workspaceprotocol.EncodeData(data[:size])
+		if err != nil {
+			return written, err
+		}
+		s.mu.Lock()
+		err = websocket.Message.Send(s.conn, frame)
+		s.mu.Unlock()
+		if err != nil {
+			return written, err
+		}
+		written += size
+		data = data[size:]
+	}
+	return written, nil
+}
+
+func (s *workspaceShellStream) Read(target []byte) (int, error) {
+	if len(target) == 0 {
+		return 0, nil
+	}
+	for len(s.read) == 0 {
+		var chunk []byte
+		if err := websocket.Message.Receive(s.conn, &chunk); err != nil {
+			return 0, err
+		}
+		frames, err := s.decoder.Feed(chunk)
+		if err != nil {
+			return 0, fmt.Errorf("decode Workspace shell frame: %w", err)
+		}
+		for _, decoded := range frames {
+			if decoded.Resize {
+				return 0, errors.New("unexpected terminal resize frame from Workspace")
+			}
+			s.read = append(s.read, decoded.Data...)
+		}
+	}
+	n := copy(target, s.read)
+	s.read = s.read[n:]
+	return n, nil
+}
+
+func (s *workspaceShellStream) Resize(columns, rows uint16) error {
+	frame, err := workspaceprotocol.EncodeResize(columns, rows)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return websocket.Message.Send(s.conn, frame)
+}
+
+func (s *workspaceShellStream) Close() error { return s.conn.Close() }
 
 // workspaceSSHProxy is an OpenSSH ProxyCommand transport. It tunnels raw SSH
 // bytes over TLS/WSS to the fixed Workspace-local 127.0.0.1:22 endpoint.

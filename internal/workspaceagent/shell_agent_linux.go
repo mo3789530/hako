@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/workspaceprotocol"
 	"github.com/mo3789530/hako/internal/workspacesession"
 	"golang.org/x/net/websocket"
 )
@@ -181,7 +182,12 @@ func offeredAgentProtocol(value string) bool {
 	return false
 }
 
-func proxyWorkspaceShell(ctx context.Context, conn *websocket.Conn, shell io.ReadWriteCloser) {
+type interactiveShell interface {
+	io.ReadWriteCloser
+	Resize(TerminalSize) error
+}
+
+func proxyWorkspaceShell(ctx context.Context, conn *websocket.Conn, shell interactiveShell) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	finished := make(chan error, 2)
@@ -202,7 +208,8 @@ func proxyWorkspaceShell(ctx context.Context, conn *websocket.Conn, shell io.Rea
 	}
 }
 
-func copyAgentFramesToShell(ctx context.Context, conn *websocket.Conn, shell io.Writer) error {
+func copyAgentFramesToShell(ctx context.Context, conn *websocket.Conn, shell interactiveShell) error {
+	var decoder workspaceprotocol.Decoder
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -211,28 +218,44 @@ func copyAgentFramesToShell(ctx context.Context, conn *websocket.Conn, shell io.
 		if err := websocket.Message.Receive(conn, &frame); err != nil {
 			return err
 		}
-		for len(frame) > 0 {
-			n, err := shell.Write(frame)
-			if err != nil || n <= 0 || n > len(frame) {
-				if err != nil {
+		decodedFrames, err := decoder.Feed(frame)
+		if err != nil {
+			return err
+		}
+		for _, decoded := range decodedFrames {
+			if decoded.Resize {
+				if err := shell.Resize(TerminalSize{Columns: decoded.Columns, Rows: decoded.Rows}); err != nil {
 					return err
 				}
-				return io.ErrShortWrite
+				continue
 			}
-			frame = frame[n:]
+			for data := decoded.Data; len(data) > 0; {
+				n, err := shell.Write(data)
+				if err != nil || n <= 0 || n > len(data) {
+					if err != nil {
+						return err
+					}
+					return io.ErrShortWrite
+				}
+				data = data[n:]
+			}
 		}
 	}
 }
 
 func copyShellToAgentFrames(ctx context.Context, shell io.Reader, conn *websocket.Conn) error {
-	buffer := make([]byte, maxTerminalFrame)
+	buffer := make([]byte, workspaceprotocol.MaxFrame-workspaceprotocol.HeaderSize)
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		n, err := shell.Read(buffer)
 		if n > 0 {
-			if sendErr := websocket.Message.Send(conn, buffer[:n]); sendErr != nil {
+			frame, encodeErr := workspaceprotocol.EncodeData(buffer[:n])
+			if encodeErr != nil {
+				return encodeErr
+			}
+			if sendErr := websocket.Message.Send(conn, frame); sendErr != nil {
 				return sendErr
 			}
 		}

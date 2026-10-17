@@ -57,6 +57,16 @@ the child before EFS unmount. The image build now requires a public-key JSON
 file and the pinned EFS RPM. `HAKO_GATEWAY_ORIGIN` remains a required runtime
 configuration value.
 
+The CLI/Agent shell stream uses an application-level binary frame with the
+`HAKS` magic, a type byte, and a four-byte big-endian payload length. Data
+frames carry terminal bytes; resize frames carry two big-endian `uint16`
+dimensions, each limited to 1–500. The incremental decoder accepts arbitrary
+stream fragmentation/coalescing because the Gateway tunnels bytes and does not
+preserve WebSocket message boundaries. Frame buffering is bounded to 64 KiB.
+On a local Linux TTY, `hako shell` disables echo and canonical line buffering,
+sends the initial window size, forwards `SIGWINCH` updates, and restores the
+original termios settings on exit. Piped CLI I/O does not alter terminal state.
+
 The supervisor, readiness, route restriction, socket permissions, binding,
 shutdown, and strict child-payload bounds have local tests. This does not verify
 the actual Lambda MicroVM image build, `/dev/pts`, or run-hook behavior. The

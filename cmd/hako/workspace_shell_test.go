@@ -18,6 +18,7 @@ import (
 	"github.com/mo3789530/hako/internal/api"
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/workspacegateway"
+	"github.com/mo3789530/hako/internal/workspaceprotocol"
 	"github.com/mo3789530/hako/internal/workspacesession"
 )
 
@@ -45,13 +46,29 @@ func (d shellTestDialer) OpenShell(context.Context, workspacesession.Claims) (io
 	}
 	go func() {
 		defer runtime.Close()
-		buffer := make([]byte, 1024)
+		buffer := make([]byte, 64*1024)
+		var decoder workspaceprotocol.Decoder
 		for {
 			n, err := runtime.Read(buffer)
 			if n > 0 {
-				_, _ = runtime.Write(buffer[:n])
-				if strings.Contains(string(buffer[:n]), string([]byte{4})) {
+				frames, decodeErr := decoder.Feed(buffer[:n])
+				if decodeErr != nil {
 					return
+				}
+				for _, decoded := range frames {
+					if decoded.Resize {
+						continue
+					}
+					frame, encodeErr := workspaceprotocol.EncodeData(decoded.Data)
+					if encodeErr != nil {
+						return
+					}
+					if _, writeErr := runtime.Write(frame); writeErr != nil {
+						return
+					}
+					if strings.Contains(string(decoded.Data), string([]byte{4})) {
+						return
+					}
 				}
 			}
 			if err != nil {

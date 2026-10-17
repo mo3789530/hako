@@ -17,7 +17,11 @@ hako cp --from <tenant-id> <workspace-id> <workspace-path> <local-path>
 short-lived shell-only Hako Session Ticket. The Control Plane applies its normal
 tenant/workspace authorization before issuing the ticket. The CLI then opens a
 TLS WebSocket directly to the configured Gateway and relays terminal bytes;
-terminal content does not pass through the Control Plane. The CLI keeps the
+terminal content does not pass through the Control Plane. When stdin and
+stdout are the local Linux terminal, the CLI disables local echo/canonical
+line buffering, sends the terminal's initial size, tracks `SIGWINCH`, and
+restores the original terminal settings on exit. Piped input/output remains
+unchanged. The CLI keeps the
 ticket in memory and does not print it. On normal stream completion, input EOF,
 or interruption, it attempts to revoke the session with a bounded cleanup
 request. `Ctrl-C` disconnects; terminal EOF (`Ctrl-D`) sends EOT to the remote
@@ -123,9 +127,11 @@ from the Workspace ID and the command's fixed permission/channel; callers
 cannot choose a runtime hostname or destination port. The SSH route is always
 the dedicated `ssh-proxy` channel to port 22.
 
-The shell command is currently a single-stream transport. It does not yet
-provide a reconnectable PTY, terminal resize signaling, or a production
-SSH/VS Code runtime router. File transfer uses the local OpenSSH `scp` client
+The shell command is currently a single-stream transport. Its bounded binary
+protocol uses a magic/type/length header and typed data/resize frames; both
+ends decode incrementally because the Gateway transports a byte stream and
+does not preserve WebSocket message boundaries. It does not yet provide a
+reconnectable PTY or a production SSH/VS Code runtime router. File transfer uses the local OpenSSH `scp` client
 through the same unverified MicroVM SSH runtime path. The Service Catalog API/CLI currently persists
 desired state only; runtime start/health/stop/remove execution and
 persistent-data behavior are not yet implemented. The local forwarding CLI and Gateway protocol have a local
