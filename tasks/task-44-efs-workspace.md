@@ -54,6 +54,14 @@ changes were made. The standalone Terraform module is
 [`workspace-storage`](../infra/terraform/modules/workspace-storage); it is not
 enabled or instantiated by a Resource Plane environment.
 
+An ARM64 image build was attempted with test-only public keys and the pinned
+`amazon-efs-utils` version. Cross-compiled init/agent binaries built, but the
+Podman host lacks ARM64 execution emulation (`exec format error` in the AL2023
+RPM-install layer); the published MicroVM base image has no amd64 manifest.
+The final Workspace image was therefore not produced. Re-run on an ARM64 host
+or an explicitly provisioned binfmt/QEMU builder, then verify `/run` on a real
+Lambda MicroVM before claiming runtime readiness.
+
 ## Acceptance criteria
 
 - Tests verify Workspace isolation, stable data across runtime replacement, duplicate create/delete, mount failure rollback, and orphan Access Point discovery.

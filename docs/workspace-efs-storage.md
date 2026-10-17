@@ -145,8 +145,11 @@ filesystem.
 The Workspace image now includes the distinct interactive Agent child; the
 root init starts it with the Access Point UID/GID only after mounting EFS,
 waits for readiness, and terminates it before ownership-checked unmount. The
-image build requires a public verification-key JSON file. The Podman image
-build and real Lambda `/run` hook remain unverified. Test
+image build requires a public verification-key JSON file. An ARM64 Podman
+build was attempted: cross-compilation succeeded, but the host cannot execute
+the ARM64 AL2023 RPM-install layer, and the MicroVM base image has no amd64
+manifest. No final image was produced; use an ARM64 or explicitly configured
+binfmt/QEMU builder. The real Lambda `/run` hook remains unverified. Test
 suspend/restart/replacement recovery plus orderly unmount. Add Resource Plane
 wiring for the standalone EFS module and dynamic per-Workspace runtime-role /
 Access Point IAM boundaries; add mount failure compensation and orphan
