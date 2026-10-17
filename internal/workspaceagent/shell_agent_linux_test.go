@@ -7,9 +7,11 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -142,6 +144,76 @@ func TestWorkspaceShellAgentRejectsForeignIdentityAndOrigin(t *testing.T) {
 	}
 }
 
+func TestWorkspaceAgentVSCodeRouteUsesDedicatedTicketAndFixedLoopbackBridge(t *testing.T) {
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	uid, gid := testShellIdentity(t, root)
+	agent, err := newWorkspaceShellAgent(map[string]ed25519.PublicKey{"rp-vscode": public}, "https://gateway.hako.test",
+		func(WorkspaceMountSpec) (*ShellManager, error) {
+			return NewShellManager(ShellConfig{WorkspaceRoot: root, RunAsUID: uid, RunAsGID: gid})
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.BindWorkspaceRuntime("microvm-vscode", testMountSpec()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = agent.Close() })
+	local, codeServer := net.Pipe()
+	defer codeServer.Close()
+	var dialCalls atomic.Int32
+	agent.vscodeDial = func(ctx context.Context) (net.Conn, error) {
+		dialCalls.Add(1)
+		return local, nil
+	}
+	go func() {
+		defer codeServer.Close()
+		request := make([]byte, len("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n"))
+		if _, err := io.ReadFull(codeServer, request); err == nil {
+			_, _ = codeServer.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"))
+		}
+	}()
+	server := httptest.NewServer(agent)
+	defer server.Close()
+	issuer := &AgentTicketIssuer{KeyID: "rp-vscode", PrivateKey: private, TTL: time.Minute}
+	claims := AgentTicket{UserID: "user-1", TenantID: "tenant-1", WorkspaceID: "workspace-1", ResourcePlane: "rp-1",
+		MicroVMID: "microvm-vscode", Permission: workspacesession.PermissionVSCode}
+	ticket, _, err := issuer.Issue(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := dialWorkspaceAgentChannel(server.URL, "https://gateway.hako.test", ticket, "vscode")
+	if err != nil {
+		t.Fatalf("connect with VS Code ticket: %v", err)
+	}
+	defer client.Close()
+	request := []byte("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+	if err := websocket.Message.Send(client, request); err != nil {
+		t.Fatal(err)
+	}
+	var response []byte
+	if err := websocket.Message.Receive(client, &response); err != nil || !strings.Contains(string(response), "200 OK") || !strings.HasSuffix(string(response), "ok") {
+		t.Fatalf("VS Code bridge response=%q err=%v", response, err)
+	}
+	if dialCalls.Load() != 1 {
+		t.Fatalf("fixed local VS Code bridge dial count=%d", dialCalls.Load())
+	}
+	if replay, err := dialWorkspaceAgentChannel(server.URL, "https://gateway.hako.test", ticket, "vscode"); err == nil {
+		_ = replay.Close()
+		t.Fatal("replayed VS Code ticket was accepted")
+	}
+	if shellTicket, _, err := issuer.Issue(AgentTicket{UserID: "user-1", TenantID: "tenant-1", WorkspaceID: "workspace-1",
+		ResourcePlane: "rp-1", MicroVMID: "microvm-vscode", Permission: workspacesession.PermissionShell}); err != nil {
+		t.Fatal(err)
+	} else if wrongChannel, err := dialWorkspaceAgentChannel(server.URL, "https://gateway.hako.test", shellTicket, "vscode"); err == nil {
+		_ = wrongChannel.Close()
+		t.Fatal("shell ticket opened the VS Code route")
+	}
+}
+
 func TestWorkspaceShellAgentBindsOnlyOnceAndOnlyAfterMount(t *testing.T) {
 	public, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -173,7 +245,11 @@ func TestWorkspaceShellAgentBindsOnlyOnceAndOnlyAfterMount(t *testing.T) {
 }
 
 func dialWorkspaceAgent(endpoint, origin, token string) (*websocket.Conn, error) {
-	wsURL := "ws" + strings.TrimPrefix(endpoint, "http") + "/v1/workspaces/workspace-1/shell"
+	return dialWorkspaceAgentChannel(endpoint, origin, token, "shell")
+}
+
+func dialWorkspaceAgentChannel(endpoint, origin, token, channel string) (*websocket.Conn, error) {
+	wsURL := "ws" + strings.TrimPrefix(endpoint, "http") + "/v1/workspaces/workspace-1/" + channel
 	config, err := websocket.NewConfig(wsURL, origin)
 	if err != nil {
 		return nil, err

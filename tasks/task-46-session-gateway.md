@@ -1,6 +1,6 @@
 # Task 46: Hako Session Tickets and Gateway
 
-Status: In Progress (Ed25519 Gateway-audience ticket claims, RBAC-backed session API, HTTPS/HMAC active-session lookup, TLS/WSS core, and shell/port local E2E exist. `cmd/hako-workspace-gateway` now composes the verifier, HTTPS session lookup, S3 runtime journal, Lambda MicroVM SDK/token provider, Agent ticket signer, and journal-backed shell directory into a non-root HTTPS service; mounted-key/config validation and a local ARM64 container build target are included. Terraform deployment, production key/secret provisioning and rotation, distributed limits/metrics/audit, VS Code adapter, and live MicroVM connectivity remain). Priority: P1.
+Status: In Progress (Ed25519 Gateway-audience ticket claims, RBAC-backed session API, HTTPS/HMAC active-session lookup, TLS/WSS core, shell/port local E2E, and a fixed-port VS Code bridge are implemented. `cmd/hako-workspace-gateway` composes the verifier, HTTPS session lookup, S3 runtime journal, Lambda MicroVM SDK/token provider, Agent ticket signer, and journal-backed shell/VS Code directory into a non-root HTTPS service; mounted-key/config validation and a local ARM64 container build target are included. Workspace image code-server startup, Terraform deployment, production key/secret provisioning and rotation, distributed limits/metrics/audit, and live MicroVM connectivity remain). Priority: P1.
 
 ## Goal
 
@@ -21,17 +21,17 @@ Connect CLI/Browser to the correct Workspace through a zero-trust HTTPS/WSS prox
 - `workspacesession.Verifier` performs fail-closed signature/audience/expiry/channel checks and requires an injected `ActiveSessionLookup` before connection upgrade. Lookup failures return a fixed error without leaking backend details; caller-supplied routing IDs are not part of this API. Unit tests cover revoked/inactive records, permission mismatch before lookup, canceled request context, and backend error redaction.
 - `HTTPActiveSessionLookup` calls the Control Plane over HTTPS using a Plane-specific HMAC key. Its internal API endpoint compares the complete claims identity and permissions against the persisted session row and returns only the active bit. The endpoint is opt-in via `HAKO_RESOURCE_PLANE_WORKSPACE_SESSION_SECRET_ARNS`; no real Secret was read or provisioned. PostgreSQL integration verifies active, revoked, expired, mismatched-user, and wrong-HMAC behavior. See [Workspace Session Ticket](../docs/workspace-session-ticket.md).
 - `internal/workspacegateway` now handles TLS-only shell, VS Code, and port-forward WSS routes. It verifies ticket/active session before upgrade, matches the signed Workspace and local Resource Plane, rejects URL query parameters and untrusted browser origins, resolves port allowlists through an injected policy, and routes only to an injected private `StreamDialer`. In-process global/per-Workspace connection caps and bounded WebSocket frame/chunk sizes are enforced. The Control Plane is not in the data-stream path. See [Workspace HTTPS/WSS Gateway](../docs/workspace-gateway.md).
-- `workspaceagent.GatewayDialer` binds the signed Workspace claim to its Workspace-local PTY manager and starts only the configured fixed shell. A TLS WSS test sends a command through the Gateway and checks its output from the real local PTY. Port-forwarding is allowed only to `127.0.0.1:{port}` after the injected `PortAuthorizer` approves it; a TLS WSS integration test round-trips bytes through an ephemeral loopback listener. No client-controlled host or Control Plane data path is used. VS Code remains unavailable until its runtime adapter exists.
+- `workspaceagent.GatewayDialer` binds the signed Workspace claim to its Workspace-local PTY manager and starts only the configured fixed shell. A TLS WSS test sends a command through the Gateway and checks its output from the real local PTY. Port-forwarding is allowed only to `127.0.0.1:{port}` after the injected `PortAuthorizer` approves it; a TLS WSS integration test round-trips bytes through an ephemeral loopback listener. No client-controlled host or Control Plane data path is used. The Lambda MicroVM adapter now supports a separate one-use VS Code ticket to the Guest Agent's fixed `127.0.0.1:8081` bridge, verified by Guest, adapter, and CLI/Gateway local E2E. The code-server process/image startup is still absent.
 - Added `workspaceagent.WorkspaceRouter`, a concurrency-safe process-local selector from verified Workspace ID to a Workspace-bound stream dialer. Duplicate registration fails closed; unregister is compare-and-delete so a delayed runtime cleanup cannot remove a replacement. Unit tests cover routing, unknown/empty claims, duplicate binding and stale cleanup, and a TLS WSS E2E exercises Gateway → router → real PTY composition. The router is not yet attached to Resource Plane lifecycle events or Gateway production deployment, and it does not provide cross-process discovery. See [Workspace HTTPS/WSS Gateway](../docs/workspace-gateway.md).
-- Gateway tests cover active-session verifier integration, shell/PTY relay through the multi-Workspace router, route spoofing, wrong channels/origins, port policy and loopback port relay, oversized frames, per-Workspace connection cap, concurrent same-ticket replay rejection/reconnect, plaintext rejection, invalid upgrade preflight, and upstream failure. Production signer/lookup-key provisioning and rotation, VS Code runtime adapter, distributed connection/rate controls, metrics/audit, Terraform deployment and active-stream revocation remain. See [Workspace HTTPS/WSS Gateway](../docs/workspace-gateway.md) and [Workspace Session Ticket](../docs/workspace-session-ticket.md).
+- Gateway tests cover active-session verifier integration, shell/PTY relay through the multi-Workspace router, route spoofing, wrong channels/origins, port policy and loopback port relay, VS Code fixed-loopback relay, oversized frames, per-Workspace connection cap, concurrent same-ticket replay rejection/reconnect, plaintext rejection, invalid upgrade preflight, and upstream failure. Production signer/lookup-key provisioning and rotation, code-server image startup, distributed connection/rate controls, metrics/audit, Terraform deployment and active-stream revocation remain. See [Workspace HTTPS/WSS Gateway](../docs/workspace-gateway.md) and [Workspace Session Ticket](../docs/workspace-session-ticket.md).
 
 ## Progress update (2026-10-17)
 
 Added `workspaceagent.LambdaMicroVMGatewayDialer` for the
-Resource Plane shell path. It validates an immutable MicroVM endpoint against
+Resource Plane shell and fixed VS Code bridge paths. It validates an immutable MicroVM endpoint against
 the bound VM ID/Region, rechecks verified Tenant/Workspace/Resource Plane and
-shell permission claims, mints a fresh 2-minute port-8080-only Lambda auth token
-and one-use guest Agent Ticket, then opens the fixed WSS shell route with both
+channel permission claims, mints a fresh 2-minute port-8080-only Lambda auth token
+and one-use guest Agent Ticket, then opens the matching fixed WSS Guest route with both
 credentials. A per-stream directory resolves the Workspace's exact current
 ProviderID from its Resource Plane journal and verifies `GetMicrovm` reports
 that same VM as running before dialing; this removes the need for an in-process
@@ -39,8 +39,8 @@ lifecycle registration map. SDK request scope, ticket identity,
 subprotocol/route construction, invalid endpoints, foreign claims, journal
 identity/state, and provider mismatch have local tests. The Gateway executable
 composition and local ARM64 image now exist, but deployment, AWS token/IAM
-provisioning, and a live MicroVM stream remain open; VS Code and guest
-port-forward are not implemented by this adapter. See
+provisioning, code-server image startup, and a live MicroVM stream remain open;
+guest port-forward is not implemented by this adapter. See
 [`Workspace HTTPS/WSS Gateway`](../docs/workspace-gateway.md).
 
 ## Acceptance criteria
@@ -68,8 +68,8 @@ and group/world writable modes. Key/configuration tests use synthetic values.
 This is local composition/build support, not deployment proof. Resource Plane
 Terraform still does not create the Gateway service, listener/target group,
 certificate handling, autoscaling, or the narrowly scoped task policy. No real
-AWS Secret, AWS API, or MicroVM was accessed. Port forwarding and VS Code stay
-disabled in this production adapter until their guest protocol and trusted
-port-policy wiring are implemented. Key rotation/reload, cross-replica
+AWS Secret, AWS API, or MicroVM was accessed. The VS Code fixed-port guest
+bridge is now composed but requires code-server image startup; guest port
+forwarding remains disabled pending trusted port-policy wiring. Key rotation/reload, cross-replica
 connection/revocation controls, structured audit/metrics, and live E2E remain
 acceptance gates.

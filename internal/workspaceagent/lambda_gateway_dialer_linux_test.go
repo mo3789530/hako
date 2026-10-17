@@ -35,15 +35,54 @@ func (p *gatewayTokenProviderStub) Create(_ context.Context, vmID string) (strin
 
 type gatewayWebSocketStub struct {
 	endpoint, workspace, origin, awsToken, ticket string
+	permission                                    workspacesession.Permission
 	stream                                        io.ReadWriteCloser
 	err                                           error
 	calls                                         int
 }
 
-func (d *gatewayWebSocketStub) Dial(_ context.Context, endpoint, workspace, origin, token, ticket string) (io.ReadWriteCloser, error) {
-	d.endpoint, d.workspace, d.origin, d.awsToken, d.ticket = endpoint, workspace, origin, token, ticket
+func (d *gatewayWebSocketStub) Dial(_ context.Context, endpoint, workspace, origin, token, ticket string, permission workspacesession.Permission) (io.ReadWriteCloser, error) {
+	d.endpoint, d.workspace, d.origin, d.awsToken, d.ticket, d.permission = endpoint, workspace, origin, token, ticket, permission
 	d.calls++
 	return d.stream, d.err
+}
+
+func TestLambdaMicroVMGatewayDialerUsesDistinctVSCodeCapabilityAndRoute(t *testing.T) {
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := WorkspaceRuntimeEndpoint{TenantID: "tenant-1", WorkspaceID: "workspace-1", ResourcePlane: "rp-1",
+		MicroVMID: "vm-1", Region: "us-east-1", Endpoint: "https://vm-1.lambda-microvm.us-east-1.on.aws"}
+	stream := &gatewayTestStream{}
+	websocket := &gatewayWebSocketStub{stream: stream}
+	issuer := &AgentTicketIssuer{KeyID: "rp-key", PrivateKey: private, TTL: time.Minute}
+	tokens := &gatewayTokenProviderStub{token: "short-token"}
+	dialer, err := NewLambdaMicroVMGatewayDialer(LambdaMicroVMGatewayDialerConfig{Endpoint: endpoint, Token: tokens,
+		Ticket: issuer, Origin: "https://gateway.hako.test", WebSocket: websocket})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := workspacesession.Claims{UserID: "user-1", TenantID: endpoint.TenantID, WorkspaceID: endpoint.WorkspaceID,
+		ResourcePlane: endpoint.ResourcePlane, Permissions: []workspacesession.Permission{workspacesession.PermissionVSCode}}
+	opened, err := dialer.OpenVSCode(context.Background(), claims)
+	if err != nil || opened != stream || websocket.permission != workspacesession.PermissionVSCode {
+		t.Fatalf("OpenVSCode() stream=%v permission=%q err=%v", opened, websocket.permission, err)
+	}
+	if _, err := VerifyAgentTicket(websocket.ticket, map[string]ed25519.PublicKey{"rp-key": public}, AgentTicket{
+		UserID: claims.UserID, TenantID: claims.TenantID, WorkspaceID: claims.WorkspaceID,
+		ResourcePlane: claims.ResourcePlane, MicroVMID: endpoint.MicroVMID, Permission: workspacesession.PermissionVSCode}, time.Now().UTC()); err != nil {
+		t.Fatalf("verify VS Code Agent ticket: %v", err)
+	}
+	config, err := newWorkspaceAgentWebSocketConfigForPermission(endpoint.Endpoint, string(endpoint.WorkspaceID),
+		"https://gateway.hako.test", tokens.token, websocket.ticket, workspacesession.PermissionVSCode)
+	if err != nil || config.Location.Path != "/v1/workspaces/workspace-1/vscode" {
+		t.Fatalf("VS Code guest route config=%v err=%v", config, err)
+	}
+	if _, err := newWorkspaceAgentWebSocketConfigForPermission(endpoint.Endpoint, string(endpoint.WorkspaceID),
+		"https://gateway.hako.test", tokens.token, websocket.ticket, workspacesession.PermissionPortForward); err == nil {
+		t.Fatal("accepted unsupported permission as guest route")
+	}
 }
 
 type gatewayTestStream struct{ bytes.Buffer }

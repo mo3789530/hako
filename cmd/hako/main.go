@@ -72,6 +72,13 @@ func main() {
 			fmt.Fprintf(os.Stderr, "hako shell: %v\n", err)
 			os.Exit(1)
 		}
+	case (len(os.Args) == 4 || len(os.Args) == 5) && os.Args[1] == "open":
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		if err := workspaceIDE(ctx, os.Args[2], os.Args[3], optionalArg(os.Args, 4), os.Stderr); err != nil {
+			fmt.Fprintf(os.Stderr, "hako open: %v\n", err)
+			os.Exit(1)
+		}
 	case len(os.Args) == 4 && os.Args[1] == "ssh-proxy":
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
@@ -271,7 +278,7 @@ func main() {
 		}
 		fmt.Fprintf(os.Stdout, "Workspace %s accepted: desired=%s observed=%s (operation=%s state=%s, request-key=%s)\n", result.Workspace.Workspace.ID, result.Workspace.Status.DesiredState, result.Workspace.Status.ObservedState, result.OperationID, result.OperationState, idempotencyKey)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: hako login | hako api health | hako tenant membership <tenant-id> | hako tenant placement-policy get <tenant-id> | hako tenant placement-policy set <tenant-id> '<policy-json>' | hako create <tenant-id> <workspace-name> [--idempotency-key <key>] | hako list <tenant-id> [limit] [offset] | hako get <tenant-id> <workspace-id> | hako wait <tenant-id> <workspace-id> [--state running|suspended|deleted] [--timeout 10m] [--interval 2s] | hako shell <tenant-id> <workspace-id> | hako ssh-proxy <tenant-id> <workspace-id> | hako cp <tenant-id> <workspace-id> <local-path> <workspace-path> | hako cp --from <tenant-id> <workspace-id> <workspace-path> <local-path> | hako forward <tenant-id> <workspace-id> <remote-port> [local-port] | hako suspend|resume|delete <tenant-id> <workspace-id> [--idempotency-key <key>] | hako workload create --tenant <id> --installation <id> --repository <id> --commit <sha> [--ref <ref>] [--timeout-seconds <seconds>] [--idempotency-key <key>] | hako workload list <tenant-id> [limit] [offset] | hako workload show <tenant-id> <run-id> | hako workload cancel <tenant-id> <run-id>")
+		fmt.Fprintln(os.Stderr, "usage: hako login | hako api health | hako tenant membership <tenant-id> | hako tenant placement-policy get <tenant-id> | hako tenant placement-policy set <tenant-id> '<policy-json>' | hako create <tenant-id> <workspace-name> [--idempotency-key <key>] | hako list <tenant-id> [limit] [offset] | hako get <tenant-id> <workspace-id> | hako wait <tenant-id> <workspace-id> [--state running|suspended|deleted] [--timeout 10m] [--interval 2s] | hako shell <tenant-id> <workspace-id> | hako open <tenant-id> <workspace-id> [local-port] | hako ssh-proxy <tenant-id> <workspace-id> | hako cp <tenant-id> <workspace-id> <local-path> <workspace-path> | hako cp --from <tenant-id> <workspace-id> <workspace-path> <local-path> | hako forward <tenant-id> <workspace-id> <remote-port> [local-port] | hako suspend|resume|delete <tenant-id> <workspace-id> [--idempotency-key <key>] | hako workload create --tenant <id> --installation <id> --repository <id> --commit <sha> [--ref <ref>] [--timeout-seconds <seconds>] [--idempotency-key <key>] | hako workload list <tenant-id> [limit] [offset] | hako workload show <tenant-id> <run-id> | hako workload cancel <tenant-id> <run-id>")
 		os.Exit(2)
 	}
 }
@@ -319,10 +326,68 @@ func workspaceForward(ctx context.Context, tenantID, workspaceID, remotePortText
 	return serveWorkspaceForward(ctx, listener, tenantID, workspaceID, uint16(remotePort), apiURL, gatewayURL, accessToken, stderr, nil, nil)
 }
 
+func workspaceIDE(ctx context.Context, tenantID, workspaceID, localPortText string, stderr io.Writer) error {
+	if ctx == nil || stderr == nil || tenantID == "" || workspaceID == "" {
+		return errors.New("Workspace IDE context, identity, and status output are required")
+	}
+	localPort := uint64(0)
+	if localPortText != "" {
+		parsed, err := strconv.ParseUint(localPortText, 10, 16)
+		if err != nil {
+			return errors.New("local port must be between 0 and 65535")
+		}
+		localPort = parsed
+	}
+	accessToken, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
+	if err != nil {
+		return err
+	}
+	apiURL, gatewayURL := os.Getenv("HAKO_API_URL"), os.Getenv("HAKO_GATEWAY_URL")
+	if apiURL == "" {
+		return errors.New("HAKO_API_URL is required")
+	}
+	if gatewayURL == "" {
+		return errors.New("HAKO_GATEWAY_URL is required")
+	}
+	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.FormatUint(localPort, 10)))
+	if err != nil {
+		return fmt.Errorf("listen on local loopback port: %w", err)
+	}
+	defer listener.Close()
+	localAddr := listener.Addr().(*net.TCPAddr)
+	ideURL := "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(localAddr.Port)) + "/"
+	fmt.Fprintf(stderr, "Opening Workspace IDE at %s. Press Ctrl-C to stop.\n", ideURL)
+	if cliBrowserOpener != nil {
+		if err := cliBrowserOpener(ideURL); err != nil {
+			return fmt.Errorf("open Workspace IDE in browser: %w", err)
+		}
+	}
+	return serveWorkspaceTunnel(ctx, listener, tenantID, workspaceID, workspacesession.PermissionVSCode, 0,
+		apiURL, gatewayURL, accessToken, stderr, nil, nil)
+}
+
 func serveWorkspaceForward(ctx context.Context, listener net.Listener, tenantID, workspaceID string, remotePort uint16, apiURL, gatewayURL, accessToken string,
 	stderr io.Writer, apiHTTPClient *http.Client, gatewayTLSConfig *tls.Config) error {
-	if ctx == nil || listener == nil || stderr == nil || remotePort == 0 {
-		return errors.New("forward listener, context, output, and remote port are required")
+	return serveWorkspaceTunnel(ctx, listener, tenantID, workspaceID, workspacesession.PermissionPortForward, remotePort,
+		apiURL, gatewayURL, accessToken, stderr, apiHTTPClient, gatewayTLSConfig)
+}
+
+func serveWorkspaceTunnel(ctx context.Context, listener net.Listener, tenantID, workspaceID string, permission workspacesession.Permission, remotePort uint16,
+	apiURL, gatewayURL, accessToken string, stderr io.Writer, apiHTTPClient *http.Client, gatewayTLSConfig *tls.Config) error {
+	if ctx == nil || listener == nil || stderr == nil || tenantID == "" || workspaceID == "" || apiURL == "" || gatewayURL == "" || accessToken == "" {
+		return errors.New("Workspace tunnel listener, identity, endpoints, credentials, context, and output are required")
+	}
+	switch permission {
+	case workspacesession.PermissionPortForward:
+		if remotePort == 0 {
+			return errors.New("remote port-forward port is required")
+		}
+	case workspacesession.PermissionVSCode:
+		if remotePort != 0 {
+			return errors.New("VS Code tunnel cannot select a remote port")
+		}
+	default:
+		return errors.New("unsupported Workspace tunnel permission")
 	}
 	stopClose := context.AfterFunc(ctx, func() { _ = listener.Close() })
 	defer stopClose()
@@ -345,7 +410,7 @@ func serveWorkspaceForward(ctx context.Context, listener net.Listener, tenantID,
 			go func() {
 				defer workers.Done()
 				defer func() { <-semaphore }()
-				if err := forwardWorkspaceConnection(ctx, localConn, tenantID, workspaceID, remotePort, apiURL, gatewayURL, accessToken, apiHTTPClient, gatewayTLSConfig); err != nil && ctx.Err() == nil {
+				if err := workspaceTunnelConnection(ctx, localConn, tenantID, workspaceID, permission, remotePort, apiURL, gatewayURL, accessToken, apiHTTPClient, gatewayTLSConfig); err != nil && ctx.Err() == nil {
 					stderrMu.Lock()
 					fmt.Fprintf(stderr, "forwarded connection failed: %v\n", err)
 					stderrMu.Unlock()
@@ -359,11 +424,17 @@ func serveWorkspaceForward(ctx context.Context, listener net.Listener, tenantID,
 
 func forwardWorkspaceConnection(ctx context.Context, localConn net.Conn, tenantID, workspaceID string, remotePort uint16,
 	apiURL, gatewayURL, accessToken string, apiHTTPClient *http.Client, gatewayTLSConfig *tls.Config) (returnErr error) {
+	return workspaceTunnelConnection(ctx, localConn, tenantID, workspaceID, workspacesession.PermissionPortForward, remotePort,
+		apiURL, gatewayURL, accessToken, apiHTTPClient, gatewayTLSConfig)
+}
+
+func workspaceTunnelConnection(ctx context.Context, localConn net.Conn, tenantID, workspaceID string, permission workspacesession.Permission, remotePort uint16,
+	apiURL, gatewayURL, accessToken string, apiHTTPClient *http.Client, gatewayTLSConfig *tls.Config) (returnErr error) {
 	defer localConn.Close()
 	session, err := api.CreateWorkspaceSession(ctx, apiURL, accessToken, tenantID, workspaceID,
-		[]workspacesession.Permission{workspacesession.PermissionPortForward}, apiHTTPClient)
+		[]workspacesession.Permission{permission}, apiHTTPClient)
 	if err != nil {
-		return fmt.Errorf("request port-forward session: %w", err)
+		return fmt.Errorf("request Workspace tunnel session: %w", err)
 	}
 	defer func() {
 		revokeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -372,7 +443,7 @@ func forwardWorkspaceConnection(ctx context.Context, localConn net.Conn, tenantI
 			returnErr = fmt.Errorf("revoke port-forward session: %w", err)
 		}
 	}()
-	stream, err := workspacegateway.Dial(ctx, gatewayURL, domain.WorkspaceID(workspaceID), workspacesession.PermissionPortForward, remotePort,
+	stream, err := workspacegateway.Dial(ctx, gatewayURL, domain.WorkspaceID(workspaceID), permission, remotePort,
 		session.Ticket, gatewayTLSConfig)
 	if err != nil {
 		return err

@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -33,6 +34,7 @@ type WorkspaceShellAgent struct {
 	replay        AgentTicketReplayGuard
 	identity      AgentTicket
 	shells        *ShellManager
+	vscodeDial    func(context.Context) (net.Conn, error)
 }
 
 func NewWorkspaceShellAgent(keys map[string]ed25519.PublicKey, gatewayOrigin string) (*WorkspaceShellAgent, error) {
@@ -53,7 +55,10 @@ func newWorkspaceShellAgent(keys map[string]ed25519.PublicKey, gatewayOrigin str
 		}
 		keyCopy[id] = append(ed25519.PublicKey(nil), key...)
 	}
-	return &WorkspaceShellAgent{keys: keyCopy, gatewayOrigin: origin, factory: factory}, nil
+	return &WorkspaceShellAgent{keys: keyCopy, gatewayOrigin: origin, factory: factory,
+		vscodeDial: func(ctx context.Context) (net.Conn, error) {
+			return (&net.Dialer{Timeout: workspaceAgentConnectTimeout}).DialContext(ctx, "tcp", "127.0.0.1:8081")
+		}}, nil
 }
 
 // BindWorkspaceRuntime pins this guest to the provider ID and Workspace
@@ -98,11 +103,14 @@ func (a *WorkspaceShellAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if r.URL.Path != "/v1/workspaces/"+string(a.workspaceID())+"/shell" {
+	switch r.URL.Path {
+	case "/v1/workspaces/" + string(a.workspaceID()) + "/shell":
+		a.serveShell(w, r)
+	case "/v1/workspaces/" + string(a.workspaceID()) + "/vscode":
+		a.serveVSCode(w, r)
+	default:
 		http.NotFound(w, r)
-		return
 	}
-	a.serveShell(w, r)
 }
 
 func (a *WorkspaceShellAgent) Close() error {
@@ -180,6 +188,108 @@ func offeredAgentProtocol(value string) bool {
 		}
 	}
 	return false
+}
+
+func (a *WorkspaceShellAgent) serveVSCode(w http.ResponseWriter, r *http.Request) {
+	a.mu.RLock()
+	identity, dial := a.identity, a.vscodeDial
+	a.mu.RUnlock()
+	if identity.WorkspaceID == "" || dial == nil || r.Method != http.MethodGet || r.URL.RawQuery != "" || r.URL.ForceQuery || r.ContentLength > 0 {
+		http.Error(w, "Workspace VS Code bridge is not ready", http.StatusServiceUnavailable)
+		return
+	}
+	token := bearerAgentTicket(r.Header.Get("Authorization"))
+	server := websocket.Server{
+		Config: websocket.Config{Protocol: []string{workspaceAgentWebSocketProtocol}},
+		Handshake: func(config *websocket.Config, request *http.Request) error {
+			if request.Method != http.MethodGet || request.URL.RawQuery != "" || request.Header.Get("Origin") != a.gatewayOrigin ||
+				!offeredAgentProtocol(request.Header.Get("Sec-WebSocket-Protocol")) || token == "" {
+				return ErrAgentTicket
+			}
+			expected := AgentTicket{TenantID: identity.TenantID, WorkspaceID: identity.WorkspaceID,
+				ResourcePlane: identity.ResourcePlane, MicroVMID: identity.MicroVMID, Permission: workspacesession.PermissionVSCode}
+			verified, err := VerifyAgentTicket(token, a.keys, expected, time.Now().UTC())
+			if err != nil || a.replay.Consume(verified, time.Now().UTC()) != nil {
+				return ErrAgentTicket
+			}
+			config.Protocol = []string{workspaceAgentWebSocketProtocol}
+			return nil
+		},
+		Handler: func(conn *websocket.Conn) {
+			conn.MaxPayloadBytes = maxTerminalFrame
+			conn.PayloadType = websocket.BinaryFrame
+			upstream, err := dial(r.Context())
+			if err != nil {
+				_ = conn.Close()
+				return
+			}
+			proxyWorkspaceRawStream(r.Context(), conn, upstream)
+		},
+	}
+	server.ServeHTTP(w, r)
+}
+
+func proxyWorkspaceRawStream(ctx context.Context, conn *websocket.Conn, upstream io.ReadWriteCloser) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	finished := make(chan error, 2)
+	go func() {
+		for {
+			if ctx.Err() != nil {
+				finished <- ctx.Err()
+				return
+			}
+			var frame []byte
+			if err := websocket.Message.Receive(conn, &frame); err != nil {
+				finished <- err
+				return
+			}
+			for len(frame) > 0 {
+				n, err := upstream.Write(frame)
+				if err != nil || n <= 0 || n > len(frame) {
+					if err != nil {
+						finished <- err
+					} else {
+						finished <- io.ErrShortWrite
+					}
+					return
+				}
+				frame = frame[n:]
+			}
+		}
+	}()
+	go func() {
+		buffer := make([]byte, maxTerminalFrame)
+		for {
+			if ctx.Err() != nil {
+				finished <- ctx.Err()
+				return
+			}
+			n, err := upstream.Read(buffer)
+			if n > 0 {
+				if sendErr := websocket.Message.Send(conn, buffer[:n]); sendErr != nil {
+					finished <- sendErr
+					return
+				}
+			}
+			if err != nil {
+				finished <- err
+				return
+			}
+			if n == 0 {
+				finished <- io.ErrNoProgress
+				return
+			}
+		}
+	}()
+	<-finished
+	cancel()
+	_ = upstream.Close()
+	_ = conn.Close()
+	select {
+	case <-finished:
+	case <-time.After(500 * time.Millisecond):
+	}
 }
 
 type interactiveShell interface {

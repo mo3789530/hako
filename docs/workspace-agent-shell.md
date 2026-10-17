@@ -30,8 +30,9 @@ real PTY and verifies the output. This adapter is currently single-Workspace;
 the Resource Plane router must select it from verified claims. The adapter
 also supports a port stream only to `127.0.0.1:{port}` after the Gateway's
 trusted port allowlist authorizes it; it does not accept a destination host.
-VS Code is not implemented by this adapter, and shell sessions are not
-reconnectable after disconnect. The random PTY session ID is
+The local `workspaceagent.GatewayDialer` has no VS Code backend; the separate
+Lambda MicroVM adapter and fixed Guest bridge are documented below. Shell
+sessions are not reconnectable after disconnect. The random PTY session ID is
 defense-in-depth, not a substitute for authorization. No public SSH or
 additional TCP listener is introduced by this package. The Lambda MicroVM
 remains the isolation boundary; this does not claim filesystem confinement
@@ -56,6 +57,15 @@ internal readiness probe before acknowledging `/run`; orderly shutdown stops
 the child before EFS unmount. The image build now requires a public-key JSON
 file and the pinned EFS RPM. `HAKO_GATEWAY_ORIGIN` remains a required runtime
 configuration value.
+
+The Guest Agent also exposes `/vscode` with an independently authorized,
+one-use ticket carrying only the `vscode` permission. It forwards bytes only
+to the fixed guest-loopback `127.0.0.1:8081`; the caller cannot choose a Host
+or port. The Lambda MicroVM Gateway adapter resolves this route only after
+Session authorization. The Workspace image does not yet start code-server, so
+the bridge has no backend until a trusted image/runtime launches code-server
+with its own authentication enabled. `hako open` binds locally only to
+`127.0.0.1` and requests a fresh Session Ticket per browser TCP stream.
 
 The CLI/Agent shell stream uses an application-level binary frame with the
 `HAKS` magic, a type byte, and a four-byte big-endian payload length. Data

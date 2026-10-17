@@ -64,7 +64,7 @@ type WorkspaceAgentTicketIssuer interface {
 }
 
 type WorkspaceWebSocketDialer interface {
-	Dial(context.Context, string, string, string, string, string) (io.ReadWriteCloser, error)
+	Dial(context.Context, string, string, string, string, string, workspacesession.Permission) (io.ReadWriteCloser, error)
 }
 
 type WorkspaceRuntimeEndpoint struct {
@@ -123,16 +123,25 @@ func validWorkspaceMicroVMEndpoint(binding WorkspaceRuntimeEndpoint) bool {
 }
 
 func (d *LambdaMicroVMGatewayDialer) OpenShell(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
+	return d.open(ctx, claims, workspacesession.PermissionShell)
+}
+
+func (d *LambdaMicroVMGatewayDialer) OpenVSCode(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
+	return d.open(ctx, claims, workspacesession.PermissionVSCode)
+}
+
+func (d *LambdaMicroVMGatewayDialer) open(ctx context.Context, claims workspacesession.Claims, permission workspacesession.Permission) (io.ReadWriteCloser, error) {
 	if d == nil || ctx == nil || claims.UserID == "" || claims.TenantID != d.endpoint.TenantID ||
 		claims.WorkspaceID != d.endpoint.WorkspaceID || claims.ResourcePlane != d.endpoint.ResourcePlane ||
-		!hasWorkspacePermission(claims.Permissions, workspacesession.PermissionShell) {
+		!hasWorkspacePermission(claims.Permissions, permission) ||
+		(permission != workspacesession.PermissionShell && permission != workspacesession.PermissionVSCode) {
 		return nil, ErrInteractiveChannelUnavailable
 	}
 	connectCtx, cancel := context.WithTimeout(ctx, workspaceAgentConnectTimeout)
 	defer cancel()
 	ticket, _, err := d.tickets.Issue(AgentTicket{UserID: claims.UserID, TenantID: claims.TenantID,
 		WorkspaceID: claims.WorkspaceID, ResourcePlane: claims.ResourcePlane, MicroVMID: d.endpoint.MicroVMID,
-		Permission: workspacesession.PermissionShell})
+		Permission: permission})
 	if err != nil || !validWorkspaceHeaderCredential(ticket, maxAgentTicketBytes) {
 		return nil, ErrInteractiveChannelUnavailable
 	}
@@ -140,7 +149,7 @@ func (d *LambdaMicroVMGatewayDialer) OpenShell(ctx context.Context, claims works
 	if err != nil {
 		return nil, ErrInteractiveChannelUnavailable
 	}
-	stream, err := d.websocket.Dial(connectCtx, d.endpoint.Endpoint, string(d.endpoint.WorkspaceID), d.origin, token, ticket)
+	stream, err := d.websocket.Dial(connectCtx, d.endpoint.Endpoint, string(d.endpoint.WorkspaceID), d.origin, token, ticket, permission)
 	if err != nil || stream == nil {
 		return nil, ErrInteractiveChannelUnavailable
 	}
@@ -168,21 +177,17 @@ func hasWorkspacePermission(permissions []workspacesession.Permission, wanted wo
 	return false
 }
 
-func (d *LambdaMicroVMGatewayDialer) OpenVSCode(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
-	return nil, ErrInteractiveChannelUnavailable
-}
-
 func (d *LambdaMicroVMGatewayDialer) OpenPort(context.Context, workspacesession.Claims, uint16) (io.ReadWriteCloser, error) {
 	return nil, ErrInteractiveChannelUnavailable
 }
 
 type workspaceAgentWebSocketDialer struct{}
 
-func (workspaceAgentWebSocketDialer) Dial(ctx context.Context, httpsEndpoint, workspaceID, origin, awsToken, agentTicket string) (io.ReadWriteCloser, error) {
+func (workspaceAgentWebSocketDialer) Dial(ctx context.Context, httpsEndpoint, workspaceID, origin, awsToken, agentTicket string, permission workspacesession.Permission) (io.ReadWriteCloser, error) {
 	if ctx == nil {
 		return nil, ErrInteractiveChannelUnavailable
 	}
-	config, err := newWorkspaceAgentWebSocketConfig(httpsEndpoint, workspaceID, origin, awsToken, agentTicket)
+	config, err := newWorkspaceAgentWebSocketConfigForPermission(httpsEndpoint, workspaceID, origin, awsToken, agentTicket, permission)
 	if err != nil {
 		return nil, err
 	}
@@ -196,8 +201,14 @@ func (workspaceAgentWebSocketDialer) Dial(ctx context.Context, httpsEndpoint, wo
 }
 
 func newWorkspaceAgentWebSocketConfig(httpsEndpoint, workspaceID, origin, awsToken, agentTicket string) (*websocket.Config, error) {
+	return newWorkspaceAgentWebSocketConfigForPermission(httpsEndpoint, workspaceID, origin, awsToken, agentTicket, workspacesession.PermissionShell)
+}
+
+func newWorkspaceAgentWebSocketConfigForPermission(httpsEndpoint, workspaceID, origin, awsToken, agentTicket string,
+	permission workspacesession.Permission) (*websocket.Config, error) {
 	if !validWebSocketSubprotocol(awsToken, 8000) || !validWorkspaceHeaderCredential(agentTicket, maxAgentTicketBytes) ||
-		!validGatewayOrigin(origin) || !validWorkspaceHookVMID(workspaceID) {
+		!validGatewayOrigin(origin) || !validWorkspaceHookVMID(workspaceID) ||
+		(permission != workspacesession.PermissionShell && permission != workspacesession.PermissionVSCode) {
 		return nil, ErrInteractiveChannelUnavailable
 	}
 	endpoint, err := url.Parse(httpsEndpoint)
@@ -206,7 +217,11 @@ func newWorkspaceAgentWebSocketConfig(httpsEndpoint, workspaceID, origin, awsTok
 		return nil, ErrInteractiveChannelUnavailable
 	}
 	endpoint.Scheme = "wss"
-	endpoint.Path = "/v1/workspaces/" + url.PathEscape(workspaceID) + "/shell"
+	channel := "shell"
+	if permission == workspacesession.PermissionVSCode {
+		channel = "vscode"
+	}
+	endpoint.Path = "/v1/workspaces/" + url.PathEscape(workspaceID) + "/" + channel
 	config, err := websocket.NewConfig(endpoint.String(), origin)
 	if err != nil {
 		return nil, ErrInteractiveChannelUnavailable

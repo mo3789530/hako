@@ -8,6 +8,7 @@ export HAKO_API_URL=https://api.example.test
 export HAKO_GATEWAY_URL=https://gateway.example.test
 hako wait <tenant-id> <workspace-id> --state running
 hako shell <tenant-id> <workspace-id>
+hako open <tenant-id> <workspace-id> [local-port]
 hako ssh-proxy <tenant-id> <workspace-id>
 hako cp <tenant-id> <workspace-id> <local-path> <workspace-path>
 hako cp --from <tenant-id> <workspace-id> <workspace-path> <local-path>
@@ -26,6 +27,15 @@ ticket in memory and does not print it. On normal stream completion, input EOF,
 or interruption, it attempts to revoke the session with a bounded cleanup
 request. `Ctrl-C` disconnects; terminal EOF (`Ctrl-D`) sends EOT to the remote
 shell. A new invocation obtains a new ticket.
+
+`hako open` starts a local listener bound only to `127.0.0.1`, opens the
+browser at that URL, and forwards each browser TCP connection through a
+short-lived `vscode` Session Ticket and the Gateway's fixed VS Code route.
+The Guest Agent only connects to `127.0.0.1:8081`; it accepts no browser
+destination/port. The Workspace image/runtime must start code-server on that
+loopback address and configure its own authentication. Hako does not disable
+or replace code-server authentication. `Ctrl-C` closes the listener and
+active streams; each stream's Hako session is revoked after disconnect.
 
 Workspace lifecycle API requests are asynchronous: an accepted create,
 suspend, resume, or delete request is not proof that the observed state has
@@ -131,7 +141,8 @@ The shell command is currently a single-stream transport. Its bounded binary
 protocol uses a magic/type/length header and typed data/resize frames; both
 ends decode incrementally because the Gateway transports a byte stream and
 does not preserve WebSocket message boundaries. It does not yet provide a
-reconnectable PTY or a production SSH/VS Code runtime router. File transfer uses the local OpenSSH `scp` client
+reconnectable PTY, code-server image/runtime startup, or production SSH/SFTP
+runtime provisioning. File transfer uses the local OpenSSH `scp` client
 through the same unverified MicroVM SSH runtime path. The Service Catalog API/CLI currently persists
 desired state only; runtime start/health/stop/remove execution and
 persistent-data behavior are not yet implemented. The local forwarding CLI and Gateway protocol have a local

@@ -42,9 +42,18 @@ type WorkspaceLambdaMicroVMStreamDirectory struct {
 }
 
 func (d *WorkspaceLambdaMicroVMStreamDirectory) OpenShell(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
+	return d.open(ctx, claims, workspacesession.PermissionShell)
+}
+
+func (d *WorkspaceLambdaMicroVMStreamDirectory) OpenVSCode(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
+	return d.open(ctx, claims, workspacesession.PermissionVSCode)
+}
+
+func (d *WorkspaceLambdaMicroVMStreamDirectory) open(ctx context.Context, claims workspacesession.Claims, permission workspacesession.Permission) (io.ReadWriteCloser, error) {
 	if d == nil || ctx == nil || claims.UserID == "" || claims.TenantID == "" || claims.WorkspaceID == "" ||
 		claims.ResourcePlane == "" || d.ResourcePlaneID == "" || claims.ResourcePlane != d.ResourcePlaneID ||
-		!hasWorkspacePermission(claims.Permissions, workspacesession.PermissionShell) || d.Journal == nil || d.MicroVMs == nil ||
+		!hasWorkspacePermission(claims.Permissions, permission) ||
+		(permission != workspacesession.PermissionShell && permission != workspacesession.PermissionVSCode) || d.Journal == nil || d.MicroVMs == nil ||
 		d.Tokens == nil || d.Tickets == nil || !validWorkspaceRegion(d.Region) || !validGatewayOrigin(d.Origin) {
 		return nil, ErrInteractiveChannelUnavailable
 	}
@@ -71,11 +80,7 @@ func (d *WorkspaceLambdaMicroVMStreamDirectory) OpenShell(ctx context.Context, c
 	if err != nil {
 		return nil, ErrInteractiveChannelUnavailable
 	}
-	return dialer.OpenShell(lookupCtx, claims)
-}
-
-func (d *WorkspaceLambdaMicroVMStreamDirectory) OpenVSCode(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
-	return nil, ErrInteractiveChannelUnavailable
+	return dialer.open(lookupCtx, claims, permission)
 }
 
 func (d *WorkspaceLambdaMicroVMStreamDirectory) OpenPort(context.Context, workspacesession.Claims, uint16) (io.ReadWriteCloser, error) {

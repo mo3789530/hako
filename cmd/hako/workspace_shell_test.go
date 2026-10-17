@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -111,6 +112,17 @@ func (forwardTestDialer) OpenPort(_ context.Context, _ workspacesession.Claims, 
 				return
 			}
 		}
+	}()
+	return client, nil
+}
+
+type vscodeTestDialer struct{ shellTestDialer }
+
+func (vscodeTestDialer) OpenVSCode(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
+	client, runtime := net.Pipe()
+	go func() {
+		defer runtime.Close()
+		_, _ = io.Copy(runtime, runtime)
 	}()
 	return client, nil
 }
@@ -289,6 +301,137 @@ func TestWorkspaceShellCLIRequestsTicketStreamsAndRevokes(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "echo hako-cli-shell") {
 		t.Fatalf("shell output did not reach CLI: %q", output.String())
+	}
+}
+
+func TestWorkspaceIDETunnelUsesVSCodePermissionAndLoopbackListener(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuer := &workspacesession.Ed25519Issuer{KeyID: "vscode-test", PrivateKey: privateKey, TTL: time.Minute}
+	ticket, claims, err := issuer.Issue(workspacesession.Claims{UserID: "usr_cli", TenantID: "tenant_cli", WorkspaceID: "ws_cli",
+		ResourcePlane: "rp_cli", Permissions: []workspacesession.Permission{workspacesession.PermissionVSCode}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created, revoked atomic.Int32
+	apiServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer ide-access" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		switch r.Method {
+		case http.MethodPost:
+			if r.URL.Path != "/v1/tenants/tenant_cli/workspaces/ws_cli/sessions" {
+				http.Error(w, "wrong create route", http.StatusNotFound)
+				return
+			}
+			var request struct {
+				Permissions []workspacesession.Permission `json:"permissions"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil || len(request.Permissions) != 1 || request.Permissions[0] != workspacesession.PermissionVSCode {
+				http.Error(w, "wrong IDE permission", http.StatusBadRequest)
+				return
+			}
+			created.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(api.WorkspaceSession{SessionID: domain.SessionID(claims.TicketID), Ticket: ticket,
+				ExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC(), Permissions: []workspacesession.Permission{workspacesession.PermissionVSCode}})
+		case http.MethodDelete:
+			if r.URL.Path != "/v1/tenants/tenant_cli/workspaces/ws_cli/sessions/"+claims.TicketID {
+				http.Error(w, "wrong revoke route", http.StatusNotFound)
+				return
+			}
+			revoked.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
+	defer apiServer.Close()
+	gateway, err := workspacegateway.New(workspacegateway.Config{ResourcePlaneID: "rp_cli",
+		Verifier: &workspacesession.Verifier{Keys: map[string]ed25519.PublicKey{"vscode-test": publicKey}, Audience: workspacesession.AudienceGateway, Lookup: activeWorkspaceSession{}},
+		Dialer:   vscodeTestDialer{}, MaxConnections: 4, MaxConnectionsPerWorkspace: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatewayServer := httptest.NewTLSServer(gateway.Handler())
+	defer gatewayServer.Close()
+	gatewayTLS := gatewayServer.Client().Transport.(*http.Transport).TLSClientConfig
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	serveDone := make(chan error, 1)
+	go func() {
+		serveDone <- serveWorkspaceTunnel(ctx, listener, "tenant_cli", "ws_cli", workspacesession.PermissionVSCode, 0,
+			apiServer.URL, gatewayServer.URL, "ide-access", io.Discard, apiServer.Client(), &tls.Config{RootCAs: gatewayTLS.RootCAs})
+	}()
+	local, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	defer local.Close()
+	request := []byte("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+	if _, err := local.Write(request); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	_ = local.SetReadDeadline(time.Now().Add(3 * time.Second))
+	response := make([]byte, len(request))
+	if _, err := io.ReadFull(local, response); err != nil || !bytes.Equal(response, request) {
+		cancel()
+		t.Fatalf("IDE tunnel response=%q err=%v", response, err)
+	}
+	if created.Load() != 1 {
+		cancel()
+		t.Fatalf("VS Code session create count=%d", created.Load())
+	}
+	_ = local.Close()
+	deadline := time.Now().Add(3 * time.Second)
+	for revoked.Load() != 1 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if revoked.Load() != 1 {
+		cancel()
+		t.Fatalf("VS Code session revoke count=%d", revoked.Load())
+	}
+	cancel()
+	select {
+	case err := <-serveDone:
+		if err != nil {
+			t.Fatalf("serveWorkspaceTunnel: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Workspace IDE tunnel listener did not stop after cancellation")
+	}
+}
+
+func TestWorkspaceIDEOpensOnlyLoopbackBrowserURLAndStopsOnCancellation(t *testing.T) {
+	previousGetter, previousBrowser := cliCredentialGetter, cliBrowserOpener
+	cliCredentialGetter = workspaceShellCredentials(`{"access_token":"ide-access","token_type":"Bearer","expires_in":3600,"stored_at":"` + time.Now().UTC().Format(time.RFC3339) + `"}`)
+	t.Cleanup(func() {
+		cliCredentialGetter = previousGetter
+		cliBrowserOpener = previousBrowser
+	})
+	t.Setenv("HAKO_API_URL", "https://api.example.test")
+	t.Setenv("HAKO_GATEWAY_URL", "https://gateway.example.test")
+	ctx, cancel := context.WithCancel(context.Background())
+	var opened string
+	cliBrowserOpener = func(value string) error {
+		opened = value
+		cancel()
+		return nil
+	}
+	if err := workspaceIDE(ctx, "tenant_cli", "ws_cli", "0", io.Discard); err != nil {
+		t.Fatalf("workspaceIDE() = %v", err)
+	}
+	if !strings.HasPrefix(opened, "http://127.0.0.1:") || !strings.HasSuffix(opened, "/") {
+		t.Fatalf("browser URL is not loopback-only: %q", opened)
 	}
 }
 

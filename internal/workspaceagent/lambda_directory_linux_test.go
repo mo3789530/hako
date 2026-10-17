@@ -74,9 +74,20 @@ func TestWorkspaceLambdaMicroVMDirectoryResolvesCurrentDurableBinding(t *testing
 		MicroVMID: "microvm-1", Permission: workspacesession.PermissionShell}, time.Now().UTC()); err != nil {
 		t.Fatalf("directory-issued Agent Ticket is invalid: %v", err)
 	}
+	vscodeClaims := claims
+	vscodeClaims.Permissions = []workspacesession.Permission{workspacesession.PermissionVSCode}
+	ideStream, err := directory.OpenVSCode(context.Background(), vscodeClaims)
+	if err != nil || ideStream != stream || ws.permission != workspacesession.PermissionVSCode {
+		t.Fatalf("OpenVSCode() stream=%v route permission=%q err=%v", ideStream, ws.permission, err)
+	}
+	if _, err := VerifyAgentTicket(ws.ticket, map[string]ed25519.PublicKey{"directory-agent-key": public}, AgentTicket{
+		UserID: claims.UserID, TenantID: claims.TenantID, WorkspaceID: claims.WorkspaceID, ResourcePlane: claims.ResourcePlane,
+		MicroVMID: "microvm-1", Permission: workspacesession.PermissionVSCode}, time.Now().UTC()); err != nil {
+		t.Fatalf("directory-issued VS Code Agent Ticket is invalid: %v", err)
+	}
 	foreignPlane := claims
 	foreignPlane.ResourcePlane = "rp-other"
-	if _, err := directory.OpenShell(context.Background(), foreignPlane); err == nil || store.calls != 1 {
+	if _, err := directory.OpenShell(context.Background(), foreignPlane); err == nil || store.calls != 2 {
 		t.Fatalf("directory accepted foreign Resource Plane claim or performed lookup: err=%v store calls=%d", err, store.calls)
 	}
 }

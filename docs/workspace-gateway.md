@@ -26,8 +26,9 @@ is a local adapter for one Workspace's fixed-shell PTY manager and private
 ports: it checks the signed Workspace ID, opens `/bin/sh` in that Workspace,
 and dials only `127.0.0.1:{port}` after Gateway `PortAuthorizer` approval. The
 SSH route has a separate signed permission and always dials `127.0.0.1:22`; it
-does not use the caller-controlled port route or public SSH ingress. It
-rejects VS Code until that runtime adapter is supplied. The Resource Plane
+does not use the caller-controlled port route or public SSH ingress. The
+local `GatewayDialer` still rejects VS Code; the Lambda MicroVM adapter below
+provides a distinct fixed VS Code bridge. The Resource Plane
 must map signed Workspace claims to the right runtime; caller-provided
 hostnames are never accepted. Static local registrations are provided by
 `workspaceagent.WorkspaceRouter`; Lambda MicroVM runtimes can instead use the
@@ -58,9 +59,10 @@ Lambda-required `lambda-microvms.authentication.*` and `lambda-microvms.port.808
 WebSocket subprotocols (which Lambda strips before forwarding). Neither
 credential is persisted or logged. The token provider/dialer and
 authorization binding are locally tested, and `cmd/hako-workspace-gateway`
-composes them with mounted keys and the journal-backed resolver; a real Lambda endpoint connection remains unverified. This adapter currently
-supports shell only; VS Code and Guest-side port-forward channels require
-additional runtime endpoints. The directory reads the matching Workspace
+composes them with mounted keys and the journal-backed resolver; a real Lambda endpoint connection remains unverified. This adapter supports shell and the
+fixed VS Code bridge; Guest-side port-forward channels require an additional
+runtime endpoint. The Workspace image must start code-server on
+`127.0.0.1:8081` and configure its own authentication. The directory reads the matching Workspace
 journal from the Resource Plane store and calls `GetMicrovm` for each new
 connection, requiring exact Tenant/Workspace/Plane identity, a non-tombstoned
 `running` journal, and the same running provider ID before creating the
@@ -123,7 +125,9 @@ writable. Secrets are not logged. A restart is currently required to rotate
 mounted keys; coordinate Session signer verification overlap and Guest Agent
 public-key image updates operationally. No Terraform service/task role/listener
 is provisioned yet, and no real Secret/AWS API/MicroVM was accessed. The
-process currently enables the shell adapter only; VS Code and guest port
-forward fail closed. `/healthz` is an unauthenticated static liveness check,
+process currently enables shell and the fixed VS Code bridge; guest port
+forward fails closed. The VS Code bridge requires code-server to run at the
+fixed guest-loopback port and does not change its authentication policy.
+`/healthz` is an unauthenticated static liveness check,
 not proof of downstream AWS or Control Plane reachability. See Task 46 for
 remaining deployment and live-validation gates.
