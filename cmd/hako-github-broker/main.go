@@ -137,6 +137,17 @@ func run() error {
 	if err != nil {
 		return errors.New("configure GitHub Actions runner cleanup broker")
 	}
+	runnerBindingIDs := make([]string, 0, len(runnerCleanupCallers))
+	for _, caller := range runnerCleanupCallers {
+		runnerBindingIDs = append(runnerBindingIDs, strings.TrimPrefix(caller, "spiffe://hako/resource-plane/"))
+	}
+	var runnerBinding *githubbroker.ActionsRunnerBindingService
+	if len(runnerBindingIDs) > 0 {
+		runnerBinding, err = githubbroker.NewActionsRunnerBindingService(runnerBindingIDs, githubbroker.NewPostgresActionsRunnerBinder(pool, policy))
+		if err != nil {
+			return errors.New("configure GitHub Actions runner claim binding service")
+		}
+	}
 	tlsConfig, err := serverTLSConfigFromEnv()
 	if err != nil {
 		return err
@@ -145,7 +156,7 @@ func run() error {
 	if addr == "" {
 		addr = defaultListenAddr
 	}
-	server := &http.Server{Addr: addr, Handler: githubbroker.HandlerWithActionsRunnerAndCleanup(oauth, checkout, checks, checkoutCallers, actionsRunner, runnerCleanup, runnerCleanupCallers), TLSConfig: tlsConfig,
+	server := &http.Server{Addr: addr, Handler: githubbroker.HandlerWithActionsRunnerLifecycle(oauth, checkout, checks, checkoutCallers, actionsRunner, runnerCleanup, runnerCleanupCallers, runnerBinding, runnerCleanupCallers), TLSConfig: tlsConfig,
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 60 * time.Second,
 		IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
 	go func() {

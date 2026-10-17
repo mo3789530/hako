@@ -117,6 +117,14 @@ func NewActionsRunnerCleanupMTLSClient(resourcePlaneID string, certificate tls.C
 	return newMTLSClient(certificate, brokerRoots, 50*time.Second, caller)
 }
 
+func NewActionsRunnerBindingMTLSClient(resourcePlaneID string, certificate tls.Certificate, brokerRoots *x509.CertPool) (*http.Client, error) {
+	caller, err := ResourcePlaneCallerID(resourcePlaneID)
+	if err != nil {
+		return nil, err
+	}
+	return newMTLSClient(certificate, brokerRoots, 6*time.Second, caller)
+}
+
 func newMTLSClient(certificate tls.Certificate, brokerRoots *x509.CertPool, timeout time.Duration, expectedCaller string) (*http.Client, error) {
 	if len(certificate.Certificate) == 0 || brokerRoots == nil || certificate.Leaf == nil {
 		return nil, ErrUnavailable
@@ -173,6 +181,12 @@ func HandlerWithActionsRunner(service *OAuthService, checkout *CheckoutService, 
 
 func HandlerWithActionsRunnerAndCleanup(service *OAuthService, checkout *CheckoutService, checks *ChecksService, checkoutCallers []string,
 	actionsRunner *ActionsRunnerRegistrationService, runnerCleanup *ActionsRunnerCleanupService, cleanupCallers []string) http.Handler {
+	return HandlerWithActionsRunnerLifecycle(service, checkout, checks, checkoutCallers, actionsRunner, runnerCleanup, cleanupCallers, nil, nil)
+}
+
+func HandlerWithActionsRunnerLifecycle(service *OAuthService, checkout *CheckoutService, checks *ChecksService, checkoutCallers []string,
+	actionsRunner *ActionsRunnerRegistrationService, runnerCleanup *ActionsRunnerCleanupService, cleanupCallers []string,
+	runnerBinding *ActionsRunnerBindingService, bindingCallers []string) http.Handler {
 	allowedCheckoutCallers := map[string]struct{}{controlPlaneURI: {}}
 	for _, caller := range checkoutCallers {
 		if caller != controlPlaneURI && !strings.HasPrefix(caller, resourcePlaneURIPrefix) {
@@ -195,6 +209,16 @@ func HandlerWithActionsRunnerAndCleanup(service *OAuthService, checkout *Checkou
 			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusServiceUnavailable) })
 		}
 		allowedCleanupCallers[caller] = struct{}{}
+	}
+	allowedBindingCallers := make(map[string]struct{}, len(bindingCallers))
+	for _, caller := range bindingCallers {
+		if !validResourcePlaneCleanupCaller(caller) {
+			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusServiceUnavailable) })
+		}
+		if _, duplicate := allowedBindingCallers[caller]; duplicate {
+			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusServiceUnavailable) })
+		}
+		allowedBindingCallers[caller] = struct{}{}
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/oauth/setup-url", func(w http.ResponseWriter, r *http.Request) {
@@ -344,6 +368,25 @@ func HandlerWithActionsRunnerAndCleanup(service *OAuthService, checkout *Checkou
 			writeResponse(w, struct{}{})
 		})
 	}
+	if runnerBinding != nil && len(allowedBindingCallers) > 0 {
+		mux.HandleFunc("POST /v1/actions-runner/bind", func(w http.ResponseWriter, r *http.Request) {
+			caller, err := authenticatedCleanupCaller(r, allowedBindingCallers)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized)
+				return
+			}
+			input, ok := decodeActionsRunnerBindingRequest(r)
+			if !ok {
+				writeError(w, http.StatusBadRequest)
+				return
+			}
+			if err := runnerBinding.Bind(r.Context(), caller, input); err != nil {
+				writeError(w, http.StatusForbidden)
+				return
+			}
+			writeResponse(w, struct{}{})
+		})
+	}
 	return mux
 }
 
@@ -482,6 +525,27 @@ func decodeActionsRunnerCleanupRequest(r *http.Request) (ActionsRunnerCleanupReq
 		return ActionsRunnerCleanupRequest{}, false
 	}
 	return ActionsRunnerCleanupRequest(decoded), true
+}
+
+func decodeActionsRunnerBindingRequest(r *http.Request) (ActionsRunnerBindingRequest, bool) {
+	var decoded ActionsRunnerBindingRequest
+	if r == nil || r.Body == nil || r.ContentLength > 1024 || !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		return ActionsRunnerBindingRequest{}, false
+	}
+	data, err := io.ReadAll(io.LimitReader(r.Body, 1025))
+	if err != nil || len(data) > 1024 {
+		return ActionsRunnerBindingRequest{}, false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&decoded) != nil || !validActionsRunnerBindingRequest(decoded) {
+		return ActionsRunnerBindingRequest{}, false
+	}
+	var trailing any
+	if decoder.Decode(&trailing) != io.EOF {
+		return ActionsRunnerBindingRequest{}, false
+	}
+	return decoded, true
 }
 
 type HTTPActionsRunnerRegistrationClient struct {

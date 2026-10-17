@@ -138,8 +138,8 @@ func NewPostgresActionsRunnerJobFailure(pool transaction.Beginner, policy transa
 			// therefore race with a successful MicroVM launch; record terminal
 			// cleanup in the same transaction and carry the immutable provider ID.
 			_, err = tx.Exec(ctx, `INSERT INTO github_actions_runner_cleanup_outbox
-				(integration_id,workflow_job_id,run_attempt,tenant_id,installation_id,repository_id,runner_id,lambda_microvm_id,reason,state,available_at,created_at,updated_at)
-				SELECT integration_id,workflow_job_id,run_attempt,tenant_id,installation_id,repository_id,runner_id,lambda_microvm_id,'failed','pending',$4,$4,$4
+				(integration_id,workflow_job_id,run_attempt,tenant_id,installation_id,repository_id,runner_id,resource_plane_id,lambda_microvm_id,reason,state,available_at,created_at,updated_at)
+				SELECT integration_id,workflow_job_id,run_attempt,tenant_id,installation_id,repository_id,runner_id,resource_plane_id,lambda_microvm_id,'failed','pending',$4,$4,$4
 				FROM github_actions_runner_jobs WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=$3 AND state='failed'
 				ON CONFLICT (integration_id,workflow_job_id,run_attempt) DO NOTHING`,
 				identity.IntegrationID, identity.WorkflowJobID, identity.RunAttempt, now)

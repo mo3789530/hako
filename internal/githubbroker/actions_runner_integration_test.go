@@ -50,11 +50,26 @@ func TestPostgresActionsRunnerStarterRequiresExactClaimActiveAppAndPriorOptIn(t 
 	if _, err := start(ctx, request); err == nil {
 		t.Fatal("same claimed job minted more than one registration token")
 	}
-	fail := NewPostgresActionsRunnerJobFailure(pool, transaction.DefaultPolicy())
-	if _, err := pool.Exec(ctx, `UPDATE github_actions_runner_jobs SET lambda_microvm_id='lambda-microvm-runner-test'
-		WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=1`, request.IntegrationID, request.WorkflowJobID); err != nil {
-		t.Fatal(err)
+	binder := NewPostgresActionsRunnerBinder(pool, transaction.DefaultPolicy())
+	binding := ActionsRunnerBindingRequest{IntegrationID: request.IntegrationID, WorkflowJobID: request.WorkflowJobID,
+		RunAttempt: request.RunAttempt, ClaimID: request.ClaimID, MicroVMID: "lambda-microvm-runner-test"}
+	bound, err := binder(ctx, "rp-tokyo-01", binding)
+	if err != nil || !bound {
+		t.Fatalf("bind exact live claim to launched Lambda MicroVM: bound=%v err=%v", bound, err)
 	}
+	if bound, err := binder(ctx, "rp-us-01", binding); err != nil || bound {
+		t.Fatalf("another Resource Plane replaced the pinned provider identity: bound=%v err=%v", bound, err)
+	}
+	if bound, err := binder(ctx, "rp-tokyo-01", ActionsRunnerBindingRequest{IntegrationID: request.IntegrationID,
+		WorkflowJobID: request.WorkflowJobID, RunAttempt: request.RunAttempt, ClaimID: "different-claim-1", MicroVMID: "another-microvm"}); err != nil || bound {
+		t.Fatalf("different claim replaced the pinned provider identity: bound=%v err=%v", bound, err)
+	}
+	var planeID, microVMID string
+	if err := pool.QueryRow(ctx, `SELECT resource_plane_id,lambda_microvm_id FROM github_actions_runner_jobs WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=1`,
+		request.IntegrationID, request.WorkflowJobID).Scan(&planeID, &microVMID); err != nil || planeID != "rp-tokyo-01" || microVMID != binding.MicroVMID {
+		t.Fatalf("durable claim binding mismatch: plane=%q microvm=%q err=%v", planeID, microVMID, err)
+	}
+	fail := NewPostgresActionsRunnerJobFailure(pool, transaction.DefaultPolicy())
 	if err := fail(ctx, identity); err != nil {
 		t.Fatal(err)
 	}
@@ -63,8 +78,11 @@ func TestPostgresActionsRunnerStarterRequiresExactClaimActiveAppAndPriorOptIn(t 
 	}
 	var cleanupState, cleanupReason string
 	var cleanupMicroVM *string
-	if err := pool.QueryRow(ctx, `SELECT state,reason,lambda_microvm_id FROM github_actions_runner_cleanup_outbox
-		WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=1`, request.IntegrationID, request.WorkflowJobID).Scan(&cleanupState, &cleanupReason, &cleanupMicroVM); err != nil || cleanupState != "pending" || cleanupReason != "failed" || cleanupMicroVM == nil || *cleanupMicroVM != "lambda-microvm-runner-test" {
-		t.Fatalf("failed startup cleanup was not transactionally queued: state=%q reason=%q MicroVM=%v error=%v", cleanupState, cleanupReason, cleanupMicroVM, err)
+	var cleanupPlane *string
+	if err := pool.QueryRow(ctx, `SELECT state,reason,resource_plane_id,lambda_microvm_id FROM github_actions_runner_cleanup_outbox
+		WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=1`, request.IntegrationID, request.WorkflowJobID).
+		Scan(&cleanupState, &cleanupReason, &cleanupPlane, &cleanupMicroVM); err != nil || cleanupState != "pending" || cleanupReason != "failed" ||
+		cleanupPlane == nil || *cleanupPlane != "rp-tokyo-01" || cleanupMicroVM == nil || *cleanupMicroVM != binding.MicroVMID {
+		t.Fatalf("failed startup cleanup was not transactionally queued: state=%q reason=%q plane=%v MicroVM=%v error=%v", cleanupState, cleanupReason, cleanupPlane, cleanupMicroVM, err)
 	}
 }

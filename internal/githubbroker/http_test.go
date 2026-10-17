@@ -169,6 +169,19 @@ func TestBrokerMTLSHandshakeAndHTTPResolver(t *testing.T) {
 		t.Fatal(err)
 	}
 	runnerService.clock = func() time.Time { return runnerNow }
+	runnerBindingRequest := ActionsRunnerBindingRequest{IntegrationID: runnerIdentity.IntegrationID, WorkflowJobID: runnerIdentity.WorkflowJobID,
+		RunAttempt: runnerIdentity.RunAttempt, ClaimID: runnerIdentity.ClaimID, MicroVMID: "runner-vm-mtls-1"}
+	bound := 0
+	runnerBinding, err := NewActionsRunnerBindingService([]string{"rp-tokyo-01"}, func(_ context.Context, planeID string, got ActionsRunnerBindingRequest) (bool, error) {
+		if planeID != "rp-tokyo-01" || got != runnerBindingRequest {
+			return false, ErrActionsRunnerBindingDenied
+		}
+		bound++
+		return true, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	cleanupRequest := ActionsRunnerCleanupRequest{IntegrationID: runnerIdentity.IntegrationID, WorkflowJobID: runnerIdentity.WorkflowJobID,
 		RunAttempt: runnerIdentity.RunAttempt, ClaimID: "cleanup-claim-1"}
 	cleanupIdentity := ActionsRunnerCleanupIdentity{ResourcePlaneID: "rp-tokyo-01", IntegrationID: runnerIdentity.IntegrationID,
@@ -193,7 +206,8 @@ func TestBrokerMTLSHandshakeAndHTTPResolver(t *testing.T) {
 	}
 	runnerCleanup.clock = func() time.Time { return runnerNow }
 	runnerCleanupCallers := []string{"spiffe://hako/resource-plane/rp-tokyo-01"}
-	server := httptest.NewUnstartedServer(HandlerWithActionsRunnerAndCleanup(service, checkout, checksService, nil, runnerService, runnerCleanup, runnerCleanupCallers))
+	server := httptest.NewUnstartedServer(HandlerWithActionsRunnerLifecycle(service, checkout, checksService, nil, runnerService, runnerCleanup,
+		runnerCleanupCallers, runnerBinding, runnerCleanupCallers))
 	serverCAs, _ := ServerTLSConfig(clientRoots)
 	server.TLS = serverCAs
 	server.StartTLS()
@@ -253,6 +267,19 @@ func TestBrokerMTLSHandshakeAndHTTPResolver(t *testing.T) {
 		WorkflowJobID: runnerIdentity.WorkflowJobID, RunAttempt: runnerIdentity.RunAttempt, ClaimID: runnerIdentity.ClaimID})
 	if err != nil || runnerGrant.Token.Value() != "ghr_mtls_registration_token" || runnerGrant.Repository != (githubapp.RepositoryAccess{Owner: "acme", Name: "runner-repo"}) {
 		t.Fatalf("mTLS Actions runner registration request failed: grant=%v repository=%+v error=%v", runnerGrant.Token, runnerGrant.Repository, err)
+	}
+	bindingClient, err := NewActionsRunnerBindingMTLSClient("rp-tokyo-01", issue("spiffe://hako/resource-plane/rp-tokyo-01"), brokerRoots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindingProvider, err := NewHTTPActionsRunnerBindingClient(server.URL, "rp-tokyo-01", bindingClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindingJob := githubwebhook.ActionsRunnerJob{IntegrationID: runnerIdentity.IntegrationID, JobID: runnerIdentity.WorkflowJobID,
+		RunAttempt: runnerIdentity.RunAttempt, State: "starting", ClaimID: runnerIdentity.ClaimID, LeaseExpires: runnerNow.Add(time.Minute)}
+	if err := bindingProvider.Bind(context.Background(), bindingJob, runnerBindingRequest.MicroVMID); err != nil || bound != 1 {
+		t.Fatalf("Resource Plane mTLS runner binding failed: bound=%d err=%v", bound, err)
 	}
 	runnerCleanupClient, err := NewActionsRunnerCleanupMTLSClient("rp-tokyo-01", issue(runnerCleanupCallers[0]), brokerRoots)
 	if err != nil {

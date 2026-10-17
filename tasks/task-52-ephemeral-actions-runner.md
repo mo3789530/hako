@@ -1,6 +1,6 @@
 # Task 52: GitHub Actions Ephemeral Runner Mode
 
-Status: In Progress (2026-10-17: signed `workflow_job.queued` deliveries are retained but excluded from the generic push/PR Go-test trigger. Normalized events preserve run attempt, workflow name, bounded labels, and optional assigned runner/group identity. Tenant Owner/Admin repository opt-in is stored via API/CLI and audited. A separate default-off admission flag revalidates Tenant/Installation/Repository policy and persists deduplicated queued job admissions; worker claims use expiring leases with recovery. A Control Plane-only mTLS broker endpoint now consumes a claim and mints the repository-scoped registration token. GitHub-observed runner assignment and completion are persisted against the exact admitted job. The starting claim pins the Lambda MicroVM and Resource Plane identities; terminal cleanup outbox records preserve both, cleanup leases are Resource Plane-scoped, and a locally tested cleanup worker/transactional queue adapter handles termination→deregistration→fenced acknowledgement with bounded retry. An AWS SDK Lambda MicroVM terminator is implemented with exact Plane fencing, identity verification, idempotent state handling, and bounded polling. A separate Plane-allowlisted mTLS broker endpoint resolves deregistration coordinates only from an unexpired cleanup claim. A new Lambda MicroVM launch adapter validates trusted image/network/role profiles, uses a deterministic claim-scoped idempotency token, and sends only non-secret admitted job metadata in the Run Hook; signed guest bootstrap/token delivery, claim binding, consumer composition/deployment, and live AWS/GitHub verification remain. Priority: P3.
+Status: In Progress (2026-10-17: signed `workflow_job.queued` deliveries are retained but excluded from the generic push/PR Go-test trigger. Normalized events preserve run attempt, workflow name, bounded labels, and optional assigned runner/group identity. Tenant Owner/Admin repository opt-in is stored via API/CLI and audited. A separate default-off admission flag revalidates Tenant/Installation/Repository policy and persists deduplicated queued job admissions; worker claims use expiring leases with recovery. A Control Plane-only mTLS broker endpoint now consumes a claim and mints the repository-scoped registration token. GitHub-observed runner assignment and completion are persisted against the exact admitted job. The starting claim pins the Lambda MicroVM and Resource Plane identities; terminal cleanup outbox records preserve both, cleanup leases are Resource Plane-scoped, and a locally tested cleanup worker/transactional queue adapter handles termination→deregistration→fenced acknowledgement with bounded retry. An AWS SDK Lambda MicroVM terminator is implemented with exact Plane fencing, identity verification, idempotent state handling, and bounded polling. A separate Plane-allowlisted mTLS broker endpoint resolves deregistration coordinates only from an unexpired cleanup claim. The Lambda MicroVM launch adapter validates trusted image/network/role profiles, uses a deterministic claim-scoped idempotency token, and sends only non-secret job metadata in the Run Hook. A Resource Plane-allowlisted mTLS binding endpoint now persists the launched VM ID against the exact live starting claim, and startup-failure cleanup preserves both Plane and VM identity. Signed guest bootstrap/token delivery, worker consumer composition/deployment, and live AWS/GitHub verification remain. Priority: P3.
 
 Claude Code Action support is tracked separately in [Task 73](task-73-claude-code-action.md), including Tenant-scoped model credentials, untrusted PR denial, and action-specific E2E.
 
@@ -129,6 +129,17 @@ Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Action
   and MicroVM-specific HTTPS endpoint. Unit tests cover idempotent retry and
   reject expired claims, unsafe labels, mismatched provider configuration,
   invalid endpoints, and provider failures. This is a launch adapter contract
-  only: durable Control Plane binding must still be wired before delivering
+  only. The broker-side binding is now available over a Plane-allowlisted
+  mTLS route, but worker orchestration must still call it before delivering
   the short-lived token to a signed guest bootstrap endpoint. No AWS call is
   made by tests.
+- The Resource Plane can persist a launched VM identity without a direct
+  Control Plane database connection. `POST /v1/actions-runner/bind` authenticates
+  a configured Resource Plane SPIFFE identity, derives Plane ID from the
+  certificate (not JSON), and transactionally calls the existing live-claim
+  binder. The mTLS client sends only Integration/job/attempt/claim and provider
+  VM IDs. Cross-Plane/stale-claim/replacement attempts fail closed. The broker
+  startup-failure transition now copies both `resource_plane_id` and
+  `lambda_microvm_id` into its cleanup outbox, verified by PostgreSQL
+  integration coverage. Registration-token issuance remains Control
+  Plane-only; guest bootstrap/token handoff is still not wired.
