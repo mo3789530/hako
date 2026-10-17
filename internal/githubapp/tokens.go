@@ -133,6 +133,15 @@ type RunnerRegistrationToken struct {
 	expiresAt time.Time
 }
 
+// NewRunnerRegistrationToken wraps a value received from GitHub in the opaque
+// type used at trusted broker boundaries.
+func NewRunnerRegistrationToken(value string, expiresAt time.Time) (RunnerRegistrationToken, error) {
+	if value == "" || len(value) > 4096 || strings.ContainsAny(value, "\r\n\x00 ") || expiresAt.IsZero() {
+		return RunnerRegistrationToken{}, credentialError("invalid_token_response")
+	}
+	return RunnerRegistrationToken{value: value, expiresAt: expiresAt}, nil
+}
+
 func (t RunnerRegistrationToken) Value() string        { return t.value }
 func (t RunnerRegistrationToken) ExpiresAt() time.Time { return t.expiresAt }
 func (RunnerRegistrationToken) String() string         { return "[REDACTED GitHub runner registration token]" }

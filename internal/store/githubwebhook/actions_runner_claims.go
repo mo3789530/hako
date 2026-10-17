@@ -45,6 +45,7 @@ func ClaimNextActionsRunnerJob(ctx context.Context, tx pgx.Tx, claimID string, n
 	err := tx.QueryRow(ctx, `WITH candidate AS (
 		SELECT integration_id,workflow_job_id,run_attempt FROM github_actions_runner_jobs
 		WHERE state='admitted' OR (state='claimed' AND lease_expires_at <= $1)
+		   OR (state='starting' AND lease_expires_at + interval '65 minutes' <= $1)
 		ORDER BY created_at,integration_id,workflow_job_id,run_attempt
 		LIMIT 1
 	)
@@ -52,7 +53,7 @@ func ClaimNextActionsRunnerJob(ctx context.Context, tx pgx.Tx, claimID string, n
 	SET state='claimed',claim_id=$2,lease_expires_at=$3,claim_attempts=j.claim_attempts+1,updated_at=$1
 	FROM candidate c
 	WHERE j.integration_id=c.integration_id AND j.workflow_job_id=c.workflow_job_id AND j.run_attempt=c.run_attempt
-	  AND (j.state='admitted' OR (j.state='claimed' AND j.lease_expires_at <= $1))
+	  AND (j.state='admitted' OR (j.state='claimed' AND j.lease_expires_at <= $1) OR (j.state='starting' AND j.lease_expires_at + interval '65 minutes' <= $1))
 	RETURNING j.integration_id,j.delivery_id,j.tenant_id,j.installation_id,j.repository_id,j.workflow_job_id,j.workflow_run_id,j.run_attempt,
 	          j.workflow_name,j.job_name,j.head_branch,j.head_sha,j.labels,j.state,j.claim_id,j.lease_expires_at,j.claim_attempts,j.created_at`,
 		now.UTC(), claimID, now.Add(lease).UTC()).Scan(

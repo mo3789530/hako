@@ -113,6 +113,18 @@ func run() error {
 	if err != nil {
 		return errors.New("configure GitHub Checks broker service")
 	}
+	actionsRunnerMinter, err := githubbroker.NewAWSActionsRunnerRegistrationTokenMinter(awsConfig, pool, policy, nil)
+	if err != nil {
+		return errors.New("configure GitHub Actions runner token minter")
+	}
+	actionsRunner, err := githubbroker.NewActionsRunnerRegistrationService(
+		githubbroker.NewPostgresActionsRunnerJobStarter(pool, policy),
+		githubbroker.NewPostgresActionsRunnerJobFailure(pool, policy),
+		actionsRunnerMinter,
+	)
+	if err != nil {
+		return errors.New("configure GitHub Actions runner broker service")
+	}
 	tlsConfig, err := serverTLSConfigFromEnv()
 	if err != nil {
 		return err
@@ -121,7 +133,7 @@ func run() error {
 	if addr == "" {
 		addr = defaultListenAddr
 	}
-	server := &http.Server{Addr: addr, Handler: githubbroker.HandlerWithServicesAndCheckoutCallers(oauth, checkout, checks, checkoutCallers), TLSConfig: tlsConfig,
+	server := &http.Server{Addr: addr, Handler: githubbroker.HandlerWithActionsRunner(oauth, checkout, checks, checkoutCallers, actionsRunner), TLSConfig: tlsConfig,
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 60 * time.Second,
 		IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
 	go func() {

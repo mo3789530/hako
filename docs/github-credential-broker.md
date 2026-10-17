@@ -28,6 +28,7 @@ The broker's TLS listener requires a trusted client certificate. OAuth setup and
 | `POST /v1/oauth/authorize-url` | Pinned identity, state, PKCE verifier | Authorization URL only; does not read a Secret |
 | `POST /v1/oauth/verify` | Pinned identity, OAuth code, expected Installation, PKCE verifier | Verified App/Installation identity only; OAuth secret stays in broker |
 | `POST /v1/checkout/token` | Tenant ID and persisted Workload Run ID only | Short-lived token and expiry over mTLS with `Cache-Control: no-store` |
+| `POST /v1/actions-runner/registration-token` | Integration ID, workflow job ID, run attempt, and current claim ID only | One repository-scoped registration token over Control Plane-only mTLS with `Cache-Control: no-store` |
 
 Checkout callers cannot choose App ID, Installation, Repository, Role ARN, Secret ARN, version, revision, generation, or commit. The broker loads the Workload Run and active exact credential pin from the database, mints a read-only repository-scoped token, then rechecks caller authorization, Run state, and the credential pin after GitHub I/O. Cancellation, disable, or rotation during the request fails closed. A failed Tenant-owned request never falls back to the shared App. Shared Runs continue using the existing shared credential provider.
 
@@ -38,9 +39,13 @@ active Tenant App revision/generation and the independent per-repository
 Installation permission for that one Repository, and rechecks authorization
 after GitHub returns. Neither the temporary Installation token nor the
 one-hour runner registration token is cached; both token types redact common
-formatting and JSON paths. This is not yet exposed as an HTTP endpoint: the
-controller must first resolve a claimed durable Actions job and bind token
-issuance to that job before the primitive is wired into the mTLS broker.
+formatting and JSON paths. The mTLS endpoint is wired to the durable claim
+resolver: it atomically consumes a live claim by transitioning `claimed` to
+`starting`, resolves the Tenant/App/Repository from the database, then calls
+the token primitive. A second request cannot mint for the consumed claim. Mint
+failures mark the start failed; a controller crash leaves a `starting` row
+non-reclaimable until the token safety window (65 minutes after the original
+lease expiry) passes.
 Installations must grant their Tenant GitHub App `Administration: write` for
 repository runners; installations without it fail closed.
 

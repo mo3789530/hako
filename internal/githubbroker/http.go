@@ -53,6 +53,13 @@ type checkoutRequest struct {
 	RunID    domain.WorkloadRunID `json:"run_id"`
 }
 
+type actionsRunnerTokenRequest struct {
+	IntegrationID string `json:"integration_id"`
+	WorkflowJobID int64  `json:"workflow_job_id"`
+	RunAttempt    int64  `json:"run_attempt"`
+	ClaimID       string `json:"claim_id"`
+}
+
 // ServerTLSConfig requires a client cert rooted in the supplied CA. The
 // handler also checks the workload URI SAN before accepting any request.
 func ServerTLSConfig(clientCAs *x509.CertPool) (*tls.Config, error) {
@@ -87,6 +94,10 @@ func NewResourcePlaneCheckoutMTLSClient(resourcePlaneID string, certificate tls.
 }
 
 func NewChecksMTLSClient(certificate tls.Certificate, brokerRoots *x509.CertPool) (*http.Client, error) {
+	return newMTLSClient(certificate, brokerRoots, 50*time.Second, controlPlaneURI)
+}
+
+func NewActionsRunnerMTLSClient(certificate tls.Certificate, brokerRoots *x509.CertPool) (*http.Client, error) {
 	return newMTLSClient(certificate, brokerRoots, 50*time.Second, controlPlaneURI)
 }
 
@@ -134,6 +145,13 @@ func HandlerWithServices(service *OAuthService, checkout *CheckoutService, check
 // Plane-only while allowing explicitly enumerated Resource Plane identities
 // to use the narrowly scoped Tenant/Run checkout endpoint.
 func HandlerWithServicesAndCheckoutCallers(service *OAuthService, checkout *CheckoutService, checks *ChecksService, checkoutCallers []string) http.Handler {
+	return HandlerWithActionsRunner(service, checkout, checks, checkoutCallers, nil)
+}
+
+// HandlerWithActionsRunner exposes runner registration only to the verified
+// Control Plane certificate identity. Resource Plane identities are never
+// admitted to this endpoint.
+func HandlerWithActionsRunner(service *OAuthService, checkout *CheckoutService, checks *ChecksService, checkoutCallers []string, actionsRunner *ActionsRunnerRegistrationService) http.Handler {
 	allowedCheckoutCallers := map[string]struct{}{controlPlaneURI: {}}
 	for _, caller := range checkoutCallers {
 		if caller != controlPlaneURI && !strings.HasPrefix(caller, resourcePlaneURIPrefix) {
@@ -253,6 +271,29 @@ func HandlerWithServicesAndCheckoutCallers(service *OAuthService, checkout *Chec
 			writeResponse(w, response{Token: grant.Token(), ExpiresAt: grant.ExpiresAt(), Repository: &repositoryResponse{Owner: repository.Owner, Name: repository.Name}})
 		})
 	}
+	if actionsRunner != nil {
+		mux.HandleFunc("POST /v1/actions-runner/registration-token", func(w http.ResponseWriter, r *http.Request) {
+			caller, err := authenticatedCaller(r)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized)
+				return
+			}
+			input, ok := decodeActionsRunnerTokenRequest(r)
+			if !ok {
+				writeError(w, http.StatusBadRequest)
+				return
+			}
+			grant, err := actionsRunner.Issue(r.Context(), caller, ActionsRunnerRegistrationRequest{
+				IntegrationID: input.IntegrationID, WorkflowJobID: input.WorkflowJobID, RunAttempt: input.RunAttempt, ClaimID: input.ClaimID,
+			})
+			if err != nil {
+				writeError(w, http.StatusForbidden)
+				return
+			}
+			repository := grant.Repository
+			writeResponse(w, response{Token: grant.Token.Value(), ExpiresAt: grant.Token.ExpiresAt(), Repository: &repositoryResponse{Owner: repository.Owner, Name: repository.Name}})
+		})
+	}
 	return mux
 }
 
@@ -335,6 +376,86 @@ func decodeChecksRequest(r *http.Request) (checkoutRequest, bool) {
 	}
 	return decoded, true
 }
+
+func decodeActionsRunnerTokenRequest(r *http.Request) (actionsRunnerTokenRequest, bool) {
+	var decoded actionsRunnerTokenRequest
+	if r == nil || r.Body == nil || r.ContentLength > 1024 || !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		return decoded, false
+	}
+	data, err := io.ReadAll(io.LimitReader(r.Body, 1025))
+	if err != nil || len(data) > 1024 {
+		return decoded, false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&decoded) != nil || !validActionsRunnerRegistrationRequest(ActionsRunnerRegistrationRequest{
+		IntegrationID: decoded.IntegrationID, WorkflowJobID: decoded.WorkflowJobID, RunAttempt: decoded.RunAttempt, ClaimID: decoded.ClaimID,
+	}) {
+		return actionsRunnerTokenRequest{}, false
+	}
+	var trailing any
+	if decoder.Decode(&trailing) != io.EOF {
+		return actionsRunnerTokenRequest{}, false
+	}
+	return decoded, true
+}
+
+type HTTPActionsRunnerRegistrationClient struct {
+	base   string
+	client *http.Client
+}
+
+func NewHTTPActionsRunnerRegistrationClient(baseURL string, client *http.Client) (*HTTPActionsRunnerRegistrationClient, error) {
+	base, err := url.Parse(strings.TrimSpace(baseURL))
+	if client == nil || err != nil || base.Scheme != "https" || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" {
+		return nil, ErrUnavailable
+	}
+	return &HTTPActionsRunnerRegistrationClient{base: strings.TrimRight(base.String(), "/"), client: client}, nil
+}
+
+// Issue requests one claim-bound registration token through the Control
+// Plane-only mTLS broker endpoint.
+func (c *HTTPActionsRunnerRegistrationClient) Issue(ctx context.Context, request ActionsRunnerRegistrationRequest) (ActionsRunnerRegistrationGrant, error) {
+	if c == nil || c.client == nil || ctx == nil || !validActionsRunnerRegistrationRequest(request) {
+		return ActionsRunnerRegistrationGrant{}, ErrActionsRunnerDenied
+	}
+	body, err := json.Marshal(actionsRunnerTokenRequest{IntegrationID: request.IntegrationID, WorkflowJobID: request.WorkflowJobID, RunAttempt: request.RunAttempt, ClaimID: request.ClaimID})
+	if err != nil {
+		return ActionsRunnerRegistrationGrant{}, ErrUnavailable
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/v1/actions-runner/registration-token", bytes.NewReader(body))
+	if err != nil {
+		return ActionsRunnerRegistrationGrant{}, ErrUnavailable
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return ActionsRunnerRegistrationGrant{}, ErrUnavailable
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || resp.ContentLength > 16<<10 || resp.Header.Get("Cache-Control") != "no-store" {
+		return ActionsRunnerRegistrationGrant{}, ErrActionsRunnerDenied
+	}
+	var decoded struct {
+		Token      string             `json:"token"`
+		ExpiresAt  time.Time          `json:"expires_at"`
+		Repository repositoryResponse `json:"repository"`
+	}
+	decoder := json.NewDecoder(io.LimitReader(resp.Body, 16<<10))
+	if err := decoder.Decode(&decoded); err != nil || decoded.Repository.Owner == "" || decoded.Repository.Name == "" {
+		return ActionsRunnerRegistrationGrant{}, ErrUnavailable
+	}
+	var trailing any
+	if decoder.Decode(&trailing) != io.EOF {
+		return ActionsRunnerRegistrationGrant{}, ErrUnavailable
+	}
+	token, err := githubapp.NewRunnerRegistrationToken(decoded.Token, decoded.ExpiresAt)
+	if err != nil || !token.ExpiresAt().After(time.Now().Add(2*time.Minute)) || token.ExpiresAt().After(time.Now().Add(65*time.Minute)) {
+		return ActionsRunnerRegistrationGrant{}, ErrUnavailable
+	}
+	return ActionsRunnerRegistrationGrant{Token: token, Repository: githubapp.RepositoryAccess{Owner: decoded.Repository.Owner, Name: decoded.Repository.Name}}, nil
+}
+
 func writeError(w http.ResponseWriter, status int) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")

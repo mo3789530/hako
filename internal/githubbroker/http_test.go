@@ -156,7 +156,19 @@ func TestBrokerMTLSHandshakeAndHTTPResolver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewUnstartedServer(HandlerWithServices(service, checkout, checksService))
+	runnerNow := time.Now().UTC()
+	runnerIdentity := actionsRunnerIdentity(runnerNow)
+	runnerService, err := NewActionsRunnerRegistrationService(func(context.Context, ActionsRunnerRegistrationRequest) (ActionsRunnerJobIdentity, error) {
+		return runnerIdentity, nil
+	}, func(context.Context, ActionsRunnerJobIdentity) error { return nil }, func(context.Context, ActionsRunnerJobIdentity) (githubapp.RunnerRegistrationToken, githubapp.RepositoryAccess, error) {
+		token, err := githubapp.NewRunnerRegistrationToken("ghr_mtls_registration_token", runnerNow.Add(time.Hour))
+		return token, githubapp.RepositoryAccess{Owner: "acme", Name: "runner-repo"}, err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runnerService.clock = func() time.Time { return runnerNow }
+	server := httptest.NewUnstartedServer(HandlerWithActionsRunner(service, checkout, checksService, nil, runnerService))
 	serverCAs, _ := ServerTLSConfig(clientRoots)
 	server.TLS = serverCAs
 	server.StartTLS()
@@ -203,6 +215,19 @@ func TestBrokerMTLSHandshakeAndHTTPResolver(t *testing.T) {
 	}
 	if fmt.Sprint(checkToken) == checkToken.Value() {
 		t.Fatal("HTTP Checks credential formatting exposed the token")
+	}
+	runnerClient, err := NewActionsRunnerMTLSClient(issue(controlPlaneURI), brokerRoots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runnerProvider, err := NewHTTPActionsRunnerRegistrationClient(server.URL, runnerClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runnerGrant, err := runnerProvider.Issue(context.Background(), ActionsRunnerRegistrationRequest{IntegrationID: runnerIdentity.IntegrationID,
+		WorkflowJobID: runnerIdentity.WorkflowJobID, RunAttempt: runnerIdentity.RunAttempt, ClaimID: runnerIdentity.ClaimID})
+	if err != nil || runnerGrant.Token.Value() != "ghr_mtls_registration_token" || runnerGrant.Repository != (githubapp.RepositoryAccess{Owner: "acme", Name: "runner-repo"}) {
+		t.Fatalf("mTLS Actions runner registration request failed: grant=%v repository=%+v error=%v", runnerGrant.Token, runnerGrant.Repository, err)
 	}
 	if _, err := NewMTLSClient(issue("spiffe://hako/resource-plane"), brokerRoots); err == nil {
 		t.Fatal("client accepted another workload identity")

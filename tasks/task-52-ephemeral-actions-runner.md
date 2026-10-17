@@ -1,6 +1,6 @@
 # Task 52: GitHub Actions Ephemeral Runner Mode
 
-Status: In Progress (2026-10-17: signed `workflow_job.queued` deliveries are retained but excluded from the generic push/PR Go-test trigger. Normalized events preserve run attempt, workflow name, bounded labels, and optional assigned runner/group identity. Tenant Owner/Admin repository opt-in is stored via API/CLI and audited. A separate default-off admission flag revalidates Tenant/Installation/Repository policy and persists deduplicated queued job admissions; worker claims use expiring leases with recovery. The trusted token client can mint a repository-scoped registration token after current opt-in authorization, but broker exposure bound to a claimed job, exact runner assignment, Lambda MicroVM lifecycle, and cleanup remain unimplemented). Priority: P3.
+Status: In Progress (2026-10-17: signed `workflow_job.queued` deliveries are retained but excluded from the generic push/PR Go-test trigger. Normalized events preserve run attempt, workflow name, bounded labels, and optional assigned runner/group identity. Tenant Owner/Admin repository opt-in is stored via API/CLI and audited. A separate default-off admission flag revalidates Tenant/Installation/Repository policy and persists deduplicated queued job admissions; worker claims use expiring leases with recovery. A Control Plane-only mTLS broker endpoint now consumes a claim and mints the repository-scoped registration token. Exact runner assignment, Lambda MicroVM lifecycle, completion reporting, and cleanup remain unimplemented). Priority: P3.
 
 Claude Code Action support is tracked separately in [Task 73](task-73-claude-code-action.md), including Tenant-scoped model credentials, untrusted PR denial, and action-specific E2E.
 
@@ -50,5 +50,7 @@ Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Action
 - The trusted GitHub token client has a fake-tested registration-token method
   that rechecks the exact Tenant App revision/generation and Runner opt-in,
   requests only repository-scoped `administration:write`, and avoids caching
-  both the broader Installation token and the one-hour runner token. Its
-  mTLS/broker route must still be bound to a claimed job before use.
+  both the broader Installation token and the one-hour runner token. The
+  Control Plane-only mTLS route accepts a claim key (not Tenant/Repository
+  coordinates), atomically consumes `claimed` into `starting`, and only then
+  resolves the pinned Tenant App and repository for token issuance.
