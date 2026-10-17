@@ -17,6 +17,7 @@ import (
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/githubapp"
 	"github.com/mo3789530/hako/internal/store/githubregistry"
+	"github.com/mo3789530/hako/internal/store/githubwebhook"
 )
 
 const controlPlaneURI = "spiffe://hako/control-plane"
@@ -54,6 +55,13 @@ type checkoutRequest struct {
 }
 
 type actionsRunnerTokenRequest struct {
+	IntegrationID string `json:"integration_id"`
+	WorkflowJobID int64  `json:"workflow_job_id"`
+	RunAttempt    int64  `json:"run_attempt"`
+	ClaimID       string `json:"claim_id"`
+}
+
+type actionsRunnerCleanupRequest struct {
 	IntegrationID string `json:"integration_id"`
 	WorkflowJobID int64  `json:"workflow_job_id"`
 	RunAttempt    int64  `json:"run_attempt"`
@@ -99,6 +107,14 @@ func NewChecksMTLSClient(certificate tls.Certificate, brokerRoots *x509.CertPool
 
 func NewActionsRunnerMTLSClient(certificate tls.Certificate, brokerRoots *x509.CertPool) (*http.Client, error) {
 	return newMTLSClient(certificate, brokerRoots, 50*time.Second, controlPlaneURI)
+}
+
+func NewActionsRunnerCleanupMTLSClient(resourcePlaneID string, certificate tls.Certificate, brokerRoots *x509.CertPool) (*http.Client, error) {
+	caller, err := ResourcePlaneCallerID(resourcePlaneID)
+	if err != nil {
+		return nil, err
+	}
+	return newMTLSClient(certificate, brokerRoots, 50*time.Second, caller)
 }
 
 func newMTLSClient(certificate tls.Certificate, brokerRoots *x509.CertPool, timeout time.Duration, expectedCaller string) (*http.Client, error) {
@@ -152,6 +168,11 @@ func HandlerWithServicesAndCheckoutCallers(service *OAuthService, checkout *Chec
 // Control Plane certificate identity. Resource Plane identities are never
 // admitted to this endpoint.
 func HandlerWithActionsRunner(service *OAuthService, checkout *CheckoutService, checks *ChecksService, checkoutCallers []string, actionsRunner *ActionsRunnerRegistrationService) http.Handler {
+	return HandlerWithActionsRunnerAndCleanup(service, checkout, checks, checkoutCallers, actionsRunner, nil, nil)
+}
+
+func HandlerWithActionsRunnerAndCleanup(service *OAuthService, checkout *CheckoutService, checks *ChecksService, checkoutCallers []string,
+	actionsRunner *ActionsRunnerRegistrationService, runnerCleanup *ActionsRunnerCleanupService, cleanupCallers []string) http.Handler {
 	allowedCheckoutCallers := map[string]struct{}{controlPlaneURI: {}}
 	for _, caller := range checkoutCallers {
 		if caller != controlPlaneURI && !strings.HasPrefix(caller, resourcePlaneURIPrefix) {
@@ -164,6 +185,16 @@ func HandlerWithActionsRunner(service *OAuthService, checkout *CheckoutService, 
 			}
 		}
 		allowedCheckoutCallers[caller] = struct{}{}
+	}
+	allowedCleanupCallers := make(map[string]struct{}, len(cleanupCallers))
+	for _, caller := range cleanupCallers {
+		if !validResourcePlaneCleanupCaller(caller) {
+			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusServiceUnavailable) })
+		}
+		if _, duplicate := allowedCleanupCallers[caller]; duplicate {
+			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusServiceUnavailable) })
+		}
+		allowedCleanupCallers[caller] = struct{}{}
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/oauth/setup-url", func(w http.ResponseWriter, r *http.Request) {
@@ -294,6 +325,25 @@ func HandlerWithActionsRunner(service *OAuthService, checkout *CheckoutService, 
 			writeResponse(w, response{Token: grant.Token.Value(), ExpiresAt: grant.Token.ExpiresAt(), Repository: &repositoryResponse{Owner: repository.Owner, Name: repository.Name}})
 		})
 	}
+	if runnerCleanup != nil && len(allowedCleanupCallers) > 0 {
+		mux.HandleFunc("POST /v1/actions-runner/deregister", func(w http.ResponseWriter, r *http.Request) {
+			caller, err := authenticatedCleanupCaller(r, allowedCleanupCallers)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized)
+				return
+			}
+			input, ok := decodeActionsRunnerCleanupRequest(r)
+			if !ok {
+				writeError(w, http.StatusBadRequest)
+				return
+			}
+			if err := runnerCleanup.Deregister(r.Context(), caller, input); err != nil {
+				writeError(w, http.StatusForbidden)
+				return
+			}
+			writeResponse(w, struct{}{})
+		})
+	}
 	return mux
 }
 
@@ -316,6 +366,19 @@ func authenticatedCheckoutCaller(r *http.Request, allowed map[string]struct{}) (
 	for _, uri := range r.TLS.PeerCertificates[0].URIs {
 		caller := uri.String()
 		if _, ok := allowed[caller]; ok {
+			return caller, nil
+		}
+	}
+	return "", ErrUnavailable
+}
+
+func authenticatedCleanupCaller(r *http.Request, allowed map[string]struct{}) (string, error) {
+	if r == nil || r.TLS == nil || len(r.TLS.PeerCertificates) == 0 || len(r.TLS.VerifiedChains) == 0 || len(allowed) == 0 {
+		return "", ErrUnavailable
+	}
+	for _, uri := range r.TLS.PeerCertificates[0].URIs {
+		caller := uri.String()
+		if _, ok := allowed[caller]; ok && validResourcePlaneCleanupCaller(caller) {
 			return caller, nil
 		}
 	}
@@ -400,9 +463,84 @@ func decodeActionsRunnerTokenRequest(r *http.Request) (actionsRunnerTokenRequest
 	return decoded, true
 }
 
+func decodeActionsRunnerCleanupRequest(r *http.Request) (ActionsRunnerCleanupRequest, bool) {
+	var decoded actionsRunnerCleanupRequest
+	if r == nil || r.Body == nil || r.ContentLength > 1024 || !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		return ActionsRunnerCleanupRequest{}, false
+	}
+	data, err := io.ReadAll(io.LimitReader(r.Body, 1025))
+	if err != nil || len(data) > 1024 {
+		return ActionsRunnerCleanupRequest{}, false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&decoded) != nil || !validCleanupRequest(ActionsRunnerCleanupRequest(decoded)) {
+		return ActionsRunnerCleanupRequest{}, false
+	}
+	var trailing any
+	if decoder.Decode(&trailing) != io.EOF {
+		return ActionsRunnerCleanupRequest{}, false
+	}
+	return ActionsRunnerCleanupRequest(decoded), true
+}
+
 type HTTPActionsRunnerRegistrationClient struct {
 	base   string
 	client *http.Client
+}
+
+type HTTPActionsRunnerCleanupClient struct {
+	base            string
+	resourcePlaneID string
+	client          *http.Client
+}
+
+func NewHTTPActionsRunnerCleanupClient(baseURL, resourcePlaneID string, client *http.Client) (*HTTPActionsRunnerCleanupClient, error) {
+	base, err := url.Parse(strings.TrimSpace(baseURL))
+	if client == nil || err != nil || base.Scheme != "https" || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" ||
+		!resourcePlaneIDPattern.MatchString(resourcePlaneID) {
+		return nil, ErrUnavailable
+	}
+	return &HTTPActionsRunnerCleanupClient{base: strings.TrimRight(base.String(), "/"), resourcePlaneID: resourcePlaneID, client: client}, nil
+}
+
+// Deregister sends only the durable cleanup key. Tenant/Installation/
+// Repository/Runner coordinates are resolved and lease-checked by the broker.
+func (c *HTTPActionsRunnerCleanupClient) Deregister(ctx context.Context, job githubwebhook.ActionsRunnerCleanupJob) error {
+	if c == nil || c.client == nil || ctx == nil || job.ResourcePlaneID == nil || *job.ResourcePlaneID != c.resourcePlaneID ||
+		job.RunnerID == nil || job.State != "claimed" || !validCleanupRequest(ActionsRunnerCleanupRequest{
+		IntegrationID: job.IntegrationID, WorkflowJobID: job.WorkflowJobID, RunAttempt: job.RunAttempt, ClaimID: job.ClaimID}) {
+		return ErrActionsRunnerCleanupDenied
+	}
+	input := ActionsRunnerCleanupRequest{IntegrationID: job.IntegrationID, WorkflowJobID: job.WorkflowJobID, RunAttempt: job.RunAttempt, ClaimID: job.ClaimID}
+	body, err := json.Marshal(input)
+	if err != nil {
+		return ErrUnavailable
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/v1/actions-runner/deregister", bytes.NewReader(body))
+	if err != nil {
+		return ErrUnavailable
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return ErrUnavailable
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || resp.ContentLength > 1024 || resp.Header.Get("Cache-Control") != "no-store" {
+		return ErrActionsRunnerCleanupDenied
+	}
+	var decoded struct{}
+	decoder := json.NewDecoder(io.LimitReader(resp.Body, 1024))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return ErrUnavailable
+	}
+	var trailing any
+	if decoder.Decode(&trailing) != io.EOF {
+		return ErrUnavailable
+	}
+	return nil
 }
 
 func NewHTTPActionsRunnerRegistrationClient(baseURL string, client *http.Client) (*HTTPActionsRunnerRegistrationClient, error) {
@@ -462,7 +600,7 @@ func writeError(w http.ResponseWriter, status int) {
 	w.WriteHeader(status)
 	_, _ = w.Write([]byte(`{"error":"broker_unavailable"}`))
 }
-func writeResponse(w http.ResponseWriter, v response) {
+func writeResponse(w http.ResponseWriter, v any) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)

@@ -20,6 +20,7 @@ import (
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/githubapp"
 	"github.com/mo3789530/hako/internal/store/githubregistry"
+	"github.com/mo3789530/hako/internal/store/githubwebhook"
 )
 
 func TestBrokerHTTPRequiresVerifiedControlPlaneCertificateBeforeResolution(t *testing.T) {
@@ -168,7 +169,31 @@ func TestBrokerMTLSHandshakeAndHTTPResolver(t *testing.T) {
 		t.Fatal(err)
 	}
 	runnerService.clock = func() time.Time { return runnerNow }
-	server := httptest.NewUnstartedServer(HandlerWithActionsRunner(service, checkout, checksService, nil, runnerService))
+	cleanupRequest := ActionsRunnerCleanupRequest{IntegrationID: runnerIdentity.IntegrationID, WorkflowJobID: runnerIdentity.WorkflowJobID,
+		RunAttempt: runnerIdentity.RunAttempt, ClaimID: "cleanup-claim-1"}
+	cleanupIdentity := ActionsRunnerCleanupIdentity{ResourcePlaneID: "rp-tokyo-01", IntegrationID: runnerIdentity.IntegrationID,
+		TenantID: runnerIdentity.TenantID, Installation: runnerIdentity.Installation, Repository: runnerIdentity.Repository,
+		WorkflowJobID: runnerIdentity.WorkflowJobID, RunAttempt: runnerIdentity.RunAttempt, RunnerID: 1234,
+		ClaimID: cleanupRequest.ClaimID, LeaseExpires: runnerNow.Add(time.Minute), Credential: runnerIdentity.Credential}
+	deregistered := 0
+	runnerCleanup, err := NewActionsRunnerCleanupService(func(_ context.Context, planeID string, got ActionsRunnerCleanupRequest) (ActionsRunnerCleanupIdentity, error) {
+		if planeID != cleanupIdentity.ResourcePlaneID || got != cleanupRequest {
+			return ActionsRunnerCleanupIdentity{}, ErrActionsRunnerCleanupDenied
+		}
+		return cleanupIdentity, nil
+	}, func(_ context.Context, identity ActionsRunnerCleanupIdentity) error {
+		if identity.RunnerID != cleanupIdentity.RunnerID || identity.TenantID != cleanupIdentity.TenantID {
+			return ErrActionsRunnerCleanupDenied
+		}
+		deregistered++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runnerCleanup.clock = func() time.Time { return runnerNow }
+	runnerCleanupCallers := []string{"spiffe://hako/resource-plane/rp-tokyo-01"}
+	server := httptest.NewUnstartedServer(HandlerWithActionsRunnerAndCleanup(service, checkout, checksService, nil, runnerService, runnerCleanup, runnerCleanupCallers))
 	serverCAs, _ := ServerTLSConfig(clientRoots)
 	server.TLS = serverCAs
 	server.StartTLS()
@@ -228,6 +253,24 @@ func TestBrokerMTLSHandshakeAndHTTPResolver(t *testing.T) {
 		WorkflowJobID: runnerIdentity.WorkflowJobID, RunAttempt: runnerIdentity.RunAttempt, ClaimID: runnerIdentity.ClaimID})
 	if err != nil || runnerGrant.Token.Value() != "ghr_mtls_registration_token" || runnerGrant.Repository != (githubapp.RepositoryAccess{Owner: "acme", Name: "runner-repo"}) {
 		t.Fatalf("mTLS Actions runner registration request failed: grant=%v repository=%+v error=%v", runnerGrant.Token, runnerGrant.Repository, err)
+	}
+	runnerCleanupClient, err := NewActionsRunnerCleanupMTLSClient("rp-tokyo-01", issue(runnerCleanupCallers[0]), brokerRoots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupProvider, err := NewHTTPActionsRunnerCleanupClient(server.URL, "rp-tokyo-01", runnerCleanupClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planeID := "rp-tokyo-01"
+	runnerID := cleanupIdentity.RunnerID
+	cleanupJob := githubwebhook.ActionsRunnerCleanupJob{IntegrationID: cleanupIdentity.IntegrationID, ResourcePlaneID: &planeID,
+		WorkflowJobID: cleanupIdentity.WorkflowJobID, RunAttempt: cleanupIdentity.RunAttempt, RunnerID: &runnerID, State: "claimed", ClaimID: cleanupIdentity.ClaimID}
+	if err := cleanupProvider.Deregister(context.Background(), cleanupJob); err != nil || deregistered != 1 {
+		t.Fatalf("Resource Plane mTLS runner deregistration failed: calls=%d error=%v", deregistered, err)
+	}
+	if _, err := NewActionsRunnerCleanupMTLSClient("rp-tokyo-01", issue("spiffe://hako/resource-plane/rp-other-01"), brokerRoots); err == nil {
+		t.Fatal("runner cleanup client accepted another Resource Plane certificate")
 	}
 	if _, err := NewMTLSClient(issue("spiffe://hako/resource-plane"), brokerRoots); err == nil {
 		t.Fatal("client accepted another workload identity")

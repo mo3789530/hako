@@ -125,6 +125,18 @@ func run() error {
 	if err != nil {
 		return errors.New("configure GitHub Actions runner broker service")
 	}
+	runnerCleanupCallers, err := configuredRunnerCleanupCallers(os.Getenv("HAKO_GITHUB_BROKER_ACTIONS_RUNNER_RESOURCE_PLANE_IDS"))
+	if err != nil {
+		return err
+	}
+	runnerDeregistrator, err := githubbroker.NewAWSActionsRunnerDeregistrator(awsConfig, pool, policy, nil)
+	if err != nil {
+		return errors.New("configure GitHub Actions runner deregistration broker")
+	}
+	runnerCleanup, err := githubbroker.NewActionsRunnerCleanupService(githubbroker.NewPostgresActionsRunnerCleanupResolver(pool, policy), runnerDeregistrator)
+	if err != nil {
+		return errors.New("configure GitHub Actions runner cleanup broker")
+	}
 	tlsConfig, err := serverTLSConfigFromEnv()
 	if err != nil {
 		return err
@@ -133,7 +145,7 @@ func run() error {
 	if addr == "" {
 		addr = defaultListenAddr
 	}
-	server := &http.Server{Addr: addr, Handler: githubbroker.HandlerWithActionsRunner(oauth, checkout, checks, checkoutCallers, actionsRunner), TLSConfig: tlsConfig,
+	server := &http.Server{Addr: addr, Handler: githubbroker.HandlerWithActionsRunnerAndCleanup(oauth, checkout, checks, checkoutCallers, actionsRunner, runnerCleanup, runnerCleanupCallers), TLSConfig: tlsConfig,
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 60 * time.Second,
 		IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
 	go func() {
@@ -146,6 +158,27 @@ func run() error {
 		return fmt.Errorf("serve GitHub broker: %w", err)
 	}
 	return nil
+}
+
+func configuredRunnerCleanupCallers(raw string) ([]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	seen := make(map[string]struct{})
+	callers := make([]string, 0)
+	for _, rawID := range strings.Split(raw, ",") {
+		id := strings.TrimSpace(rawID)
+		caller, err := githubbroker.ResourcePlaneCallerID(id)
+		if err != nil {
+			return nil, errors.New("HAKO_GITHUB_BROKER_ACTIONS_RUNNER_RESOURCE_PLANE_IDS contains an invalid Resource Plane ID")
+		}
+		if _, exists := seen[caller]; exists {
+			return nil, errors.New("HAKO_GITHUB_BROKER_ACTIONS_RUNNER_RESOURCE_PLANE_IDS contains duplicates")
+		}
+		seen[caller] = struct{}{}
+		callers = append(callers, caller)
+	}
+	return callers, nil
 }
 
 func configuredCheckoutCallers(raw string) ([]string, error) {

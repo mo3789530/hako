@@ -18,7 +18,7 @@ Hako GitHub Credential Broker
         └── short-lived, repository-scoped Installation token
 ```
 
-The broker's TLS listener requires a trusted client certificate. OAuth setup and GitHub Checks endpoints require the exact `spiffe://hako/control-plane` URI SAN. The checkout endpoint accepts that identity plus only Resource Plane identities explicitly listed in `HAKO_GITHUB_BROKER_CHECKOUT_RESOURCE_PLANE_IDS` (comma-separated stable Plane IDs); it does not grant those callers OAuth or Checks access. The Resource Plane worker uses `spiffe://hako/resource-plane/<resource-plane-id>` and a client constructor that checks the same exact identity. The broker's checkout service authorizer repeats the allowlist check before reading the canonical Run or minting a token. Use a private service endpoint; this listener is not a public API or SSH/data-plane gateway.
+The broker's TLS listener requires a trusted client certificate. OAuth setup and GitHub Checks endpoints require the exact `spiffe://hako/control-plane` URI SAN. The checkout endpoint accepts that identity plus only Resource Plane identities explicitly listed in `HAKO_GITHUB_BROKER_CHECKOUT_RESOURCE_PLANE_IDS` (comma-separated stable Plane IDs); it does not grant those callers OAuth or Checks access. The ephemeral Actions runner cleanup endpoint accepts a separate exact Plane allowlist in `HAKO_GITHUB_BROKER_ACTIONS_RUNNER_RESOURCE_PLANE_IDS`. It receives only the durable integration/job/attempt/claim key, then verifies the unexpired cleanup lease and Plane pin in the Control Plane database before resolving the Tenant App credential and removing that exact repository runner. Tenant, Installation, Repository, and Runner IDs are never accepted from the Resource Plane request. The Resource Plane worker uses `spiffe://hako/resource-plane/<resource-plane-id>` and a client constructor that checks the same exact identity. Use a private service endpoint; this listener is not a public API or SSH/data-plane gateway.
 
 ## Endpoints
 
@@ -29,6 +29,7 @@ The broker's TLS listener requires a trusted client certificate. OAuth setup and
 | `POST /v1/oauth/verify` | Pinned identity, OAuth code, expected Installation, PKCE verifier | Verified App/Installation identity only; OAuth secret stays in broker |
 | `POST /v1/checkout/token` | Tenant ID and persisted Workload Run ID only | Short-lived token and expiry over mTLS with `Cache-Control: no-store` |
 | `POST /v1/actions-runner/registration-token` | Integration ID, workflow job ID, run attempt, and current claim ID only | One repository-scoped registration token over Control Plane-only mTLS with `Cache-Control: no-store` |
+| `POST /v1/actions-runner/deregister` | Integration ID, workflow job ID, run attempt, and current cleanup claim ID only | Empty acknowledgement; Plane-specific mTLS and the live Control Plane cleanup lease authorize the exact repository runner removal |
 
 Checkout callers cannot choose App ID, Installation, Repository, Role ARN, Secret ARN, version, revision, generation, or commit. The broker loads the Workload Run and active exact credential pin from the database, mints a read-only repository-scoped token, then rechecks caller authorization, Run state, and the credential pin after GitHub I/O. Cancellation, disable, or rotation during the request fails closed. A failed Tenant-owned request never falls back to the shared App. Shared Runs continue using the existing shared credential provider.
 
@@ -67,6 +68,7 @@ The executable accepts these environment variables:
 | `HAKO_GITHUB_BROKER_TLS_KEY_FILE` | Matching server key PEM |
 | `HAKO_GITHUB_BROKER_CLIENT_CA_FILE` | CA bundle used to verify Control Plane client certificates |
 | `HAKO_GITHUB_BROKER_CHECKOUT_RESOURCE_PLANE_IDS` | Optional comma-separated Resource Plane IDs permitted to call only `/v1/checkout/token`; defaults to none |
+| `HAKO_GITHUB_BROKER_ACTIONS_RUNNER_RESOURCE_PLANE_IDS` | Optional comma-separated Resource Plane IDs permitted to call only `/v1/actions-runner/deregister`; defaults to none |
 | `HAKO_GITHUB_BROKER_LISTEN_ADDR` | Listener address; defaults to `:8443` |
 
 TLS certificate, private key, and client CA must be configured together. TLS is at least 1.3, and the server requires a verified client certificate. API/OAuth/Checks clients must present the Control Plane URI SAN. Checkout clients may use the Control Plane URI or an explicitly allowlisted Resource Plane URI, use the broker trust root, and refuse redirects. The checkout client has a bounded 50-second HTTP timeout; the OAuth client has a shorter timeout. Server read/header/write/idle limits are bounded.
