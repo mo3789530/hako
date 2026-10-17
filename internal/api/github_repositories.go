@@ -139,6 +139,9 @@ func SetGitHubRepositoryActionsRunnerWorkflowPolicy(ctx context.Context, baseURL
 	if err := decoder.Decode(&result); err != nil || !sameRunnerWorkflowPolicy(result.Policy, policy) {
 		return GitHubRepositoryActionsRunnerWorkflowPolicyResult{}, errors.New("invalid GitHub Actions runner workflow policy response")
 	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return GitHubRepositoryActionsRunnerWorkflowPolicyResult{}, errors.New("invalid GitHub Actions runner workflow policy response")
+	}
 	return result, nil
 }
 
