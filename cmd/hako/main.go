@@ -35,6 +35,13 @@ var cliBrowserOpener auth.BrowserOpener = openBrowser
 
 func main() {
 	switch {
+	case len(os.Args) >= 4 && os.Args[1] == "model" && os.Args[2] == "credential":
+		result, err := manageModelCredentialCLI(os.Args[3:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hako model credential: %v\n", err)
+			os.Exit(1)
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(result)
 	case len(os.Args) >= 3 && os.Args[1] == "factory" && os.Args[2] == "validate":
 		if err := validateFactoryManifestCLI(os.Args[3:], os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "hako factory validate: %v\n", err)

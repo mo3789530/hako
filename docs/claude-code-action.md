@@ -24,8 +24,10 @@ Use a full, reviewed commit SHA for every third-party Action reference. Hako
 does not bundle an Action version, move tags, or claim compatibility with an
 unverified release. The repository owner is responsible for reviewing and
 pinning the Action revision and its inputs. Actual Claude Action execution is
-not certified until Tasks 75–77 (credential isolation, execution, and E2E) are
-complete.
+not certified until Task 75 runtime delivery/IAM wiring and Tasks 76–77
+(execution and E2E) are complete. See
+[`claude-model-credentials.md`](claude-model-credentials.md) for the
+Tenant-owned provider credential model.
 
 Configure the repository policy with the workflow file path, approved branch
 refs/events, and allowed runner labels. For the example above, the policy's

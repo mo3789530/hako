@@ -27,6 +27,13 @@ GRANT INSERT ON TABLE tenant_github_app_installation_bindings TO hako_api;
 REVOKE UPDATE, DELETE ON TABLE tenant_github_app_installation_bindings FROM hako_api;
 -- Credential bindings must be provisioned through an explicitly authorized
 -- operator DB role, not this API role. No Secret values belong in these rows.
+-- Claude/model credential bindings follow the same operator-only rule. Tenant
+-- Owners/Admins may reference approved bindings and rotate/disable metadata,
+-- but the API cannot create or retarget a binding to another Tenant's Secret.
+GRANT SELECT ON TABLE tenant_model_credential_bindings TO hako_api;
+REVOKE INSERT, UPDATE, DELETE ON TABLE tenant_model_credential_bindings FROM hako_api;
+GRANT SELECT, INSERT, UPDATE ON TABLE tenant_model_credentials TO hako_api;
+REVOKE DELETE ON TABLE tenant_model_credentials FROM hako_api;
 
 -- The Dispatcher role can claim/publish Outbox rows but cannot alter schema or
 -- access Workspace, Tenant, User, Session, or Operation tables.

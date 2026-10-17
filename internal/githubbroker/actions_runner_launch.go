@@ -3,6 +3,8 @@ package githubbroker
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -194,9 +196,11 @@ func postgresActionsRunnerLaunchStarter(pool transaction.Beginner, policy transa
 			var currentPlaneID *string
 			var tokenIssuedAt *time.Time
 			var workflowPolicyJSON []byte
+			var provenanceVerifiedAt *time.Time
+			var provenancePolicySHA256 *string
 			err := tx.QueryRow(ctx, `SELECT j.integration_id,j.tenant_id,j.installation_id,j.repository_id,j.workflow_job_id,j.workflow_run_id,j.run_attempt,
 				j.workflow_name,j.job_name,j.head_branch,j.head_sha,j.labels,j.claim_id,j.lease_expires_at,r.owner_login,r.repository_name,
-				j.state,j.resource_plane_id,j.registration_token_issued_at,r.actions_runner_workflow_policy
+				j.state,j.resource_plane_id,j.registration_token_issued_at,r.actions_runner_workflow_policy,j.provenance_verified_at,j.provenance_policy_sha256
 				FROM github_actions_runner_jobs j
 				JOIN github_webhook_deliveries d ON d.integration_id=j.integration_id AND d.delivery_id=j.delivery_id
 				JOIN tenant_github_integrations i ON i.id=j.integration_id AND i.tenant_id=j.tenant_id
@@ -212,20 +216,30 @@ func postgresActionsRunnerLaunchStarter(pool transaction.Beginner, policy transa
 				FOR UPDATE OF j`, request.IntegrationID, request.WorkflowJobID, request.RunAttempt, request.ClaimID, now, planeID).
 				Scan(&command.IntegrationID, &command.TenantID, &command.Installation, &command.Repository, &command.WorkflowJobID, &command.WorkflowRunID,
 					&command.RunAttempt, &command.WorkflowName, &command.JobName, &command.HeadBranch, &command.HeadSHA, &labelsJSON, &command.ClaimID,
-					&command.LeaseExpires, &command.Owner, &command.Name, &state, &currentPlaneID, &tokenIssuedAt, &workflowPolicyJSON)
+					&command.LeaseExpires, &command.Owner, &command.Name, &state, &currentPlaneID, &tokenIssuedAt, &workflowPolicyJSON,
+					&provenanceVerifiedAt, &provenancePolicySHA256)
 			if err != nil || json.Unmarshal(labelsJSON, &command.Labels) != nil ||
 				(!verified && len(workflowPolicyJSON) != 0) || (verified && !bytes.Equal(workflowPolicyJSON, proof)) {
 				return ActionsRunnerLaunchCommand{}, ErrActionsRunnerLaunchDenied
 			}
 			if state == "claimed" {
-				tag, err := tx.Exec(ctx, `UPDATE github_actions_runner_jobs SET state='starting',resource_plane_id=$6,updated_at=$5
+				var verifiedAt *time.Time
+				var policyHash *string
+				if verified && len(proof) > 0 {
+					hash := sha256.Sum256(proof)
+					hashText := hex.EncodeToString(hash[:])
+					verifiedAt, policyHash = &now, &hashText
+				}
+				tag, err := tx.Exec(ctx, `UPDATE github_actions_runner_jobs SET state='starting',resource_plane_id=$6,
+					provenance_verified_at=$7,provenance_policy_sha256=$8,updated_at=$5
 					WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=$3 AND state='claimed' AND claim_id=$4
 					AND lease_expires_at>$5 AND resource_plane_id IS NULL AND lambda_microvm_id IS NULL`,
-					request.IntegrationID, request.WorkflowJobID, request.RunAttempt, request.ClaimID, now, planeID)
+					request.IntegrationID, request.WorkflowJobID, request.RunAttempt, request.ClaimID, now, planeID, verifiedAt, policyHash)
 				if err != nil || tag.RowsAffected() != 1 {
 					return ActionsRunnerLaunchCommand{}, ErrActionsRunnerLaunchDenied
 				}
-			} else if state != "starting" || currentPlaneID == nil || *currentPlaneID != planeID || tokenIssuedAt != nil {
+			} else if state != "starting" || currentPlaneID == nil || *currentPlaneID != planeID || tokenIssuedAt != nil ||
+				!provenanceFenceMatches(provenanceVerifiedAt, provenancePolicySHA256, proof, verified) {
 				return ActionsRunnerLaunchCommand{}, ErrActionsRunnerLaunchDenied
 			}
 			command.ResourcePlaneID, command.State = planeID, "starting"
@@ -244,6 +258,19 @@ func validCommitSHA(value string) bool {
 		}
 	}
 	return true
+}
+
+func provenanceFenceMatches(storedAt *time.Time, storedHash *string, proof []byte, verified bool) bool {
+	expected := verified && len(proof) > 0
+	if (storedAt != nil) != expected || (storedHash != nil) != expected {
+		return false
+	}
+	if !expected {
+		return true
+	}
+	hash := sha256.Sum256(proof)
+	expectedHash := hex.EncodeToString(hash[:])
+	return *storedHash == expectedHash
 }
 
 func validActionsRunnerBranch(value string) bool {

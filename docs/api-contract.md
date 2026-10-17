@@ -147,8 +147,10 @@ repository runner opt-in clears this policy. Configure it with
 The broker launch path uses this allowlist with authoritative GitHub Run/Job
 metadata before consuming a runner claim. Claim consumption rechecks that the
 policy snapshot has not changed. A configured policy cannot be bypassed by the
-legacy launch path. Full Claude credential handling and Action execution remain
-separate Tasks 75–77.
+legacy launch path. Tenant model-credential metadata is managed through
+`/v1/tenants/{tenant_id}/model-credentials`; see
+[`claude-model-credentials.md`](claude-model-credentials.md). Delivery to an
+actual Action process remains in Task 75/76.
 
 `POST /v1/tenants/{tenant_id}/github/apps/{integration_id}/deliveries/{delivery_id}/replay`
 is available when Tenant GitHub App management is enabled and requires Tenant

@@ -1,0 +1,110 @@
+# Claude model credentials
+
+Claude model credentials are Tenant-owned provider credentials. They are not
+GitHub App credentials, AWS credentials, GitHub Actions repository secrets, or
+general Workspace Secrets.
+
+## Data and provisioning boundary
+
+The database stores only metadata: Tenant/provider, an operator-approved
+binding ID, an immutable Secrets Manager VersionId, status, generation, and
+auditing actor/timestamps. The API and CLI never accept or return plaintext,
+Secret ARN, or reader Role ARN. A per-Tenant/provider unique constraint permits
+one configured Anthropic credential per Tenant.
+
+An authorized platform operator provisions `tenant_model_credential_bindings`
+after creating a dedicated Secret and reader Role. The binding is immutable to
+the public API and pins the Secret ARN and Role ARN to one Tenant and provider.
+The API role has SELECT-only access to this table. Each reader Role trust policy
+must name only the trusted Hako model-credential broker role, and its identity
+policy must allow `secretsmanager:GetSecretValue` only on its one Tenant Secret.
+The broker further supplies an STS session policy for that exact ARN and reads
+only the stored VersionId. There is no `AWSCURRENT` fallback.
+
+After the Secret and Role are provisioned and reviewed, a platform operator
+registers the exact metadata through the migration/admin database role (never
+through `hako_api`):
+
+```sql
+INSERT INTO tenant_model_credential_bindings
+  (id, tenant_id, provider, secret_arn, reader_role_arn, status, created_at, updated_at)
+VALUES
+  ('binding_<opaque-id>', '<tenant-id>', 'anthropic',
+   'arn:aws:secretsmanager:<region>:<account>:secret:<tenant-specific-name>',
+   'arn:aws:iam::<account>:role/hako/model-reader/<opaque-id>',
+   'approved', now(), now());
+```
+
+The referenced Secret must contain the provider key as its SecretString. A
+binding ARN is globally unique in DSQL, preventing one Secret from being
+registered to multiple Tenants. The tenant member receives only the binding ID
+and approved VersionId for the metadata API; neither the ARN nor Role is
+returned.
+
+No Secret creation, real Secret read, IAM change, or AWS apply is part of this
+local implementation task. A deployment must provision and review those
+operator-controlled resources separately.
+
+## Owner/Admin API and CLI
+
+Tenant Owners/Admins may use:
+
+```text
+GET  /v1/tenants/{tenant}/model-credentials
+POST /v1/tenants/{tenant}/model-credentials
+POST /v1/tenants/{tenant}/model-credentials/anthropic/rotate
+POST /v1/tenants/{tenant}/model-credentials/anthropic/disable
+```
+
+Create references an existing approved binding and a 32-hex-character
+Secrets Manager VersionId. Rotate/disable require an expected generation; each
+successful change increments the generation and is audited in the same DB
+transaction. Stale rotations are rejected. Cross-Tenant binding references are
+hidden as not found. All successful responses are `Cache-Control: no-store`.
+
+CLI equivalents are:
+
+```bash
+hako model credential list --tenant acme
+hako model credential add --tenant acme --binding model-anthropic-acme --version-id 0123456789abcdef0123456789abcdef
+hako model credential rotate --tenant acme --version-id fedcba9876543210fedcba9876543210 --generation 1
+hako model credential disable --tenant acme --generation 2
+```
+
+The CLI accepts a VersionId, never a credential value. Do not place provider
+keys in command arguments, environment variables, source control, workflow
+inputs, logs, or artifacts.
+
+## Runtime eligibility and revocation
+
+The trusted resolver requires a live claimed runner identity pinned to the
+exact Resource Plane and Lambda MicroVM, a non-expired lease, an active
+Tenant-owned GitHub integration/repository opt-in, a persisted launch-time
+workflow provenance timestamp, and the hash of the current workflow policy to
+match the hash verified before claim consumption. It also requires an active
+credential and an approved same-Tenant Anthropic binding. Forks, unverified
+jobs, disabled/rotated credentials, stale policy, or foreign runtime identities
+are denied before the SecretReader is called.
+
+The Secret read occurs outside the DB transaction. Immediately after the read,
+the resolver repeats the authorization and compares the full binding,
+VersionId, and generation before passing a short-lived byte buffer only to a
+trusted in-process consumer. Rotation/revocation during the external read
+therefore prevents delivery; the buffer is zeroed on every return path. Errors
+are deliberately generic and do not include provider/Secret values.
+
+For suspected exposure, first disable the Tenant credential at the current
+generation, then revoke the operator binding and its reader Role trust/policy,
+and disable that repository's runner opt-in if a workflow may have been
+compromised. Review immutable `tenant.model_credential.*` audit events and the
+corresponding runner delivery/cleanup records. Rotate by provisioning a new
+immutable Secret version and updating the Tenant credential with the observed
+generation; never overwrite the pinned version in place. Production alerting
+and IAM revocation automation remain deployment work.
+
+This resolver and its fake-provider tests are local libraries, not yet a
+deployed credential-delivery protocol to the Action process. Task 76 must wire
+that final boundary without putting the credential in SQS, runner registration
+data, API responses, command arguments, logs, or artifacts. Credentials are
+read-only by default; repository write access requires a separate explicit
+capability and is not implied by the model API key.

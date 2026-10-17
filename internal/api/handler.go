@@ -204,6 +204,14 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 		protected.POST("/v1/tenants/:tenant_id/github/installations/setup", beginGitHubInstallationSetup(pool, setupVerifier),
 			RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
 	}
+	protected.GET("/v1/tenants/:tenant_id/model-credentials", listModelCredentials(pool),
+		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+	protected.POST("/v1/tenants/:tenant_id/model-credentials", createModelCredential(pool),
+		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+	protected.POST("/v1/tenants/:tenant_id/model-credentials/:provider/rotate", rotateModelCredential(pool),
+		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+	protected.POST("/v1/tenants/:tenant_id/model-credentials/:provider/disable", disableModelCredential(pool),
+		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
 	protected.GET("/v1/health", health, RequireScopes(auth.HakoAPIScope))
 	protected.GET("/v1/service-catalog", listServiceCatalog, RequireScopes(auth.HakoAPIScope))
 	protected.GET("/v1/tenants/:tenant_id/membership", tenantMembership,
