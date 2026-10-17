@@ -33,7 +33,16 @@ caller-provided hostnames are never accepted. Active session/revocation state
 is checked through the verifier's injected `ActiveSessionLookup`; the local
 `HTTPActiveSessionLookup` uses the signed HTTPS/HMAC Control Plane endpoint,
 which checks the complete claims identity against PostgreSQL and returns only
-the active bit. No terminal/application payload is sent to the Control Plane.
+the active bit. `workspaceagent.WorkspaceRouter` is a local in-process router
+that selects the registered single-Workspace dialer using the verified
+Workspace claim. It rejects duplicate live registrations, and cleanup must
+compare against the expected dialer so a delayed removal cannot unregister a
+replacement. Unknown Workspace IDs fail closed. Registration is an internal
+Resource Plane responsibility; it does not accept host/port destinations and
+does not yet discover runtimes or consume lifecycle events. The map is
+process-local, so production wiring must register/unregister entries from the
+Resource Plane runtime lifecycle and define behavior across Gateway replicas.
+No terminal/application payload is sent to the Control Plane.
 
 The Gateway bounds concurrent total and per-Workspace connections in-process,
 and applies a maximum payload size to every incoming WebSocket frame and every
@@ -51,6 +60,6 @@ port-forward byte round-trip to an ephemeral `127.0.0.1` listener,
 wrong channel/Workspace/Origin, plaintext rejection, denied/allowed port
 forwarding, per-Workspace connection cap, concurrent ticket replay rejection
 with reconnect-after-close, upstream failure, and oversized frames. The concrete authenticated
-Resource Plane multi-Workspace router/configuration, distributed limits, metrics/audit events,
+Resource Plane multi-Workspace router lifecycle wiring, distributed limits, metrics/audit events,
 long-running service deployment, IDE process bridge, and Lambda MicroVM
 end-to-end stream PoC remain open Task 46/47 work.
