@@ -72,6 +72,13 @@ been built by Lambda's image builder, and no AWS image, hook, IAM, network, or
 MicroVM lifecycle has been deployed or verified. The test-only key example is
 used for packaging checks only.
 
+On the local development host, the ARM64 ZIP package builds successfully and
+contains the expected three files. A Podman ARM64 image build currently stops
+at the first `RUN` instruction with `exec format error` because this host has no
+ARM64 execution emulation configured. Do not treat an amd64 build, the ZIP
+package check, or the pulled base image as proof of an ARM64 Lambda MicroVM
+image build; use Lambda's image builder or an ARM64 build host for that gate.
+
 This image currently supports the Workload protocol's fixed Go test operation;
 it does not implement the interactive Workspace shell/PTY API. The guest runs
 tests with network access disabled by its current process factory, so projects

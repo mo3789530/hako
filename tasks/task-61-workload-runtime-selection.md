@@ -20,3 +20,13 @@ Status: API contract identified (AWS Lambda MicroVMs); image/container/network P
 - 未達要件は明示する。基盤を自動変更せず、未検証の24時間実行やnested container対応を保証しない。
 - CP/RP分離、DSQLへのRP直接接続禁止、Secret非露出、attempt fencingを維持する。
 - 実行pathと監視が検証されるまでRun作成はdefault-off。AWS applyは含まない。
+
+## Local verification note (2026-10-17)
+
+`make build-workload-microvm-artifact` produced the ARM64 agent ZIP using the
+test-only public-key fixture, and the output was inspected as a statically
+linked AArch64 executable plus Dockerfile and public key. A Podman image build
+pulled the Lambda MicroVM base images but failed at `dnf` with `exec format
+error` because the local x86 host has no ARM64 emulation. This does not satisfy
+the Lambda image/container/network PoC; use Lambda's image builder or an ARM64
+host for the image validation step. No AWS resources were created or changed.
