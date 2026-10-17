@@ -48,6 +48,11 @@ Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Action
   `in_progress`/`completed` deliveries. PostgreSQL integration coverage verifies
   both paths and confirms a terminal job cannot be altered by an uncorrelatable
   status event.
+- A GitHub Runner ID is now single-job within its exact Tenant App installation
+  and repository scope. An idempotent database uniqueness constraint closes
+  concurrent races, while status processing quarantines an assignment to a
+  second job before updating it. The PostgreSQL E2E covers attempted reuse
+  after the original job has completed.
 - `HAKO_GITHUB_ACTIONS_RUNNER_ADMISSIONS_ENABLED` defaults off. When enabled,
   the webhook processor admits only queued jobs whose current Tenant-owned
   Installation and Repository opt-in were active before receipt. Admission is

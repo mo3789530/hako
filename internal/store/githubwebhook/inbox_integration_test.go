@@ -438,6 +438,28 @@ func TestActionsRunnerAdmissionRequiresSeparateRepositoryOptInAndDeduplicatesJob
 	if err := pool.QueryRow(ctx, `SELECT state,runner_id,conclusion FROM github_actions_runner_jobs WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`).Scan(&runnerState, &runnerID, &conclusion); err != nil || runnerState != "completed" || runnerID == nil || *runnerID != 9810 || conclusion != "success" {
 		t.Fatalf("uncorrelatable status changed completed job: state=%q runner=%v conclusion=%q error=%v", runnerState, runnerID, conclusion, err)
 	}
+	if _, err := pool.Exec(ctx, `INSERT INTO github_actions_runner_jobs
+		(integration_id,delivery_id,tenant_id,installation_id,repository_id,workflow_job_id,workflow_run_id,run_attempt,workflow_name,job_name,head_branch,head_sha,labels,state,created_at,updated_at,claim_id,lease_expires_at,claim_attempts)
+		VALUES ('shared','443b2c3d-4e5f-4789-8abc-def012345678','tenant_actions_admission',8801,8802,9911,9912,1,'CI','other-test','feature/task',repeat('a',40),'["self-hosted","hako"]','starting',$1,$1,'runner-controller-2',$2,1)`, now.Add(52*time.Second), now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	duplicateRunner := githubwebhook.VerifiedDelivery{DeliveryID: "543b2c3d-4e5f-4789-8abc-def012345678", Event: "workflow_job", Action: "in_progress",
+		Payload: []byte(`{"action":"in_progress","installation":{"id":8801},"repository":{"id":8802,"name":"enabled","owner":{"login":"acme"}},"workflow_job":{"id":9911,"run_id":9912,"run_attempt":1,"workflow_name":"CI","name":"other-test","head_branch":"feature/task","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"in_progress","labels":["self-hosted","hako"],"runner_id":9810,"runner_name":"hako-runner-1"}}`)}
+	if inserted, err := inbox.Record(ctx, duplicateRunner, now.Add(53*time.Second)); err != nil || !inserted {
+		t.Fatalf("record reused Runner ID for second job: inserted=%v error=%v", inserted, err)
+	}
+	stats, err = ProcessBatchWithActionsRunnerAdmissions(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(54*time.Second), nil)
+	if err != nil || stats.Processed != 1 {
+		t.Fatalf("process reused Runner ID = %+v error=%v", stats, err)
+	}
+	var secondJobState string
+	var secondJobRunnerID *int64
+	if err := pool.QueryRow(ctx, `SELECT state,runner_id FROM github_actions_runner_jobs WHERE integration_id='shared' AND workflow_job_id=9911 AND run_attempt=1`).Scan(&secondJobState, &secondJobRunnerID); err != nil || secondJobState != "starting" || secondJobRunnerID != nil {
+		t.Fatalf("Runner ID was reused for a second job: state=%q runner=%v error=%v", secondJobState, secondJobRunnerID, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE github_actions_runner_jobs SET runner_id=9810 WHERE integration_id='shared' AND workflow_job_id=9911 AND run_attempt=1`); err == nil {
+		t.Fatal("database uniqueness constraint allowed one GitHub Runner ID to be pinned to two jobs")
+	}
 }
 
 func TestProcessBatchAppliesInstallationSuspendUnsuspendAndDeleteLifecycle(t *testing.T) {

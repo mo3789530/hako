@@ -103,6 +103,22 @@ func ProcessActionsRunnerStatusDelivery(ctx context.Context, tx pgx.Tx, integrat
 		}
 		return true, nil
 	}
+	if job.RunnerID != nil {
+		var usedByAnotherJob bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (
+			SELECT 1 FROM github_actions_runner_jobs
+			WHERE integration_id=$1 AND installation_id=$2 AND repository_id=$3 AND runner_id=$4
+			  AND NOT (workflow_job_id=$5 AND run_attempt=$6)
+		)`, integrationID, event.InstallationID, event.Repository.GitHubID, *job.RunnerID, job.ID, job.RunAttempt).Scan(&usedByAnotherJob); err != nil {
+			return false, fmt.Errorf("check Actions runner single-job assignment: %w", err)
+		}
+		if usedByAnotherJob {
+			if err := failStaleWebhookDelivery(ctx, tx, integrationID, deliveryID); err != nil {
+				return false, err
+			}
+			return true, nil
+		}
+	}
 
 	var tenant, state, headBranch, headSHA string
 	var installationID, repositoryID, workflowRunID, storedJobID, runAttempt int64
