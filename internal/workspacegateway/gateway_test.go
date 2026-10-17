@@ -208,7 +208,11 @@ func TestGatewayWSShellConnectsToWorkspacePTY(t *testing.T) {
 	}
 	defer shells.Close()
 	dialer := &workspaceagent.GatewayDialer{WorkspaceID: "ws_gateway_a", Shells: shells}
-	gateway, err := New(Config{ResourcePlaneID: "rp_gateway_a", Verifier: newTestVerifier(t), Dialer: dialer,
+	router := workspaceagent.NewWorkspaceRouter()
+	if !router.Register("ws_gateway_a", dialer) {
+		t.Fatal("register Workspace PTY runtime")
+	}
+	gateway, err := New(Config{ResourcePlaneID: "rp_gateway_a", Verifier: newTestVerifier(t), Dialer: router,
 		AllowedOrigins: []string{"https://ide.example.test"}, MaxConnections: 2, MaxConnectionsPerWorkspace: 1})
 	if err != nil {
 		t.Fatal(err)

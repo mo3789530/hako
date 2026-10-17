@@ -54,12 +54,12 @@ expiry/revocation. Multiple Gateway replicas still need shared active-connection
 coordination and load-balancer/API throttles. TLS termination, private Gateway-to-runtime transport,
 and task/service health wiring are deployment responsibilities.
 
-Local WSS tests exercise shell byte relay and a Gateway-to-real-local-PTY
-command, dedicated SSH-proxy permission and fixed `127.0.0.1:22` routing, a
+Local WSS tests exercise shell byte relay and a Gateway → WorkspaceRouter →
+Workspace-bound PTY command path, dedicated SSH-proxy permission and fixed `127.0.0.1:22` routing, a
 port-forward byte round-trip to an ephemeral `127.0.0.1` listener,
 wrong channel/Workspace/Origin, plaintext rejection, denied/allowed port
 forwarding, per-Workspace connection cap, concurrent ticket replay rejection
 with reconnect-after-close, upstream failure, and oversized frames. The concrete authenticated
-Resource Plane multi-Workspace router lifecycle wiring, distributed limits, metrics/audit events,
+Resource Plane runtime lifecycle registration, distributed limits, metrics/audit events,
 long-running service deployment, IDE process bridge, and Lambda MicroVM
 end-to-end stream PoC remain open Task 46/47 work.

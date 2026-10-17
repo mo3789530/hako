@@ -1,6 +1,6 @@
 # Task 45: Workspace Agent and Secret References
 
-Current update: Workspace PTY is connected to the TLS WSS Gateway through a signed-Workspace-bound adapter; shell command/output and allowlisted loopback port-forward E2E pass. The older status line below predates this connection; multi-Workspace routing, VS Code, production key distribution, and MicroVM `/dev/pts` validation remain.
+Current update: Workspace PTY is connected to the TLS WSS Gateway through a signed-Workspace-bound adapter; shell command/output and allowlisted loopback port-forward E2E pass. A process-local multi-Workspace router is now exercised in the Gateway-to-real-PTY TLS WSS test. Resource Plane runtime lifecycle registration, VS Code, production key distribution, and MicroVM `/dev/pts` validation remain.
 
 SSH bridge update: Task 47 adds a separate `ssh-proxy` session permission and a Gateway route that only dials `127.0.0.1:22`; `hako ssh-proxy` relays the OpenSSH ProxyCommand over TLS/WSS. This is local protocol evidence only: Workspace image `sshd` startup/configuration and real MicroVM routing are unverified. TCP/22 is not externally exposed.
 
