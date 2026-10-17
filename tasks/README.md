@@ -120,7 +120,7 @@ Claude Code Actionは**現在実装されていない**。Task 73は親の集約
 
 | 順序 | Task | 内容 | Depends on |
 |---|---|---|---|
-| 17 | [52 — GitHub Actions Runner Mode](task-52-ephemeral-actions-runner.md) | 進行中：cleanup identityをLambda MicroVM ID + Resource Planeでpinし、Plane単位にclaim。異なるPlaneの物理cleanupを拒否するPostgreSQL E2Eを追加。runner launch/deregister/cleanup consumerは未実装 | 40, 41, 51 |
+| 17 | [52 — GitHub Actions Runner Mode](task-52-ephemeral-actions-runner.md) | 進行中：cleanup identityのPlane fencingに加え、terminate→Tenant/Repository deregister→lease ACK/retryのCleanupWorkerとPostgreSQL queue adapterを実装。実MicroVM/broker adapter、runner launch、consumer deploymentが残る | 40, 41, 51 |
 | 18 | [53 — Native Pipeline/Agent](task-53-native-pipeline-agent.md) | **進行中**。安全なversion 1 manifest parserと`hako factory validate` CLIを実装・文書化。Run生成・Pipeline実行、Issue→Agent→PRは39/50/51の後 | 39, 50, 51 |
 | 19 | [54 — Preview/Catalog/Deploy](task-54-preview-catalog-deploy.md) | Preview、Software Catalog、OIDC deploy policy | 43–46, 50, 51 |
 | 20 | [55 — Quota/Usage UX](task-55-quota-usage.md) | workload/service quota、利用量と操作UX | 40, 47, 50 |
