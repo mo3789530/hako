@@ -172,7 +172,7 @@ func (r *JobRuntime) RunGoTest(ctx context.Context, spec JobSpec) (JobResult, er
 	jobCtx, cancel := context.WithTimeout(ctx, spec.Timeout)
 	defer cancel()
 	logs := &boundedJobLog{limit: r.config.MaxLogBytes}
-	args := r.podmanArgs(repositoryPath)
+	args := r.podmanArgs(repositoryPath, spec.TenantID, spec.RunID)
 	args = append(args, r.config.GoImage, "go", "test", "./...")
 	jobErr := r.config.CommandRunner.Run(jobCtx, r.config.PodmanPath, args, logs)
 	completedAt := time.Now().UTC()
@@ -201,9 +201,10 @@ func (r *JobRuntime) RunGoTest(ctx context.Context, spec JobSpec) (JobResult, er
 	return result, nil
 }
 
-func (r *JobRuntime) podmanArgs(repositoryPath string) []string {
+func (r *JobRuntime) podmanArgs(repositoryPath string, tenantID domain.TenantID, runID domain.WorkloadRunID) []string {
 	args := []string{"run", "--rm", "--pull=never", "--network=none", "--read-only", "--cap-drop=ALL",
 		"--security-opt=no-new-privileges", "--pids-limit=256", "--memory=2g", "--cpus=2",
+		"--label=hako.managed-by=hako", "--label=hako.tenant-id=" + string(tenantID), "--label=hako.workload-run-id=" + string(runID),
 		"--userns=keep-id:uid=65532,gid=65532",
 		"--user=65532:65532", "--stop-timeout=5", "--tmpfs", "/tmp:rw,nosuid,nodev,size=1g,mode=1777",
 		"--mount", "type=bind,src=" + repositoryPath + ",dst=/workspace,ro=true,relabel=private",
