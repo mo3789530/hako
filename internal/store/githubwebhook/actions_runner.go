@@ -86,21 +86,24 @@ func ProcessActionsRunnerDelivery(ctx context.Context, tx pgx.Tx, integrationID,
 		return true, false, nil
 	}
 	job := event.WorkflowJob
+	if job.RunAttempt <= 0 {
+		// A runner admission must correlate to later in_progress/completed
+		// events using the exact workflow attempt. Retain older normalized
+		// deliveries, but do not create an uncorrelatable runtime job.
+		if err := failStaleWebhookDelivery(ctx, tx, integrationID, deliveryID); err != nil {
+			return false, false, err
+		}
+		return true, false, nil
+	}
 	labels, err := json.Marshal(job.Labels)
 	if err != nil {
 		return false, false, fmt.Errorf("encode Actions runner labels: %w", err)
-	}
-	runAttempt := job.RunAttempt
-	if runAttempt == 0 {
-		// Older GitHub payloads can omit this field. Persist zero as an explicit
-		// compatibility bucket; a present attempt is always positive at normalize.
-		runAttempt = 0
 	}
 	tag, err := tx.Exec(ctx, `INSERT INTO github_actions_runner_jobs
 		(integration_id,delivery_id,tenant_id,installation_id,repository_id,workflow_job_id,workflow_run_id,run_attempt,workflow_name,job_name,head_branch,head_sha,labels,state,created_at,updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'admitted',$14,$14)
 		ON CONFLICT (integration_id,workflow_job_id,run_attempt) DO NOTHING`,
-		integrationID, deliveryID, tenantID, event.InstallationID, event.Repository.GitHubID, job.ID, job.RunID, runAttempt,
+		integrationID, deliveryID, tenantID, event.InstallationID, event.Repository.GitHubID, job.ID, job.RunID, job.RunAttempt,
 		job.WorkflowName, job.Name, job.HeadBranch, job.HeadSHA, labels, admittedAt.UTC())
 	if err != nil {
 		return false, false, fmt.Errorf("persist Actions runner admission: %w", err)
@@ -111,7 +114,7 @@ func ProcessActionsRunnerDelivery(ctx context.Context, tx pgx.Tx, integrationID,
 		var existingInstallation, existingRepository, existingRun, existingJob int64
 		var existingBranch, existingSHA string
 		if err := tx.QueryRow(ctx, `SELECT tenant_id,installation_id,repository_id,workflow_run_id,workflow_job_id,head_branch,head_sha
-			FROM github_actions_runner_jobs WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=$3`, integrationID, job.ID, runAttempt).
+			FROM github_actions_runner_jobs WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=$3`, integrationID, job.ID, job.RunAttempt).
 			Scan(&existingTenant, &existingInstallation, &existingRepository, &existingRun, &existingJob, &existingBranch, &existingSHA); err != nil {
 			return false, false, fmt.Errorf("verify idempotent Actions runner admission: %w", err)
 		}

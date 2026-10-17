@@ -40,6 +40,14 @@ Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Action
   Queued jobs with null runner assignment remain unassigned; later events can
   be correlated against the exact job and run attempt. Older normalized rows
   remain readable because these fields are additive/optional.
+- Runner admission now requires a positive `run_attempt`, even though event
+  normalization retains older payloads where GitHub omitted the field. Such
+  queued deliveries are quarantined without creating a job/runtime; status
+  events missing an attempt are likewise prevented from updating a job. This
+  avoids persisting a zero-attempt job that cannot correlate with normal
+  `in_progress`/`completed` deliveries. PostgreSQL integration coverage verifies
+  both paths and confirms a terminal job cannot be altered by an uncorrelatable
+  status event.
 - `HAKO_GITHUB_ACTIONS_RUNNER_ADMISSIONS_ENABLED` defaults off. When enabled,
   the webhook processor admits only queued jobs whose current Tenant-owned
   Installation and Repository opt-in were active before receipt. Admission is

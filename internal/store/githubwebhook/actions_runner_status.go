@@ -94,6 +94,15 @@ func ProcessActionsRunnerStatusDelivery(ctx context.Context, tx pgx.Tx, integrat
 		}
 		return true, nil
 	}
+	if job.RunAttempt <= 0 {
+		// Status events without an exact attempt cannot safely update an
+		// admitted runner. Quarantine them rather than matching the legacy
+		// zero-attempt compatibility bucket.
+		if err := failStaleWebhookDelivery(ctx, tx, integrationID, deliveryID); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
 
 	var tenant, state, headBranch, headSHA string
 	var installationID, repositoryID, workflowRunID, storedJobID, runAttempt int64

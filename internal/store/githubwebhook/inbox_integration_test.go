@@ -293,16 +293,18 @@ func TestActionsRunnerAdmissionRequiresSeparateRepositoryOptInAndDeduplicatesJob
 	duplicate := makeDelivery("b3b2c3d4-e5f6-4789-8abc-def012345678", 8802, "enabled")
 	optedOut := makeDelivery("c3b2c3d4-e5f6-4789-8abc-def012345678", 8803, "disabled")
 	preOptIn := makeDelivery("d3b2c3d4-e5f6-4789-8abc-def012345678", 8802, "enabled")
+	missingAttempt := makeDelivery("343b2c3d-e5f6-4789-8abc-def012345678", 8802, "enabled")
+	missingAttempt.Payload = []byte(strings.Replace(string(missingAttempt.Payload), `,"run_attempt":1`, "", 1))
 	for _, item := range []struct {
 		delivery githubwebhook.VerifiedDelivery
 		received time.Time
-	}{{accepted, now}, {duplicate, now}, {optedOut, now}, {preOptIn, now.Add(-2 * time.Minute)}} {
+	}{{accepted, now}, {duplicate, now}, {optedOut, now}, {preOptIn, now.Add(-2 * time.Minute)}, {missingAttempt, now}} {
 		if inserted, err := inbox.Record(ctx, item.delivery, item.received); err != nil || !inserted {
 			t.Fatalf("record %s: inserted=%v error=%v", item.delivery.DeliveryID, inserted, err)
 		}
 	}
 	stats, err := ProcessBatchWithActionsRunnerAdmissions(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(time.Second), nil)
-	if err != nil || stats.Claimed != 4 || stats.Processed != 4 || stats.ActionsRunnerJobsAdmitted != 1 {
+	if err != nil || stats.Claimed != 5 || stats.Processed != 5 || stats.ActionsRunnerJobsAdmitted != 1 {
 		t.Fatalf("Actions runner admission batch = %+v, error=%v", stats, err)
 	}
 	var jobs int
@@ -315,11 +317,15 @@ func TestActionsRunnerAdmissionRequiresSeparateRepositoryOptInAndDeduplicatesJob
 	if jobs != 1 || tenantID != "tenant_actions_admission" || string(labels) != `["self-hosted", "hako"]` || state != "admitted" {
 		t.Fatalf("admitted Actions job count=%d tenant=%q labels=%s state=%q", jobs, tenantID, labels, state)
 	}
-	for _, rejected := range []githubwebhook.VerifiedDelivery{optedOut, preOptIn} {
+	for _, rejected := range []githubwebhook.VerifiedDelivery{optedOut, preOptIn, missingAttempt} {
 		var status string
 		if err := pool.QueryRow(ctx, `SELECT processing_status FROM github_webhook_deliveries WHERE delivery_id=$1`, rejected.DeliveryID).Scan(&status); err != nil || status != "failed" {
 			t.Fatalf("ineligible repository delivery %s status=%q error=%v", rejected.DeliveryID, status, err)
 		}
+	}
+	var uncorrelatableJobs int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM github_actions_runner_jobs WHERE run_attempt=0`).Scan(&uncorrelatableJobs); err != nil || uncorrelatableJobs != 0 {
+		t.Fatalf("admitted uncorrelatable zero-attempt runner jobs: count=%d error=%v", uncorrelatableJobs, err)
 	}
 	var queuedWorkloadRuns int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM workload_runs`).Scan(&queuedWorkloadRuns); err != nil || queuedWorkloadRuns != 0 {
@@ -419,6 +425,18 @@ func TestActionsRunnerAdmissionRequiresSeparateRepositoryOptInAndDeduplicatesJob
 	}
 	if err := pool.QueryRow(ctx, `SELECT state,runner_id,conclusion FROM github_actions_runner_jobs WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`).Scan(&runnerState, &runnerID, &conclusion); err != nil || runnerState != "completed" || runnerID == nil || *runnerID != 9810 || conclusion != "success" {
 		t.Fatalf("reordered status reopened completed job: state=%q runner=%v conclusion=%q error=%v", runnerState, runnerID, conclusion, err)
+	}
+	missingStatusAttempt := makeStatusDelivery("243b2c3d-4e5f-4789-8abc-def012345678", "in_progress", "in_progress", "", strings.Repeat("a", 40))
+	missingStatusAttempt.Payload = []byte(strings.Replace(string(missingStatusAttempt.Payload), `,"run_attempt":1`, "", 1))
+	if inserted, err := inbox.Record(ctx, missingStatusAttempt, now.Add(50*time.Second)); err != nil || !inserted {
+		t.Fatalf("record Actions status without attempt: inserted=%v error=%v", inserted, err)
+	}
+	stats, err = ProcessBatchWithActionsRunnerAdmissions(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(51*time.Second), nil)
+	if err != nil || stats.Processed != 1 {
+		t.Fatalf("process uncorrelatable Actions status = %+v error=%v", stats, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT state,runner_id,conclusion FROM github_actions_runner_jobs WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`).Scan(&runnerState, &runnerID, &conclusion); err != nil || runnerState != "completed" || runnerID == nil || *runnerID != 9810 || conclusion != "success" {
+		t.Fatalf("uncorrelatable status changed completed job: state=%q runner=%v conclusion=%q error=%v", runnerState, runnerID, conclusion, err)
 	}
 }
 
