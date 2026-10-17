@@ -172,10 +172,13 @@ func TestNormalizeBuildsVersionedHakoEvents(t *testing.T) {
 		},
 		{
 			name: "workflow job", event: "workflow_job",
-			payload:  `{"action":"queued","installation":{"id":12},"repository":{"id":42,"name":"api","owner":{"login":"acme"}},"workflow_job":{"id":5,"run_id":4,"name":"test","head_branch":"main","head_sha":"` + sha + `","status":"queued"}}`,
+			payload:  `{"action":"queued","installation":{"id":12},"repository":{"id":42,"name":"api","owner":{"login":"acme"}},"workflow_job":{"id":5,"run_id":4,"run_attempt":2,"name":"test","workflow_name":"CI","head_branch":"main","head_sha":"` + sha + `","status":"queued","labels":["self-hosted","hako","linux-arm64"],"runner_id":null,"runner_name":null,"runner_group_id":null,"runner_group_name":null}}`,
 			wantType: "repository.workflow_job.queued",
 			check: func(got RepositoryEvent) bool {
-				return got.WorkflowJob != nil && got.WorkflowJob.ID == 5 && got.WorkflowJob.RunID == 4
+				return got.WorkflowJob != nil && got.WorkflowJob.ID == 5 && got.WorkflowJob.RunID == 4 &&
+					got.WorkflowJob.RunAttempt == 2 && got.WorkflowJob.WorkflowName == "CI" &&
+					strings.Join(got.WorkflowJob.Labels, ",") == "self-hosted,hako,linux-arm64" &&
+					got.WorkflowJob.RunnerID == nil && got.WorkflowJob.RunnerName == ""
 			},
 		},
 		{
@@ -207,6 +210,52 @@ func TestNormalizeBuildsVersionedHakoEvents(t *testing.T) {
 				t.Fatalf("normalized event = %+v", got)
 			}
 		})
+	}
+}
+
+func TestNormalizeWorkflowJobCapturesRunnerAssignment(t *testing.T) {
+	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	payload := []byte(`{"action":"in_progress","installation":{"id":12},"repository":{"id":42,"name":"api","owner":{"login":"acme"}},"workflow_job":{"id":5,"run_id":4,"run_attempt":3,"name":"test","workflow_name":"CI","head_branch":"main","head_sha":"` + sha + `","status":"in_progress","labels":["self-hosted","hako"],"runner_id":71,"runner_name":"hako-rp-a1","runner_group_id":19,"runner_group_name":"hako-runners"}}`)
+	event, err := Normalize(VerifiedDelivery{DeliveryID: testDeliveryID, Event: "workflow_job", Action: "in_progress", Payload: payload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := event.WorkflowJob
+	if job == nil || job.RunAttempt != 3 || job.WorkflowName != "CI" || job.RunnerID == nil || *job.RunnerID != 71 ||
+		job.RunnerName != "hako-rp-a1" || job.RunnerGroupID == nil || *job.RunnerGroupID != 19 || job.RunnerGroupName != "hako-runners" {
+		t.Fatalf("normalized runner assignment = %+v", job)
+	}
+}
+
+func TestNormalizeRejectsInvalidWorkflowJobCorrelationMetadata(t *testing.T) {
+	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	base := `{"action":"queued","installation":{"id":12},"repository":{"id":42,"name":"api","owner":{"login":"acme"}},"workflow_job":{"id":5,"run_id":4,"run_attempt":1,"name":"test","head_branch":"main","head_sha":"` + sha + `","status":"queued","labels":["hako"]}}`
+	mutations := []struct {
+		name string
+		from string
+		to   string
+	}{
+		{name: "zero attempt", from: `"run_attempt":1`, to: `"run_attempt":0`},
+		{name: "action status mismatch", from: `"status":"queued"`, to: `"status":"completed"`},
+		{name: "negative runner", from: `"labels":["hako"]`, to: `"labels":["hako"],"runner_id":-1`},
+		{name: "empty label", from: `"labels":["hako"]`, to: `"labels":[""]`},
+		{name: "control label", from: `"labels":["hako"]`, to: `"labels":["bad\nlabel"]`},
+	}
+	for _, test := range mutations {
+		t.Run(test.name, func(t *testing.T) {
+			payload := strings.Replace(base, test.from, test.to, 1)
+			if _, err := Normalize(VerifiedDelivery{DeliveryID: testDeliveryID, Event: "workflow_job", Action: "queued", Payload: []byte(payload)}); err == nil {
+				t.Fatal("invalid workflow job correlation metadata was accepted")
+			}
+		})
+	}
+	labels := make([]string, 101)
+	for index := range labels {
+		labels[index] = `"hako"`
+	}
+	oversized := strings.Replace(base, `"labels":["hako"]`, `"labels":[`+strings.Join(labels, ",")+`]`, 1)
+	if _, err := Normalize(VerifiedDelivery{DeliveryID: testDeliveryID, Event: "workflow_job", Action: "queued", Payload: []byte(oversized)}); err == nil {
+		t.Fatal("too many workflow job labels were accepted")
 	}
 }
 

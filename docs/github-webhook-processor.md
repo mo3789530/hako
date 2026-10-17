@@ -15,6 +15,12 @@ explicitly enabled) repository trigger events from that inbox.
   ID. With `HAKO_WEBHOOK_WORKLOAD_TRIGGERS_ENABLED=true`, push and pull-request
   deliveries are additionally consumed; `workflow_job` and older schema
   deliveries stay in `received` for their appropriate future consumer.
+- Normalized `workflow_job` records retain exact job/run IDs, run attempt,
+  workflow name, up to 100 bounded labels, and optional assigned runner/group
+  identity. These fields are event metadata only: their presence does not
+  authorize a job or launch a runner. The dedicated Task 52 admission path must
+  revalidate Tenant/Repository binding and policy before obtaining a short-lived
+  registration token or creating a Lambda MicroVM.
 - Push and pull-request scheduling is opt-in per synchronized Tenant
   repository. A Tenant Owner/Admin uses
   `PUT /v1/tenants/{tenant_id}/github/installations/{installation_id}/repositories/{repository_id}/factory`

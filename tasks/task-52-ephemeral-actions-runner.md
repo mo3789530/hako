@@ -1,6 +1,6 @@
 # Task 52: GitHub Actions Ephemeral Runner Mode
 
-Status: In Progress (2026-10-17: signed `workflow_job.queued` deliveries are retained but excluded from the generic push/PR Go-test trigger. Dedicated runner admission must authorize the event before requesting a registration token or creating a MicroVM. Runner lifecycle is not implemented). Priority: P3.
+Status: In Progress (2026-10-17: signed `workflow_job.queued` deliveries are retained but excluded from the generic push/PR Go-test trigger. Normalized events now preserve run attempt, workflow name, bounded labels, and optional assigned runner/group identity for matching `in_progress`/`completed` deliveries. Dedicated runner admission must authorize the event before requesting a registration token or creating a MicroVM. Runner lifecycle is not implemented). Priority: P3.
 
 Claude Code Action support is tracked separately in [Task 73](task-73-claude-code-action.md), including Tenant-scoped model credentials, untrusted PR denial, and action-specific E2E.
 
@@ -31,3 +31,11 @@ Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Action
   workload. The future runner admission path must independently resolve
   Tenant/Repository policy; no runner token, runtime, or Check is created by
   the generic trigger.
+- `WorkflowJobRef` now retains the workflow/job/run IDs, positive `run_attempt`
+  when provided, workflow name, exact bounded runner label strings (maximum
+  100), and optional runner/group assignment IDs and names. Action/status
+  mismatches, invalid label controls/lengths, and non-positive supplied
+  IDs/attempts fail normalization.
+  Queued jobs with null runner assignment remain unassigned; later events can
+  be correlated against the exact job and run attempt. Older normalized rows
+  remain readable because these fields are additive/optional.

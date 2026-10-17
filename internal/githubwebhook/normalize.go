@@ -50,13 +50,20 @@ type PullRequestRef struct {
 }
 
 type WorkflowJobRef struct {
-	ID         int64  `json:"id"`
-	RunID      int64  `json:"run_id"`
-	Name       string `json:"name"`
-	HeadBranch string `json:"head_branch"`
-	HeadSHA    string `json:"head_sha"`
-	Status     string `json:"status"`
-	Conclusion string `json:"conclusion,omitempty"`
+	ID              int64    `json:"id"`
+	RunID           int64    `json:"run_id"`
+	RunAttempt      int64    `json:"run_attempt,omitempty"`
+	Name            string   `json:"name"`
+	WorkflowName    string   `json:"workflow_name,omitempty"`
+	HeadBranch      string   `json:"head_branch"`
+	HeadSHA         string   `json:"head_sha"`
+	Status          string   `json:"status"`
+	Conclusion      string   `json:"conclusion,omitempty"`
+	Labels          []string `json:"labels,omitempty"`
+	RunnerID        *int64   `json:"runner_id,omitempty"`
+	RunnerName      string   `json:"runner_name,omitempty"`
+	RunnerGroupID   *int64   `json:"runner_group_id,omitempty"`
+	RunnerGroupName string   `json:"runner_group_name,omitempty"`
 }
 
 type githubPayload struct {
@@ -89,13 +96,20 @@ type githubPayload struct {
 		} `json:"base"`
 	} `json:"pull_request"`
 	WorkflowJob struct {
-		ID         int64  `json:"id"`
-		RunID      int64  `json:"run_id"`
-		Name       string `json:"name"`
-		HeadBranch string `json:"head_branch"`
-		HeadSHA    string `json:"head_sha"`
-		Status     string `json:"status"`
-		Conclusion string `json:"conclusion"`
+		ID              int64    `json:"id"`
+		RunID           int64    `json:"run_id"`
+		RunAttempt      *int64   `json:"run_attempt"`
+		Name            string   `json:"name"`
+		WorkflowName    *string  `json:"workflow_name"`
+		HeadBranch      string   `json:"head_branch"`
+		HeadSHA         string   `json:"head_sha"`
+		Status          string   `json:"status"`
+		Conclusion      string   `json:"conclusion"`
+		Labels          []string `json:"labels"`
+		RunnerID        *int64   `json:"runner_id"`
+		RunnerName      *string  `json:"runner_name"`
+		RunnerGroupID   *int64   `json:"runner_group_id"`
+		RunnerGroupName *string  `json:"runner_group_name"`
 	} `json:"workflow_job"`
 }
 
@@ -156,13 +170,27 @@ func Normalize(delivery VerifiedDelivery) (RepositoryEvent, error) {
 	case "workflow_job":
 		repository, err := normalizeRepository(payload.Repository)
 		job := payload.WorkflowJob
-		if err != nil || payload.Installation.ID <= 0 || job.ID <= 0 || job.RunID <= 0 || boundedText(job.Name, 200) == "" || !validRef(job.HeadBranch) || !validSHA(job.HeadSHA) || !oneOf(job.Status, "queued", "in_progress", "completed") {
+		labels, labelErr := normalizeWorkflowJobLabels(job.Labels)
+		if err != nil || payload.Installation.ID <= 0 || job.ID <= 0 || job.RunID <= 0 ||
+			(job.RunAttempt != nil && *job.RunAttempt <= 0) ||
+			(job.RunnerID != nil && *job.RunnerID <= 0) || (job.RunnerGroupID != nil && *job.RunnerGroupID <= 0) ||
+			!validOptionalWorkflowText(job.WorkflowName, 200) || !validOptionalWorkflowText(job.RunnerName, 200) || !validOptionalWorkflowText(job.RunnerGroupName, 200) || labelErr != nil ||
+			boundedText(job.Name, 200) == "" || !validRef(job.HeadBranch) || !validSHA(job.HeadSHA) ||
+			!oneOf(job.Status, "queued", "in_progress", "completed") || !workflowJobActionMatchesStatus(delivery.Action, job.Status) {
 			return RepositoryEvent{}, fmt.Errorf("%w: workflow job requires installation, repository, and valid job metadata", ErrInvalidDelivery)
 		}
 		event.Type = "repository.workflow_job." + delivery.Action
 		event.Repository, event.InstallationID = repository, payload.Installation.ID
 		event.Ref, event.CommitSHA = job.HeadBranch, strings.ToLower(job.HeadSHA)
-		event.WorkflowJob = &WorkflowJobRef{ID: job.ID, RunID: job.RunID, Name: boundedText(job.Name, 200), HeadBranch: job.HeadBranch, HeadSHA: strings.ToLower(job.HeadSHA), Status: job.Status, Conclusion: boundedText(job.Conclusion, 100)}
+		var runAttempt int64
+		if job.RunAttempt != nil {
+			runAttempt = *job.RunAttempt
+		}
+		event.WorkflowJob = &WorkflowJobRef{ID: job.ID, RunID: job.RunID, RunAttempt: runAttempt, Name: boundedText(job.Name, 200),
+			WorkflowName: optionalWorkflowText(job.WorkflowName, 200), HeadBranch: job.HeadBranch, HeadSHA: strings.ToLower(job.HeadSHA),
+			Status: job.Status, Conclusion: boundedText(job.Conclusion, 100), Labels: labels, RunnerID: job.RunnerID,
+			RunnerName: optionalWorkflowText(job.RunnerName, 200), RunnerGroupID: job.RunnerGroupID,
+			RunnerGroupName: optionalWorkflowText(job.RunnerGroupName, 200)}
 	case "installation":
 		if payload.Installation.ID <= 0 {
 			return RepositoryEvent{}, fmt.Errorf("%w: installation event requires installation ID", ErrInvalidDelivery)
@@ -190,6 +218,52 @@ func Normalize(delivery VerifiedDelivery) (RepositoryEvent, error) {
 		return RepositoryEvent{}, fmt.Errorf("%w: unsupported event %q", ErrInvalidDelivery, delivery.Event)
 	}
 	return event, nil
+}
+
+func workflowJobActionMatchesStatus(action, status string) bool {
+	return (action == "queued" && status == "queued") ||
+		(action == "in_progress" && status == "in_progress") ||
+		(action == "completed" && status == "completed")
+}
+
+func normalizeWorkflowJobLabels(labels []string) ([]string, error) {
+	if len(labels) > 100 {
+		return nil, fmt.Errorf("%w: too many workflow job labels", ErrInvalidDelivery)
+	}
+	result := make([]string, len(labels))
+	for index, label := range labels {
+		if !validWorkflowLabel(label) {
+			return nil, fmt.Errorf("%w: invalid workflow job label", ErrInvalidDelivery)
+		}
+		result[index] = label
+	}
+	return result, nil
+}
+
+func validWorkflowLabel(value string) bool {
+	if value == "" || len(value) > 200 || strings.TrimSpace(value) != value {
+		return false
+	}
+	for _, char := range value {
+		if char < 0x20 || char == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+func validOptionalWorkflowText(value *string, max int) bool {
+	if value == nil || *value == "" {
+		return true
+	}
+	return boundedText(*value, max) != ""
+}
+
+func optionalWorkflowText(value *string, max int) string {
+	if value == nil {
+		return ""
+	}
+	return boundedText(*value, max)
 }
 
 func normalizeRepository(repository *githubRepository) (*RepositoryRef, error) {
