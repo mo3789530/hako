@@ -113,10 +113,13 @@ is added to SQS messages, the GitHub runner registration token, process
 arguments, logs, artifacts, or DSQL. Buffers are cleared in the resolver,
 broker, worker, and bootstrap sender after handoff.
 
-This is the trusted broker-to-guest bootstrap handoff, not proof that the
-guest-side receiver has installed the key into the official Action process.
-That receiver and end-to-end process wiring, plus broker/Resource Plane IAM,
-certificate provisioning, and deployment review, remain gated follow-up work
+The guest-side receiver primitive now verifies the Ed25519 signature, exact
+MicroVM ID, expiry, strict bounded JSON, and one-time consumption before handing
+the claims to a synchronous consumer. It wipes the model-key buffer after the
+consumer returns and never retries a failed callback in-process. The receiver
+is not yet composed into a runner image or connected to the official Action
+process; full broker→worker→guest process E2E, broker/Resource Plane IAM,
+certificate provisioning, and deployment review remain gated follow-up work
 (Tasks 52, 75–77). No real Secret was read or provisioned for local tests.
 Credentials are read-only by default; repository write access requires a
 separate explicit capability and is not implied by the model API key.

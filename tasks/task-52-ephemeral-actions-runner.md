@@ -196,3 +196,11 @@ Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Action
   remain acceptance gaps. Runner admission stays default-off. The dispatch
   queue contract and its single-Plane limitation are recorded in
   [Actions Runner startup queue](../docs/actions-runner-startup-queue.md).
+- `RunnerBootstrapReceiver` adds the guest-side receiver primitive: it accepts
+  only bounded strict JSON, verifies the signed envelope against the exact
+  MicroVM ID and expiry, marks a single delivery consumed before invoking a
+  synchronous consumer, and clears the model-key byte buffer afterward. Tests
+  cover wrong-VM signed envelopes, malformed bodies, duplicate requests,
+  consumer failure and buffer erasure. This handler is not yet wired into an
+  Actions runner image or official runner process; execution and image
+  composition remain Task 76/77 work.
