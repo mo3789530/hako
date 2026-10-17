@@ -12,7 +12,7 @@ import (
 	"github.com/mo3789530/hako/internal/testutil"
 )
 
-func TestPostgresActionsRunnerStarterRequiresExactClaimActiveAppAndPriorOptIn(t *testing.T) {
+func TestPostgresActionsRunnerLaunchAndBootstrapRequireExactClaimPlaneAndMicroVM(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	pool := testutil.NewIsolatedPostgres(t)
@@ -37,18 +37,21 @@ func TestPostgresActionsRunnerStarterRequiresExactClaimActiveAppAndPriorOptIn(t 
 			t.Fatal(err)
 		}
 	}
-	start := NewPostgresActionsRunnerJobStarter(pool, transaction.DefaultPolicy())
 	request := ActionsRunnerRegistrationRequest{IntegrationID: "integration_runner_start", WorkflowJobID: 7130, RunAttempt: 1, ClaimID: "controller-claim-1"}
-	identity, err := start(ctx, request)
-	if err != nil || identity.TenantID != "tenant_runner_start" || identity.Installation != 7121 || identity.Repository != 7122 || identity.Credential.GitHubAppID != 712 || identity.Credential.ConfigRevision != 3 || identity.Credential.CredentialGeneration != 7 || identity.LeaseExpires.Before(now) {
-		t.Fatalf("start exact claimed Runner job identity=%+v error=%v", identity, err)
+	start := NewPostgresActionsRunnerLaunchStarter(pool, transaction.DefaultPolicy())
+	command, err := start(ctx, "rp-tokyo-01", request)
+	if err != nil || command.TenantID != "tenant_runner_start" || command.Installation != 7121 || command.Repository != 7122 || command.Owner != "acme" || command.Name != "runner-api" || command.State != "starting" || command.LeaseExpires.Before(now) {
+		t.Fatalf("start exact claimed Runner job=%+v error=%v", command, err)
 	}
 	var state, claimID string
 	if err := pool.QueryRow(ctx, `SELECT state,claim_id FROM github_actions_runner_jobs WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=1`, request.IntegrationID, request.WorkflowJobID).Scan(&state, &claimID); err != nil || state != "starting" || claimID != request.ClaimID {
 		t.Fatalf("registration start did not consume claim: state=%q claim=%q err=%v", state, claimID, err)
 	}
-	if _, err := start(ctx, request); err == nil {
-		t.Fatal("same claimed job minted more than one registration token")
+	if retry, err := start(ctx, "rp-tokyo-01", request); err != nil || retry.ResourcePlaneID != command.ResourcePlaneID || retry.ClaimID != command.ClaimID {
+		t.Fatalf("lost launch response was not idempotently replayed: command=%+v err=%v", retry, err)
+	}
+	if _, err := start(ctx, "rp-us-01", request); err == nil {
+		t.Fatal("same claimed job was dispatched to another Resource Plane")
 	}
 	binder := NewPostgresActionsRunnerBinder(pool, transaction.DefaultPolicy())
 	binding := ActionsRunnerBindingRequest{IntegrationID: request.IntegrationID, WorkflowJobID: request.WorkflowJobID,
@@ -76,14 +79,23 @@ func TestPostgresActionsRunnerStarterRequiresExactClaimActiveAppAndPriorOptIn(t 
 	if _, err := bootstrapStarter(ctx, "rp-us-01", request); err == nil {
 		t.Fatal("a different Resource Plane obtained the registration token")
 	}
+	if _, err := start(ctx, "rp-tokyo-01", request); err == nil {
+		t.Fatal("launch replay continued after one-time token issuance")
+	}
 	var planeID, microVMID string
 	if err := pool.QueryRow(ctx, `SELECT resource_plane_id,lambda_microvm_id FROM github_actions_runner_jobs WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=1`,
 		request.IntegrationID, request.WorkflowJobID).Scan(&planeID, &microVMID); err != nil || planeID != "rp-tokyo-01" || microVMID != binding.MicroVMID {
 		t.Fatalf("durable claim binding mismatch: plane=%q microvm=%q err=%v", planeID, microVMID, err)
 	}
-	fail := NewPostgresActionsRunnerJobFailure(pool, transaction.DefaultPolicy())
-	if err := fail(ctx, identity); err != nil {
+	fail := NewPostgresActionsRunnerStartupFailureRecorder(pool, transaction.DefaultPolicy())
+	if err := fail(ctx, "rp-tokyo-01", request); err != nil {
 		t.Fatal(err)
+	}
+	if err := fail(ctx, "rp-tokyo-01", request); err != nil {
+		t.Fatalf("idempotent startup failure replay failed: %v", err)
+	}
+	if err := fail(ctx, "rp-us-01", request); err == nil {
+		t.Fatal("foreign Resource Plane marked the runner startup failed")
 	}
 	if err := pool.QueryRow(ctx, `SELECT state FROM github_actions_runner_jobs WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=1`, request.IntegrationID, request.WorkflowJobID).Scan(&state); err != nil || state != "failed" {
 		t.Fatalf("registration mint failure did not become terminal: state=%q err=%v", state, err)

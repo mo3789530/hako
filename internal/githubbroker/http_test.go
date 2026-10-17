@@ -185,6 +185,32 @@ func TestBrokerMTLSHandshakeAndHTTPResolver(t *testing.T) {
 		t.Fatal(err)
 	}
 	runnerBootstrapTokenService.clock = func() time.Time { return runnerNow }
+	launchCommand := ActionsRunnerLaunchCommand{ResourcePlaneID: "rp-tokyo-01", IntegrationID: runnerIdentity.IntegrationID, TenantID: runnerIdentity.TenantID,
+		Installation: runnerIdentity.Installation, Repository: runnerIdentity.Repository, WorkflowJobID: runnerIdentity.WorkflowJobID, WorkflowRunID: runnerIdentity.WorkflowRunID,
+		RunAttempt: runnerIdentity.RunAttempt, WorkflowName: runnerIdentity.WorkflowName, JobName: runnerIdentity.JobName, HeadBranch: runnerIdentity.HeadBranch,
+		HeadSHA: runnerIdentity.HeadSHA, Labels: runnerIdentity.Labels, ClaimID: runnerIdentity.ClaimID, LeaseExpires: runnerNow.Add(time.Minute),
+		Owner: "acme", Name: "runner-repo", State: "starting"}
+	launchService, err := NewActionsRunnerLaunchService([]string{"rp-tokyo-01"}, func(_ context.Context, planeID string, request ActionsRunnerRegistrationRequest) (ActionsRunnerLaunchCommand, error) {
+		if planeID != launchCommand.ResourcePlaneID || request.IntegrationID != launchCommand.IntegrationID || request.ClaimID != launchCommand.ClaimID {
+			return ActionsRunnerLaunchCommand{}, ErrActionsRunnerLaunchDenied
+		}
+		return launchCommand, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	launchService.clock = func() time.Time { return runnerNow }
+	failureReports := 0
+	runnerFailureService, err := NewActionsRunnerStartupFailureService([]string{"rp-tokyo-01"}, func(_ context.Context, planeID string, request ActionsRunnerRegistrationRequest) error {
+		if planeID != "rp-tokyo-01" || request.IntegrationID != runnerIdentity.IntegrationID || request.ClaimID != runnerIdentity.ClaimID {
+			return ErrActionsRunnerStartupFailureDenied
+		}
+		failureReports++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	runnerBindingRequest := ActionsRunnerBindingRequest{IntegrationID: runnerIdentity.IntegrationID, WorkflowJobID: runnerIdentity.WorkflowJobID,
 		RunAttempt: runnerIdentity.RunAttempt, ClaimID: runnerIdentity.ClaimID, MicroVMID: "runner-vm-mtls-1"}
 	bound := 0
@@ -222,8 +248,9 @@ func TestBrokerMTLSHandshakeAndHTTPResolver(t *testing.T) {
 	}
 	runnerCleanup.clock = func() time.Time { return runnerNow }
 	runnerCleanupCallers := []string{"spiffe://hako/resource-plane/rp-tokyo-01"}
-	server := httptest.NewUnstartedServer(HandlerWithActionsRunnerBrokerLifecycle(service, checkout, checksService, nil, runnerService, runnerCleanup,
-		runnerCleanupCallers, runnerBinding, runnerCleanupCallers, runnerBootstrapTokenService, runnerCleanupCallers))
+	server := httptest.NewUnstartedServer(HandlerWithActionsRunnerExecutionLifecycle(service, checkout, checksService, nil, runnerService, runnerCleanup,
+		runnerCleanupCallers, runnerBinding, runnerCleanupCallers, runnerBootstrapTokenService, runnerCleanupCallers, launchService, runnerCleanupCallers,
+		runnerFailureService, runnerCleanupCallers))
 	serverCAs, _ := ServerTLSConfig(clientRoots)
 	server.TLS = serverCAs
 	server.StartTLS()
@@ -309,6 +336,31 @@ func TestBrokerMTLSHandshakeAndHTTPResolver(t *testing.T) {
 		WorkflowJobID: runnerIdentity.WorkflowJobID, RunAttempt: runnerIdentity.RunAttempt, ClaimID: runnerIdentity.ClaimID})
 	if err != nil || runnerBootstrapGrant.Token.Value() != "ghr_mtls_bootstrap_token" || runnerBootstrapGrant.Repository != (githubapp.RepositoryAccess{Owner: "acme", Name: "runner-repo"}) {
 		t.Fatalf("Resource Plane mTLS bootstrap token request failed: grant=%v repository=%+v error=%v", runnerBootstrapGrant.Token, runnerBootstrapGrant.Repository, err)
+	}
+	runnerLaunchTransport, err := NewActionsRunnerLaunchMTLSClient("rp-tokyo-01", issue("spiffe://hako/resource-plane/rp-tokyo-01"), brokerRoots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runnerLaunchProvider, err := NewHTTPActionsRunnerLaunchClient(server.URL, "rp-tokyo-01", runnerLaunchTransport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runnerLaunchCommand, err := runnerLaunchProvider.Start(context.Background(), ActionsRunnerRegistrationRequest{IntegrationID: runnerIdentity.IntegrationID,
+		WorkflowJobID: runnerIdentity.WorkflowJobID, RunAttempt: runnerIdentity.RunAttempt, ClaimID: runnerIdentity.ClaimID})
+	if err != nil || runnerLaunchCommand.ResourcePlaneID != "rp-tokyo-01" || runnerLaunchCommand.Owner != "acme" || runnerLaunchCommand.State != "starting" {
+		t.Fatalf("Resource Plane mTLS runner launch request failed: command=%+v error=%v", runnerLaunchCommand, err)
+	}
+	failureTransport, err := NewActionsRunnerStartupFailureMTLSClient("rp-tokyo-01", issue("spiffe://hako/resource-plane/rp-tokyo-01"), brokerRoots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failureProvider, err := NewHTTPActionsRunnerStartupFailureClient(server.URL, failureTransport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := failureProvider.Fail(context.Background(), ActionsRunnerRegistrationRequest{IntegrationID: runnerIdentity.IntegrationID,
+		WorkflowJobID: runnerIdentity.WorkflowJobID, RunAttempt: runnerIdentity.RunAttempt, ClaimID: runnerIdentity.ClaimID}); err != nil || failureReports != 1 {
+		t.Fatalf("Resource Plane startup-failure report failed: reports=%d err=%v", failureReports, err)
 	}
 	runnerCleanupClient, err := NewActionsRunnerCleanupMTLSClient("rp-tokyo-01", issue(runnerCleanupCallers[0]), brokerRoots)
 	if err != nil {

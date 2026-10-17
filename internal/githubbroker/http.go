@@ -133,6 +133,22 @@ func NewActionsRunnerBootstrapTokenMTLSClient(resourcePlaneID string, certificat
 	return newMTLSClient(certificate, brokerRoots, 30*time.Second, caller)
 }
 
+func NewActionsRunnerLaunchMTLSClient(resourcePlaneID string, certificate tls.Certificate, brokerRoots *x509.CertPool) (*http.Client, error) {
+	caller, err := ResourcePlaneCallerID(resourcePlaneID)
+	if err != nil {
+		return nil, err
+	}
+	return newMTLSClient(certificate, brokerRoots, 15*time.Second, caller)
+}
+
+func NewActionsRunnerStartupFailureMTLSClient(resourcePlaneID string, certificate tls.Certificate, brokerRoots *x509.CertPool) (*http.Client, error) {
+	caller, err := ResourcePlaneCallerID(resourcePlaneID)
+	if err != nil {
+		return nil, err
+	}
+	return newMTLSClient(certificate, brokerRoots, 10*time.Second, caller)
+}
+
 func newMTLSClient(certificate tls.Certificate, brokerRoots *x509.CertPool, timeout time.Duration, expectedCaller string) (*http.Client, error) {
 	if len(certificate.Certificate) == 0 || brokerRoots == nil || certificate.Leaf == nil {
 		return nil, ErrUnavailable
@@ -203,6 +219,25 @@ func HandlerWithActionsRunnerBrokerLifecycle(service *OAuthService, checkout *Ch
 	actionsRunner *ActionsRunnerRegistrationService, runnerCleanup *ActionsRunnerCleanupService, cleanupCallers []string,
 	runnerBinding *ActionsRunnerBindingService, bindingCallers []string,
 	runnerBootstrapToken *ActionsRunnerBootstrapTokenService, runnerTokenCallers []string) http.Handler {
+	return HandlerWithActionsRunnerRuntimeLifecycle(service, checkout, checks, checkoutCallers, actionsRunner, runnerCleanup,
+		cleanupCallers, runnerBinding, bindingCallers, runnerBootstrapToken, runnerTokenCallers, nil, nil)
+}
+
+func HandlerWithActionsRunnerRuntimeLifecycle(service *OAuthService, checkout *CheckoutService, checks *ChecksService, checkoutCallers []string,
+	actionsRunner *ActionsRunnerRegistrationService, runnerCleanup *ActionsRunnerCleanupService, cleanupCallers []string,
+	runnerBinding *ActionsRunnerBindingService, bindingCallers []string,
+	runnerBootstrapToken *ActionsRunnerBootstrapTokenService, runnerTokenCallers []string,
+	runnerLaunch *ActionsRunnerLaunchService, runnerLaunchCallers []string) http.Handler {
+	return HandlerWithActionsRunnerExecutionLifecycle(service, checkout, checks, checkoutCallers, actionsRunner, runnerCleanup,
+		cleanupCallers, runnerBinding, bindingCallers, runnerBootstrapToken, runnerTokenCallers, runnerLaunch, runnerLaunchCallers, nil, nil)
+}
+
+func HandlerWithActionsRunnerExecutionLifecycle(service *OAuthService, checkout *CheckoutService, checks *ChecksService, checkoutCallers []string,
+	actionsRunner *ActionsRunnerRegistrationService, runnerCleanup *ActionsRunnerCleanupService, cleanupCallers []string,
+	runnerBinding *ActionsRunnerBindingService, bindingCallers []string,
+	runnerBootstrapToken *ActionsRunnerBootstrapTokenService, runnerTokenCallers []string,
+	runnerLaunch *ActionsRunnerLaunchService, runnerLaunchCallers []string,
+	runnerStartupFailure *ActionsRunnerStartupFailureService, failureCallers []string) http.Handler {
 	allowedCheckoutCallers := map[string]struct{}{controlPlaneURI: {}}
 	for _, caller := range checkoutCallers {
 		if caller != controlPlaneURI && !strings.HasPrefix(caller, resourcePlaneURIPrefix) {
@@ -245,6 +280,26 @@ func HandlerWithActionsRunnerBrokerLifecycle(service *OAuthService, checkout *Ch
 			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusServiceUnavailable) })
 		}
 		allowedRunnerTokenCallers[caller] = struct{}{}
+	}
+	allowedRunnerLaunchCallers := make(map[string]struct{}, len(runnerLaunchCallers))
+	for _, caller := range runnerLaunchCallers {
+		if !validResourcePlaneCleanupCaller(caller) {
+			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusServiceUnavailable) })
+		}
+		if _, duplicate := allowedRunnerLaunchCallers[caller]; duplicate {
+			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusServiceUnavailable) })
+		}
+		allowedRunnerLaunchCallers[caller] = struct{}{}
+	}
+	allowedFailureCallers := make(map[string]struct{}, len(failureCallers))
+	for _, caller := range failureCallers {
+		if !validResourcePlaneCleanupCaller(caller) {
+			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusServiceUnavailable) })
+		}
+		if _, duplicate := allowedFailureCallers[caller]; duplicate {
+			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusServiceUnavailable) })
+		}
+		allowedFailureCallers[caller] = struct{}{}
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/oauth/setup-url", func(w http.ResponseWriter, r *http.Request) {
@@ -434,6 +489,49 @@ func HandlerWithActionsRunnerBrokerLifecycle(service *OAuthService, checkout *Ch
 			}
 			repository := grant.Repository
 			writeResponse(w, response{Token: grant.Token.Value(), ExpiresAt: grant.Token.ExpiresAt(), Repository: &repositoryResponse{Owner: repository.Owner, Name: repository.Name}})
+		})
+	}
+	if runnerLaunch != nil && len(allowedRunnerLaunchCallers) > 0 {
+		mux.HandleFunc("POST /v1/actions-runner/launch", func(w http.ResponseWriter, r *http.Request) {
+			caller, err := authenticatedCleanupCaller(r, allowedRunnerLaunchCallers)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized)
+				return
+			}
+			input, ok := decodeActionsRunnerTokenRequest(r)
+			if !ok {
+				writeError(w, http.StatusBadRequest)
+				return
+			}
+			command, err := runnerLaunch.Start(r.Context(), caller, ActionsRunnerRegistrationRequest{
+				IntegrationID: input.IntegrationID, WorkflowJobID: input.WorkflowJobID, RunAttempt: input.RunAttempt, ClaimID: input.ClaimID,
+			})
+			if err != nil {
+				writeError(w, http.StatusForbidden)
+				return
+			}
+			writeResponse(w, command)
+		})
+	}
+	if runnerStartupFailure != nil && len(allowedFailureCallers) > 0 {
+		mux.HandleFunc("POST /v1/actions-runner/startup-failed", func(w http.ResponseWriter, r *http.Request) {
+			caller, err := authenticatedCleanupCaller(r, allowedFailureCallers)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized)
+				return
+			}
+			input, ok := decodeActionsRunnerTokenRequest(r)
+			if !ok {
+				writeError(w, http.StatusBadRequest)
+				return
+			}
+			if err := runnerStartupFailure.Fail(r.Context(), caller, ActionsRunnerRegistrationRequest{
+				IntegrationID: input.IntegrationID, WorkflowJobID: input.WorkflowJobID, RunAttempt: input.RunAttempt, ClaimID: input.ClaimID,
+			}); err != nil {
+				writeError(w, http.StatusForbidden)
+				return
+			}
+			writeResponse(w, struct{}{})
 		})
 	}
 	return mux

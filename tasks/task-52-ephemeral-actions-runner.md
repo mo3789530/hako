@@ -130,9 +130,8 @@ Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Action
   reject expired claims, unsafe labels, mismatched provider configuration,
   invalid endpoints, and provider failures. This is a launch adapter contract
   only. The broker-side binding is now available over a Plane-allowlisted
-  mTLS route, but worker orchestration must still call it before delivering
-  the short-lived token to a signed guest bootstrap endpoint. No AWS call is
-  made by tests.
+  mTLS route. The new `RunnerStartupWorker` composes this binding with the
+  launch and bootstrap-token clients; no AWS call is made by tests.
 - The Resource Plane can persist a launched VM identity without a direct
   Control Plane database connection. `POST /v1/actions-runner/bind` authenticates
   a configured Resource Plane SPIFFE identity, derives Plane ID from the
@@ -147,7 +146,17 @@ Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Action
   atomically permits only one token-mint attempt per workflow attempt. The
   older registration endpoint remains Control Plane-only. A Resource Plane
   mTLS client returns the short-lived opaque grant for the signed bootstrap
-  sender; worker and guest listener are not yet connected.
+  sender; the actual queue consumer and guest listener remain unconnected.
+- `POST /v1/actions-runner/launch` now consumes a live claimed job into
+  `starting`, assigns its Resource Plane from the verified SPIFFE identity,
+  and returns repository/job metadata without secrets. A lost response can be
+  replayed by the same Plane while the claim is live and before token issuance;
+  another Plane or later-stage replay fails closed. The new
+  `RunnerStartupWorker` enforces launch → bind → token broker → signed guest
+  bootstrap, and reports any post-claim failure through the Plane-only
+  `POST /v1/actions-runner/startup-failed` route. That route atomically marks
+  only the exact live starting claim failed and writes its cleanup outbox row;
+  retries are idempotent only when that Plane's failure cleanup already exists.
 - `RunnerBootstrapper` now requests a Lambda MicroVM auth token scoped to the
   fixed runner-bootstrap port 8080 and at most five minutes (one minute when
   the claim lease is short), then posts a signed,
@@ -158,5 +167,7 @@ Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Action
   provides the guest-side Ed25519/VM/expiry checks. Fake SDK and transport tests
   cover exact port scope, signature/tamper rejection, wrong VM, expiry, unsafe
   endpoint rejection before auth-token issuance, and the successful HTTPS
-  request contract. This is a tested protocol library only: no guest listener,
-  MicroVM image wiring, worker orchestration, or AWS call is implemented.
+  request contract. Worker ordering and cleanup reporting have fake-backed
+  local tests, and launch/token/failure endpoints are covered by mTLS and
+  PostgreSQL tests. This remains library-level composition: no SQS consumer,
+  guest listener/image wiring, or AWS call is implemented.

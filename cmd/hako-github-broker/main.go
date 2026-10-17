@@ -157,6 +157,22 @@ func run() error {
 			return errors.New("configure GitHub Actions runner bootstrap token broker")
 		}
 	}
+	var runnerLaunch *githubbroker.ActionsRunnerLaunchService
+	if len(runnerBindingIDs) > 0 {
+		runnerLaunch, err = githubbroker.NewActionsRunnerLaunchService(runnerBindingIDs,
+			githubbroker.NewPostgresActionsRunnerLaunchStarter(pool, policy))
+		if err != nil {
+			return errors.New("configure GitHub Actions runner launch broker")
+		}
+	}
+	var runnerStartupFailure *githubbroker.ActionsRunnerStartupFailureService
+	if len(runnerBindingIDs) > 0 {
+		runnerStartupFailure, err = githubbroker.NewActionsRunnerStartupFailureService(runnerBindingIDs,
+			githubbroker.NewPostgresActionsRunnerStartupFailureRecorder(pool, policy))
+		if err != nil {
+			return errors.New("configure GitHub Actions runner startup-failure recorder")
+		}
+	}
 	tlsConfig, err := serverTLSConfigFromEnv()
 	if err != nil {
 		return err
@@ -165,7 +181,7 @@ func run() error {
 	if addr == "" {
 		addr = defaultListenAddr
 	}
-	server := &http.Server{Addr: addr, Handler: githubbroker.HandlerWithActionsRunnerBrokerLifecycle(oauth, checkout, checks, checkoutCallers, actionsRunner, runnerCleanup, runnerCleanupCallers, runnerBinding, runnerCleanupCallers, runnerBootstrapToken, runnerCleanupCallers), TLSConfig: tlsConfig,
+	server := &http.Server{Addr: addr, Handler: githubbroker.HandlerWithActionsRunnerExecutionLifecycle(oauth, checkout, checks, checkoutCallers, actionsRunner, runnerCleanup, runnerCleanupCallers, runnerBinding, runnerCleanupCallers, runnerBootstrapToken, runnerCleanupCallers, runnerLaunch, runnerCleanupCallers, runnerStartupFailure, runnerCleanupCallers), TLSConfig: tlsConfig,
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 60 * time.Second,
 		IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
 	go func() {
