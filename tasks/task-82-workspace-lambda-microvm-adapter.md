@@ -38,7 +38,11 @@ Implemented in `internal/workspaceruntime` and documented in
 [`docs/workspace-runtime-adapter.md`](../docs/workspace-runtime-adapter.md).
 Exact launch parameters are persisted in the journal so ambiguous retries
 cannot silently change image/network/role settings after a process restart.
-The Resource Controller Lambda remains fake-only. SDK stubs verify launch,
-duplicate delivery, ambiguous response recovery, state transitions, unsupported
-runtime class/provider errors, stale-command rejection, and poll deadlines;
-no AWS call was made.
+The Resource Controller Lambda now contains an explicit `lambda-microvm`
+composition of this adapter, the conditional S3 journal, and a strict static
+Resource Plane launch profile. The Terraform deployment remains fixed to
+`fake` and grants no MicroVM/journal permissions, so this is composition
+evidence only and is not deployable as a production runtime. SDK stubs verify
+launch, duplicate delivery, ambiguous response recovery, state transitions,
+unsupported runtime class/provider errors, stale-command rejection, and poll
+deadlines; local configuration tests make no AWS call.

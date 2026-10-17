@@ -1,10 +1,32 @@
 # Task 43: Production Workspace Runtime
 
-Status: Implemented locally through Tasks 80–83 (contract, durable journal, Lambda MicroVM adapter, SDK HTTP/recovery and PostgreSQL result/binding E2E). Production controller wiring, real AWS image/network/lifecycle PoC, EFS/agent recovery, and deployment remain unverified. Priority: P1.
+Status: Implemented locally through Tasks 80–83 (contract, durable journal, Lambda MicroVM adapter, SDK HTTP/recovery and PostgreSQL result/binding E2E). The Resource Controller Lambda now composes the AWS runtime behind an explicit `HAKO_RUNTIME_IMPLEMENTATION=lambda-microvm` mode with strict static launch-profile parsing and the S3 journal; Terraform still selects only `fake` and does not grant production runtime permissions. Real AWS image/network/lifecycle PoC, EFS/agent recovery, and deployment remain unverified. Priority: P1.
 
 ## Goal
 
 Replace the production gap behind the current fake-only Resource Controller with an AWS Runtime that implements ensure-running, suspend, resume, and delete without weakening the existing Workspace revision-fencing contract.
+
+## Local controller composition progress
+
+- Added an explicit Lambda MicroVM mode to the Resource Controller Lambda.
+  It composes the official MicroVM SDK client, S3 conditional Workspace
+  journal, a strict launch contract, and the existing revision-fenced
+  runtime. Terraform remains hard-coded to the development Fake Runtime and
+  its IAM policy grants neither S3 journal nor MicroVM API access.
+- The launch profile is strict, bounded Resource Plane configuration; commands
+  cannot select an image, execution role, or connector. Profile validation
+  requires the image/connectors to match the Lambda region and execution-role
+  account, and rejects Workspace-specific hook data. Local tests verify the
+  composition/config boundary only; they make no AWS calls.
+- Fixed Workspace command routing in the Outbox Dispatcher to accept both
+  legacy schema v1 and revision-fenced schema v2 envelopes (requiring a
+  positive revision for v2); previously actual create/action commands written
+  as v2 were rejected by a v1-only route validator. The SQS message body remains
+  unchanged for the strict Resource Plane controller decoder.
+- This does not satisfy the live AWS deployment gate: agent startup and EFS
+  persistence are not wired, and no MicroVM/network/image PoC or apply has been
+  performed. Do not enable this mode in Terraform before Task 44/45 and 61
+  gates are reviewed.
 
 ## Execution units
 

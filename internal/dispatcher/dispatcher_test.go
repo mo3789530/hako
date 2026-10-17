@@ -58,6 +58,35 @@ func TestRunOnceRoutesAndAcknowledgesCommittedCommand(t *testing.T) {
 	}
 }
 
+func TestRunOnceRoutesRevisionFencedSchemaV2WorkspaceCommand(t *testing.T) {
+	now := time.Date(2026, 10, 17, 0, 0, 0, 0, time.UTC)
+	store := &fakeStore{events: []outbox.Event{{
+		ID: "evt_v2", AggregateType: "operation", AggregateID: "op_v2", EventType: "operation.requested", Attempt: 1,
+		Payload: []byte(`{"schema_version":2,"workspace_revision":3,"operation_id":"op_v2","resource_plane_id":"rp_tokyo"}`),
+	}}}
+	publisher := &fakePublisher{}
+	dispatcher, err := New(store, publisher, map[string]string{"rp_tokyo": "queue-v2"}, Config{Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := dispatcher.RunOnce(context.Background())
+	if err != nil || stats != (Stats{Claimed: 1, Published: 1}) || len(publisher.queueURLs) != 1 || publisher.queueURLs[0] != "queue-v2" {
+		t.Fatalf("Schema v2 operation was not routed: stats=%+v queues=%v err=%v", stats, publisher.queueURLs, err)
+	}
+}
+
+func TestValidateCommandRejectsRevisionVersionMismatch(t *testing.T) {
+	for _, payload := range []string{
+		`{"schema_version":1,"workspace_revision":1,"operation_id":"op_1","resource_plane_id":"rp_1"}`,
+		`{"schema_version":2,"operation_id":"op_1","resource_plane_id":"rp_1"}`,
+	} {
+		_, err := validateCommand(outbox.Event{AggregateType: "operation", AggregateID: "op_1", EventType: "operation.requested", Payload: []byte(payload)})
+		if err == nil {
+			t.Errorf("accepted mismatched command version: %s", payload)
+		}
+	}
+}
+
 func TestRunOnceReleasesFailedPublicationWithBoundedBackoff(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	store := &fakeStore{events: []outbox.Event{{

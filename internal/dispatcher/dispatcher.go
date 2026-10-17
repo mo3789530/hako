@@ -55,9 +55,10 @@ type Stats struct {
 }
 
 type commandEnvelope struct {
-	SchemaVersion   int    `json:"schema_version"`
-	OperationID     string `json:"operation_id"`
-	ResourcePlaneID string `json:"resource_plane_id"`
+	SchemaVersion     int    `json:"schema_version"`
+	WorkspaceRevision int64  `json:"workspace_revision,omitempty"`
+	OperationID       string `json:"operation_id"`
+	ResourcePlaneID   string `json:"resource_plane_id"`
 }
 
 type workloadScheduleEnvelope struct {
@@ -233,7 +234,8 @@ func validateCommand(event outbox.Event) (string, error) {
 	if err := json.Unmarshal(event.Payload, &command); err != nil {
 		return "", fmt.Errorf("decode Outbox command: %w", err)
 	}
-	if command.SchemaVersion != 1 || command.OperationID == "" || command.OperationID != event.AggregateID || command.ResourcePlaneID == "" {
+	validVersion := command.SchemaVersion == 1 && command.WorkspaceRevision == 0 || command.SchemaVersion == 2 && command.WorkspaceRevision > 0
+	if !validVersion || command.OperationID == "" || command.OperationID != event.AggregateID || command.ResourcePlaneID == "" {
 		return "", errors.New("Outbox command has an unsupported or inconsistent envelope")
 	}
 	return command.ResourcePlaneID, nil

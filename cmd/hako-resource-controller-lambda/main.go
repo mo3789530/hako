@@ -13,7 +13,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/resourcecontroller"
-	fakeruntime "github.com/mo3789530/hako/internal/runtime/fake"
 )
 
 func main() {
@@ -21,10 +20,6 @@ func main() {
 	resultQueueURL := strings.TrimSpace(os.Getenv("HAKO_OPERATION_RESULT_QUEUE_URL"))
 	if resourcePlaneID == "" || resultQueueURL == "" {
 		log.Fatal("HAKO_RESOURCE_PLANE_ID and HAKO_OPERATION_RESULT_QUEUE_URL are required")
-	}
-	runtime, err := configuredRuntime(os.Getenv("HAKO_RUNTIME_IMPLEMENTATION"))
-	if err != nil {
-		log.Fatal(err)
 	}
 	executionTimeout, err := parseExecutionTimeout(os.Getenv("HAKO_OPERATION_TIMEOUT"))
 	if err != nil {
@@ -39,13 +34,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("load AWS SDK configuration: %v", err)
 	}
+	runtime, err := configuredRuntime(os.Getenv("HAKO_RUNTIME_IMPLEMENTATION"), awsCfg, os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
 	sink, err := resourcecontroller.NewSQSResultSink(sqs.NewFromConfig(awsCfg), resultQueueURL)
 	if err != nil {
 		log.Fatalf("configure Operation result queue: %v", err)
 	}
 	controller, err := resourcecontroller.NewWithExecutionTimeoutAndMaxCommandAge(resourcePlaneID, runtime, sink, nil, executionTimeout, maxCommandAge)
 	if err != nil {
-		log.Fatalf("configure fake Resource Controller: %v", err)
+		log.Fatalf("configure Resource Controller: %v", err)
 	}
 	handler, err := resourcecontroller.NewLambdaHandler(controller)
 	if err != nil {
@@ -63,13 +62,6 @@ func parseMaxCommandAge(raw string) (time.Duration, error) {
 		return 0, errors.New("HAKO_COMMAND_MAX_AGE must be a positive Go duration, such as 30m")
 	}
 	return parsed, nil
-}
-
-func configuredRuntime(implementation string) (resourcecontroller.Runtime, error) {
-	if strings.TrimSpace(implementation) != "fake" {
-		return nil, errors.New("this Lambda binary only supports HAKO_RUNTIME_IMPLEMENTATION=fake; it must not be used for production workspaces")
-	}
-	return fakeruntime.New(), nil
 }
 
 func parseExecutionTimeout(raw string) (time.Duration, error) {

@@ -55,9 +55,11 @@ worker wiring are reviewed.
 With `enable_fake_resource_controller = true`, the command queue can trigger
 an optional development-only Lambda using batch size one and
 `ReportBatchItemFailures`. A command is acknowledged only after its result has
-been sent. This binary is hard-coded to `HAKO_RUNTIME_IMPLEMENTATION=fake`;
-the in-memory runtime does not create or persist Workspace resources and is
-not a production executor.
+been sent. The Terraform-deployed function environment is hard-coded to
+`HAKO_RUNTIME_IMPLEMENTATION=fake` and therefore uses the in-memory Fake Runtime.
+The executable also has a separately configured `lambda-microvm` composition,
+but Terraform does not select it or grant its S3 journal/Lambda MicroVM
+permissions. It is not a production deployment path yet.
 
 Both primary queues use SQS-managed encryption, 20-second long polling, and a
 four-day retention default. Their visibility timeout defaults to 6000 seconds,
@@ -152,8 +154,9 @@ requires the artifact from
 `make build-resource-controller-lambda`; it is disabled by default. Do not put
 AWS account credentials in Terraform variables or state.
 
-The Lambda adapter's partial batch response and fake-only runtime constraints
-are documented in [Resource Controller Lambda](resource-controller-lambda.md).
+The Lambda adapter's partial batch response, local Lambda MicroVM composition,
+and fake-only Terraform deployment are documented in
+[Resource Controller Lambda](resource-controller-lambda.md).
 
 Validate without touching AWS resources:
 

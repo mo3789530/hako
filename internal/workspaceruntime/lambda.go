@@ -436,7 +436,17 @@ func (r *LambdaMicroVM) launchRequest(ctx context.Context, command resourcecontr
 }
 
 func (r *LambdaMicroVM) validateSpec(spec LaunchSpec) error {
-	if !r.config.SupportedRuntimeClasses[spec.RuntimeClass] || !validARNService(spec.ImageIdentifier, "lambda", "microvm-image:") || !validARNService(spec.ExecutionRoleARN, "iam", "role/") ||
+	if !r.config.SupportedRuntimeClasses[spec.RuntimeClass] {
+		return ErrSpecification
+	}
+	return ValidateLaunchSpec(spec)
+}
+
+// ValidateLaunchSpec checks a trusted Resource Plane launch profile before it
+// is used to create a MicroVM. It intentionally excludes support-policy
+// selection, which belongs to the caller's enabled runtime-class set.
+func ValidateLaunchSpec(spec LaunchSpec) error {
+	if strings.TrimSpace(spec.RuntimeClass) == "" || !validARNService(spec.ImageIdentifier, "lambda", "microvm-image:") || !validARNService(spec.ExecutionRoleARN, "iam", "role/") ||
 		!regexp.MustCompile(`^[1-9][0-9]*$`).MatchString(spec.ImageVersion) || spec.MaximumDurationInSeconds < 1 || int64(spec.MaximumDurationInSeconds) > int64(MaxMicroVMRuntime/time.Second) ||
 		spec.MaxIdleDurationSeconds < 60 || spec.SuspendedDurationSeconds < 0 || len(spec.EgressNetworkConnectors) == 0 || len(spec.EgressNetworkConnectors) > 10 || len(spec.IngressNetworkConnectors) > 10 ||
 		len(spec.RunHookPayload) > 16<<10 || (spec.RunHookPayload != "" && !safeRunHookPayload(spec.RunHookPayload)) {

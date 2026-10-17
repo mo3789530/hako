@@ -2,8 +2,9 @@
 
 This runbook covers the local Resource Plane Workspace journal and the Lambda
 MicroVM adapter. It is not an AWS deployment procedure. The controller binary
-remains fake-only until image, network, IAM, and real lifecycle PoCs are
-reviewed and separately approved.
+can locally compose the `lambda-microvm` adapter, but Terraform remains
+Fake-only and grants no S3 journal or MicroVM permissions until image, network,
+storage, IAM, and real lifecycle PoCs are reviewed and separately approved.
 
 ## Retry and recovery
 

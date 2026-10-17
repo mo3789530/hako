@@ -2,6 +2,11 @@
 
 `cmd/hako-dispatcher` polls the Control Plane's Transactional Outbox and sends each Operation command to the configured Resource Plane SQS queue. It can also route versioned `workload_run.schedule_requested` events to the dedicated Workload scheduler queue. API handlers never send to SQS directly, so commits are not coupled to a network call.
 
+Workspace Operation routing accepts both legacy schema v1 envelopes (without a
+Workspace revision) and revision-fenced schema v2 envelopes (positive
+`workspace_revision`). The event payload is sent unchanged; the Resource Plane
+controller performs the full strict decode and lifecycle validation.
+
 ## Delivery semantics
 
 - The dispatcher leases due `published_at IS NULL` events in a short database transaction, commits the lease, then sends to SQS.

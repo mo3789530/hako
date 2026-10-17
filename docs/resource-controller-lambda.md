@@ -1,4 +1,4 @@
-# Resource Controller Lambda (development Fake Runtime)
+# Resource Controller Lambda
 
 `cmd/hako-resource-controller-lambda` is the Lambda adapter for the existing
 Resource Controller. It accepts SQS event batches, invokes the shared command
@@ -9,20 +9,36 @@ result queue. The Terraform event source mapping uses batch size one today so
 that one Workspace operation cannot consume the Lambda timeout budget of
 several other records.
 
-## Deliberate fake-only boundary
+## Runtime selection and deployment boundary
 
-The binary requires `HAKO_RUNTIME_IMPLEMENTATION=fake` and refuses startup if
-any other value is set. It uses an in-memory Runtime; no Lambda MicroVM, EFS,
-network, or other Workspace resource is created. Its idempotency cache is
-process-local and is lost on cold start, so it is not a production Workspace
-executor. Schema v2 fencing is checked by the Control Plane and the Fake
-Runtime, but production use must wait for a durable/idempotent AWS Runtime
-implementation that atomically persists its revision watermark before side
-effects, plus compensation/cleanup.
+The binary requires an explicit `HAKO_RUNTIME_IMPLEMENTATION` value. `fake`
+uses the in-memory test Runtime. `lambda-microvm` composes the Workspace
+Lambda MicroVM adapter with the S3 conditional journal, a Resource
+Plane-owned static launch profile, and the AWS Lambda MicroVM SDK client. The
+launch profile is provided through
+`HAKO_WORKSPACE_RUNTIME_LAUNCH_SPEC_JSON`; the journal uses
+`HAKO_WORKSPACE_RUNTIME_JOURNAL_BUCKET` and optional
+`HAKO_WORKSPACE_RUNTIME_JOURNAL_PREFIX`. Optional poll settings are
+`HAKO_WORKSPACE_RUNTIME_POLL_INTERVAL` (default `500ms`, range `10ms`–`10s`)
+and `HAKO_WORKSPACE_RUNTIME_POLL_TIMEOUT` (default `30s`, range `1s`–`10m`).
+Unknown JSON fields, fixed per-Workspace hook payloads, unsupported classes,
+cross-region images/connectors, and launch roles/connectors from a different
+account are rejected. Commands cannot supply image, role, or connector values.
+
+The Resource Plane Terraform module still deploys only the fake mode, tags it
+as fake-only, and grants no journal or MicroVM API permissions. The real mode
+is not enabled or deployable from the current Terraform configuration. Its
+local config/constructor tests make no AWS calls; no Lambda MicroVM, EFS,
+network, or Workspace was created. Do not enable the real mode until the Task
+43/44/45 image, network, storage, IAM, and runtime PoC gates are reviewed and
+explicitly approved. The Lambda adapter itself uses durable revision/tombstone
+fencing before provider effects, but end-to-end Workspace durability and
+agent/service recovery are not yet available.
 
 The Terraform module creates this function and its SQS event source mapping
 only when `enable_fake_resource_controller=true`; the default is `false`. The
-function is tagged `hako:runtime=fake-only`. It runs with a dedicated
+function environment fixes `HAKO_RUNTIME_IMPLEMENTATION=fake`, is tagged
+`hako:runtime=fake-only`, and runs with a dedicated
 pre-created log group and only receives the command queue, sends to the result
 queue, and writes to its log streams. No `CreateLogGroup` or runtime-resource
 AWS permissions are granted.
@@ -46,11 +62,11 @@ SQS partial batch responses prevent a poison message or result queue outage
 from forcing already-completed messages from the same invocation to replay.
 The queue RedrivePolicy still determines when failed messages move to the
 DLQ. A duplicate command can still arrive after a Lambda cold start. Schema v2
-commands include a Workspace revision, but the current Fake Runtime keeps its
-watermark only in process memory. A production Runtime must persist and
-atomically check that watermark (including delete tombstones) before resource
-side effects; this provider-backed durability is not implemented. The result
-consumer also refuses results for superseded revisions.
+commands include a Workspace revision. The Lambda MicroVM Runtime persists
+and atomically checks that watermark (including delete tombstones) in the S3
+journal before provider side effects; the Terraform-deployed Fake Runtime
+keeps its watermark only in process memory. The result consumer also refuses
+results for superseded revisions.
 
 The adapter also honors `HAKO_COMMAND_MAX_AGE` (default `30m`, positive Go
 duration). A well-formed command older than this cutoff is not executed; the

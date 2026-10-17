@@ -43,8 +43,10 @@ Resource-Plane journal key and verified provider ID are its ownership record.
 It never discovers or adopts an unjournaled MicroVM by listing provider
 resources. The Resource Plane Lambda execution role supplies AWS credentials.
 
-This package is not wired into the resource-controller Lambda binary. That
-binary remains fake-only, and no production runtime flag enables this adapter.
-Image/container/network isolation and real AWS lifecycle PoCs remain required
-before deployment. Tests use an SDK stub and local conditional-store fake; they
-do not make AWS calls.
+The Resource Controller Lambda now has a local `lambda-microvm` composition
+using this adapter, the S3 journal, and a strict Resource Plane-owned static
+profile. Terraform still fixes the deployed development function to `fake`
+and grants no MicroVM or journal permissions; the adapter is not enabled by a
+deployment. Image/container/network isolation and real AWS lifecycle PoCs
+remain required before deployment. Tests use SDK stubs and local conditional-
+store fakes; they do not make AWS calls.
