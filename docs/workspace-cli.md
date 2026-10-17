@@ -66,6 +66,10 @@ choose a host or port. TCP/22 remains private and is never exposed publicly.
 The SSH daemon must be present and configured inside the Workspace image. The
 ProxyCommand emits no protocol text on stdout; diagnostics go to stderr. It
 attempts session revocation when the stream closes or the process is cancelled.
+The Lambda MicroVM adapter and unprivileged Guest Agent now implement the
+dedicated `/ssh` WSS bridge and fixed `127.0.0.1:22` dial, with one-use
+MicroVM-bound authorization. This does not install the SSH daemon or provide a
+host key; those remain image/runtime provisioning gates.
 
 Copy files through the same private SSH tunnel:
 

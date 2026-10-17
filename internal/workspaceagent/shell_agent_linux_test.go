@@ -97,6 +97,74 @@ func TestWorkspaceShellAgentRequiresPinnedTicketAndRelaysToPTY(t *testing.T) {
 	}
 }
 
+func TestWorkspaceShellAgentSSHBridgeRequiresSSHProxyTicketAndRelaysRawBytes(t *testing.T) {
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	uid, gid := testShellIdentity(t, root)
+	agent, err := newWorkspaceShellAgent(map[string]ed25519.PublicKey{"rp-key-ssh": public}, "https://gateway.hako.test",
+		func(spec WorkspaceMountSpec) (*ShellManager, error) {
+			return NewShellManager(ShellConfig{WorkspaceRoot: root, RunAsUID: uid, RunAsGID: gid})
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.BindWorkspaceRuntime("microvm-1", testMountSpec()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		agent.mu.RLock()
+		manager := agent.shells
+		agent.mu.RUnlock()
+		_ = manager.Close()
+	})
+	var dials atomic.Int32
+	agent.sshDial = func(context.Context) (net.Conn, error) {
+		dials.Add(1)
+		guest, peer := net.Pipe()
+		go func() { _, _ = io.Copy(peer, peer); _ = peer.Close() }()
+		return guest, nil
+	}
+	server := httptest.NewServer(agent)
+	defer server.Close()
+	issuer := &AgentTicketIssuer{KeyID: "rp-key-ssh", PrivateKey: private, TTL: time.Minute}
+	sshTicket, _, err := issuer.Issue(AgentTicket{UserID: "user-1", TenantID: "tenant-1", WorkspaceID: "workspace-1",
+		ResourcePlane: "rp-1", MicroVMID: "microvm-1", Permission: workspacesession.PermissionSSHProxy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := dialWorkspaceAgentChannel(server.URL, "https://gateway.hako.test", sshTicket, "ssh")
+	if err != nil {
+		t.Fatalf("connect with SSH-proxy ticket: %v", err)
+	}
+	if err := websocket.Message.Send(client, []byte("ssh-handshake-bytes")); err != nil {
+		t.Fatal(err)
+	}
+	var echoed []byte
+	if err := websocket.Message.Receive(client, &echoed); err != nil || string(echoed) != "ssh-handshake-bytes" {
+		t.Fatalf("SSH raw byte relay = %q, %v", echoed, err)
+	}
+	_ = client.Close()
+	if replay, err := dialWorkspaceAgentChannel(server.URL, "https://gateway.hako.test", sshTicket, "ssh"); err == nil {
+		_ = replay.Close()
+		t.Fatal("replayed SSH Agent ticket was accepted")
+	}
+	shellTicket, _, err := issuer.Issue(AgentTicket{UserID: "user-1", TenantID: "tenant-1", WorkspaceID: "workspace-1",
+		ResourcePlane: "rp-1", MicroVMID: "microvm-1", Permission: workspacesession.PermissionShell})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unauthorized, err := dialWorkspaceAgentChannel(server.URL, "https://gateway.hako.test", shellTicket, "ssh"); err == nil {
+		_ = unauthorized.Close()
+		t.Fatal("shell ticket was accepted on SSH bridge")
+	}
+	if got := dials.Load(); got != 1 {
+		t.Fatalf("SSH bridge opened guest sshd %d times, want exactly one authorized stream", got)
+	}
+}
+
 func TestWorkspaceShellAgentRejectsForeignIdentityAndOrigin(t *testing.T) {
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

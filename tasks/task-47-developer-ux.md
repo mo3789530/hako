@@ -29,6 +29,13 @@ Complete the basic interactive development flow and reproducible local-service t
   raw bytes over TLS/WSS, and attempts revocation on exit. The Gateway has a
   dedicated route that always dials Workspace-local port 22 and does not
   accept caller-supplied host/port values. TCP/22 is not internet-exposed.
+- The Lambda MicroVM Resource Plane adapter now accepts the `ssh-proxy`
+  permission only through the Gateway's fixed port-22 route. It forwards the
+  one-use capability to Guest port 8080 and the unprivileged Guest Agent then
+  dials only `127.0.0.1:22`; arbitrary port values and `port-forward`-only
+  tickets are rejected. Local WSS tests cover byte relay, ticket identity,
+  and replay rejection. The image still has no configured `sshd` or SFTP
+  subsystem, and trusted per-Workspace host-key provisioning remains open.
 - Added `hako cp` upload and `hako cp --from` download through OpenSSH 9+
   `scp`/SFTP, using the same ticketed ProxyCommand, a Tenant/Workspace
   `HostKeyAlias`, normal host-key validation, and lexical `/workspace` path

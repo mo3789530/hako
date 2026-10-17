@@ -41,6 +41,13 @@ func (d *GatewayDialer) OpenPort(ctx context.Context, claims workspacesession.Cl
 	if d == nil || d.WorkspaceID == "" || claims.WorkspaceID != d.WorkspaceID || ctx == nil || port == 0 {
 		return nil, ErrInteractiveChannelUnavailable
 	}
+	if port == 22 {
+		if !hasWorkspacePermission(claims.Permissions, workspacesession.PermissionSSHProxy) {
+			return nil, ErrInteractiveChannelUnavailable
+		}
+	} else if !hasWorkspacePermission(claims.Permissions, workspacesession.PermissionPortForward) {
+		return nil, ErrInteractiveChannelUnavailable
+	}
 	connection, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))))
 	if err != nil {
 		return nil, ErrInteractiveChannelUnavailable

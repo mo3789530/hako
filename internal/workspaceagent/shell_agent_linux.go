@@ -35,6 +35,7 @@ type WorkspaceShellAgent struct {
 	identity      AgentTicket
 	shells        *ShellManager
 	vscodeDial    func(context.Context) (net.Conn, error)
+	sshDial       func(context.Context) (net.Conn, error)
 }
 
 func NewWorkspaceShellAgent(keys map[string]ed25519.PublicKey, gatewayOrigin string) (*WorkspaceShellAgent, error) {
@@ -58,6 +59,8 @@ func newWorkspaceShellAgent(keys map[string]ed25519.PublicKey, gatewayOrigin str
 	return &WorkspaceShellAgent{keys: keyCopy, gatewayOrigin: origin, factory: factory,
 		vscodeDial: func(ctx context.Context) (net.Conn, error) {
 			return (&net.Dialer{Timeout: workspaceAgentConnectTimeout}).DialContext(ctx, "tcp", "127.0.0.1:8081")
+		}, sshDial: func(ctx context.Context) (net.Conn, error) {
+			return (&net.Dialer{Timeout: workspaceAgentConnectTimeout}).DialContext(ctx, "tcp", "127.0.0.1:22")
 		}}, nil
 }
 
@@ -108,6 +111,8 @@ func (a *WorkspaceShellAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		a.serveShell(w, r)
 	case "/v1/workspaces/" + string(a.workspaceID()) + "/vscode":
 		a.serveVSCode(w, r)
+	case "/v1/workspaces/" + string(a.workspaceID()) + "/ssh":
+		a.serveSSH(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -208,6 +213,48 @@ func (a *WorkspaceShellAgent) serveVSCode(w http.ResponseWriter, r *http.Request
 			}
 			expected := AgentTicket{TenantID: identity.TenantID, WorkspaceID: identity.WorkspaceID,
 				ResourcePlane: identity.ResourcePlane, MicroVMID: identity.MicroVMID, Permission: workspacesession.PermissionVSCode}
+			verified, err := VerifyAgentTicket(token, a.keys, expected, time.Now().UTC())
+			if err != nil || a.replay.Consume(verified, time.Now().UTC()) != nil {
+				return ErrAgentTicket
+			}
+			config.Protocol = []string{workspaceAgentWebSocketProtocol}
+			return nil
+		},
+		Handler: func(conn *websocket.Conn) {
+			conn.MaxPayloadBytes = maxTerminalFrame
+			conn.PayloadType = websocket.BinaryFrame
+			upstream, err := dial(r.Context())
+			if err != nil {
+				_ = conn.Close()
+				return
+			}
+			proxyWorkspaceRawStream(r.Context(), conn, upstream)
+		},
+	}
+	server.ServeHTTP(w, r)
+}
+
+// serveSSH bridges a one-use SSH-proxy ticket to the fixed guest loopback SSH
+// endpoint. The client never chooses a destination and port 22 is never
+// exposed on the MicroVM's external interface.
+func (a *WorkspaceShellAgent) serveSSH(w http.ResponseWriter, r *http.Request) {
+	a.mu.RLock()
+	identity, dial := a.identity, a.sshDial
+	a.mu.RUnlock()
+	if identity.WorkspaceID == "" || dial == nil || r.Method != http.MethodGet || r.URL.RawQuery != "" || r.URL.ForceQuery || r.ContentLength > 0 {
+		http.Error(w, "Workspace SSH bridge is not ready", http.StatusServiceUnavailable)
+		return
+	}
+	token := bearerAgentTicket(r.Header.Get("Authorization"))
+	server := websocket.Server{
+		Config: websocket.Config{Protocol: []string{workspaceAgentWebSocketProtocol}},
+		Handshake: func(config *websocket.Config, request *http.Request) error {
+			if request.Method != http.MethodGet || request.URL.RawQuery != "" || request.Header.Get("Origin") != a.gatewayOrigin ||
+				!offeredAgentProtocol(request.Header.Get("Sec-WebSocket-Protocol")) || token == "" {
+				return ErrAgentTicket
+			}
+			expected := AgentTicket{TenantID: identity.TenantID, WorkspaceID: identity.WorkspaceID,
+				ResourcePlane: identity.ResourcePlane, MicroVMID: identity.MicroVMID, Permission: workspacesession.PermissionSSHProxy}
 			verified, err := VerifyAgentTicket(token, a.keys, expected, time.Now().UTC())
 			if err != nil || a.replay.Consume(verified, time.Now().UTC()) != nil {
 				return ErrAgentTicket

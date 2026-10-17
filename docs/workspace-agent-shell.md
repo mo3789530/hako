@@ -99,9 +99,14 @@ ticket binding, fixed route, AWS subprotocols, and rejection paths have local
 tests. `WorkspaceLambdaMicroVMStreamDirectory` now resolves the current
 allocation from the Resource Plane journal and verifies provider state for
 each new shell stream, removing the need for process-local lifecycle
-registration. Production Gateway composition, AWS IAM/configuration, and a
-real MicroVM connection remain unverified. VS Code and Guest port-forward
-streams also remain unsupported by this dialer. Production key
+registration. The same adapter now routes the dedicated `ssh-proxy` permission
+to the fixed Guest `/ssh` WebSocket route, where the unprivileged Agent dials
+only `127.0.0.1:22`; the caller cannot supply a destination. Local tests cover
+the ticket-bound raw-byte bridge and reject arbitrary ports/replay. The image
+does not yet install/configure `sshd` or SFTP, and trusted per-Workspace host
+key provisioning is still required. Production Gateway composition, AWS
+IAM/configuration, and a real MicroVM connection remain unverified. Guest
+port-forward streams remain unsupported by this adapter. Production key
 rotation/distribution is unresolved. Keep Workspace runtime exposure disabled
 until deployment gates are complete.
 

@@ -85,6 +85,43 @@ func TestLambdaMicroVMGatewayDialerUsesDistinctVSCodeCapabilityAndRoute(t *testi
 	}
 }
 
+func TestLambdaMicroVMGatewayDialerRoutesSSHProxyOnlyToGuestSSHBridge(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := WorkspaceRuntimeEndpoint{TenantID: "tenant-1", WorkspaceID: "workspace-1", ResourcePlane: "rp-1",
+		MicroVMID: "vm-1", Region: "us-east-1", Endpoint: "https://vm-1.lambda-microvm.us-east-1.on.aws"}
+	stream := &gatewayTestStream{}
+	websocket := &gatewayWebSocketStub{stream: stream}
+	tokens := &gatewayTokenProviderStub{token: "short-token"}
+	dialer, err := NewLambdaMicroVMGatewayDialer(LambdaMicroVMGatewayDialerConfig{Endpoint: endpoint, Token: tokens,
+		Ticket: &AgentTicketIssuer{KeyID: "rp-key", PrivateKey: private, TTL: time.Minute},
+		Origin: "https://gateway.hako.test", WebSocket: websocket})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := workspacesession.Claims{UserID: "user-1", TenantID: endpoint.TenantID, WorkspaceID: endpoint.WorkspaceID,
+		ResourcePlane: endpoint.ResourcePlane, Permissions: []workspacesession.Permission{workspacesession.PermissionSSHProxy}}
+	opened, err := dialer.OpenPort(context.Background(), claims, 22)
+	if err != nil || opened != stream || websocket.permission != workspacesession.PermissionSSHProxy {
+		t.Fatalf("OpenPort(22) stream=%v permission=%q err=%v", opened, websocket.permission, err)
+	}
+	config, err := newWorkspaceAgentWebSocketConfigForPermission(endpoint.Endpoint, string(endpoint.WorkspaceID),
+		"https://gateway.hako.test", tokens.token, websocket.ticket, workspacesession.PermissionSSHProxy)
+	if err != nil || config.Location.Path != "/v1/workspaces/workspace-1/ssh" || config.Protocol[2] != "lambda-microvms.port.8080" {
+		t.Fatalf("SSH bridge WebSocket config=%v err=%v", config, err)
+	}
+	if _, err := dialer.OpenPort(context.Background(), claims, 2222); !errors.Is(err, ErrInteractiveChannelUnavailable) {
+		t.Fatalf("OpenPort(2222) error=%v, want fixed SSH target rejection", err)
+	}
+	portForwardClaims := claims
+	portForwardClaims.Permissions = []workspacesession.Permission{workspacesession.PermissionPortForward}
+	if _, err := dialer.OpenPort(context.Background(), portForwardClaims, 22); !errors.Is(err, ErrInteractiveChannelUnavailable) {
+		t.Fatalf("OpenPort(22) with port-forward-only ticket error=%v", err)
+	}
+}
+
 type gatewayTestStream struct{ bytes.Buffer }
 
 func (s *gatewayTestStream) Close() error { return nil }

@@ -130,11 +130,18 @@ func (d *LambdaMicroVMGatewayDialer) OpenVSCode(ctx context.Context, claims work
 	return d.open(ctx, claims, workspacesession.PermissionVSCode)
 }
 
+func (d *LambdaMicroVMGatewayDialer) OpenPort(ctx context.Context, claims workspacesession.Claims, port uint16) (io.ReadWriteCloser, error) {
+	if port != 22 || !hasWorkspacePermission(claims.Permissions, workspacesession.PermissionSSHProxy) {
+		return nil, ErrInteractiveChannelUnavailable
+	}
+	return d.open(ctx, claims, workspacesession.PermissionSSHProxy)
+}
+
 func (d *LambdaMicroVMGatewayDialer) open(ctx context.Context, claims workspacesession.Claims, permission workspacesession.Permission) (io.ReadWriteCloser, error) {
 	if d == nil || ctx == nil || claims.UserID == "" || claims.TenantID != d.endpoint.TenantID ||
 		claims.WorkspaceID != d.endpoint.WorkspaceID || claims.ResourcePlane != d.endpoint.ResourcePlane ||
 		!hasWorkspacePermission(claims.Permissions, permission) ||
-		(permission != workspacesession.PermissionShell && permission != workspacesession.PermissionVSCode) {
+		(permission != workspacesession.PermissionShell && permission != workspacesession.PermissionVSCode && permission != workspacesession.PermissionSSHProxy) {
 		return nil, ErrInteractiveChannelUnavailable
 	}
 	connectCtx, cancel := context.WithTimeout(ctx, workspaceAgentConnectTimeout)
@@ -177,10 +184,6 @@ func hasWorkspacePermission(permissions []workspacesession.Permission, wanted wo
 	return false
 }
 
-func (d *LambdaMicroVMGatewayDialer) OpenPort(context.Context, workspacesession.Claims, uint16) (io.ReadWriteCloser, error) {
-	return nil, ErrInteractiveChannelUnavailable
-}
-
 type workspaceAgentWebSocketDialer struct{}
 
 func (workspaceAgentWebSocketDialer) Dial(ctx context.Context, httpsEndpoint, workspaceID, origin, awsToken, agentTicket string, permission workspacesession.Permission) (io.ReadWriteCloser, error) {
@@ -208,7 +211,7 @@ func newWorkspaceAgentWebSocketConfigForPermission(httpsEndpoint, workspaceID, o
 	permission workspacesession.Permission) (*websocket.Config, error) {
 	if !validWebSocketSubprotocol(awsToken, 8000) || !validWorkspaceHeaderCredential(agentTicket, maxAgentTicketBytes) ||
 		!validGatewayOrigin(origin) || !validWorkspaceHookVMID(workspaceID) ||
-		(permission != workspacesession.PermissionShell && permission != workspacesession.PermissionVSCode) {
+		(permission != workspacesession.PermissionShell && permission != workspacesession.PermissionVSCode && permission != workspacesession.PermissionSSHProxy) {
 		return nil, ErrInteractiveChannelUnavailable
 	}
 	endpoint, err := url.Parse(httpsEndpoint)
@@ -220,6 +223,8 @@ func newWorkspaceAgentWebSocketConfigForPermission(httpsEndpoint, workspaceID, o
 	channel := "shell"
 	if permission == workspacesession.PermissionVSCode {
 		channel = "vscode"
+	} else if permission == workspacesession.PermissionSSHProxy {
+		channel = "ssh"
 	}
 	endpoint.Path = "/v1/workspaces/" + url.PathEscape(workspaceID) + "/" + channel
 	config, err := websocket.NewConfig(endpoint.String(), origin)
