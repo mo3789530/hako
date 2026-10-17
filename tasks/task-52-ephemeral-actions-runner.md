@@ -67,6 +67,11 @@ Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Action
   outbox transaction, and the cleanup lease returns it to the future worker.
   This is only the durable identity handoff: no Lambda MicroVM launch,
   GitHub deregistration, or physical cleanup API is invoked yet.
+- If registration-token issuance or startup fails after the claim enters
+  `starting`, the broker's failure transition now inserts the cleanup outbox
+  row in the same PostgreSQL transaction and preserves any already-bound
+  Lambda MicroVM ID. This closes the failure window between VM allocation and
+  runner readiness; a cleanup consumer is still needed to act on the record.
 - `HAKO_GITHUB_ACTIONS_RUNNER_ADMISSIONS_ENABLED` defaults off. When enabled,
   the webhook processor admits only queued jobs whose current Tenant-owned
   Installation and Repository opt-in were active before receipt. Admission is

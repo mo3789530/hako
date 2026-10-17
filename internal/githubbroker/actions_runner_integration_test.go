@@ -51,10 +51,20 @@ func TestPostgresActionsRunnerStarterRequiresExactClaimActiveAppAndPriorOptIn(t 
 		t.Fatal("same claimed job minted more than one registration token")
 	}
 	fail := NewPostgresActionsRunnerJobFailure(pool, transaction.DefaultPolicy())
+	if _, err := pool.Exec(ctx, `UPDATE github_actions_runner_jobs SET lambda_microvm_id='lambda-microvm-runner-test'
+		WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=1`, request.IntegrationID, request.WorkflowJobID); err != nil {
+		t.Fatal(err)
+	}
 	if err := fail(ctx, identity); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT state FROM github_actions_runner_jobs WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=1`, request.IntegrationID, request.WorkflowJobID).Scan(&state); err != nil || state != "failed" {
 		t.Fatalf("registration mint failure did not become terminal: state=%q err=%v", state, err)
+	}
+	var cleanupState, cleanupReason string
+	var cleanupMicroVM *string
+	if err := pool.QueryRow(ctx, `SELECT state,reason,lambda_microvm_id FROM github_actions_runner_cleanup_outbox
+		WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=1`, request.IntegrationID, request.WorkflowJobID).Scan(&cleanupState, &cleanupReason, &cleanupMicroVM); err != nil || cleanupState != "pending" || cleanupReason != "failed" || cleanupMicroVM == nil || *cleanupMicroVM != "lambda-microvm-runner-test" {
+		t.Fatalf("failed startup cleanup was not transactionally queued: state=%q reason=%q MicroVM=%v error=%v", cleanupState, cleanupReason, cleanupMicroVM, err)
 	}
 }

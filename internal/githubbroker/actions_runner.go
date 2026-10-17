@@ -127,9 +127,22 @@ func NewPostgresActionsRunnerJobFailure(pool transaction.Beginner, policy transa
 			return ErrActionsRunnerDenied
 		}
 		_, err := transaction.Within(ctx, pool, policy, func(ctx context.Context, tx pgx.Tx) (struct{}, error) {
+			now := time.Now().UTC()
 			_, err := tx.Exec(ctx, `UPDATE github_actions_runner_jobs SET state='failed',claim_id=NULL,lease_expires_at=NULL,updated_at=$5
 				WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=$3 AND state='starting' AND claim_id=$4`,
-				identity.IntegrationID, identity.WorkflowJobID, identity.RunAttempt, identity.ClaimID, time.Now().UTC())
+				identity.IntegrationID, identity.WorkflowJobID, identity.RunAttempt, identity.ClaimID, now)
+			if err != nil {
+				return struct{}{}, err
+			}
+			// Token issuance happens before Resource Plane startup. A failure can
+			// therefore race with a successful MicroVM launch; record terminal
+			// cleanup in the same transaction and carry the immutable provider ID.
+			_, err = tx.Exec(ctx, `INSERT INTO github_actions_runner_cleanup_outbox
+				(integration_id,workflow_job_id,run_attempt,tenant_id,installation_id,repository_id,runner_id,lambda_microvm_id,reason,state,available_at,created_at,updated_at)
+				SELECT integration_id,workflow_job_id,run_attempt,tenant_id,installation_id,repository_id,runner_id,lambda_microvm_id,'failed','pending',$4,$4,$4
+				FROM github_actions_runner_jobs WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=$3 AND state='failed'
+				ON CONFLICT (integration_id,workflow_job_id,run_attempt) DO NOTHING`,
+				identity.IntegrationID, identity.WorkflowJobID, identity.RunAttempt, now)
 			return struct{}{}, err
 		})
 		if err != nil {
