@@ -1,6 +1,9 @@
 # Task 44: EFS-Backed Workspace Persistence
 
-Status: In progress (local AP provisioner/discovery library only). Priority: P1.
+Status: In progress (AP provisioner, durable runtime binding, Linux mount hook,
+and dedicated root init image definition implemented locally; image execution,
+per-Workspace IAM/network policy, and recovery/deployment gates remain).
+Priority: P1.
 
 ## Goal
 
@@ -35,6 +38,10 @@ invocation still need verification, and the interactive Agent is not yet
 started by the image. The existing Workload Agent image has an incompatible
 hook schema. Current Workspaces also share one static execution role, so IAM
 authorization does not yet enforce per-Workspace AP isolation.
+The root init process now attempts ownership-checked `/workspace` unmount on
+graceful shutdown and preserves its marker if the unmount fails. Forced Lambda
+MicroVM shutdown behavior remains unverified; controller cleanup still waits
+for provider termination before AP deletion.
 This task is not complete: Workspace-scoped role and
 EFS policies, encrypted EFS/private mount target/scoped network Terraform,
 backup/restore, retention, automated orphan cleanup, and live isolation checks

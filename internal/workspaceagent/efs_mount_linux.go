@@ -21,6 +21,7 @@ const (
 	workspaceEFSMarkerPath = "/run/hako/workspace-efs-mount.json"
 	workspaceEFSMountPath  = "/workspace"
 	workspaceMountBinary   = "/bin/mount"
+	workspaceUmountBinary  = "/bin/umount"
 	workspaceMountInfoPath = "/proc/self/mountinfo"
 )
 
@@ -45,6 +46,7 @@ type LinuxEFSMountExecutor struct {
 	mu            sync.Mutex
 	runner        mountCommandRunner
 	mountBinary   string
+	umountBinary  string
 	mountInfoPath string
 	markerPath    string
 	workspacePath string
@@ -54,21 +56,35 @@ type LinuxEFSMountExecutor struct {
 
 func NewLinuxEFSMountExecutor() *LinuxEFSMountExecutor {
 	return &LinuxEFSMountExecutor{runner: execMountCommandRunner{}, mountBinary: workspaceMountBinary,
+		umountBinary:  workspaceUmountBinary,
 		mountInfoPath: workspaceMountInfoPath, markerPath: workspaceEFSMarkerPath, workspacePath: workspaceEFSMountPath,
 		isRoot: func() bool { return os.Geteuid() == 0 }, makeDirectory: os.MkdirAll}
+}
+
+// NewLinuxWorkspaceMountLifecycle returns both the lifecycle handler and the
+// executor so the root init process can perform ownership-checked unmount on
+// graceful shutdown using the same runtime configuration.
+func NewLinuxWorkspaceMountLifecycle(next http.Handler) (http.Handler, *LinuxEFSMountExecutor, error) {
+	if os.Geteuid() != 0 {
+		return nil, nil, errors.New("Workspace mount lifecycle must run in the root guest init layer")
+	}
+	if info, err := os.Stat("/sbin/mount.efs"); err != nil || info.IsDir() || info.Mode().Perm()&0111 == 0 {
+		return nil, nil, errors.New("Amazon EFS mount helper is not installed in the Workspace image")
+	}
+	executor := NewLinuxEFSMountExecutor()
+	handler, err := NewWorkspaceMountLifecycleHandler(next, executor)
+	if err != nil {
+		return nil, nil, err
+	}
+	return handler, executor, nil
 }
 
 // NewLinuxWorkspaceMountLifecycleHandler wires the strict Workspace /run hook
 // to the Linux EFS mount helper. The process must run as root in the guest
 // init layer; the interactive Agent should run unprivileged after the mount.
 func NewLinuxWorkspaceMountLifecycleHandler(next http.Handler) (http.Handler, error) {
-	if os.Geteuid() != 0 {
-		return nil, errors.New("Workspace mount lifecycle must run in the root guest init layer")
-	}
-	if info, err := os.Stat("/sbin/mount.efs"); err != nil || info.IsDir() || info.Mode().Perm()&0111 == 0 {
-		return nil, errors.New("Amazon EFS mount helper is not installed in the Workspace image")
-	}
-	return NewWorkspaceMountLifecycleHandler(next, NewLinuxEFSMountExecutor())
+	handler, _, err := NewLinuxWorkspaceMountLifecycle(next)
+	return handler, err
 }
 
 func (m *LinuxEFSMountExecutor) MountAndVerify(ctx context.Context, spec WorkspaceMountSpec) error {
@@ -110,6 +126,40 @@ func (m *LinuxEFSMountExecutor) MountAndVerify(ctx context.Context, spec Workspa
 	mounted, err = workspacePathMounted(m.mountInfoPath, m.workspacePath)
 	if err != nil || !mounted {
 		return errors.New("EFS mount helper returned without mounting Workspace storage")
+	}
+	return nil
+}
+
+// Unmount removes only a mount whose exact Workspace identity was recorded by
+// this executor. It is safe to retry after the kernel unmounted the filesystem
+// but before marker removal completed.
+func (m *LinuxEFSMountExecutor) Unmount(ctx context.Context) error {
+	if m == nil || ctx == nil || ctx.Err() != nil || m.runner == nil || m.umountBinary == "" ||
+		m.mountInfoPath == "" || m.markerPath == "" || m.workspacePath != workspaceEFSMountPath || m.isRoot == nil || !m.isRoot() {
+		return errors.New("Workspace EFS unmount configuration or privilege is invalid")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, found, err := readWorkspaceMountMarker(m.markerPath); err != nil {
+		return err
+	} else if !found {
+		return nil
+	}
+	mounted, err := workspacePathMounted(m.mountInfoPath, m.workspacePath)
+	if err != nil {
+		return err
+	}
+	if mounted {
+		if err := m.runner.Run(ctx, m.umountBinary, m.workspacePath); err != nil {
+			return errors.New("unmount Workspace EFS")
+		}
+		mounted, err = workspacePathMounted(m.mountInfoPath, m.workspacePath)
+		if err != nil || mounted {
+			return errors.New("Workspace EFS remains mounted after unmount")
+		}
+	}
+	if err := os.Remove(m.markerPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return errors.New("remove Workspace EFS mount marker")
 	}
 	return nil
 }

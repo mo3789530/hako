@@ -21,13 +21,26 @@ import (
 const workspaceInitListenAddress = "0.0.0.0:8080"
 
 func main() {
-	handler, err := workspaceagent.NewLinuxWorkspaceMountLifecycleHandler(http.NotFoundHandler())
-	if err != nil {
-		log.Fatal("configure Workspace init: ", err)
+	if err := run(); err != nil {
+		log.Fatal("Hako Workspace init stopped: ", err)
 	}
+}
+
+func run() error {
+	handler, mountExecutor, err := workspaceagent.NewLinuxWorkspaceMountLifecycle(http.NotFoundHandler())
+	if err != nil {
+		return errors.New("configure Workspace init")
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := mountExecutor.Unmount(ctx); err != nil {
+			log.Printf("Workspace EFS unmount did not finish cleanly")
+		}
+	}()
 	listener, err := net.Listen("tcp", workspaceInitListenAddress)
 	if err != nil {
-		log.Fatal("listen for Lambda MicroVM lifecycle hooks: ", err)
+		return errors.New("listen for Lambda MicroVM lifecycle hooks")
 	}
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
@@ -40,14 +53,16 @@ func main() {
 	select {
 	case err := <-serveResult:
 		if !errors.Is(err, http.ErrServerClosed) {
-			log.Fatal("Workspace init listener stopped unexpectedly")
+			return errors.New("Workspace init listener stopped unexpectedly")
 		}
+		return nil
 	case <-signals:
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := server.Shutdown(ctx); err != nil {
 			_ = server.Close()
-			log.Fatal("shut down Workspace init listener")
+			return errors.New("shut down Workspace init listener")
 		}
+		return nil
 	}
 }

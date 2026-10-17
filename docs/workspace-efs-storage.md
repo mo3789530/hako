@@ -32,7 +32,6 @@ silently starting with empty storage. Delete waits for MicroVM termination,
 deletes only the exact owned AP, then confirms the journal tombstone. A failed
 cleanup remains retryable.
 
-The guest image still does not implement or acknowledge the mount contract.
 The dedicated `images/workspace-init` Workspace image runs
 `cmd/hako-workspace-init`, which serves the strict Workspace-specific `/run`
 hook as root and acknowledges only after the mount is verified. The image is
@@ -56,6 +55,14 @@ confirms MicroVM `RUNNING`, not that `/workspace` is mounted, and this is not
 production-ready. A failed startup before the
 runtime journal is created may leave a tagged AP; `DiscoverManaged` exposes it
 for reconciliation but no automated orphan deletion exists.
+
+On graceful init-process shutdown, the root executor attempts to unmount only
+when its root-owned marker matches a managed mount; successful unmount is
+verified before removing the marker. Failed/busy unmount preserves the marker
+for diagnosis. Lambda MicroVM termination delivery and forced-shutdown behavior
+have not been verified, so controller-side deletion still waits for runtime
+termination before deleting the Access Point and must not rely on guest
+unmount as the only cleanup guarantee.
 
 AWS documents Access Point mounts through the EFS mount helper using `tls` and
 `accesspoint=` options, and requires TLS when IAM authorization is used. The
@@ -117,7 +124,8 @@ Run `GOCACHE=/tmp/hako-go-cache go test ./internal/workspacestorage ./internal/w
 Tests cover deterministic Workspace separation, retry identity, malformed AWS
 responses, ownership-fenced deletion, absent-AP idempotency, tagged AP
 discovery, exact fixed mount arguments, bounded mount-table confirmation,
-intent-marker retries, and rejection of an unowned or non-NFS mount. They use
+intent-marker retries, ownership-checked unmount/retry, and rejection of an
+unowned or non-NFS mount. They use
 an in-memory EFS API/mount-command fake and do not contact AWS or mount a real
 filesystem.
 

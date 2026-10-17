@@ -27,6 +27,9 @@ func (s *mountCommandStub) Run(_ context.Context, binary string, args ...string)
 	if s.err != nil {
 		return s.err
 	}
+	if binary == workspaceUmountBinary {
+		return os.WriteFile(s.infoPath, nil, 0600)
+	}
 	return os.WriteFile(s.infoPath, []byte("36 25 0:42 / /workspace rw,relatime - nfs4 127.0.0.1:/ rw,vers=4.1\n"), 0600)
 }
 
@@ -37,7 +40,7 @@ func TestLinuxEFSMountUsesFixedTLSAccessPointAndIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &mountCommandStub{infoPath: infoPath}
-	executor := &LinuxEFSMountExecutor{runner: runner, mountBinary: "/bin/mount", mountInfoPath: infoPath,
+	executor := &LinuxEFSMountExecutor{runner: runner, mountBinary: "/bin/mount", umountBinary: workspaceUmountBinary, mountInfoPath: infoPath,
 		markerPath: markerPath, workspacePath: "/workspace", isRoot: func() bool { return true },
 		makeDirectory: func(string, os.FileMode) error { return nil }}
 	spec := testMountSpec()
@@ -73,7 +76,7 @@ func TestLinuxEFSMountRecordsIntentBeforeCommandAndRetriesFailure(t *testing.T) 
 		t.Fatal(err)
 	}
 	runner := &mountCommandStub{infoPath: infoPath, err: errors.New("mount failed")}
-	executor := &LinuxEFSMountExecutor{runner: runner, mountBinary: "/bin/mount", mountInfoPath: infoPath,
+	executor := &LinuxEFSMountExecutor{runner: runner, mountBinary: "/bin/mount", umountBinary: workspaceUmountBinary, mountInfoPath: infoPath,
 		markerPath: markerPath, workspacePath: "/workspace", isRoot: func() bool { return true },
 		makeDirectory: func(string, os.FileMode) error { return nil }}
 	spec := testMountSpec()
@@ -96,7 +99,7 @@ func TestLinuxEFSMountRejectsUnownedMountAndNonRoot(t *testing.T) {
 	if err := os.WriteFile(infoPath, []byte("36 25 0:42 / /workspace rw - nfs4 127.0.0.1:/ rw\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	executor := &LinuxEFSMountExecutor{runner: runner, mountBinary: "/bin/mount", mountInfoPath: infoPath,
+	executor := &LinuxEFSMountExecutor{runner: runner, mountBinary: "/bin/mount", umountBinary: workspaceUmountBinary, mountInfoPath: infoPath,
 		markerPath: markerPath, workspacePath: "/workspace", isRoot: func() bool { return true },
 		makeDirectory: func(string, os.FileMode) error { return nil }}
 	if err := executor.MountAndVerify(context.Background(), testMountSpec()); err == nil || len(runner.calls) != 0 {
@@ -105,6 +108,52 @@ func TestLinuxEFSMountRejectsUnownedMountAndNonRoot(t *testing.T) {
 	executor.isRoot = func() bool { return false }
 	if err := executor.MountAndVerify(context.Background(), testMountSpec()); err == nil || len(runner.calls) != 0 {
 		t.Fatal("allowed an unprivileged mount request")
+	}
+}
+
+func TestLinuxEFSMountUnmountsOnlyOwnedMountAndIsIdempotent(t *testing.T) {
+	infoPath := filepath.Join(t.TempDir(), "mountinfo")
+	markerPath := filepath.Join(t.TempDir(), "mount-marker.json")
+	if err := os.WriteFile(infoPath, []byte("36 25 0:42 / /workspace rw - nfs4 127.0.0.1:/ rw\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeWorkspaceMountMarker(markerPath, testMountSpec()); err != nil {
+		t.Fatal(err)
+	}
+	runner := &mountCommandStub{infoPath: infoPath}
+	executor := &LinuxEFSMountExecutor{runner: runner, mountBinary: "/bin/mount", umountBinary: workspaceUmountBinary,
+		mountInfoPath: infoPath, markerPath: markerPath, workspacePath: "/workspace", isRoot: func() bool { return true }}
+	if err := executor.Unmount(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != 1 || runner.calls[0].binary != workspaceUmountBinary || !reflect.DeepEqual(runner.calls[0].args, []string{"/workspace"}) {
+		t.Fatalf("unmount command = %+v", runner.calls)
+	}
+	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("mount ownership marker was not removed: %v", err)
+	}
+	if err := executor.Unmount(context.Background()); err != nil || len(runner.calls) != 1 {
+		t.Fatalf("unmount retry was not idempotent: calls=%d err=%v", len(runner.calls), err)
+	}
+}
+
+func TestLinuxEFSMountUnmountRetainsMarkerOnFailure(t *testing.T) {
+	infoPath := filepath.Join(t.TempDir(), "mountinfo")
+	markerPath := filepath.Join(t.TempDir(), "mount-marker.json")
+	if err := os.WriteFile(infoPath, []byte("36 25 0:42 / /workspace rw - nfs4 127.0.0.1:/ rw\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeWorkspaceMountMarker(markerPath, testMountSpec()); err != nil {
+		t.Fatal(err)
+	}
+	runner := &mountCommandStub{infoPath: infoPath, err: errors.New("busy")}
+	executor := &LinuxEFSMountExecutor{runner: runner, umountBinary: workspaceUmountBinary, mountInfoPath: infoPath,
+		markerPath: markerPath, workspacePath: "/workspace", isRoot: func() bool { return true }}
+	if err := executor.Unmount(context.Background()); err == nil {
+		t.Fatal("reported a busy mount as unmounted")
+	}
+	if _, found, err := readWorkspaceMountMarker(markerPath); err != nil || !found {
+		t.Fatalf("failed unmount lost its ownership marker: found=%v err=%v", found, err)
 	}
 }
 
