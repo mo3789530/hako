@@ -1,6 +1,6 @@
 # Task 76: Claude Action ephemeral execution and result lifecycle
 
-Status: In Progress (guest `/run` runtime and signed identity-bound bootstrap start a one-shot official Actions runner through a fake-tested process consumer; model credential is limited to the runner environment and local runner state is cleaned on exit. Configure/start/run failures now emit bounded identity+phase+exit metadata, but the current guest callback only logs it. Pinned image artifact, durable result/Check reporting, durable terminal cleanup and end-to-end tests remain). Priority: P2. Parent: Task 73. Depends on: Tasks 40, 41, 52, 74, 75.
+Status: In Progress (guest `/run` runtime and signed identity-bound bootstrap start a one-shot official Actions runner through a fake-tested process consumer; a composed local guest→signed bootstrap→runner process E2E verifies job identity, model-key scope, failure result, replay rejection, and local cleanup. Configure/start/run failures emit bounded identity+phase+exit metadata, but the current guest callback only logs it. Pinned image artifact, durable result/Check reporting, durable terminal cleanup, and broker→worker→guest/PostgreSQL E2E remain). Priority: P2. Parent: Task 73. Depends on: Tasks 40, 41, 52, 74, 75.
 
 ## Goal
 

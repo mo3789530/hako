@@ -8,10 +8,70 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestRunnerGuestRuntimeExecutesOneBoundOfficialRunnerAndReportsExit(t *testing.T) {
+	root := t.TempDir()
+	writeRunnerScript(t, filepath.Join(root, "config.sh"), "#!/bin/sh\nprintf '%s' \"$*\" > config.args\ntouch .credentials\n")
+	writeRunnerScript(t, filepath.Join(root, "run.sh"), "#!/bin/sh\nenv > runner.env\nmkdir -p _work/repo _diag\nprintf source > _work/repo/file\nexit 17\n")
+	exited := make(chan RunnerProcessResult, 1)
+	process, err := NewRunnerProcessConsumer(RunnerProcessConfig{RootDirectory: root, SetupTimeout: time.Second, MaximumRun: time.Minute,
+		OnExit: func(result RunnerProcessResult) { exited <- result }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest, err := NewRunnerGuestRuntime(publicKey, process)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launch := RunnerLaunchPayload{SchemaVersion: 1, WorkflowJobID: 420, WorkflowRunID: 430, RunAttempt: 2,
+		RepositoryURL: "https://github.com/acme/api", RunnerName: "hako-420-2", Labels: []string{"self-hosted", "hako", "arm64"}}
+	if got := sendRunnerRunHook(guest, "mvm-runner-e2e", launch); got.Code != http.StatusOK {
+		t.Fatalf("bind authenticated Lambda MicroVM run hook: status=%d body=%s", got.Code, got.Body.String())
+	}
+	now := time.Now().UTC()
+	claims := RunnerBootstrapClaims{SchemaVersion: 1, MicroVMID: "mvm-runner-e2e", IntegrationID: "integration_runner", WorkflowJobID: 420,
+		WorkflowRunID: 430, RunAttempt: 2, RepositoryURL: launch.RepositoryURL, RunnerName: launch.RunnerName, Labels: launch.Labels,
+		Token: "synthetic-registration-token", ModelCredential: []byte("sk-ant-synthetic-secret"), ExpiresAt: now.Add(time.Minute).Unix()}
+	envelope, err := SignRunnerBootstrap(privateKey, claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(envelope.Claims.ModelCredential)
+	if got := sendGuestBootstrap(guest, envelope); got.Code != http.StatusAccepted {
+		t.Fatalf("consume exact signed bootstrap: status=%d body=%s", got.Code, got.Body.String())
+	}
+	result := awaitRunnerProcessResult(t, exited)
+	if result.IntegrationID != "integration_runner" || result.WorkflowJobID != 420 || result.WorkflowRunID != 430 || result.RunAttempt != 2 ||
+		result.ExitCode != 17 || result.FailurePhase != "run" || result.TimedOut || result.Cancelled || result.CleanupFailed {
+		t.Fatalf("unexpected bound runner outcome: %+v", result)
+	}
+	args, err := os.ReadFile(filepath.Join(root, "config.args"))
+	if err != nil || !strings.Contains(string(args), "--ephemeral") || strings.Contains(string(args), "sk-ant-synthetic-secret") {
+		t.Fatalf("runner config received unsafe args: %q err=%v", args, err)
+	}
+	runnerEnv, err := os.ReadFile(filepath.Join(root, "runner.env"))
+	if err != nil || !strings.Contains(string(runnerEnv), "ANTHROPIC_API_KEY=sk-ant-synthetic-secret") || strings.Contains(string(runnerEnv), "AWS_ACCESS_KEY_ID=") {
+		t.Fatalf("runner process env did not have scoped credentials: err=%v", err)
+	}
+	for _, path := range []string{"_work", "_temp", "_diag", ".credentials"} {
+		if _, err := os.Lstat(filepath.Join(root, path)); !os.IsNotExist(err) {
+			t.Errorf("bound guest retained local runner state %q", path)
+		}
+	}
+	if got := sendGuestBootstrap(guest, envelope); got.Code != http.StatusConflict {
+		t.Fatalf("second job reused the same guest: status=%d", got.Code)
+	}
+}
 
 func TestRunnerGuestRuntimeBindsRunHookBeforeOneMatchingBootstrap(t *testing.T) {
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)

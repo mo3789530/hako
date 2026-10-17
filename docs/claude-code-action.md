@@ -63,7 +63,9 @@ conflicting VM or job identities are rejected.
 The guest executable and process consumer are now present. They configure the
 official runner as ephemeral, pass the Tenant model key only in the runner
 process environment, and remove local credentials, diagnostic, temp, and
-checkout state after exit. A pinned ARM64 image recipe is provided, but no
+checkout state after exit. A composed local test covers `/run` binding through
+signed bootstrap and fake runner execution, including a failure result, replay
+rejection, and local cleanup. A pinned ARM64 image recipe is provided, but no
 runner archive/image has been built or published; job completion→Checks and
 durable cleanup are also not yet integrated. AWS documents the `/run` hook body
 and per-MicroVM payload in [Running and using MicroVMs](https://docs.aws.amazon.com/lambda/latest/dg/microvms-launching.html).
