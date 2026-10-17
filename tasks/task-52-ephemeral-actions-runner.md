@@ -162,8 +162,8 @@ Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Action
   message properties, and returns per-record batch failures so a malformed or
   transiently failed record does not replay successful records in the same
   batch. Tests verify the worker sequence and poison-record isolation. A
-  production SQS event-source mapping, command publisher/dispatcher and Lambda
-  runtime composition remain unimplemented and default-off.
+  production SQS event-source mapping and command publisher/dispatcher remain
+  unimplemented and default-off; Lambda runtime composition is tracked below.
 - `RunnerBootstrapper` now requests a Lambda MicroVM auth token scoped to the
   fixed runner-bootstrap port 8080 and at most five minutes (one minute when
   the claim lease is short), then posts a signed,
@@ -176,5 +176,21 @@ Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Action
   endpoint rejection before auth-token issuance, and the successful HTTPS
   request contract. Worker ordering and cleanup reporting have fake-backed
   local tests, and launch/token/failure endpoints are covered by mTLS and
-  PostgreSQL tests. This remains library-level composition: no SQS consumer,
-  guest listener/image wiring, or AWS call is implemented.
+  PostgreSQL tests. This is a library-level startup worker: the guest
+  listener/image is not wired, and no live AWS call has been made.
+
+- `cmd/hako-actions-runner-lambda` now provides the Resource Plane Lambda
+  runtime entrypoint for the SQS startup handler. It requires an HTTPS broker,
+  fixed MicroVM image/version, restricted egress connector, Resource Plane
+  identity, and four distinct Secrets Manager ARN references for the broker
+  client certificate/key, trust bundle, and Ed25519 bootstrap signing key.
+  Startup loads those values through the Lambda execution role, bounds their
+  size, validates mTLS and signing-key material, and composes the broker
+  clients, Lambda MicroVM SDK launcher/auth-token provider, signed bootstrapper,
+  startup-failure reporter, and partial-batch SQS handler. Tests use fake
+  Secrets Manager and Lambda APIs; no AWS endpoint or real Secret was accessed.
+  `make build-actions-runner-lambda` packages the ARM64 custom-runtime ZIP.
+  This code is not deployed: queue publisher/dispatcher, event-source mapping,
+  exact IAM policy, guest listener/image, GitHub Check reporting, and live
+  AWS/GitHub verification remain acceptance gaps. Runner admission stays
+  default-off.

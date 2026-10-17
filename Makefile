@@ -1,4 +1,4 @@
-.PHONY: fmt lint test test-integration test-integration-local test-webhook-lifecycle-integration test-software-factory-e2e test-workload-runtime test-workload-runtime-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-health-reporter-lambda build-workload-controller-lambda build-workload-microvm-artifact build-workspace-microvm-image build-github-checks-consumer-image build-workspace-gateway-image terraform-fmt terraform-validate terraform-test
+.PHONY: fmt lint test test-integration test-integration-local test-webhook-lifecycle-integration test-software-factory-e2e test-workload-runtime test-workload-runtime-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-health-reporter-lambda build-workload-controller-lambda build-actions-runner-lambda build-workload-microvm-artifact build-workspace-microvm-image build-github-checks-consumer-image build-workspace-gateway-image terraform-fmt terraform-validate terraform-test
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -not -path './.git/*')
@@ -74,6 +74,11 @@ build-workload-controller-lambda:
 	mkdir -p build/workload-controller-lambda
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o build/workload-controller-lambda/bootstrap ./cmd/hako-workload-controller-lambda
 	cd build/workload-controller-lambda && zip -q ../hako-workload-controller.zip bootstrap
+
+build-actions-runner-lambda:
+	mkdir -p build/actions-runner-lambda
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o build/actions-runner-lambda/bootstrap ./cmd/hako-actions-runner-lambda
+	cd build/actions-runner-lambda && zip -q ../hako-actions-runner.zip bootstrap
 
 # Packages a Lambda MicroVM code artifact; the supplied file must contain public verification keys only.
 build-workload-microvm-artifact:

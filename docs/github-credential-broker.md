@@ -29,9 +29,24 @@ The broker's TLS listener requires a trusted client certificate. OAuth setup and
 | `POST /v1/oauth/verify` | Pinned identity, OAuth code, expected Installation, PKCE verifier | Verified App/Installation identity only; OAuth secret stays in broker |
 | `POST /v1/checkout/token` | Tenant ID and persisted Workload Run ID only | Short-lived token and expiry over mTLS with `Cache-Control: no-store` |
 | `POST /v1/actions-runner/registration-token` | Integration ID, workflow job ID, run attempt, and current claim ID only | One repository-scoped registration token over Control Plane-only mTLS with `Cache-Control: no-store` |
+| `POST /v1/actions-runner/launch` | Integration ID, workflow job ID, run attempt, and current claim ID only | Consumes the live claim and pins the caller's allowlisted Resource Plane; returns bounded repository/job metadata, never a runner token |
+| `POST /v1/actions-runner/bind` | Integration ID, workflow job ID, run attempt, claim ID, and Lambda MicroVM ID | Binds the launched VM to the exact live claim; Plane ID is derived from the verified certificate |
+| `POST /v1/actions-runner/bootstrap-token` | Integration ID, workflow job ID, run attempt, claim ID, and bound Lambda MicroVM ID | One-time opaque registration token grant, only after the exact Plane+VM binding is verified |
+| `POST /v1/actions-runner/startup-failed` | Integration ID, workflow job ID, run attempt, claim ID, and bounded failure category | Marks the exact live claim failed and creates its identity-fenced cleanup outbox record |
 | `POST /v1/actions-runner/deregister` | Integration ID, workflow job ID, run attempt, and current cleanup claim ID only | Empty acknowledgement; Plane-specific mTLS and the live Control Plane cleanup lease authorize the exact repository runner removal |
 
 Checkout callers cannot choose App ID, Installation, Repository, Role ARN, Secret ARN, version, revision, generation, or commit. The broker loads the Workload Run and active exact credential pin from the database, mints a read-only repository-scoped token, then rechecks caller authorization, Run state, and the credential pin after GitHub I/O. Cancellation, disable, or rotation during the request fails closed. A failed Tenant-owned request never falls back to the shared App. Shared Runs continue using the existing shared credential provider.
+
+The Resource Plane startup endpoints (`launch`, `bind`, `bootstrap-token`, and
+`startup-failed`) accept only the exact configured Resource Plane SPIFFE
+identity. Plane identity is derived from the client certificate rather than
+request JSON. The launch claim is idempotently replayable only by the same
+Plane, while live, and before token issuance; token issuance requires the
+persisted MicroVM binding and is consumed at most once per attempt. The Lambda
+runtime loads its mTLS certificate/key, broker CA and signing key from four
+separate Secret ARNs using its execution role. The local composition is fake-
+tested and is not deployed; its queue publisher/event-source mapping, exact
+IAM, guest listener/image and Check reporter remain separate work.
 
 The trusted `githubapp.TokenClient` also has a repository-scoped Actions runner
 registration-token primitive for Tenant-owned Apps. It requires the exact
