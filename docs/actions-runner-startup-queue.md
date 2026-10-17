@@ -60,6 +60,13 @@ The trusted Tenant App token client can now mint a repository-only
 repository opt-in is checked both before and after token minting; the token is
 distinct from checkout, runner-registration, and deregistration credentials.
 
+`githubapp.ActionsRunClient` uses that token to fetch the exact run, requested
+attempt's paginated jobs, and workflow path. It rejects foreign repository or
+run identities, absent/duplicate jobs, unexpected run attempts, oversized
+responses, redirects, and malformed workflow paths. This lookup and the pure
+provenance verifier are not yet invoked by the queue consumer or launcher; the
+Task 74 admission integration remains a required fail-closed gate.
+
 This verifier is currently a tested library contract only. It is not yet backed
 by DSQL policy storage, GitHub Actions Run/Job API reads, or wired before
 MicroVM launch. Therefore Claude Action workflows must not be considered

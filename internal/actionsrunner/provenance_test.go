@@ -10,7 +10,8 @@ import (
 func TestVerifyRunnerWorkflowProvenance(t *testing.T) {
 	policy := RunnerWorkflowPolicy{TenantID: domain.TenantID("tenant_acme"), IntegrationID: "integration_acme", InstallationID: 101,
 		RepositoryID: 202, Owner: "acme", Repository: "api", WorkflowPath: ".github/workflows/claude.yml",
-		AllowedRefs: []string{"refs/heads/main"}, AllowedEvents: []string{"push"}, RequiredLabels: []string{"self-hosted", "hako"}}
+		AllowedRefs: []string{"refs/heads/main"}, AllowedEvents: []string{"push"}, RequiredLabels: []string{"self-hosted", "hako"},
+		AllowedLabels: []string{"self-hosted", "hako", "arm64"}}
 	valid := AuthoritativeWorkflowRun{TenantID: policy.TenantID, IntegrationID: policy.IntegrationID, InstallationID: policy.InstallationID,
 		RepositoryID: policy.RepositoryID, Owner: policy.Owner, Repository: policy.Repository, WorkflowPath: policy.WorkflowPath,
 		WorkflowRef: "refs/heads/main", HeadSHA: strings.Repeat("a", 40), RunID: 303, RunAttempt: 1, JobID: 404,
@@ -32,6 +33,9 @@ func TestVerifyRunnerWorkflowProvenance(t *testing.T) {
 		"fork":                    func(run *AuthoritativeWorkflowRun) { run.Fork = true },
 		"foreign head repository": func(run *AuthoritativeWorkflowRun) { run.HeadRepository++ },
 		"missing label":           func(run *AuthoritativeWorkflowRun) { run.Labels = []string{"self-hosted"} },
+		"unexpected label":        func(run *AuthoritativeWorkflowRun) { run.Labels = append(run.Labels, "privileged") },
+		"duplicate label":         func(run *AuthoritativeWorkflowRun) { run.Labels = append(run.Labels, "hako") },
+		"unsafe event":            func(run *AuthoritativeWorkflowRun) { run.Event = "pull_request_target" },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -46,7 +50,7 @@ func TestVerifyRunnerWorkflowProvenance(t *testing.T) {
 	invalidPolicies := []RunnerWorkflowPolicy{
 		{TenantID: policy.TenantID, IntegrationID: policy.IntegrationID, InstallationID: policy.InstallationID, RepositoryID: policy.RepositoryID,
 			Owner: policy.Owner, Repository: policy.Repository, WorkflowPath: "../../evil.yml", AllowedRefs: policy.AllowedRefs,
-			AllowedEvents: policy.AllowedEvents, RequiredLabels: policy.RequiredLabels},
+			AllowedEvents: policy.AllowedEvents, RequiredLabels: policy.RequiredLabels, AllowedLabels: policy.AllowedLabels},
 		{TenantID: policy.TenantID, IntegrationID: policy.IntegrationID, InstallationID: policy.InstallationID, RepositoryID: policy.RepositoryID,
 			Owner: policy.Owner, Repository: policy.Repository, WorkflowPath: policy.WorkflowPath},
 	}

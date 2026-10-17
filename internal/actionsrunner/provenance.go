@@ -23,6 +23,7 @@ type RunnerWorkflowPolicy struct {
 	AllowedRefs    []string
 	AllowedEvents  []string
 	RequiredLabels []string
+	AllowedLabels  []string
 }
 
 // AuthoritativeWorkflowRun must be populated from GitHub's Actions Run and
@@ -68,15 +69,15 @@ var (
 func VerifyRunnerWorkflowProvenance(policy RunnerWorkflowPolicy, queued QueuedWorkflowJob, run AuthoritativeWorkflowRun) error {
 	if policy.TenantID == "" || policy.IntegrationID == "" || policy.InstallationID <= 0 || policy.RepositoryID <= 0 ||
 		!validRepositoryPart(policy.Owner) || !validRepositoryPart(policy.Repository) || !workflowPathPattern.MatchString(policy.WorkflowPath) ||
-		len(policy.AllowedRefs) == 0 || len(policy.AllowedEvents) == 0 || len(policy.RequiredLabels) == 0 ||
+		len(policy.AllowedRefs) == 0 || len(policy.AllowedEvents) == 0 || len(policy.RequiredLabels) == 0 || len(policy.AllowedLabels) == 0 ||
 		run.TenantID != policy.TenantID || run.IntegrationID != policy.IntegrationID || run.InstallationID != policy.InstallationID ||
 		run.RepositoryID != policy.RepositoryID || run.Owner != policy.Owner || run.Repository != policy.Repository ||
 		run.WorkflowPath != policy.WorkflowPath || !validWorkflowRef(run.WorkflowRef) || !containsExact(policy.AllowedRefs, run.WorkflowRef) ||
 		!workflowSHAPattern.MatchString(run.HeadSHA) || queued.RunID <= 0 || queued.RunAttempt <= 0 || queued.JobID <= 0 ||
 		queued.RunID != run.RunID || queued.RunAttempt != run.RunAttempt || queued.JobID != run.JobID ||
-		queued.WorkflowRef != run.WorkflowRef || queued.HeadSHA != run.HeadSHA || run.Fork ||
+		queued.WorkflowRef != run.WorkflowRef || queued.HeadSHA != run.HeadSHA || run.Fork || run.Event == "pull_request_target" ||
 		run.HeadRepository != policy.RepositoryID || !containsExact(policy.AllowedEvents, run.Event) ||
-		!containsAll(run.Labels, policy.RequiredLabels) {
+		!containsAll(run.Labels, policy.RequiredLabels) || !containsOnly(run.Labels, policy.AllowedLabels) {
 		return errors.New("GitHub Actions workflow provenance denied")
 	}
 	return nil
@@ -97,4 +98,18 @@ func containsAll(values, required []string) bool {
 		}
 	}
 	return true
+}
+
+func containsOnly(values, allowed []string) bool {
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if value == "" || !slices.Contains(allowed, value) {
+			return false
+		}
+		if _, duplicate := seen[value]; duplicate {
+			return false
+		}
+		seen[value] = struct{}{}
+	}
+	return len(values) > 0
 }
