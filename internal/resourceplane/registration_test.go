@@ -54,6 +54,8 @@ func TestParseNormalizesCapabilitiesAndRejectsInvalidManifests(t *testing.T) {
 		{"unknown capability", strings.Replace(validManifest, `"container"`, `"gpu"`, 1)},
 		{"duplicate capability", strings.Replace(validManifest, `"container"`, `"microvm"`, 1)},
 		{"unsafe queue url", strings.Replace(validManifest, "https://sqs.ap-northeast-1.amazonaws.com", "http://sqs.ap-northeast-1.amazonaws.com", 1)},
+		{"lookalike queue host", strings.Replace(validManifest, "sqs.ap-northeast-1.amazonaws.com", "sqs.ap-northeast-1.amazonaws.com.attacker.test", 1)},
+		{"queue host port", strings.Replace(validManifest, "sqs.ap-northeast-1.amazonaws.com/", "sqs.ap-northeast-1.amazonaws.com:8443/", 1)},
 		{"wrong queue region", strings.Replace(validManifest, "sqs.ap-northeast-1", "sqs.us-east-1", 1)},
 		{"wrong queue account", strings.Replace(validManifest, "/123456789012/", "/999999999999/", 1)},
 		{"same queue url", strings.Replace(validManifest, "rp-tokyo-01-results", "rp-tokyo-01-commands", 1)},
@@ -101,6 +103,52 @@ func TestManifestAcceptsSeparateWorkloadQueues(t *testing.T) {
 	}
 	if got := manifest.WorkloadResultQueueURLs()["rp-tokyo-01"]; got != "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-workload-results" {
 		t.Fatalf("Workload result queue = %q", got)
+	}
+}
+
+func TestManifestAcceptsSingleActionsRunnerStartupQueue(t *testing.T) {
+	data := strings.Replace(validManifest,
+		`"result_queue_url": "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-results"`,
+		`"result_queue_url": "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-results",
+    "actions_runner_startup_queue_url": "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-actions-runner-startup"`, 1)
+	manifest, err := Parse([]byte(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	registration, found, err := manifest.ActionsRunnerStartupQueue()
+	if err != nil || !found || registration.ID != "rp-tokyo-01" || registration.Region != "ap-northeast-1" ||
+		registration.ActionsRunnerStartupQueueURL != "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-actions-runner-startup" {
+		t.Fatalf("Actions runner startup queue = %+v found=%v error=%v", registration, found, err)
+	}
+}
+
+func TestManifestRejectsDuplicateAndMultipleActionsRunnerQueueRoutes(t *testing.T) {
+	data := strings.Replace(validManifest,
+		`"result_queue_url": "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-results"`,
+		`"result_queue_url": "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-results",
+    "actions_runner_startup_queue_url": "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-commands"`, 1)
+	if _, err := Parse([]byte(data)); err == nil || !strings.Contains(err.Error(), "duplicates another queue") {
+		t.Fatalf("Actions runner queue reused a command queue: %v", err)
+	}
+	manifest, err := Parse([]byte(validManifest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := manifest.ResourcePlanes[0]
+	first.ActionsRunnerStartupQueueURL = "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-actions-runner-startup"
+	manifest.ResourcePlanes[0] = first
+	second := first
+	second.ID = "rp-tokyo-02"
+	second.AccountID = "999999999999"
+	second.CommandQueueURL = "https://sqs.ap-northeast-1.amazonaws.com/999999999999/rp-tokyo-02-commands"
+	second.ResultQueueURL = "https://sqs.ap-northeast-1.amazonaws.com/999999999999/rp-tokyo-02-results"
+	second.ActionsRunnerStartupQueueURL = "https://sqs.ap-northeast-1.amazonaws.com/999999999999/rp-tokyo-02-actions-runner-startup"
+	manifest.ResourcePlanes = append(manifest.ResourcePlanes, second)
+	if err := manifest.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := manifest.ActionsRunnerStartupQueue(); err == nil || found {
+		t.Fatalf("multiple routes should fail closed: found=%v err=%v", found, err)
 	}
 }
 

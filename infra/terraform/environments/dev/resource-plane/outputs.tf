@@ -62,6 +62,26 @@ output "workload_commands_dlq_arn" {
   value = module.resource_plane.workload_commands_dlq_arn
 }
 
+output "actions_runner_startup_queue_url" {
+  value = module.resource_plane.actions_runner_startup_queue_url
+}
+
+output "actions_runner_startup_queue_arn" {
+  value = module.resource_plane.actions_runner_startup_queue_arn
+}
+
+output "actions_runner_startup_dlq_arn" {
+  value = module.resource_plane.actions_runner_startup_dlq_arn
+}
+
+output "actions_runner_worker_lambda_arn" {
+  value = module.resource_plane.actions_runner_worker_lambda_arn
+}
+
+output "actions_runner_worker_event_source_mapping_uuid" {
+  value = module.resource_plane.actions_runner_worker_event_source_mapping_uuid
+}
+
 output "workload_controller_lambda_arn" {
   value = module.resource_plane.workload_controller_lambda_arn
 }

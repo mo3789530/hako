@@ -47,3 +47,15 @@ See [`docs/terraform-modules.md`](../../../../docs/terraform-modules.md) for the
 Run `make terraform-test` for AWS-mock plan tests that verify the Worker stays
 disabled by default and validate the full opt-in Lambda/queue/recovery graph.
 These tests neither apply resources nor contact AWS.
+
+`actions_runner_deployment` is a separate default-off Lambda MicroVM startup
+worker. When supplied with a built ZIP, four distinct exact Secret ARNs, a
+fixed image/version, egress connector, and private subnet/security-group
+configuration, it creates an encrypted startup queue/DLQ, allows only the
+configured Control Plane Dispatcher role to send, and attaches a batch-size-1
+SQS event source mapping with `ReportBatchItemFailures`. Its Lambda role is
+restricted to that queue, those Secrets, the selected MicroVM image and
+connector, logs, and the provided VPC resources. The queue URL is exposed for
+the Control Plane Resource Plane manifest. The manifest currently permits only
+one Actions Runner queue until durable multi-Plane runner placement exists.
+This remains opt-in and does not create a runner image or apply infrastructure.

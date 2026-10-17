@@ -34,6 +34,15 @@ locals {
       element(split("/", plane.workload_command_queue_url), length(split("/", plane.workload_command_queue_url)) - 1)
     ) if try(trimspace(plane.workload_command_queue_url), "") != ""
   ]
+  dispatcher_actions_runner_queue_arns = [
+    for plane in local.dispatcher_resource_planes : format(
+      "arn:%s:sqs:%s:%s:%s",
+      data.aws_partition.current.partition,
+      plane.region,
+      plane.account_id,
+      element(split("/", plane.actions_runner_startup_queue_url), length(split("/", plane.actions_runner_startup_queue_url)) - 1)
+    ) if try(trimspace(plane.actions_runner_startup_queue_url), "") != ""
+  ]
   dispatcher_workload_queue_arns = var.enable_outbox_dispatcher ? [aws_sqs_queue.workload_scheduler[0].arn] : []
   dispatcher_github_checks_queue_arns = var.enable_github_checks_delivery ? [
     aws_sqs_queue.github_checks[0].arn
@@ -68,6 +77,14 @@ locals {
         Effect   = "Allow"
         Action   = ["sqs:SendMessage"]
         Resource = local.dispatcher_workload_command_queue_arns
+      }
+    ] : [],
+    length(local.dispatcher_actions_runner_queue_arns) > 0 ? [
+      {
+        Sid      = "PublishActionsRunnerStartupToDedicatedQueue"
+        Effect   = "Allow"
+        Action   = ["sqs:SendMessage"]
+        Resource = local.dispatcher_actions_runner_queue_arns
       }
     ] : [],
     length(local.dispatcher_workload_queue_arns) > 0 ? [

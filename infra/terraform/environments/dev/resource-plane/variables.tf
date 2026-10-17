@@ -26,6 +26,38 @@ variable "enable_workload_result_queue" {
   default     = false
 }
 
+variable "actions_runner_vpc_config" {
+  description = "Pre-provisioned private subnets and dedicated security group for an explicitly configured Actions Runner worker."
+  type = object({
+    subnet_ids         = list(string)
+    security_group_ids = list(string)
+  })
+  default = null
+}
+
+variable "actions_runner_deployment" {
+  description = "Default-off Actions Runner Lambda MicroVM deployment. Supply exact Secret ARNs and a built ZIP, never Secret values."
+  type = object({
+    zip_path                       = string
+    broker_url                     = string
+    broker_client_cert_secret_arn  = string
+    broker_client_key_secret_arn   = string
+    broker_ca_secret_arn           = string
+    bootstrap_signing_key_arn      = string
+    microvm_image_arn              = string
+    microvm_image_version          = string
+    execution_role_arn             = optional(string, "")
+    egress_connector_arn           = string
+    maximum_duration_seconds       = number
+    startup_timeout_seconds        = number
+    lambda_timeout_seconds         = number
+    lambda_memory_size             = number
+    reserved_concurrent_executions = number
+    secret_kms_key_arns            = optional(list(string), [])
+  })
+  default = null
+}
+
 variable "control_plane_workload_result_consumer_role_arn" {
   description = "Exact Control Plane role allowed to consume Workload Run results; required when the queue is enabled."
   type        = string

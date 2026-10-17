@@ -206,6 +206,87 @@ variable "workload_controller_deployment" {
   }
 }
 
+variable "actions_runner_vpc_config" {
+  description = "Pre-provisioned private subnets and a dedicated security group for the optional Actions Runner Lambda."
+  type = object({
+    subnet_ids         = list(string)
+    security_group_ids = list(string)
+  })
+  default = null
+
+  validation {
+    condition = var.actions_runner_vpc_config == null || (
+      length(var.actions_runner_vpc_config.subnet_ids) >= 2 && length(var.actions_runner_vpc_config.subnet_ids) <= 16 &&
+      length(var.actions_runner_vpc_config.subnet_ids) == length(toset(var.actions_runner_vpc_config.subnet_ids)) &&
+      alltrue([for id in var.actions_runner_vpc_config.subnet_ids : can(regex("^subnet-[0-9A-Fa-f]+$", id))]) &&
+      length(var.actions_runner_vpc_config.security_group_ids) >= 1 && length(var.actions_runner_vpc_config.security_group_ids) <= 5 &&
+      length(var.actions_runner_vpc_config.security_group_ids) == length(toset(var.actions_runner_vpc_config.security_group_ids)) &&
+      alltrue([for id in var.actions_runner_vpc_config.security_group_ids : can(regex("^sg-[0-9A-Fa-f]+$", id))])
+    )
+    error_message = "actions_runner_vpc_config requires unique private subnet and dedicated security group IDs."
+  }
+}
+
+variable "actions_runner_deployment" {
+  description = "Optional default-off Lambda MicroVM startup worker deployment; only ZIP path, policy inputs, endpoints, and exact Secret ARNs are accepted. Never provide Secret values."
+  type = object({
+    zip_path                       = string
+    broker_url                     = string
+    broker_client_cert_secret_arn  = string
+    broker_client_key_secret_arn   = string
+    broker_ca_secret_arn           = string
+    bootstrap_signing_key_arn      = string
+    microvm_image_arn              = string
+    microvm_image_version          = string
+    execution_role_arn             = optional(string, "")
+    egress_connector_arn           = string
+    maximum_duration_seconds       = number
+    startup_timeout_seconds        = number
+    lambda_timeout_seconds         = number
+    lambda_memory_size             = number
+    reserved_concurrent_executions = number
+    secret_kms_key_arns            = optional(list(string), [])
+  })
+  default = null
+
+  validation {
+    condition = var.actions_runner_deployment == null || (
+      var.actions_runner_vpc_config != null &&
+      var.actions_runner_deployment.zip_path != "" && fileexists(var.actions_runner_deployment.zip_path) &&
+      can(regex("^https://[^/?#]+(?::[0-9]+)?(/[^?#]*)?$", var.actions_runner_deployment.broker_url)) &&
+      can(regex("^arn:(aws|aws-us-gov|aws-cn):lambda:[a-z0-9-]+:[0-9]{12}:microvm-image:[A-Za-z0-9_-]+$", var.actions_runner_deployment.microvm_image_arn)) &&
+      can(regex("^[1-9][0-9]*$", var.actions_runner_deployment.microvm_image_version)) &&
+      can(regex("^arn:(aws|aws-us-gov|aws-cn):lambda:[a-z0-9-]+:[0-9]{12}:network-connector:[A-Za-z0-9_-]+$", var.actions_runner_deployment.egress_connector_arn)) &&
+      split(":", var.actions_runner_deployment.microvm_image_arn)[3] == split(":", var.actions_runner_deployment.egress_connector_arn)[3] &&
+      split(":", var.actions_runner_deployment.microvm_image_arn)[4] == split(":", var.actions_runner_deployment.egress_connector_arn)[4] &&
+      (var.actions_runner_deployment.execution_role_arn == "" || can(regex("^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:role/.+$", var.actions_runner_deployment.execution_role_arn))) &&
+      var.actions_runner_deployment.maximum_duration_seconds >= 1 && var.actions_runner_deployment.maximum_duration_seconds <= 28800 &&
+      floor(var.actions_runner_deployment.maximum_duration_seconds) == var.actions_runner_deployment.maximum_duration_seconds &&
+      var.actions_runner_deployment.startup_timeout_seconds >= 5 && var.actions_runner_deployment.startup_timeout_seconds <= 300 &&
+      floor(var.actions_runner_deployment.startup_timeout_seconds) == var.actions_runner_deployment.startup_timeout_seconds &&
+      var.actions_runner_deployment.lambda_timeout_seconds >= var.actions_runner_deployment.startup_timeout_seconds + 30 && var.actions_runner_deployment.lambda_timeout_seconds <= 900 &&
+      floor(var.actions_runner_deployment.lambda_timeout_seconds) == var.actions_runner_deployment.lambda_timeout_seconds &&
+      var.command_visibility_timeout_seconds >= var.actions_runner_deployment.lambda_timeout_seconds * 6 &&
+      var.actions_runner_deployment.lambda_memory_size >= 1024 && var.actions_runner_deployment.lambda_memory_size <= 10240 &&
+      floor(var.actions_runner_deployment.lambda_memory_size) == var.actions_runner_deployment.lambda_memory_size &&
+      var.actions_runner_deployment.reserved_concurrent_executions >= 1 && var.actions_runner_deployment.reserved_concurrent_executions <= 1000 &&
+      floor(var.actions_runner_deployment.reserved_concurrent_executions) == var.actions_runner_deployment.reserved_concurrent_executions &&
+      length(toset([
+        var.actions_runner_deployment.broker_client_cert_secret_arn,
+        var.actions_runner_deployment.broker_client_key_secret_arn,
+        var.actions_runner_deployment.broker_ca_secret_arn,
+        var.actions_runner_deployment.bootstrap_signing_key_arn
+      ])) == 4 &&
+      alltrue([for arn in [var.actions_runner_deployment.broker_client_cert_secret_arn, var.actions_runner_deployment.broker_client_key_secret_arn,
+        var.actions_runner_deployment.broker_ca_secret_arn, var.actions_runner_deployment.bootstrap_signing_key_arn] :
+      can(regex("^arn:(aws|aws-us-gov|aws-cn):secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]{1,512}$", arn))]) &&
+      alltrue([for arn in var.actions_runner_deployment.secret_kms_key_arns : can(regex("^arn:(aws|aws-us-gov|aws-cn):kms:[a-z0-9-]+:[0-9]{12}:key/[A-Fa-f0-9-]+$", arn))]) &&
+      length(var.actions_runner_deployment.secret_kms_key_arns) == length(toset(var.actions_runner_deployment.secret_kms_key_arns))
+    )
+    error_message = "Actions Runner deployment requires an existing ZIP, HTTPS broker, private VPC configuration, fixed MicroVM image/version and same-Region egress connector, four distinct exact Secret ARNs, bounded timeouts/concurrency, and queue visibility at least six times the Lambda timeout."
+  }
+}
+
 variable "max_receive_count" {
   description = "Receives before SQS moves a command/result message to its DLQ."
   type        = number

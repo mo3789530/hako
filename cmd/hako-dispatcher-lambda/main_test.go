@@ -63,12 +63,17 @@ func TestConfiguredQueuesRequiresManifest(t *testing.T) {
 }
 
 func TestConfiguredQueuesUsesRegionAwareManifest(t *testing.T) {
-	t.Setenv("HAKO_RESOURCE_PLANE_MANIFEST_JSON", `{"schema_version":1,"resource_planes":[{"id":"rp-tokyo-01","provider":"aws","account_id":"123456789012","region":"ap-northeast-1","capabilities":["microvm"],"command_queue_url":"https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-commands","result_queue_url":"https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-results","workload_command_queue_url":"https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-workload-commands","workload_result_queue_url":"https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-workload-results"}]}`)
+	t.Setenv("HAKO_RESOURCE_PLANE_MANIFEST_JSON", `{"schema_version":1,"resource_planes":[{"id":"rp-tokyo-01","provider":"aws","account_id":"123456789012","region":"ap-northeast-1","capabilities":["microvm"],"command_queue_url":"https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-commands","result_queue_url":"https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-results","workload_command_queue_url":"https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-workload-commands","workload_result_queue_url":"https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-workload-results","actions_runner_startup_queue_url":"https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-actions-runner-startup"}]}`)
 	queues, err := configuredQueues()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := queues["rp-tokyo-01"]; got.Region != "ap-northeast-1" || got.URL != "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-commands" || got.WorkloadURL != "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-workload-commands" {
 		t.Fatalf("manifest queue = %+v", got)
+	}
+	runnerQueue, found, err := configuredActionsRunnerQueue()
+	if err != nil || !found || runnerQueue.ID != "rp-tokyo-01" || runnerQueue.Region != "ap-northeast-1" ||
+		runnerQueue.ActionsRunnerStartupQueueURL != "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-actions-runner-startup" {
+		t.Fatalf("runner startup route = %+v found=%v error=%v", runnerQueue, found, err)
 	}
 }

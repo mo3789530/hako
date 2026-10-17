@@ -34,7 +34,28 @@ Control Plane Dispatcher role --SendMessage--> workload-commands queue
 Workload Controller role --Receive/Delete-------> workload-commands queue
 Workload Controller role --SendMessage----------> workload-results queue
 Control Plane Workload Result Consumer --Receive/Delete--> workload-results queue
+
+Control Plane Dispatcher role --SendMessage--> actions-runner-startup queue
+                                                   |
+                                      maxReceiveCount (default 5)
+                                                   v
+                                     actions-runner-startup DLQ
+
+Actions Runner Lambda role --Receive/Delete--> actions-runner-startup queue
 ```
+
+The optional `actions_runner_deployment` object (`null` by default) creates a
+separate encrypted Actions Runner startup queue/DLQ, exact cross-account
+Dispatcher send policy, dedicated Lambda role/function, and a batch-size-1
+event-source mapping with `ReportBatchItemFailures`. The worker IAM scope is
+limited to that queue, four configured Secret ARNs, the configured Lambda
+MicroVM image, egress connector, optional MicroVM execution role, logs, and
+private VPC attachment. The queue URL is exposed through the Resource Plane
+manifest as `actions_runner_startup_queue_url`; the Control Plane Dispatcher
+gets `sqs:SendMessage` only to that queue ARN. The version-1 manifest currently
+rejects more than one runner startup queue until durable Resource Plane
+placement exists. The queue, Lambda, and dispatch route remain default-off;
+Terraform configuration does not imply that resources have been applied.
 
 The optional `enable_workload_result_queue` (`false` by default) provisions a
 separate encrypted Workload command queue/DLQ and result queue/DLQ, independent
@@ -96,6 +117,15 @@ need matching identity policies in their own account for cross-account SQS acces
 consumer policy yet; they are intentionally operator-only until an audited
 redrive workflow is defined. See the [AWS provider SQS queue policy
 resource](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/sqs_queue_policy).
+
+When enabled, the Actions Runner role has no Control Plane database access and
+no long-lived GitHub credential. It reads only the four configured TLS and
+bootstrap-signing Secrets and relies on the mTLS credential broker for the
+short-lived repository runner token. The `lambda:ConnectMicrovm` permission is
+currently wildcard-scoped because the created MicroVM identifier is not known
+when the IAM policy is planned; review this against AWS resource-level
+authorization before production enablement. `iam:PassRole`, when configured,
+is limited to the supplied execution role and Lambda service condition.
 
 Queue and log resources carry `hako:managed-by` and
 `hako:resource-plane-id` tags. Queue-role tags distinguish commands, results,

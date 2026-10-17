@@ -78,6 +78,31 @@ output "workload_commands_dlq_arn" {
   value       = try(aws_sqs_queue.workload_commands_dlq[0].arn, null)
 }
 
+output "actions_runner_startup_queue_url" {
+  description = "URL of the opt-in Actions Runner startup queue; null until its worker is configured."
+  value       = try(aws_sqs_queue.actions_runner_startup[0].url, null)
+}
+
+output "actions_runner_startup_queue_arn" {
+  description = "ARN of the opt-in Actions Runner startup queue; null until its worker is configured."
+  value       = try(aws_sqs_queue.actions_runner_startup[0].arn, null)
+}
+
+output "actions_runner_startup_dlq_arn" {
+  description = "ARN of the opt-in Actions Runner startup DLQ; null until its worker is configured."
+  value       = try(aws_sqs_queue.actions_runner_startup_dlq[0].arn, null)
+}
+
+output "actions_runner_worker_lambda_arn" {
+  description = "ARN of the opt-in Lambda MicroVM Actions Runner worker."
+  value       = try(aws_lambda_function.actions_runner_worker[0].arn, null)
+}
+
+output "actions_runner_worker_event_source_mapping_uuid" {
+  description = "SQS event-source mapping for the Actions Runner startup worker."
+  value       = try(aws_lambda_event_source_mapping.actions_runner_worker[0].uuid, null)
+}
+
 output "resource_controller_role_arn" {
   description = "ARN of the least-privilege Resource Controller execution role."
   value       = aws_iam_role.resource_controller.arn
@@ -147,6 +172,7 @@ output "monitoring_alarm_names" {
     try([aws_cloudwatch_metric_alarm.workload_commands_backlog[0].alarm_name], []),
     try([aws_cloudwatch_metric_alarm.workload_controller_errors[0].alarm_name], []),
     try([aws_cloudwatch_metric_alarm.workload_recovery_failed_invocations[0].alarm_name], []),
+    try([aws_cloudwatch_metric_alarm.actions_runner_startup_dlq_visible[0].alarm_name], []),
     try([aws_cloudwatch_metric_alarm.health_report_stale[0].alarm_name], []),
     try([aws_cloudwatch_metric_alarm.health_report_unhealthy[0].alarm_name], []),
     try([aws_cloudwatch_metric_alarm.health_report_probe_failures[0].alarm_name], []),

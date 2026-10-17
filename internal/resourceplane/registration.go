@@ -44,6 +44,9 @@ type Registration struct {
 	// keep Workload attempt messages/results away from Workspace Operations.
 	WorkloadCommandQueueURL string `json:"workload_command_queue_url,omitempty"`
 	WorkloadResultQueueURL  string `json:"workload_result_queue_url,omitempty"`
+	// ActionsRunnerStartupQueueURL is optional and remains single-plane until
+	// runner placement can select a Resource Plane from capacity/policy.
+	ActionsRunnerStartupQueueURL string `json:"actions_runner_startup_queue_url,omitempty"`
 }
 
 var supportedCapabilities = map[string]struct{}{
@@ -136,6 +139,24 @@ func (manifest Manifest) WorkloadResultQueueURLs() map[string]string {
 	return queueURLs
 }
 
+// ActionsRunnerStartupQueue returns the one optionally configured startup
+// queue. Multiple queues are rejected until a durable runner placement policy
+// exists; silently selecting one would create an unsafe routing decision.
+func (manifest Manifest) ActionsRunnerStartupQueue() (Registration, bool, error) {
+	var selected Registration
+	found := false
+	for _, registration := range manifest.ResourcePlanes {
+		if registration.ActionsRunnerStartupQueueURL == "" {
+			continue
+		}
+		if found {
+			return Registration{}, false, errors.New("Actions runner startup queue is configured for multiple Resource Planes without placement policy")
+		}
+		selected, found = registration, true
+	}
+	return selected, found, nil
+}
+
 // Validate checks stable IDs, AWS placement metadata, endpoints, and the
 // version-1 capability vocabulary. Capabilities are normalized in place.
 func (manifest *Manifest) Validate() error {
@@ -214,6 +235,12 @@ func (manifest *Manifest) Validate() error {
 				struct{ role, url string }{role: "workload result", url: registration.WorkloadResultQueueURL},
 			)
 		}
+		if registration.ActionsRunnerStartupQueueURL != "" {
+			if err := validateQueueURL(registration.ActionsRunnerStartupQueueURL, registration.Region, registration.AccountID); err != nil {
+				return fmt.Errorf("resource_planes[%d].actions_runner_startup_queue_url: %w", i, err)
+			}
+			queues = append(queues, struct{ role, url string }{role: "Actions runner startup", url: registration.ActionsRunnerStartupQueueURL})
+		}
 		seenPlaneQueueURLs := make(map[string]struct{}, len(queues))
 		for _, queue := range queues {
 			if _, exists := seenPlaneQueueURLs[queue.url]; exists {
@@ -231,10 +258,12 @@ func (manifest *Manifest) Validate() error {
 
 func validateQueueURL(raw, region, accountID string) error {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.Port() != "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return errors.New("must be an HTTPS SQS queue URL without user info, query, or fragment")
 	}
-	if !strings.HasPrefix(parsed.Hostname(), "sqs."+region+".") {
+	host := parsed.Hostname()
+	validAWSHost := host == "sqs."+region+".amazonaws.com" || host == "sqs."+region+".amazonaws.com.cn"
+	if host != strings.ToLower(host) || !validAWSHost {
 		return errors.New("must use the registered Resource Plane Region")
 	}
 	path := strings.Split(strings.Trim(parsed.Path, "/"), "/")

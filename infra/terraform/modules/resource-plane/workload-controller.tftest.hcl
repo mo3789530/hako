@@ -79,6 +79,75 @@ run "workload_controller_is_disabled_by_default" {
     condition     = length(aws_iam_role_policy.workload_controller_runtime) == 0
     error_message = "Lambda MicroVM and S3 runtime IAM must remain disabled by default."
   }
+
+  assert {
+    condition = (length(aws_sqs_queue.actions_runner_startup) == 0 && length(aws_lambda_function.actions_runner_worker) == 0 &&
+    length(aws_lambda_event_source_mapping.actions_runner_worker) == 0)
+    error_message = "Actions Runner queues, worker, and event source mapping must remain disabled by default."
+  }
+}
+
+run "actions_runner_worker_consumes_only_its_opt_in_queue" {
+  command = plan
+  providers = {
+    aws = aws.mock
+  }
+
+  variables {
+    resource_plane_id                      = "rp-test"
+    control_plane_dispatcher_role_arn      = "arn:aws:iam::123456789012:role/hako-cp-dispatcher"
+    control_plane_result_consumer_role_arn = "arn:aws:iam::123456789012:role/hako-cp-result-consumer"
+    command_visibility_timeout_seconds     = 6000
+    actions_runner_vpc_config = {
+      subnet_ids         = ["subnet-11111111", "subnet-22222222"]
+      security_group_ids = ["sg-11111111"]
+    }
+    actions_runner_deployment = {
+      zip_path                       = "workload-controller.tftest.hcl"
+      broker_url                     = "https://broker.hako.example"
+      broker_client_cert_secret_arn  = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/runner-cert-AbCdEf"
+      broker_client_key_secret_arn   = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/runner-key-AbCdEf"
+      broker_ca_secret_arn           = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/runner-ca-AbCdEf"
+      bootstrap_signing_key_arn      = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/runner-signing-AbCdEf"
+      microvm_image_arn              = "arn:aws:lambda:ap-northeast-1:123456789012:microvm-image:hako-actions-runner"
+      microvm_image_version          = "2"
+      execution_role_arn             = "arn:aws:iam::123456789012:role/hako-runner-microvm"
+      egress_connector_arn           = "arn:aws:lambda:ap-northeast-1:123456789012:network-connector:hako-runner-egress"
+      maximum_duration_seconds       = 28800
+      startup_timeout_seconds        = 240
+      lambda_timeout_seconds         = 300
+      lambda_memory_size             = 2048
+      reserved_concurrent_executions = 3
+    }
+  }
+
+  assert {
+    condition = (aws_sqs_queue.actions_runner_startup[0].sqs_managed_sse_enabled &&
+    jsondecode(aws_sqs_queue.actions_runner_startup[0].redrive_policy).deadLetterTargetArn == aws_sqs_queue.actions_runner_startup_dlq[0].arn)
+    error_message = "Actions Runner startup messages must be encrypted and redriven only to their dedicated DLQ."
+  }
+
+  assert {
+    condition = (jsondecode(aws_sqs_queue_policy.actions_runner_startup[0].policy).Statement[0].Principal.AWS == "arn:aws:iam::123456789012:role/hako-cp-dispatcher" &&
+    jsondecode(aws_sqs_queue_policy.actions_runner_startup[0].policy).Statement[0].Action == "sqs:SendMessage")
+    error_message = "Only the exact Control Plane Dispatcher role may publish startup messages."
+  }
+
+  assert {
+    condition = (aws_lambda_event_source_mapping.actions_runner_worker[0].event_source_arn == aws_sqs_queue.actions_runner_startup[0].arn &&
+      aws_lambda_event_source_mapping.actions_runner_worker[0].batch_size == 1 &&
+    contains(aws_lambda_event_source_mapping.actions_runner_worker[0].function_response_types, "ReportBatchItemFailures"))
+    error_message = "Runner worker must consume only its dedicated queue and return partial batch failures."
+  }
+
+  assert {
+    condition = anytrue([for statement in jsondecode(aws_iam_role_policy.actions_runner_worker[0].policy).Statement :
+      statement.Sid == "ConsumeOnlyActionsRunnerStartupQueue" && statement.Resource == aws_sqs_queue.actions_runner_startup[0].arn
+      ]) && anytrue([for statement in jsondecode(aws_iam_role_policy.actions_runner_worker[0].policy).Statement :
+      statement.Sid == "ReadOnlyExactActionsRunnerSecrets" && length(statement.Resource) == 4 && !contains(statement.Resource, "*")
+    ])
+    error_message = "Runner worker queue and Secret permissions must be explicitly scoped."
+  }
 }
 
 run "workload_controller_wires_only_dedicated_queue_and_recovery" {

@@ -21,15 +21,19 @@ Each registration contains:
 | `result_queue_url` | SQS queue URL for Resource Plane results. |
 | `workload_command_queue_url` | Optional SQS queue URL dedicated to Workload attempt dispatch/cancel. Must be configured together with `workload_result_queue_url`. |
 | `workload_result_queue_url` | Optional SQS queue URL dedicated to Workload execution results. |
+| `actions_runner_startup_queue_url` | Optional SQS queue URL for ephemeral Actions Runner startup claims. At most one Resource Plane may configure this field until runner placement is implemented. |
 
 The v1 capability vocabulary is `microvm`, `container`, `private-network`, and
 `persistent-volume`. Capability strings are trimmed and lowercased during
 validation; duplicate or unknown capabilities fail closed. Queue URLs must be
 HTTPS, use the registered Region's SQS hostname, identify the registered AWS
 account in the URL path, and be distinct across all configured queues. The
-optional Workload queue URLs must either both be present or both absent. Unknown
-JSON fields, unsupported schema versions, duplicate Plane IDs, oversized
-manifests, and trailing JSON values are rejected.
+optional Workload queue URLs must either both be present or both absent. The
+optional Actions Runner startup queue is distinct from all other queues;
+multiple runner queues fail closed because selecting a Resource Plane requires
+a durable placement policy. Unknown JSON fields, unsupported schema versions,
+duplicate Plane IDs, oversized manifests, and trailing JSON values are
+rejected.
 
 The Scheduler persists Plane ID, provider, region, and capability JSON in the
 `resource_planes` table; operators currently bootstrap that row and its
@@ -40,6 +44,11 @@ Dispatcher routes Workspace commands to `command_queue_url` and Workload
 attempt dispatch/cancel to the dedicated Workload queue when configured. It
 does not fall back to a Workspace queue for Workload messages; missing routing
 leaves the Outbox item retryable. Both use Region-specific SQS clients. The
+runner startup publisher uses `actions_runner_startup_queue_url` when present,
+claims a durable runner admission with a bounded lease, and publishes only the
+integration/job/attempt/claim key. The Control Plane Dispatcher IAM role is
+granted send access only to the exact configured queue ARN. The current
+single-queue limit avoids implicit multi-Plane placement. The
 Operation Result Consumer concurrently polls each registered `result_queue_url`.
 The Workload result consumer uses `workload_result_queue_url` when deployed.
 For a migration, the Dispatcher

@@ -167,6 +167,267 @@ resource "aws_sqs_queue_redrive_allow_policy" "workload_commands_dlq" {
   })
 }
 
+# The Actions Runner startup path is independently opt-in. It receives only
+# opaque job/attempt/claim keys; repository metadata and runner credentials are
+# resolved by the Control Plane broker after mTLS authentication.
+resource "aws_sqs_queue" "actions_runner_startup" {
+  count = var.actions_runner_deployment == null ? 0 : 1
+
+  name                       = "${var.resource_plane_id}-actions-runner-startup"
+  message_retention_seconds  = var.message_retention_seconds
+  visibility_timeout_seconds = var.command_visibility_timeout_seconds
+  receive_wait_time_seconds  = 20
+  sqs_managed_sse_enabled    = true
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.actions_runner_startup_dlq[0].arn
+    maxReceiveCount     = var.max_receive_count
+  })
+  tags = merge(local.common_tags, { "hako:queue-role" = "actions-runner-startup" })
+}
+
+resource "aws_sqs_queue" "actions_runner_startup_dlq" {
+  count = var.actions_runner_deployment == null ? 0 : 1
+
+  name                      = "${var.resource_plane_id}-actions-runner-startup-dlq"
+  message_retention_seconds = var.dlq_retention_seconds
+  sqs_managed_sse_enabled   = true
+  tags                      = merge(local.common_tags, { "hako:queue-role" = "actions-runner-startup-dlq" })
+}
+
+resource "aws_sqs_queue_redrive_allow_policy" "actions_runner_startup_dlq" {
+  count = var.actions_runner_deployment == null ? 0 : 1
+
+  queue_url = aws_sqs_queue.actions_runner_startup_dlq[0].id
+  redrive_allow_policy = jsonencode({
+    redrivePermission = "byQueue"
+    sourceQueueArns   = [aws_sqs_queue.actions_runner_startup[0].arn]
+  })
+}
+
+resource "aws_sqs_queue_policy" "actions_runner_startup" {
+  count = var.actions_runner_deployment == null ? 0 : 1
+
+  queue_url = aws_sqs_queue.actions_runner_startup[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "AllowExactControlPlaneDispatcherSend"
+      Effect    = "Allow"
+      Principal = { AWS = var.control_plane_dispatcher_role_arn }
+      Action    = "sqs:SendMessage"
+      Resource  = aws_sqs_queue.actions_runner_startup[0].arn
+    }]
+  })
+}
+
+resource "aws_cloudwatch_log_group" "actions_runner_worker" {
+  count = var.actions_runner_deployment == null ? 0 : 1
+
+  name              = "/aws/lambda/${var.resource_plane_id}-actions-runner-worker"
+  retention_in_days = var.log_retention_days
+  tags              = merge(local.common_tags, { "hako:component" = "actions-runner-worker" })
+}
+
+data "aws_iam_policy_document" "actions_runner_worker_assume_role" {
+  count = var.actions_runner_deployment == null ? 0 : 1
+
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["lambda.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values   = ["arn:${data.aws_partition.current.partition}:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:${var.resource_plane_id}-actions-runner-worker"]
+    }
+  }
+}
+
+resource "aws_iam_role" "actions_runner_worker" {
+  count = var.actions_runner_deployment == null ? 0 : 1
+
+  name               = "${var.resource_plane_id}-actions-runner-worker"
+  assume_role_policy = data.aws_iam_policy_document.actions_runner_worker_assume_role[0].json
+  tags               = merge(local.common_tags, { "hako:component" = "actions-runner-worker" })
+}
+
+resource "aws_iam_role_policy" "actions_runner_worker" {
+  count = var.actions_runner_deployment == null ? 0 : 1
+
+  name = "${var.resource_plane_id}-actions-runner-worker"
+  role = aws_iam_role.actions_runner_worker[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = concat([
+      {
+        Sid      = "ConsumeOnlyActionsRunnerStartupQueue"
+        Effect   = "Allow"
+        Action   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:ChangeMessageVisibility", "sqs:GetQueueAttributes"]
+        Resource = aws_sqs_queue.actions_runner_startup[0].arn
+      },
+      {
+        Sid    = "ReadOnlyExactActionsRunnerSecrets"
+        Effect = "Allow"
+        Action = ["secretsmanager:GetSecretValue"]
+        Resource = [
+          var.actions_runner_deployment.broker_client_cert_secret_arn,
+          var.actions_runner_deployment.broker_client_key_secret_arn,
+          var.actions_runner_deployment.broker_ca_secret_arn,
+          var.actions_runner_deployment.bootstrap_signing_key_arn
+        ]
+      },
+      {
+        Sid      = "OperateOnlyConfiguredLambdaMicroVMImage"
+        Effect   = "Allow"
+        Action   = ["lambda:RunMicrovm", "lambda:CreateMicrovmAuthToken"]
+        Resource = var.actions_runner_deployment.microvm_image_arn
+      },
+      {
+        Sid      = "PassOnlyConfiguredMicroVMNetworkConnector"
+        Effect   = "Allow"
+        Action   = ["lambda:PassNetworkConnector"]
+        Resource = var.actions_runner_deployment.egress_connector_arn
+      },
+      {
+        Sid      = "ConnectLambdaMicroVM"
+        Effect   = "Allow"
+        Action   = ["lambda:ConnectMicrovm"]
+        Resource = "*"
+      },
+      {
+        Sid      = "WriteOnlyActionsRunnerWorkerLogs"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "${aws_cloudwatch_log_group.actions_runner_worker[0].arn}:*"
+      }
+      ], var.actions_runner_deployment.execution_role_arn == "" ? [] : [{
+        Sid      = "PassOnlyConfiguredMicroVMExecutionRole"
+        Effect   = "Allow"
+        Action   = ["iam:PassRole"]
+        Resource = var.actions_runner_deployment.execution_role_arn
+        Condition = {
+          StringEquals = { "iam:PassedToService" = "lambda.amazonaws.com" }
+        }
+        }], length(var.actions_runner_deployment.secret_kms_key_arns) == 0 ? [] : [{
+        Sid      = "DecryptOnlyConfiguredRunnerSecretKeys"
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt"]
+        Resource = var.actions_runner_deployment.secret_kms_key_arns
+        }], [{
+        Sid    = "CreateLambdaVpcNetworkInterfaces"
+        Effect = "Allow"
+        Action = ["ec2:CreateNetworkInterface"]
+        Resource = concat(
+          ["arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:network-interface/*"],
+          [for id in var.actions_runner_vpc_config.subnet_ids : "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:subnet/${id}"],
+          [for id in var.actions_runner_vpc_config.security_group_ids : "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:security-group/${id}"]
+        )
+        }, {
+        Sid      = "ManageLambdaVpcNetworkInterfaces"
+        Effect   = "Allow"
+        Action   = ["ec2:AssignPrivateIpAddresses", "ec2:DeleteNetworkInterface", "ec2:UnassignPrivateIpAddresses"]
+        Resource = ["arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:network-interface/*"]
+        }, {
+        Sid      = "DescribeLambdaVpcNetworkInterfaces"
+        Effect   = "Allow"
+        Action   = ["ec2:DescribeNetworkInterfaces"]
+        Resource = ["*"]
+    }])
+  })
+}
+
+resource "aws_lambda_function" "actions_runner_worker" {
+  count = var.actions_runner_deployment == null ? 0 : 1
+
+  function_name                  = "${var.resource_plane_id}-actions-runner-worker"
+  role                           = aws_iam_role.actions_runner_worker[0].arn
+  runtime                        = "provided.al2023"
+  handler                        = "bootstrap"
+  architectures                  = ["arm64"]
+  filename                       = var.actions_runner_deployment.zip_path
+  source_code_hash               = filebase64sha256(var.actions_runner_deployment.zip_path)
+  timeout                        = var.actions_runner_deployment.lambda_timeout_seconds
+  memory_size                    = var.actions_runner_deployment.lambda_memory_size
+  reserved_concurrent_executions = var.actions_runner_deployment.reserved_concurrent_executions
+
+  environment {
+    variables = {
+      HAKO_RESOURCE_PLANE_ID                               = var.resource_plane_id
+      HAKO_ACTIONS_RUNNER_BROKER_URL                       = var.actions_runner_deployment.broker_url
+      HAKO_ACTIONS_RUNNER_BROKER_CLIENT_CERT_SECRET_ARN    = var.actions_runner_deployment.broker_client_cert_secret_arn
+      HAKO_ACTIONS_RUNNER_BROKER_CLIENT_KEY_SECRET_ARN     = var.actions_runner_deployment.broker_client_key_secret_arn
+      HAKO_ACTIONS_RUNNER_BROKER_CA_SECRET_ARN             = var.actions_runner_deployment.broker_ca_secret_arn
+      HAKO_ACTIONS_RUNNER_BOOTSTRAP_SIGNING_KEY_SECRET_ARN = var.actions_runner_deployment.bootstrap_signing_key_arn
+      HAKO_ACTIONS_RUNNER_MICROVM_IMAGE_ARN                = var.actions_runner_deployment.microvm_image_arn
+      HAKO_ACTIONS_RUNNER_MICROVM_IMAGE_VERSION            = var.actions_runner_deployment.microvm_image_version
+      HAKO_ACTIONS_RUNNER_EXECUTION_ROLE_ARN               = var.actions_runner_deployment.execution_role_arn
+      HAKO_ACTIONS_RUNNER_EGRESS_CONNECTOR_ARN             = var.actions_runner_deployment.egress_connector_arn
+      HAKO_ACTIONS_RUNNER_MAXIMUM_DURATION_SECONDS         = tostring(var.actions_runner_deployment.maximum_duration_seconds)
+      HAKO_ACTIONS_RUNNER_STARTUP_TIMEOUT                  = "${var.actions_runner_deployment.startup_timeout_seconds}s"
+    }
+  }
+
+  vpc_config {
+    subnet_ids         = var.actions_runner_vpc_config.subnet_ids
+    security_group_ids = var.actions_runner_vpc_config.security_group_ids
+  }
+
+  lifecycle {
+    precondition {
+      condition = (split(":", var.actions_runner_deployment.microvm_image_arn)[3] == data.aws_region.current.name &&
+        split(":", var.actions_runner_deployment.microvm_image_arn)[4] == data.aws_caller_identity.current.account_id &&
+        split(":", var.actions_runner_deployment.egress_connector_arn)[3] == data.aws_region.current.name &&
+        split(":", var.actions_runner_deployment.egress_connector_arn)[4] == data.aws_caller_identity.current.account_id &&
+        alltrue([for arn in [var.actions_runner_deployment.broker_client_cert_secret_arn, var.actions_runner_deployment.broker_client_key_secret_arn,
+          var.actions_runner_deployment.broker_ca_secret_arn, var.actions_runner_deployment.bootstrap_signing_key_arn] :
+        split(":", arn)[3] == data.aws_region.current.name && split(":", arn)[4] == data.aws_caller_identity.current.account_id]) &&
+        (var.actions_runner_deployment.execution_role_arn == "" || split(":", var.actions_runner_deployment.execution_role_arn)[4] == data.aws_caller_identity.current.account_id) &&
+      alltrue([for arn in var.actions_runner_deployment.secret_kms_key_arns : split(":", arn)[3] == data.aws_region.current.name && split(":", arn)[4] == data.aws_caller_identity.current.account_id]))
+      error_message = "Actions Runner MicroVM image, egress connector, runtime Secrets, KMS keys, and optional execution role must remain in this Resource Plane account and Region."
+    }
+  }
+
+  depends_on = [aws_iam_role_policy.actions_runner_worker]
+  tags       = merge(local.common_tags, { "hako:component" = "actions-runner-worker" })
+}
+
+resource "aws_lambda_event_source_mapping" "actions_runner_worker" {
+  count = var.actions_runner_deployment == null ? 0 : 1
+
+  event_source_arn        = aws_sqs_queue.actions_runner_startup[0].arn
+  function_name           = aws_lambda_function.actions_runner_worker[0].arn
+  batch_size              = 1
+  function_response_types = ["ReportBatchItemFailures"]
+  enabled                 = true
+}
+
+resource "aws_cloudwatch_metric_alarm" "actions_runner_startup_dlq_visible" {
+  count = var.actions_runner_deployment == null ? 0 : 1
+
+  alarm_name          = "${var.resource_plane_id}-actions-runner-startup-dlq-visible"
+  alarm_description   = "Actions Runner startup records reached the DLQ; inspect the claim lease and broker history before redrive."
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = var.alarm_actions
+  ok_actions          = var.alarm_actions
+  dimensions          = { QueueName = aws_sqs_queue.actions_runner_startup_dlq[0].name }
+  tags                = merge(local.common_tags, { "hako:component" = "actions-runner-worker" })
+}
+
 resource "aws_cloudwatch_metric_alarm" "commands_dlq_visible" {
   alarm_name          = "${var.resource_plane_id}-commands-dlq-visible"
   alarm_description   = "Command messages reached the dead-letter queue; inspect and redrive only after diagnosis."

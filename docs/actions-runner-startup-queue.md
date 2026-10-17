@@ -1,8 +1,10 @@
 # Actions Runner startup queue
 
-Status: local Control Plane dispatch composition and Resource Plane consumer
-handler are implemented. Queue provisioning, event-source mapping, exact IAM,
-multi-Resource-Plane placement, and live AWS delivery are not implemented.
+Status: local Control Plane dispatch composition, Resource Plane consumer
+handler, and default-off Terraform configuration for the queue/DLQ, cross-
+account publisher policy, worker role, Lambda function, and partial-batch
+event-source mapping are implemented. AWS resources have not been applied.
+Multi-Resource-Plane placement and live AWS delivery remain unimplemented.
 Runner admission and dispatch remain opt-in.
 
 ## Flow
@@ -19,10 +21,10 @@ workflow_job.queued
 ```
 
 The scheduled Outbox Dispatcher runs the runner admission publisher only when
-`HAKO_ACTIONS_RUNNER_STARTUP_QUEUE_URL` is configured. The optional
-`HAKO_ACTIONS_RUNNER_STARTUP_QUEUE_REGION` selects the signing region; if
-unset, the Lambda's configured AWS region is used. The publisher claims at most
-10 admitted/recoverable jobs per invocation with a 10-minute lease. Each SQS
+one Resource Plane manifest entry has an
+`actions_runner_startup_queue_url`. The queue URL and signing region come from
+that validated entry. The publisher claims at most 10 admitted/recoverable jobs
+per invocation with a 10-minute lease. Each SQS
 message contains only `schema_version`, `integration_id`, `workflow_job_id`,
 `run_attempt`, and `claim_id`; Tenant, Repository, commit, labels, and
 credentials are resolved later by the trusted broker from the database.
@@ -35,9 +37,10 @@ consumer returns per-record failures, allowing successful records in a batch
 to remain acknowledged. FIFO queues use deterministic group/deduplication IDs;
 standard queues rely on claim fencing.
 
-This composition currently accepts one explicitly configured startup queue.
-It is suitable only for a single configured Resource Plane; it does not yet
-perform capacity/region placement or persist a selected Plane before dispatch.
+The Control Plane manifest accepts at most one Actions Runner startup queue.
+Multiple queue entries fail closed until durable placement exists. This is
+suitable only for a single configured Resource Plane; it does not yet perform
+capacity/region placement or persist a selected Plane before dispatch.
 Multi-plane routing must add a durable placement decision and per-Plane queue
 mapping before production use.
 
@@ -54,13 +57,11 @@ and ARM64 ZIP build are documented in
 
 ## Not yet deployable
 
-- Provision a dedicated encrypted startup queue and DLQ with a bounded
-  visibility timeout and redrive policy.
-- Grant the Control Plane Dispatcher only `sqs:SendMessage` to that exact queue;
-  grant the Resource Plane Lambda only receive/delete/visibility actions.
-- Add an opt-in event-source mapping with `ReportBatchItemFailures`, and prove
-  queue visibility exceeds Lambda timeout and startup operation bounds.
+- Review and approve the default-off Terraform queue/DLQ, queue policy, worker
+  IAM and event-source mapping; apply requires separate user approval.
+- Confirm queue visibility exceeds six times the configured Lambda timeout and
+  the Lambda timeout exceeds the runner startup operation timeout.
 - Add durable multi-Plane placement and queue selection; do not route by
   untrusted workflow labels.
-- Verify restricted egress, runner image/listener behavior, and cleanup under
-  approved AWS/GitHub test credentials before enabling admission.
+- Build and verify the runner MicroVM image/listener, restricted egress, and
+  cleanup under approved AWS/GitHub test credentials before enabling admission.

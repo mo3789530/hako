@@ -112,12 +112,15 @@ func buildHandler(ctx context.Context) (func(context.Context, events.CloudWatchE
 		return nil, fmt.Errorf("configure Outbox Dispatcher: %w", err)
 	}
 	run := runWithActionsRunner(engine.RunOnce, nil)
-	if runnerQueueURL := strings.TrimSpace(os.Getenv("HAKO_ACTIONS_RUNNER_STARTUP_QUEUE_URL")); runnerQueueURL != "" {
+	runnerQueue, hasRunnerQueue, err := configuredActionsRunnerQueue()
+	if err != nil {
+		pool.Close()
+		return nil, err
+	}
+	if hasRunnerQueue {
 		runnerAWSConfig := awsCfg
-		if runnerQueueRegion := strings.TrimSpace(os.Getenv("HAKO_ACTIONS_RUNNER_STARTUP_QUEUE_REGION")); runnerQueueRegion != "" {
-			runnerAWSConfig.Region = runnerQueueRegion
-		}
-		runnerPublisher, err := actionsrunner.NewRunnerStartupSQSPublisher(sqs.NewFromConfig(runnerAWSConfig), runnerQueueURL)
+		runnerAWSConfig.Region = runnerQueue.Region
+		runnerPublisher, err := actionsrunner.NewRunnerStartupSQSPublisher(sqs.NewFromConfig(runnerAWSConfig), runnerQueue.ActionsRunnerStartupQueueURL)
 		if err != nil {
 			pool.Close()
 			return nil, fmt.Errorf("configure Actions runner startup SQS publisher: %w", err)
@@ -131,6 +134,18 @@ func buildHandler(ctx context.Context) (func(context.Context, events.CloudWatchE
 		run = runWithActionsRunner(engine.RunOnce, runnerDispatcher.DispatchOnce)
 	}
 	return handlerFor(run), nil
+}
+
+func configuredActionsRunnerQueue() (resourceplane.Registration, bool, error) {
+	manifestJSON := strings.TrimSpace(os.Getenv("HAKO_RESOURCE_PLANE_MANIFEST_JSON"))
+	if manifestJSON == "" {
+		return resourceplane.Registration{}, false, errors.New("HAKO_RESOURCE_PLANE_MANIFEST_JSON is required")
+	}
+	manifest, err := resourceplane.Parse([]byte(manifestJSON))
+	if err != nil {
+		return resourceplane.Registration{}, false, fmt.Errorf("parse Resource Plane manifest for Actions runner queue: %w", err)
+	}
+	return manifest.ActionsRunnerStartupQueue()
 }
 
 type queueConfiguration struct {
