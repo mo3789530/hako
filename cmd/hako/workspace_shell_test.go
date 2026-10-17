@@ -78,7 +78,7 @@ func (forwardTestDialer) OpenVSCode(context.Context, workspacesession.Claims) (i
 	return nil, workspacegateway.ErrClientConfig
 }
 func (forwardTestDialer) OpenPort(_ context.Context, _ workspacesession.Claims, port uint16) (io.ReadWriteCloser, error) {
-	if port != 5432 {
+	if port != 5432 && port != 22 {
 		return nil, workspacegateway.ErrClientConfig
 	}
 	client, runtime := net.Pipe()
@@ -96,6 +96,98 @@ func (forwardTestDialer) OpenPort(_ context.Context, _ workspacesession.Claims, 
 		}
 	}()
 	return client, nil
+}
+
+type sshProxyOutput struct {
+	chunks chan []byte
+}
+
+func (w sshProxyOutput) Write(data []byte) (int, error) {
+	w.chunks <- append([]byte(nil), data...)
+	return len(data), nil
+}
+
+func TestWorkspaceSSHProxyCLIUsesDedicatedTicketAndRevokes(t *testing.T) {
+	previousGetter := cliCredentialGetter
+	cliCredentialGetter = workspaceShellCredentials(`{"access_token":"cli-access","token_type":"Bearer","expires_in":3600,"stored_at":"` + time.Now().UTC().Format(time.RFC3339) + `"}`)
+	t.Cleanup(func() { cliCredentialGetter = previousGetter })
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuer := &workspacesession.Ed25519Issuer{KeyID: "ssh-proxy-test", PrivateKey: privateKey, TTL: time.Minute}
+	ticket, claims, err := issuer.Issue(workspacesession.Claims{UserID: "usr_cli", TenantID: "tenant_cli", WorkspaceID: "ws_cli",
+		ResourcePlane: "rp_cli", Permissions: []workspacesession.Permission{workspacesession.PermissionSSHProxy}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var revoked atomic.Int32
+	apiServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer cli-access" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if r.Method == http.MethodDelete {
+			revoked.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		var request struct {
+			Permissions []workspacesession.Permission `json:"permissions"`
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/tenants/tenant_cli/workspaces/ws_cli/sessions" ||
+			json.NewDecoder(r.Body).Decode(&request) != nil || len(request.Permissions) != 1 || request.Permissions[0] != workspacesession.PermissionSSHProxy {
+			http.Error(w, "unexpected SSH session request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(api.WorkspaceSession{SessionID: domain.SessionID(claims.TicketID), Ticket: ticket,
+			ExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC(), Permissions: []workspacesession.Permission{workspacesession.PermissionSSHProxy}})
+	}))
+	defer apiServer.Close()
+	gateway, err := workspacegateway.New(workspacegateway.Config{ResourcePlaneID: "rp_cli",
+		Verifier: &workspacesession.Verifier{Keys: map[string]ed25519.PublicKey{"ssh-proxy-test": publicKey}, Audience: workspacesession.AudienceGateway, Lookup: activeWorkspaceSession{}},
+		Dialer:   forwardTestDialer{}, MaxConnections: 1, MaxConnectionsPerWorkspace: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatewayServer := httptest.NewTLSServer(gateway.Handler())
+	defer gatewayServer.Close()
+	gatewayTLS := gatewayServer.Client().Transport.(*http.Transport).TLSClientConfig
+	t.Setenv("HAKO_API_URL", apiServer.URL)
+	t.Setenv("HAKO_GATEWAY_URL", gatewayServer.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	stdin, stdinWriter := io.Pipe()
+	output := sshProxyOutput{chunks: make(chan []byte, 1)}
+	done := make(chan error, 1)
+	go func() {
+		done <- workspaceSSHProxyWith(ctx, "tenant_cli", "ws_cli", stdin, output, apiServer.Client(), &tls.Config{RootCAs: gatewayTLS.RootCAs})
+	}()
+	if _, err := stdinWriter.Write([]byte("ssh-client-protocol")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case chunk := <-output.chunks:
+		if string(chunk) != "ssh-client-protocol" {
+			t.Fatalf("SSH proxy output=%q", chunk)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("SSH proxy did not relay bytes through Gateway")
+	}
+	cancel()
+	_ = stdinWriter.Close()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("cancelled SSH proxy returned error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("SSH proxy did not stop after cancellation")
+	}
+	if revoked.Load() != 1 {
+		t.Fatalf("SSH proxy ticket revoke count=%d, want 1", revoked.Load())
+	}
 }
 
 type allowForwardTestPort struct{}

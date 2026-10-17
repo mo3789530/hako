@@ -9,7 +9,7 @@ from the database rather than accepted from the request.
 
 Tickets use Ed25519 and are audience-bound to `hako-gateway`. Claims bind the
 user, Tenant, Workspace, Resource Plane, allowed channels (`shell`, `vscode`,
-`port-forward`), issue/expiry times, and a random 192-bit ticket ID. Maximum
+`port-forward`, `ssh-proxy`), issue/expiry times, and a random 192-bit ticket ID. Maximum
 TTL is five minutes. API issuance persists the ticket ID and permissions in
 the existing `sessions` table and appends an audit event in the same
 transaction. The response ticket is never included in audit details. A

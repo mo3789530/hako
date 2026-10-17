@@ -93,6 +93,42 @@ func TestGatewayWSShellRoutesOnlyFromSignedTicketAndRelaysBytes(t *testing.T) {
 	}
 }
 
+func TestGatewaySSHProxyUsesDedicatedPermissionAndFixedLoopbackPort22(t *testing.T) {
+	gateway, server, _, dialer := newTestGateway(t, Config{MaxConnections: 1, MaxConnectionsPerWorkspace: 1})
+	defer server.Close()
+	token := issueTestTicket(t, []workspacesession.Permission{workspacesession.PermissionSSHProxy})
+	client, err := dialWorkspace(server.URL, "/v1/workspaces/ws_gateway_a/ssh", token, "https://ide.example.test")
+	if err != nil {
+		t.Fatalf("dial SSH proxy WSS: %v", err)
+	}
+	if err := websocket.Message.Send(client, []byte("ssh-protocol-bytes")); err != nil {
+		t.Fatal(err)
+	}
+	var received []byte
+	if err := websocket.Message.Receive(client, &received); err != nil {
+		t.Fatalf("receive SSH proxy stream: %v", err)
+	}
+	if string(received) != "ssh-protocol-bytes" {
+		t.Fatalf("SSH proxy payload=%q", received)
+	}
+	_ = client.Close()
+	waitForConnections(t, gateway, 0)
+	if dialer.port.Load() != 22 || dialer.opens.Load() != 1 {
+		t.Fatalf("SSH proxy destination port=%d opens=%d, want fixed port 22 and one stream", dialer.port.Load(), dialer.opens.Load())
+	}
+}
+
+func TestGatewaySSHProxyRejectsTicketWithoutDedicatedPermission(t *testing.T) {
+	_, server, shellToken, dialer := newTestGateway(t, Config{MaxConnections: 1, MaxConnectionsPerWorkspace: 1})
+	defer server.Close()
+	if _, err := dialWorkspace(server.URL, "/v1/workspaces/ws_gateway_a/ssh", shellToken, "https://ide.example.test"); err == nil {
+		t.Fatal("SSH proxy accepted a ticket without ssh-proxy permission")
+	}
+	if dialer.opens.Load() != 0 {
+		t.Fatalf("runtime was opened before permission validation: %d", dialer.opens.Load())
+	}
+}
+
 func TestGatewayClientDialsTLSStreamWithShortLivedTicket(t *testing.T) {
 	_, server, token, _ := newTestGateway(t, Config{MaxConnections: 1, MaxConnectionsPerWorkspace: 1})
 	defer server.Close()
@@ -112,6 +148,23 @@ func TestGatewayClientDialsTLSStreamWithShortLivedTicket(t *testing.T) {
 	}
 	if string(got) != "hako-cli-stream" {
 		t.Fatalf("Gateway client received %q", got)
+	}
+}
+
+func TestGatewayClientUsesSSHProxyRouteWithoutCallerPort(t *testing.T) {
+	_, server, _, _ := newTestGateway(t, Config{MaxConnections: 1, MaxConnectionsPerWorkspace: 1})
+	defer server.Close()
+	token := issueTestTicket(t, []workspacesession.Permission{workspacesession.PermissionSSHProxy})
+	serverTransport := server.Client().Transport.(*http.Transport)
+	connection, err := Dial(context.Background(), server.URL, domain.WorkspaceID("ws_gateway_a"), workspacesession.PermissionSSHProxy, 0,
+		token, &tls.Config{RootCAs: serverTransport.TLSClientConfig.RootCAs})
+	if err != nil {
+		t.Fatalf("dial SSH proxy endpoint: %v", err)
+	}
+	_ = connection.Close()
+	if _, err := Dial(context.Background(), server.URL, domain.WorkspaceID("ws_gateway_a"), workspacesession.PermissionSSHProxy, 22,
+		token, &tls.Config{RootCAs: serverTransport.TLSClientConfig.RootCAs}); err == nil {
+		t.Fatal("SSH proxy client must not accept a caller-selected port")
 	}
 }
 

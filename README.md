@@ -1604,8 +1604,8 @@ Hakoは最初は **Lambda MicroVMを使ったRemote Development Environment** �
 
 - [ ] 短命Hako Session Ticketの発行・署名・失効・権限検証を実装する（Ed25519の5分ticketとRBAC確認付き発行/失効API、HTTPS/HMAC active-session API/clientとPostgreSQL照合、WSS-to-PTY/localhost port-forward local E2Eは実装。production key provisioning/rotation、Gateway client配備、fleet-wide revocationは未完了）。[Workspace Session Ticket](docs/workspace-session-ticket.md)。
 - [ ] Gatewayを常駐サービスとして配置し、HTTPS/WSSでSession検証・ルーティングする（TLS-only WSS coreのshell/VS Code/port route、ticket/active-session検証、path/Origin/port policy、in-process connection/frame limits、実PTY接続、allowlisted `127.0.0.1` port-forward、同一ticketの同時再利用拒否と切断後再接続をlocal E2E済み。production key/Client設定、multi-Workspace Resource Plane router、VS Code adapter、fleet deployment/limits/metricsは未完了）。[Workspace HTTPS/WSS Gateway](docs/workspace-gateway.md)。
-- [ ] CLIの`hako ssh-proxy`とVS Code Remote SSH接続を実装する。
-- [ ] CLIのshell、port forward、file transferを実装する（`hako shell <tenant-id> <workspace-id>`のSession API→TLS WSS→PTY relayとcancel時close/revoke、および`hako forward <tenant-id> <workspace-id> <remote-port> [local-port]`の127.0.0.1待受・接続ごとの短命ticket/TLS WSS relay/revokeをlocal実装・race test済み。file transferは未実装）。[Workspace CLI](docs/workspace-cli.md)
+- [ ] VS Code Remote SSH接続を実装する（`hako ssh-proxy`のlocal TLS/WSS ProxyCommandは実装。MicroVM sshd/router deploymentは未検証）。
+- [ ] CLIのshell、SSH proxy、port forward、file transferを実装する（`hako shell`/`hako ssh-proxy`のSession API→TLS WSS→固定PTY/loopback SSH、および`hako forward`の127.0.0.1待受・接続ごとの短命ticket/TLS WSS relay/revokeをlocal実装・race test済み。file transferと実MicroVM接続は未実装）。[Workspace CLI](docs/workspace-cli.md)
 - [ ] 切断後もPTY/processを維持し、Grace Period後にSuspendするLifecycleを実装する。
 - [ ] レート制限、接続上限、監査記録、Gatewayヘルス監視を実装する。
 

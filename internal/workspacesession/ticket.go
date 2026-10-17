@@ -37,6 +37,7 @@ const (
 	PermissionShell       Permission = "shell"
 	PermissionVSCode      Permission = "vscode"
 	PermissionPortForward Permission = "port-forward"
+	PermissionSSHProxy    Permission = "ssh-proxy"
 )
 
 type Claims struct {
@@ -150,13 +151,13 @@ func Verify(token string, keys map[string]ed25519.PublicKey, audience string, no
 }
 
 func validPermissions(permissions []Permission) bool {
-	if len(permissions) == 0 || len(permissions) > 3 {
+	if len(permissions) == 0 || len(permissions) > 4 {
 		return false
 	}
 	seen := make(map[Permission]struct{}, len(permissions))
 	for _, permission := range permissions {
 		switch permission {
-		case PermissionShell, PermissionVSCode, PermissionPortForward:
+		case PermissionShell, PermissionVSCode, PermissionPortForward, PermissionSSHProxy:
 		default:
 			return false
 		}

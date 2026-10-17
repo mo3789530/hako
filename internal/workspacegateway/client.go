@@ -45,6 +45,11 @@ func Dial(ctx context.Context, gatewayURL string, workspaceID domain.WorkspaceID
 			return nil, ErrClientConfig
 		}
 		path += "/vscode"
+	case workspacesession.PermissionSSHProxy:
+		if port != 0 {
+			return nil, ErrClientConfig
+		}
+		path += "/ssh"
 	case workspacesession.PermissionPortForward:
 		if port == 0 {
 			return nil, ErrClientConfig

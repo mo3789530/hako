@@ -2,6 +2,8 @@
 
 Current update: Workspace PTY is connected to the TLS WSS Gateway through a signed-Workspace-bound adapter; shell command/output and allowlisted loopback port-forward E2E pass. The older status line below predates this connection; multi-Workspace routing, VS Code, production key distribution, and MicroVM `/dev/pts` validation remain.
 
+SSH bridge update: Task 47 adds a separate `ssh-proxy` session permission and a Gateway route that only dials `127.0.0.1:22`; `hako ssh-proxy` relays the OpenSSH ProxyCommand over TLS/WSS. This is local protocol evidence only: Workspace image `sshd` startup/configuration and real MicroVM routing are unverified. TCP/22 is not externally exposed.
+
 Status: In Progress (Task 43 has local runtime controller/fencing/recovery E2E in Tasks 80–83. The workload controller mints five-minute Lambda endpoint tokens and operation-scoped Ed25519 tickets; bounded protocol-v1 HTTP client/handler and a fixed Go-test process backend cover start/status/result locally. A `cmd/hako-agent` listener executable composes the filesystem Agent on port 8080 and loads image-owned public verification keys. A Lambda MicroVM image ZIP packager and `/ready`/`/validate`/`/run` hook handler now bind each Agent to the provider MicroVM ID and immutable attempt/execution metadata. A separate Linux Workspace shell runtime now provides bounded PTY sessions, fixed `/bin/sh`, minimal environment, session expiry/limits, resize, and process-group cleanup; it is not yet connected to Gateway tickets/WebSocket. General process APIs, actual Lambda image build/run, production key distribution, and image/network PoC remain. Priority: P1.
 
 ## Goal

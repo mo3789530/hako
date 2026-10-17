@@ -95,6 +95,7 @@ func (g *Gateway) Handler() http.Handler {
 		_, _ = io.WriteString(w, `{"status":"ok"}`)
 	})
 	mux.HandleFunc("GET /v1/workspaces/{workspace_id}/shell", g.serveShell)
+	mux.HandleFunc("GET /v1/workspaces/{workspace_id}/ssh", g.serveSSH)
 	mux.HandleFunc("GET /v1/workspaces/{workspace_id}/vscode", g.serveVSCode)
 	mux.HandleFunc("GET /v1/workspaces/{workspace_id}/ports/{port}", g.servePort)
 	return noStore(mux)
@@ -117,6 +118,14 @@ func (g *Gateway) serveShell(w http.ResponseWriter, r *http.Request) {
 func (g *Gateway) serveVSCode(w http.ResponseWriter, r *http.Request) {
 	g.serve(w, r, workspacesession.PermissionVSCode, func(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
 		return g.config.Dialer.OpenVSCode(ctx, claims)
+	})
+}
+
+func (g *Gateway) serveSSH(w http.ResponseWriter, r *http.Request) {
+	g.serve(w, r, workspacesession.PermissionSSHProxy, func(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
+		// SSH remains private to the Workspace. The route fixes the destination
+		// to loopback port 22; the caller cannot supply a host or port.
+		return g.config.Dialer.OpenPort(ctx, claims, 22)
 	})
 }
 

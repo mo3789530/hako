@@ -10,6 +10,7 @@ rejected so tickets or client routing hints cannot be smuggled through URLs.
 Routes are:
 
 - `GET /v1/workspaces/{workspace_id}/shell` (`shell` permission)
+- `GET /v1/workspaces/{workspace_id}/ssh` (`ssh-proxy` permission; fixed loopback TCP port 22)
 - `GET /v1/workspaces/{workspace_id}/vscode` (`vscode` permission)
 - `GET /v1/workspaces/{workspace_id}/ports/{port}` (`port-forward` permission)
 - `GET /healthz` (unauthenticated health probe)
@@ -23,7 +24,9 @@ opens the private runtime connection; the Gateway itself does not proxy bytes
 through the Control Plane or query Aurora DSQL. `workspaceagent.GatewayDialer`
 is a local adapter for one Workspace's fixed-shell PTY manager and private
 ports: it checks the signed Workspace ID, opens `/bin/sh` in that Workspace,
-and dials only `127.0.0.1:{port}` after Gateway `PortAuthorizer` approval. It
+and dials only `127.0.0.1:{port}` after Gateway `PortAuthorizer` approval. The
+SSH route has a separate signed permission and always dials `127.0.0.1:22`; it
+does not use the caller-controlled port route or public SSH ingress. It
 rejects VS Code until that runtime adapter is supplied. A Resource Plane
 router still needs to map signed Workspace claims to the right runtime;
 caller-provided hostnames are never accepted. Active session/revocation state
@@ -43,7 +46,8 @@ coordination and load-balancer/API throttles. TLS termination, private Gateway-t
 and task/service health wiring are deployment responsibilities.
 
 Local WSS tests exercise shell byte relay and a Gateway-to-real-local-PTY
-command, a port-forward byte round-trip to an ephemeral `127.0.0.1` listener,
+command, dedicated SSH-proxy permission and fixed `127.0.0.1:22` routing, a
+port-forward byte round-trip to an ephemeral `127.0.0.1` listener,
 wrong channel/Workspace/Origin, plaintext rejection, denied/allowed port
 forwarding, per-Workspace connection cap, concurrent ticket replay rejection
 with reconnect-after-close, upstream failure, and oversized frames. The concrete authenticated

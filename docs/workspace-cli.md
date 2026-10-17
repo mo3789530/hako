@@ -7,6 +7,7 @@ hako login
 export HAKO_API_URL=https://api.example.test
 export HAKO_GATEWAY_URL=https://gateway.example.test
 hako shell <tenant-id> <workspace-id>
+hako ssh-proxy <tenant-id> <workspace-id>
 ```
 
 `hako shell` uses the saved Cognito access token to ask the Control Plane for a
@@ -18,6 +19,23 @@ ticket in memory and does not print it. On normal stream completion, input EOF,
 or interruption, it attempts to revoke the session with a bounded cleanup
 request. `Ctrl-C` disconnects; terminal EOF (`Ctrl-D`) sends EOT to the remote
 shell. A new invocation obtains a new ticket.
+
+Configure OpenSSH or VS Code Remote SSH to use Hako as a ProxyCommand:
+
+```sshconfig
+Host hako-ws-api-dev
+    HostName hako-workspace
+    User hako
+    ProxyCommand hako ssh-proxy <tenant-id> <workspace-id>
+```
+
+`hako ssh-proxy` gets a short-lived ticket with the dedicated `ssh-proxy`
+permission and relays raw SSH bytes over TLS/WSS. The Gateway routes this
+permission only to the fixed Workspace-local `127.0.0.1:22`; the client cannot
+choose a host or port. TCP/22 remains private and is never exposed publicly.
+The SSH daemon must be present and configured inside the Workspace image. The
+ProxyCommand emits no protocol text on stdout; diagnostics go to stderr. It
+attempts session revocation when the stream closes or the process is cancelled.
 
 Forward one allowed Workspace loopback service port with:
 
@@ -66,12 +84,13 @@ audit events.
 
 The Gateway URL must be an HTTPS/WSS origin without a path, query, or embedded
 credentials. TLS verification remains enabled. The client constructs the route
-from the Workspace ID and the fixed `shell` permission; callers cannot choose a
-runtime hostname or destination port.
+from the Workspace ID and the command's fixed permission/channel; callers
+cannot choose a runtime hostname or destination port. The SSH route is always
+the dedicated `ssh-proxy` channel to port 22.
 
 The shell command is currently a single-stream transport. It does not yet
-provide a reconnectable PTY, terminal resize signaling, SSH ProxyCommand/VS Code
-Remote SSH, or file transfer. The Service Catalog API/CLI currently persists
+provide a reconnectable PTY, terminal resize signaling, a production
+SSH/VS Code runtime router, or file transfer. The Service Catalog API/CLI currently persists
 desired state only; runtime start/health/stop/remove execution and
 persistent-data behavior are not yet implemented. The local forwarding CLI and Gateway protocol have a local
 E2E, but production Resource Plane routing remains unfinished. Deployment

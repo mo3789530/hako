@@ -156,6 +156,15 @@ func TestWorkspaceSessionAPIEnforcesRBACPersistsAndRevokesTickets(t *testing.T) 
 	if err := pool.QueryRow(ctx, `SELECT user_id FROM sessions WHERE id = $1 AND permissions_json = '["port-forward","shell"]'`, response.SessionID).Scan(&storedUser); err != nil || storedUser != "usr_session_owner" {
 		t.Fatalf("session was not persisted with canonical permissions: user=%q error=%v", storedUser, err)
 	}
+	sshCreated := request("session-owner", http.MethodPost, basePath, `{"permissions":["ssh-proxy"]}`)
+	var sshResponse createWorkspaceSessionResponse
+	if sshCreated.Code != http.StatusCreated || json.Unmarshal(sshCreated.Body.Bytes(), &sshResponse) != nil || len(sshResponse.Permissions) != 1 || sshResponse.Permissions[0] != workspacesession.PermissionSSHProxy {
+		t.Fatalf("create dedicated SSH proxy session = HTTP %d %s", sshCreated.Code, sshCreated.Body.String())
+	}
+	sshClaims, err := workspacesession.Verify(sshResponse.Ticket, map[string]ed25519.PublicKey{"session-key-v1": ticketPublic}, workspacesession.AudienceGateway, time.Now())
+	if err != nil || workspacesession.AuthorizeChannel(sshClaims, workspacesession.PermissionSSHProxy) != nil || workspacesession.AuthorizeChannel(sshClaims, workspacesession.PermissionPortForward) == nil {
+		t.Fatalf("SSH proxy ticket must be narrowly scoped: claims=%+v error=%v", sshClaims, err)
+	}
 	var expiredCount int
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM sessions WHERE id = $1`, "000000000000000000000000000000000000000000000000").Scan(&expiredCount); err != nil || expiredCount != 0 {
 		t.Fatalf("expired sessions were not pruned: count=%d error=%v", expiredCount, err)

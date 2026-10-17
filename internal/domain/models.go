@@ -166,6 +166,7 @@ const (
 	SessionPermissionVSCode      SessionPermission = "vscode"
 	SessionPermissionShell       SessionPermission = "shell"
 	SessionPermissionPortForward SessionPermission = "port-forward"
+	SessionPermissionSSHProxy    SessionPermission = "ssh-proxy"
 )
 
 type Session struct {

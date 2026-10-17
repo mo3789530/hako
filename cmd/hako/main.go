@@ -70,6 +70,13 @@ func main() {
 			fmt.Fprintf(os.Stderr, "hako shell: %v\n", err)
 			os.Exit(1)
 		}
+	case len(os.Args) == 4 && os.Args[1] == "ssh-proxy":
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		if err := workspaceSSHProxy(ctx, os.Args[2], os.Args[3], os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "hako ssh-proxy: %v\n", err)
+			os.Exit(1)
+		}
 	case (len(os.Args) == 5 || len(os.Args) == 6) && os.Args[1] == "forward":
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
@@ -239,7 +246,7 @@ func main() {
 		}
 		fmt.Fprintf(os.Stdout, "Workspace %s accepted: desired=%s observed=%s (operation=%s state=%s, request-key=%s)\n", result.Workspace.Workspace.ID, result.Workspace.Status.DesiredState, result.Workspace.Status.ObservedState, result.OperationID, result.OperationState, idempotencyKey)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: hako login | hako api health | hako tenant membership <tenant-id> | hako tenant placement-policy get <tenant-id> | hako tenant placement-policy set <tenant-id> '<policy-json>' | hako create <tenant-id> <workspace-name> [--idempotency-key <key>] | hako list <tenant-id> [limit] [offset] | hako get <tenant-id> <workspace-id> | hako shell <tenant-id> <workspace-id> | hako forward <tenant-id> <workspace-id> <remote-port> [local-port] | hako suspend|resume|delete <tenant-id> <workspace-id> [--idempotency-key <key>] | hako workload create --tenant <id> --installation <id> --repository <id> --commit <sha> [--ref <ref>] [--timeout-seconds <seconds>] [--idempotency-key <key>] | hako workload list <tenant-id> [limit] [offset] | hako workload show <tenant-id> <run-id> | hako workload cancel <tenant-id> <run-id>")
+		fmt.Fprintln(os.Stderr, "usage: hako login | hako api health | hako tenant membership <tenant-id> | hako tenant placement-policy get <tenant-id> | hako tenant placement-policy set <tenant-id> '<policy-json>' | hako create <tenant-id> <workspace-name> [--idempotency-key <key>] | hako list <tenant-id> [limit] [offset] | hako get <tenant-id> <workspace-id> | hako shell <tenant-id> <workspace-id> | hako ssh-proxy <tenant-id> <workspace-id> | hako forward <tenant-id> <workspace-id> <remote-port> [local-port] | hako suspend|resume|delete <tenant-id> <workspace-id> [--idempotency-key <key>] | hako workload create --tenant <id> --installation <id> --repository <id> --commit <sha> [--ref <ref>] [--timeout-seconds <seconds>] [--idempotency-key <key>] | hako workload list <tenant-id> [limit] [offset] | hako workload show <tenant-id> <run-id> | hako workload cancel <tenant-id> <run-id>")
 		os.Exit(2)
 	}
 }
@@ -420,6 +427,60 @@ func workspaceShellWith(ctx context.Context, tenantID, workspaceID string, stdin
 	}()
 	if _, err := io.Copy(stdout, connection); err != nil && ctx.Err() == nil && !errors.Is(err, io.EOF) {
 		return fmt.Errorf("Workspace shell stream: %w", err)
+	}
+	return nil
+}
+
+// workspaceSSHProxy is an OpenSSH ProxyCommand transport. It tunnels raw SSH
+// bytes over TLS/WSS to the fixed Workspace-local 127.0.0.1:22 endpoint.
+func workspaceSSHProxy(ctx context.Context, tenantID, workspaceID string, stdin io.Reader, stdout io.Writer) error {
+	return workspaceSSHProxyWith(ctx, tenantID, workspaceID, stdin, stdout, nil, nil)
+}
+
+func workspaceSSHProxyWith(ctx context.Context, tenantID, workspaceID string, stdin io.Reader, stdout io.Writer, apiHTTPClient *http.Client, gatewayTLSConfig *tls.Config) (returnErr error) {
+	if ctx == nil || stdin == nil || stdout == nil {
+		return errors.New("SSH proxy input, output, and context are required")
+	}
+	accessToken, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
+	if err != nil {
+		return err
+	}
+	apiURL, gatewayURL := os.Getenv("HAKO_API_URL"), os.Getenv("HAKO_GATEWAY_URL")
+	if apiURL == "" {
+		return errors.New("HAKO_API_URL is required")
+	}
+	if gatewayURL == "" {
+		return errors.New("HAKO_GATEWAY_URL is required")
+	}
+	session, err := api.CreateWorkspaceSession(ctx, apiURL, accessToken, tenantID, workspaceID,
+		[]workspacesession.Permission{workspacesession.PermissionSSHProxy}, apiHTTPClient)
+	if err != nil {
+		return fmt.Errorf("request Workspace SSH proxy session: %w", err)
+	}
+	defer func() {
+		revokeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := api.RevokeWorkspaceSession(revokeCtx, apiURL, accessToken, tenantID, workspaceID, string(session.SessionID), apiHTTPClient); err != nil && returnErr == nil {
+			returnErr = fmt.Errorf("revoke Workspace SSH proxy session: %w", err)
+		}
+	}()
+	connection, err := workspacegateway.Dial(ctx, gatewayURL, domain.WorkspaceID(workspaceID), workspacesession.PermissionSSHProxy, 0,
+		session.Ticket, gatewayTLSConfig)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return err
+	}
+	defer connection.Close()
+	stopClose := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	defer stopClose()
+	go func() {
+		_, _ = io.Copy(connection, stdin)
+		_ = connection.Close()
+	}()
+	if _, err := io.Copy(stdout, connection); err != nil && ctx.Err() == nil && !errors.Is(err, io.EOF) {
+		return fmt.Errorf("Workspace SSH proxy stream: %w", err)
 	}
 	return nil
 }
