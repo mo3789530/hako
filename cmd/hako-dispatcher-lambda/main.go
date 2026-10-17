@@ -14,9 +14,11 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/mo3789530/hako/internal/actionsrunner"
 	"github.com/mo3789530/hako/internal/dispatcher"
 	"github.com/mo3789530/hako/internal/resourceplane"
 	"github.com/mo3789530/hako/internal/store/dsql"
+	"github.com/mo3789530/hako/internal/store/githubwebhook"
 	"github.com/mo3789530/hako/internal/store/transaction"
 )
 
@@ -30,6 +32,26 @@ func main() {
 }
 
 type runOnce func(context.Context) (dispatcher.Stats, error)
+
+type runnerDispatchOnce func(context.Context) (actionsrunner.RunnerStartupDispatchStats, error)
+
+func runWithActionsRunner(outboxRun runOnce, runnerRun runnerDispatchOnce) runOnce {
+	return func(ctx context.Context) (dispatcher.Stats, error) {
+		stats, err := outboxRun(ctx)
+		if err != nil {
+			return stats, err
+		}
+		if runnerRun == nil {
+			return stats, nil
+		}
+		runnerStats, err := runnerRun(ctx)
+		log.Printf("Actions runner dispatch complete (claimed=%d published=%d failed=%d)", runnerStats.Claimed, runnerStats.Published, runnerStats.Failed)
+		if err != nil {
+			return stats, fmt.Errorf("dispatch Actions runner startup jobs: %w", err)
+		}
+		return stats, nil
+	}
+}
 
 func handlerFor(run runOnce) func(context.Context, events.CloudWatchEvent) error {
 	return func(ctx context.Context, _ events.CloudWatchEvent) error {
@@ -89,7 +111,26 @@ func buildHandler(ctx context.Context) (func(context.Context, events.CloudWatchE
 		pool.Close()
 		return nil, fmt.Errorf("configure Outbox Dispatcher: %w", err)
 	}
-	return handlerFor(engine.RunOnce), nil
+	run := runWithActionsRunner(engine.RunOnce, nil)
+	if runnerQueueURL := strings.TrimSpace(os.Getenv("HAKO_ACTIONS_RUNNER_STARTUP_QUEUE_URL")); runnerQueueURL != "" {
+		runnerAWSConfig := awsCfg
+		if runnerQueueRegion := strings.TrimSpace(os.Getenv("HAKO_ACTIONS_RUNNER_STARTUP_QUEUE_REGION")); runnerQueueRegion != "" {
+			runnerAWSConfig.Region = runnerQueueRegion
+		}
+		runnerPublisher, err := actionsrunner.NewRunnerStartupSQSPublisher(sqs.NewFromConfig(runnerAWSConfig), runnerQueueURL)
+		if err != nil {
+			pool.Close()
+			return nil, fmt.Errorf("configure Actions runner startup SQS publisher: %w", err)
+		}
+		runnerDispatcher, err := actionsrunner.NewRunnerStartupDispatcher(githubwebhook.ActionsRunnerJobClaimer{Pool: pool, Policy: transaction.DefaultPolicy()},
+			runnerPublisher, actionsrunner.RunnerStartupDispatcherConfig{BatchSize: 10, LeaseDuration: 10 * time.Minute})
+		if err != nil {
+			pool.Close()
+			return nil, fmt.Errorf("configure Actions runner startup dispatcher: %w", err)
+		}
+		run = runWithActionsRunner(engine.RunOnce, runnerDispatcher.DispatchOnce)
+	}
+	return handlerFor(run), nil
 }
 
 type queueConfiguration struct {

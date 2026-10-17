@@ -17,6 +17,14 @@ type RunnerStartupHandler struct {
 	worker *RunnerStartupWorker
 }
 
+type runnerStartupMessage struct {
+	SchemaVersion int    `json:"schema_version"`
+	IntegrationID string `json:"integration_id"`
+	WorkflowJobID int64  `json:"workflow_job_id"`
+	RunAttempt    int64  `json:"run_attempt"`
+	ClaimID       string `json:"claim_id"`
+}
+
 func NewRunnerStartupHandler(worker *RunnerStartupWorker) (*RunnerStartupHandler, error) {
 	if worker == nil {
 		return nil, ErrInvalidRunnerLaunch
@@ -49,12 +57,17 @@ func decodeRunnerStartupRequest(body string) (githubbroker.ActionsRunnerRegistra
 	}
 	decoder := json.NewDecoder(io.LimitReader(bytes.NewBufferString(body), 2049))
 	decoder.DisallowUnknownFields()
-	var request githubbroker.ActionsRunnerRegistrationRequest
-	if decoder.Decode(&request) != nil || !validActionsRunnerBootstrapRequest(request) {
+	var message runnerStartupMessage
+	if decoder.Decode(&message) != nil || message.SchemaVersion != 1 {
 		return githubbroker.ActionsRunnerRegistrationRequest{}, ErrInvalidRunnerStartupEvent
 	}
 	var trailing any
 	if decoder.Decode(&trailing) != io.EOF {
+		return githubbroker.ActionsRunnerRegistrationRequest{}, ErrInvalidRunnerStartupEvent
+	}
+	request := githubbroker.ActionsRunnerRegistrationRequest{IntegrationID: message.IntegrationID, WorkflowJobID: message.WorkflowJobID,
+		RunAttempt: message.RunAttempt, ClaimID: message.ClaimID}
+	if !validActionsRunnerBootstrapRequest(request) {
 		return githubbroker.ActionsRunnerRegistrationRequest{}, ErrInvalidRunnerStartupEvent
 	}
 	return request, nil

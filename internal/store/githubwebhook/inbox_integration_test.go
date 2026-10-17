@@ -354,17 +354,9 @@ func TestActionsRunnerAdmissionRequiresSeparateRepositoryOptInAndDeduplicatesJob
 	if err := secondClaimTx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	recoveryTx, err := pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	recovered, ok, err := ClaimNextActionsRunnerJob(ctx, recoveryTx, "controller-recovery", now.Add(40*time.Second), 30*time.Second)
+	recovered, ok, err := (ActionsRunnerJobClaimer{Pool: pool, Policy: transaction.DefaultPolicy()}).ClaimNext(ctx, "controller-recovery", now.Add(40*time.Second), 30*time.Second)
 	if err != nil || !ok || recovered.ClaimID != "controller-recovery" || recovered.ClaimAttempts != 2 {
-		_ = recoveryTx.Rollback(ctx)
 		t.Fatalf("expired lease recovery=%+v ok=%v error=%v", recovered, ok, err)
-	}
-	if err := recoveryTx.Commit(ctx); err != nil {
-		t.Fatal(err)
 	}
 	stats, err = ProcessBatchWithActionsRunnerAdmissions(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(2*time.Second), nil)
 	if err != nil || stats != (BatchStats{}) {

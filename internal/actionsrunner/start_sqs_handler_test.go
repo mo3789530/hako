@@ -38,7 +38,7 @@ func TestRunnerStartupHandlerReturnsOnlyFailedSQSRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	goodBody := `{"integration_id":"integration_runner","workflow_job_id":9901,"run_attempt":1,"claim_id":"runner-claim-1"}`
+	goodBody := `{"schema_version":1,"integration_id":"integration_runner","workflow_job_id":9901,"run_attempt":1,"claim_id":"runner-claim-1"}`
 	response, err := handler.Handle(context.Background(), events.SQSEvent{Records: []events.SQSMessage{
 		{MessageId: "good-record", Body: goodBody},
 		{MessageId: "poison-record", Body: `{"integration_id":"integration_runner","workflow_job_id":9902,"run_attempt":1,"claim_id":"runner-claim-2","tenant_id":"not-accepted"}`},
@@ -53,7 +53,7 @@ func TestRunnerStartupHandlerReturnsOnlyFailedSQSRecords(t *testing.T) {
 }
 
 func TestDecodeRunnerStartupRequestRejectsOversizedAndMalformedBodies(t *testing.T) {
-	for _, body := range []string{"", strings.Repeat("x", 2049), `{"integration_id":"integration_runner","workflow_job_id":1,"run_attempt":1,"claim_id":"runner-claim-1","tenant_id":"attacker"}`, `{} {}`} {
+	for _, body := range []string{"", strings.Repeat("x", 2049), `{"schema_version":1,"integration_id":"integration_runner","workflow_job_id":1,"run_attempt":1,"claim_id":"runner-claim-1","tenant_id":"attacker"}`, `{"schema_version":2,"integration_id":"integration_runner","workflow_job_id":1,"run_attempt":1,"claim_id":"runner-claim-1"}`, `{} {}`} {
 		if _, err := decodeRunnerStartupRequest(body); err == nil {
 			t.Fatalf("invalid SQS body accepted: %.80q", body)
 		}
