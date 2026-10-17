@@ -364,6 +364,62 @@ func TestActionsRunnerAdmissionRequiresSeparateRepositoryOptInAndDeduplicatesJob
 	if err != nil || stats != (BatchStats{}) {
 		t.Fatalf("replayed admission batch = %+v, error=%v", stats, err)
 	}
+	if _, err := pool.Exec(ctx, `UPDATE github_actions_runner_jobs SET state='starting',claim_id='runner-controller',lease_expires_at=$2,updated_at=$1
+		WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`, now.Add(41*time.Second), now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	makeStatusDelivery := func(id, action, status, conclusion, sha string) githubwebhook.VerifiedDelivery {
+		payload := fmt.Sprintf(`{"action":%q,"installation":{"id":8801},"repository":{"id":8802,"name":"enabled","owner":{"login":"acme"}},"workflow_job":{"id":9901,"run_id":9902,"run_attempt":1,"workflow_name":"CI","name":"test","head_branch":"feature/task","head_sha":%q,"status":%q,"conclusion":%q,"labels":["self-hosted","hako"],"runner_id":9810,"runner_name":"hako-runner-1"}}`, action, sha, status, conclusion)
+		return githubwebhook.VerifiedDelivery{DeliveryID: id, Event: "workflow_job", Action: action, Payload: []byte(payload)}
+	}
+	wrongSHA := makeStatusDelivery("e3b2c3d4-e5f6-4789-8abc-def012345678", "in_progress", "in_progress", "", strings.Repeat("b", 40))
+	if inserted, err := inbox.Record(ctx, wrongSHA, now.Add(42*time.Second)); err != nil || !inserted {
+		t.Fatalf("record mismatched Actions assignment: inserted=%v error=%v", inserted, err)
+	}
+	stats, err = ProcessBatchWithActionsRunnerAdmissions(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(43*time.Second), nil)
+	if err != nil || stats.Processed != 1 {
+		t.Fatalf("process mismatched Actions assignment = %+v error=%v", stats, err)
+	}
+	var runnerState string
+	var runnerID *int64
+	if err := pool.QueryRow(ctx, `SELECT state,runner_id FROM github_actions_runner_jobs WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`).Scan(&runnerState, &runnerID); err != nil || runnerState != "starting" || runnerID != nil {
+		t.Fatalf("mismatched SHA changed Actions assignment: state=%q runner=%v error=%v", runnerState, runnerID, err)
+	}
+	inProgress := makeStatusDelivery("f3b2c3d4-e5f6-4789-8abc-def012345678", "in_progress", "in_progress", "", strings.Repeat("a", 40))
+	if inserted, err := inbox.Record(ctx, inProgress, now.Add(44*time.Second)); err != nil || !inserted {
+		t.Fatalf("record Actions in_progress: inserted=%v error=%v", inserted, err)
+	}
+	stats, err = ProcessBatchWithActionsRunnerAdmissions(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(45*time.Second), nil)
+	if err != nil || stats.Processed != 1 {
+		t.Fatalf("process Actions in_progress = %+v error=%v", stats, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT state,runner_id FROM github_actions_runner_jobs WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`).Scan(&runnerState, &runnerID); err != nil || runnerState != "running" || runnerID == nil || *runnerID != 9810 {
+		t.Fatalf("Actions runner assignment = state=%q runner=%v error=%v", runnerState, runnerID, err)
+	}
+	completed := makeStatusDelivery("043b2c3d-4e5f-4789-8abc-def012345678", "completed", "completed", "success", strings.Repeat("a", 40))
+	if inserted, err := inbox.Record(ctx, completed, now.Add(46*time.Second)); err != nil || !inserted {
+		t.Fatalf("record Actions completed: inserted=%v error=%v", inserted, err)
+	}
+	stats, err = ProcessBatchWithActionsRunnerAdmissions(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(47*time.Second), nil)
+	if err != nil || stats.Processed != 1 {
+		t.Fatalf("process Actions completed = %+v error=%v", stats, err)
+	}
+	var conclusion string
+	var completedAt *time.Time
+	if err := pool.QueryRow(ctx, `SELECT state,runner_id,conclusion,completed_at FROM github_actions_runner_jobs WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`).Scan(&runnerState, &runnerID, &conclusion, &completedAt); err != nil || runnerState != "completed" || runnerID == nil || *runnerID != 9810 || conclusion != "success" || completedAt == nil {
+		t.Fatalf("Actions completion = state=%q runner=%v conclusion=%q at=%v error=%v", runnerState, runnerID, conclusion, completedAt, err)
+	}
+	reordered := makeStatusDelivery("143b2c3d-4e5f-4789-8abc-def012345678", "in_progress", "in_progress", "", strings.Repeat("a", 40))
+	if inserted, err := inbox.Record(ctx, reordered, now.Add(48*time.Second)); err != nil || !inserted {
+		t.Fatalf("record reordered Actions in_progress: inserted=%v error=%v", inserted, err)
+	}
+	stats, err = ProcessBatchWithActionsRunnerAdmissions(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(49*time.Second), nil)
+	if err != nil || stats.Processed != 1 {
+		t.Fatalf("process reordered Actions in_progress = %+v error=%v", stats, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT state,runner_id,conclusion FROM github_actions_runner_jobs WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`).Scan(&runnerState, &runnerID, &conclusion); err != nil || runnerState != "completed" || runnerID == nil || *runnerID != 9810 || conclusion != "success" {
+		t.Fatalf("reordered status reopened completed job: state=%q runner=%v conclusion=%q error=%v", runnerState, runnerID, conclusion, err)
+	}
 }
 
 func TestProcessBatchAppliesInstallationSuspendUnsuspendAndDeleteLifecycle(t *testing.T) {

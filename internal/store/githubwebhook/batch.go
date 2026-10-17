@@ -74,9 +74,10 @@ func processBatch(ctx context.Context, pool BatchPool, policy transaction.Policy
 		        WHERE b.installation_id = d.installation_id AND i.status = 'active' AND i.suspended_at IS NULL
 		      ))
 		    OR ($3 AND d.event_type IN ('push', 'pull_request'))
-			OR ($4 AND d.event_type='workflow_job' AND d.action='queued')
+			OR ($4 AND d.event_type='workflow_job' AND d.action IN ('queued','in_progress','completed'))
 		  )
-		ORDER BY d.received_at, d.delivery_id
+		ORDER BY CASE WHEN d.event_type='workflow_job' AND d.action='queued' THEN 0 ELSE 1 END,
+		         d.received_at, d.delivery_id
 		LIMIT $1`, batchSize, githubwebhook.RepositoryEventSchemaVersion, createRun != nil, actionsRunnerAdmissions)
 	if err != nil {
 		return stats, fmt.Errorf("select pending GitHub repository events: %w", err)
@@ -105,7 +106,17 @@ func processBatch(ctx context.Context, pool BatchPool, policy transaction.Policy
 				if !actionsRunnerAdmissions {
 					return deliveryResult{}, nil
 				}
-				done, admitted, err := ProcessActionsRunnerDelivery(ctx, tx, delivery.integrationID, delivery.id, processedAt)
+				var done, admitted bool
+				var err error
+				var action string
+				if err := tx.QueryRow(ctx, `SELECT action FROM github_webhook_deliveries WHERE integration_id=$1 AND delivery_id=$2`, delivery.integrationID, delivery.id).Scan(&action); err != nil {
+					return deliveryResult{}, err
+				}
+				if action == "queued" {
+					done, admitted, err = ProcessActionsRunnerDelivery(ctx, tx, delivery.integrationID, delivery.id, processedAt)
+				} else {
+					done, err = ProcessActionsRunnerStatusDelivery(ctx, tx, delivery.integrationID, delivery.id, processedAt)
+				}
 				if err != nil {
 					return deliveryResult{}, err
 				}

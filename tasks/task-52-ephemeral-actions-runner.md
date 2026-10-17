@@ -1,6 +1,6 @@
 # Task 52: GitHub Actions Ephemeral Runner Mode
 
-Status: In Progress (2026-10-17: signed `workflow_job.queued` deliveries are retained but excluded from the generic push/PR Go-test trigger. Normalized events preserve run attempt, workflow name, bounded labels, and optional assigned runner/group identity. Tenant Owner/Admin repository opt-in is stored via API/CLI and audited. A separate default-off admission flag revalidates Tenant/Installation/Repository policy and persists deduplicated queued job admissions; worker claims use expiring leases with recovery. A Control Plane-only mTLS broker endpoint now consumes a claim and mints the repository-scoped registration token. Exact runner assignment, Lambda MicroVM lifecycle, completion reporting, and cleanup remain unimplemented). Priority: P3.
+Status: In Progress (2026-10-17: signed `workflow_job.queued` deliveries are retained but excluded from the generic push/PR Go-test trigger. Normalized events preserve run attempt, workflow name, bounded labels, and optional assigned runner/group identity. Tenant Owner/Admin repository opt-in is stored via API/CLI and audited. A separate default-off admission flag revalidates Tenant/Installation/Repository policy and persists deduplicated queued job admissions; worker claims use expiring leases with recovery. A Control Plane-only mTLS broker endpoint now consumes a claim and mints the repository-scoped registration token. GitHub-observed runner assignment and completion are persisted against the exact admitted job; Lambda MicroVM launch and physical cleanup remain unimplemented). Priority: P3.
 
 Claude Code Action support is tracked separately in [Task 73](task-73-claude-code-action.md), including Tenant-scoped model credentials, untrusted PR denial, and action-specific E2E.
 
@@ -54,3 +54,13 @@ Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Action
   Control Plane-only mTLS route accepts a claim key (not Tenant/Repository
   coordinates), atomically consumes `claimed` into `starting`, and only then
   resolves the pinned Tenant App and repository for token issuance.
+- Authorized `workflow_job.in_progress` and `completed` deliveries are now
+  processed by the separate default-off admission path. They update a durable
+  job only when Tenant, Installation, Repository, workflow run/job/attempt,
+  branch, and commit SHA match the queued admission. The assigned Runner ID is
+  pinned on first `in_progress`; assignment mismatches and out-of-order status
+  events cannot replace or reopen a job. GitHub conclusion and completion time
+  are retained, and terminal transitions clear claim leases. Migration `000081`
+  adds observed runner/result fields. This records GitHub-observed state only;
+  it does not yet launch/stop a Lambda MicroVM, publish a Check, or retry
+  physical cleanup.
