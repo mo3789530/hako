@@ -1,6 +1,6 @@
 # Task 52: GitHub Actions Ephemeral Runner Mode
 
-Status: In Progress (2026-10-17: signed `workflow_job.queued` deliveries are retained but excluded from the generic push/PR Go-test trigger. Normalized events preserve run attempt, workflow name, bounded labels, and optional assigned runner/group identity. Tenant Owner/Admin repository opt-in is stored via API/CLI and audited. A separate default-off admission flag revalidates Tenant/Installation/Repository policy and persists deduplicated queued job admissions; worker claims use expiring leases with recovery. A Control Plane-only mTLS broker endpoint now consumes a claim and mints the repository-scoped registration token. GitHub-observed runner assignment and completion are persisted against the exact admitted job. The starting claim pins the Lambda MicroVM and Resource Plane identities; terminal cleanup outbox records preserve both, cleanup leases are Resource Plane-scoped, and a locally tested cleanup worker/transactional queue adapter handles termination→deregistration→fenced acknowledgement with bounded retry. An AWS SDK Lambda MicroVM terminator is implemented with exact Plane fencing, identity verification, idempotent state handling, and bounded polling. A separate Plane-allowlisted mTLS broker endpoint resolves deregistration coordinates only from an unexpired cleanup claim. Runner launch, consumer deployment, and live AWS/GitHub verification remain. Priority: P3.
+Status: In Progress (2026-10-17: signed `workflow_job.queued` deliveries are retained but excluded from the generic push/PR Go-test trigger. Normalized events preserve run attempt, workflow name, bounded labels, and optional assigned runner/group identity. Tenant Owner/Admin repository opt-in is stored via API/CLI and audited. A separate default-off admission flag revalidates Tenant/Installation/Repository policy and persists deduplicated queued job admissions; worker claims use expiring leases with recovery. A Control Plane-only mTLS broker endpoint now consumes a claim and mints the repository-scoped registration token. GitHub-observed runner assignment and completion are persisted against the exact admitted job. The starting claim pins the Lambda MicroVM and Resource Plane identities; terminal cleanup outbox records preserve both, cleanup leases are Resource Plane-scoped, and a locally tested cleanup worker/transactional queue adapter handles termination→deregistration→fenced acknowledgement with bounded retry. An AWS SDK Lambda MicroVM terminator is implemented with exact Plane fencing, identity verification, idempotent state handling, and bounded polling. A separate Plane-allowlisted mTLS broker endpoint resolves deregistration coordinates only from an unexpired cleanup claim. A new Lambda MicroVM launch adapter validates trusted image/network/role profiles, uses a deterministic claim-scoped idempotency token, and sends only non-secret admitted job metadata in the Run Hook; signed guest bootstrap/token delivery, claim binding, consumer composition/deployment, and live AWS/GitHub verification remain. Priority: P3.
 
 Claude Code Action support is tracked separately in [Task 73](task-73-claude-code-action.md), including Tenant-scoped model credentials, untrusted PR denial, and action-specific E2E.
 
@@ -115,5 +115,20 @@ Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Action
   events cannot replace or reopen a job. GitHub conclusion and completion time
   are retained, and terminal transitions clear claim leases. Migration `000081`
   adds observed runner/result fields. This records GitHub-observed state only;
-  it does not yet launch/stop a Lambda MicroVM, publish a Check, or retry
-  physical cleanup.
+  it is not yet connected to the Lambda MicroVM launcher, a runner Check, or
+  physical cleanup retry.
+
+- `internal/actionsrunner.LambdaRunnerLauncher` now invokes the official
+  Lambda MicroVM SDK using a trusted, fixed image/version, restricted egress
+  connector, optional same-account execution role, and an eight-hour-bounded
+  runtime. The stable client token is derived from Integration/job/attempt/
+  live claim, so retries address the same provider allocation. The `/run`
+  payload contains only repository URL, bounded job identity, runner name, and
+  labels; the registration token is intentionally absent. Provider output is
+  checked for exact image, version, duration, role, egress connector, state,
+  and MicroVM-specific HTTPS endpoint. Unit tests cover idempotent retry and
+  reject expired claims, unsafe labels, mismatched provider configuration,
+  invalid endpoints, and provider failures. This is a launch adapter contract
+  only: durable Control Plane binding must still be wired before delivering
+  the short-lived token to a signed guest bootstrap endpoint. No AWS call is
+  made by tests.
