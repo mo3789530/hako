@@ -420,6 +420,55 @@ func (c *TokenClient) ActionsRunnerRegistrationToken(ctx context.Context, tenant
 	return RunnerRegistrationToken{value: response.Token, expiresAt: response.ExpiresAt}, access, nil
 }
 
+// DeregisterActionsRunner removes one exact repository runner using a
+// short-lived, repository-scoped administration:write Installation token.
+// It deliberately authorizes against the active Tenant App and repository
+// binding rather than the Runner opt-in flag, so disabling admission cannot
+// strand an already-created ephemeral runner.
+func (c *TokenClient) DeregisterActionsRunner(ctx context.Context, tenant domain.TenantID, installationID, repositoryID, runnerID int64) error {
+	if c == nil || ctx == nil || c.config.IntegrationID == "" || c.tenantAppAuth == nil || tenant == "" ||
+		installationID <= 0 || repositoryID <= 0 || runnerID <= 0 {
+		return credentialError("invalid_request")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	select {
+	case c.gate <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-c.gate }()
+	identity := TenantAppIdentity{TenantID: c.config.TenantID, IntegrationID: c.config.IntegrationID, GitHubAppID: c.config.AppID,
+		ConfigRevision: c.config.ConfigRevision, CredentialGeneration: c.config.CredentialGeneration}
+	if tenant != identity.TenantID {
+		return credentialError("repository_not_authorized")
+	}
+	if err := c.tenantAppAuth.AuthorizeTenantApp(ctx, identity); err != nil {
+		return credentialError("repository_not_authorized")
+	}
+	access, err := c.authorizer.AuthorizeRepository(ctx, tenant, installationID, repositoryID)
+	if err != nil || !validLogin(access.Owner) || !validCredentialRepositoryName(access.Name) {
+		return credentialError("repository_not_authorized")
+	}
+	key := tokenCacheKey{tenant: tenant, integration: c.config.IntegrationID, appID: c.config.AppID,
+		configRevision: c.config.ConfigRevision, credentialGeneration: c.config.CredentialGeneration,
+		installation: installationID, repository: repositoryID, permissionScope: "administration:write"}
+	defer delete(c.cache, key)
+	delete(c.cache, key)
+	installationToken, err := c.scopedInstallationToken(ctx, key, map[string]string{"administration": "write"})
+	if err != nil {
+		return err
+	}
+	if err := c.tenantAppAuth.AuthorizeTenantApp(ctx, identity); err != nil {
+		return credentialError("repository_not_authorized")
+	}
+	if _, err := c.authorizer.AuthorizeRepository(ctx, tenant, installationID, repositoryID); err != nil {
+		return credentialError("repository_not_authorized")
+	}
+	path := "/repos/" + url.PathEscape(access.Owner) + "/" + url.PathEscape(access.Name) + "/actions/runners/" + strconv.FormatInt(runnerID, 10)
+	return c.request(ctx, http.MethodDelete, path, installationToken.Value(), nil, nil)
+}
+
 // ChecksRunToken enforces the immutable credential pin captured by a Workload
 // Run and returns the trusted Repository coordinates used by the Checks API.
 func (c *TokenClient) ChecksRunToken(ctx context.Context, run domain.WorkloadRun) (InstallationToken, RepositoryAccess, error) {
@@ -681,6 +730,10 @@ func (c *TokenClient) request(ctx context.Context, method, path, appJWT string, 
 			retryable := response.StatusCode == 429 || response.StatusCode == 500 || response.StatusCode == 502 || response.StatusCode == 503 || response.StatusCode == 504 || (response.StatusCode == 403 && (response.Header.Get("X-RateLimit-Remaining") == "0" || response.Header.Get("Retry-After") != ""))
 			safeErr = &CredentialError{Code: "github_rejected", Status: response.StatusCode, Retryable: retryable}
 			if response.StatusCode >= 200 && response.StatusCode < 300 {
+				if dst == nil {
+					_ = response.Body.Close()
+					return nil
+				}
 				if err := decodeGitHubJSON(response, dst); err != nil {
 					return credentialError("invalid_github_response")
 				}

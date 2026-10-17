@@ -332,6 +332,60 @@ func TestActionsRunnerRegistrationTokenDeniesRepositoryWithoutRunnerOptInBeforeG
 	}
 }
 
+func TestDeregisterActionsRunnerUsesExactRepositoryScopeAfterRunnerOptOut(t *testing.T) {
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	deleteCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/app/installations/77", "/repos/acme/api/installation":
+			_, _ = io.WriteString(w, `{"id":77,"app_id":12,"suspended_at":null}`)
+		case "/app/installations/77/access_tokens":
+			var body struct {
+				RepositoryIDs []int64           `json:"repository_ids"`
+				Permissions   map[string]string `json:"permissions"`
+			}
+			if r.Method != http.MethodPost || json.NewDecoder(r.Body).Decode(&body) != nil || len(body.RepositoryIDs) != 1 || body.RepositoryIDs[0] != 88 ||
+				len(body.Permissions) != 1 || body.Permissions["administration"] != "write" {
+				t.Errorf("deregister Installation token was not exact/repository-scoped: %+v", body)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"token": testTokenValue, "expires_at": now.Add(time.Hour),
+				"permissions": map[string]string{"administration": "write", "metadata": "read"}, "repositories": []map[string]int{{"id": 88}}})
+		case "/repos/acme/api/actions/runners/9810":
+			deleteCalled = true
+			if r.Method != http.MethodDelete || r.Header.Get("Authorization") != "Bearer "+testTokenValue {
+				t.Errorf("deregister request method/credential = %s / %q", r.Method, r.Header.Get("Authorization"))
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected GitHub endpoint %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	_, privatePEM := newSigningKey(t)
+	secrets := secretAPIFunc(func(_ context.Context, _ *secretsmanager.GetSecretValueInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+		versionID := strings.Repeat("a", 32)
+		return &secretsmanager.GetSecretValueOutput{SecretString: &privatePEM, VersionId: &versionID}, nil
+	})
+	// Runner opt-in is deliberately false: cleanup must still be allowed after
+	// admission was disabled, while the active Tenant App/repository remain bound.
+	authorizer := actionsRunnerRepositoryAuthorizer{access: RepositoryAccess{Owner: "acme", Name: "api"}, allowed: false}
+	client, err := NewTokenClient(TokenConfig{AppID: 12, PrivateKeySecretARN: testKeyARN, PrivateKeySecretVersionID: strings.Repeat("a", 32),
+		TenantID: "tenant_one", IntegrationID: "integration_one", ConfigRevision: 2, CredentialGeneration: 3}, secrets, authorizer, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.apiURL = server.URL
+	client.now = func() time.Time { return now }
+	client.wait = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	if err := client.DeregisterActionsRunner(context.Background(), "tenant_one", 77, 88, 9810); err != nil {
+		t.Fatalf("DeregisterActionsRunner() error=%v", err)
+	}
+	if !deleteCalled {
+		t.Fatal("GitHub runner deregistration endpoint was not called")
+	}
+}
+
 func TestVerifyAppProvesConfiguredIDWithSafeErrors(t *testing.T) {
 	for _, tc := range []struct {
 		name string

@@ -72,6 +72,12 @@ Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Action
   row in the same PostgreSQL transaction and preserves any already-bound
   Lambda MicroVM ID. This closes the failure window between VM allocation and
   runner readiness; a cleanup consumer is still needed to act on the record.
+- The Tenant App token client now supports exact repository runner removal via
+  GitHub's repository self-hosted-runner API using only a short-lived,
+  repository-scoped `administration:write` Installation token. Cleanup remains
+  authorized by the active Tenant App/repository binding even after the Runner
+  admission opt-in is turned off; the runner ID must come from the durable
+  cleanup job. The real consumer and its transport are not yet connected.
 - `HAKO_GITHUB_ACTIONS_RUNNER_ADMISSIONS_ENABLED` defaults off. When enabled,
   the webhook processor admits only queued jobs whose current Tenant-owned
   Installation and Repository opt-in were active before receipt. Admission is
