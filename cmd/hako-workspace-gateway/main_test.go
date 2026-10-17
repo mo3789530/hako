@@ -27,7 +27,7 @@ func TestLoadDeploymentConfigRequiresCompleteSecureConfiguration(t *testing.T) {
 		t.Fatalf("load valid configuration: %v", err)
 	}
 	if cfg.ListenAddress != ":8443" || cfg.MaxConnections != 500 || cfg.MaxConnectionsPerWS != 10 ||
-		cfg.PublicOrigin != "https://gateway.hako.test" || len(cfg.AllowedOrigins) != 2 {
+		cfg.PublicOrigin != "https://gateway.hako.test" || len(cfg.AllowedOrigins) != 2 || cfg.SessionRecheckInterval.String() != "15s" {
 		t.Fatalf("unexpected defaults/config: %+v", cfg)
 	}
 
@@ -52,6 +52,13 @@ func TestLoadDeploymentConfigRequiresCompleteSecureConfiguration(t *testing.T) {
 	values["HAKO_GATEWAY_MAX_CONNECTIONS"] = "not-a-number"
 	if _, err := loadDeploymentConfig(getenv); err == nil {
 		t.Fatal("expected invalid connection limit to be rejected")
+	}
+	for _, value := range []string{"0s", "500ms", "61s", "not-a-duration"} {
+		values["HAKO_GATEWAY_MAX_CONNECTIONS"] = "500"
+		values["HAKO_GATEWAY_SESSION_RECHECK_INTERVAL"] = value
+		if _, err := loadDeploymentConfig(getenv); err == nil {
+			t.Errorf("expected invalid Session recheck interval %q to be rejected", value)
+		}
 	}
 }
 

@@ -32,6 +32,18 @@ func (l activeLookup) IsActive(context.Context, workspacesession.Claims) (bool, 
 	return l.active, l.err
 }
 
+type revokingActiveLookup struct {
+	calls atomic.Int32
+	err   error
+}
+
+func (l *revokingActiveLookup) IsActive(context.Context, workspacesession.Claims) (bool, error) {
+	if l.calls.Add(1) == 1 {
+		return true, nil
+	}
+	return false, l.err
+}
+
 type portAuthorizer struct {
 	allow bool
 	err   error
@@ -424,6 +436,75 @@ func TestGatewayConnectionLimitAndUpstreamFailure(t *testing.T) {
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusBadGateway {
 		t.Fatalf("upstream failure status=%d body=%s", response.StatusCode, response.Body)
+	}
+}
+
+func TestGatewayRechecksAndClosesActiveStreamAfterSessionRevocation(t *testing.T) {
+	lookup := &revokingActiveLookup{}
+	verifier := &workspacesession.Verifier{Keys: map[string]ed25519.PublicKey{"gateway-test": testPublicKey()},
+		Audience: workspacesession.AudienceGateway, Lookup: lookup}
+	gateway, err := New(Config{ResourcePlaneID: "rp_gateway_a", Verifier: verifier, Dialer: &testDialer{},
+		AllowedOrigins: []string{"https://ide.example.test"}, MaxConnections: 2, MaxConnectionsPerWorkspace: 2,
+		SessionRecheckInterval: 20 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewTLSServer(gateway.Handler())
+	defer server.Close()
+	connection, err := dialWorkspace(server.URL, "/v1/workspaces/ws_gateway_a/shell",
+		issueTestTicket(t, []workspacesession.Permission{workspacesession.PermissionShell}), "https://ide.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if err := websocket.Message.Send(connection, []byte("before-revocation")); err != nil {
+		t.Fatal(err)
+	}
+	var echoed []byte
+	if err := websocket.Message.Receive(connection, &echoed); err != nil || string(echoed) != "before-revocation" {
+		t.Fatalf("authorized stream before revocation = %q, %v", echoed, err)
+	}
+	if err := connection.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var discarded []byte
+	if err := websocket.Message.Receive(connection, &discarded); err == nil {
+		t.Fatal("revoked active Session stream remained open")
+	}
+	waitForConnections(t, gateway, 0)
+	if got := lookup.calls.Load(); got < 2 {
+		t.Fatalf("active Session lookup calls=%d, want initial authorization and stream recheck", got)
+	}
+}
+
+func TestGatewayFailsClosedWhenActiveSessionRecheckIsUnavailable(t *testing.T) {
+	lookup := &revokingActiveLookup{err: errors.New("synthetic lookup failure")}
+	verifier := &workspacesession.Verifier{Keys: map[string]ed25519.PublicKey{"gateway-test": testPublicKey()},
+		Audience: workspacesession.AudienceGateway, Lookup: lookup}
+	gateway, err := New(Config{ResourcePlaneID: "rp_gateway_a", Verifier: verifier, Dialer: &testDialer{},
+		AllowedOrigins: []string{"https://ide.example.test"}, MaxConnections: 2, MaxConnectionsPerWorkspace: 2,
+		SessionRecheckInterval: 20 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewTLSServer(gateway.Handler())
+	defer server.Close()
+	connection, err := dialWorkspace(server.URL, "/v1/workspaces/ws_gateway_a/shell",
+		issueTestTicket(t, []workspacesession.Permission{workspacesession.PermissionShell}), "https://ide.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if err := connection.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var discarded []byte
+	if err := websocket.Message.Receive(connection, &discarded); err == nil {
+		t.Fatal("active stream remained open after Session lookup failure")
+	}
+	waitForConnections(t, gateway, 0)
+	if got := lookup.calls.Load(); got < 2 {
+		t.Fatalf("active Session lookup calls=%d, want initial authorization and stream recheck", got)
 	}
 }
 

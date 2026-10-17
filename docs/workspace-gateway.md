@@ -37,7 +37,11 @@ below. Active session/revocation state
 is checked through the verifier's injected `ActiveSessionLookup`; the local
 `HTTPActiveSessionLookup` uses the signed HTTPS/HMAC Control Plane endpoint,
 which checks the complete claims identity against PostgreSQL and returns only
-the active bit. `workspaceagent.WorkspaceRouter` is a local in-process router
+the active bit. The Gateway repeats this metadata-only authorization check
+every 15 seconds while a WebSocket is open (bounded to at most once per
+minute); revocation, ticket expiry, or lookup failure closes both stream
+directions. Workspace bytes still flow directly between the client and
+Resource Plane runtime. `workspaceagent.WorkspaceRouter` is a local in-process router
 that selects the registered single-Workspace dialer using the verified
 Workspace claim. It rejects duplicate live registrations, and cleanup must
 compare against the expected dialer so a delayed removal cannot unregister a
@@ -86,7 +90,8 @@ Workspace-bound PTY command path, dedicated SSH-proxy permission and fixed `127.
 port-forward byte round-trip to an ephemeral `127.0.0.1` listener,
 wrong channel/Workspace/Origin, plaintext rejection, denied/allowed port
 forwarding, per-Workspace connection cap, concurrent ticket replay rejection
-with reconnect-after-close, upstream failure, and oversized frames. The concrete authenticated
+with reconnect-after-close, active-stream revocation and fail-closed lookup
+failure, upstream failure, and oversized frames. The concrete authenticated
 Gateway composition exists in the local service entrypoint; Terraform
 deployment, distributed limits, metrics/audit events, IDE process bridge, and
 Lambda MicroVM end-to-end stream PoC remain
@@ -113,6 +118,7 @@ The process requires these deployment inputs:
 | `HAKO_GATEWAY_TLS_CERT_FILE`, `HAKO_GATEWAY_TLS_KEY_FILE` | Mounted TLS certificate and private key |
 | `HAKO_GATEWAY_PUBLIC_ORIGIN` | Fixed HTTPS origin sent to the Workspace Agent |
 | `HAKO_GATEWAY_ALLOWED_ORIGINS` | Comma-separated exact browser origins |
+| `HAKO_GATEWAY_SESSION_RECHECK_INTERVAL` | Active-session revocation/expiry check interval (`1s`–`1m`, default `15s`) |
 | `HAKO_GATEWAY_SESSION_PUBLIC_KEYS_FILE` | JSON map of signing key ID to raw-base64 Ed25519 public key; supports verification key overlap |
 | `HAKO_GATEWAY_SESSION_LOOKUP_ENDPOINT` | HTTPS Control Plane origin for active-session revalidation |
 | `HAKO_GATEWAY_SESSION_LOOKUP_KEY_FILE` | Raw per-Resource-Plane HMAC key bytes (at least 32 bytes), mounted as a secret |

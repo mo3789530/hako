@@ -23,8 +23,10 @@ import (
 )
 
 const (
-	defaultMaxPayloadBytes = 64 << 10
-	maxAllowedPayloadBytes = 1 << 20
+	defaultMaxPayloadBytes        = 64 << 10
+	maxAllowedPayloadBytes        = 1 << 20
+	defaultSessionRecheckInterval = 15 * time.Second
+	maxSessionRecheckInterval     = time.Minute
 )
 
 var (
@@ -53,6 +55,7 @@ type Config struct {
 	MaxConnections             int
 	MaxConnectionsPerWorkspace int
 	MaxPayloadBytes            int
+	SessionRecheckInterval     time.Duration
 }
 
 type Gateway struct {
@@ -75,6 +78,12 @@ func New(config Config) (*Gateway, error) {
 	}
 	if config.MaxPayloadBytes < 1024 || config.MaxPayloadBytes > maxAllowedPayloadBytes {
 		return nil, ErrConfig
+	}
+	if config.SessionRecheckInterval < 0 || config.SessionRecheckInterval > maxSessionRecheckInterval {
+		return nil, ErrConfig
+	}
+	if config.SessionRecheckInterval == 0 {
+		config.SessionRecheckInterval = defaultSessionRecheckInterval
 	}
 	origins := make(map[string]struct{}, len(config.AllowedOrigins))
 	for _, raw := range config.AllowedOrigins {
@@ -236,10 +245,52 @@ func (g *Gateway) serveChecked(w http.ResponseWriter, r *http.Request, permissio
 		Handler: func(client *websocket.Conn) {
 			client.MaxPayloadBytes = g.config.MaxPayloadBytes
 			client.PayloadType = websocket.BinaryFrame
-			proxyStreams(r.Context(), client, upstream, g.config.MaxPayloadBytes)
+			proxyAuthorizedStreams(r.Context(), client, upstream, g.config.MaxPayloadBytes,
+				g.config.SessionRecheckInterval, func(ctx context.Context) error {
+					_, err := g.config.Verifier.Authorize(ctx, token, permission)
+					return err
+				})
 		},
 	}
 	server.ServeHTTP(w, r)
+}
+
+// proxyAuthorizedStreams periodically rechecks the persisted Session while a
+// WebSocket remains open. The Control Plane carries only this bounded
+// authorization check; application bytes continue to flow directly between
+// the client and Resource Plane runtime. Any revocation or lookup failure
+// cancels both stream directions (fail closed).
+func proxyAuthorizedStreams(ctx context.Context, client *websocket.Conn, upstream io.ReadWriteCloser, maxPayload int,
+	interval time.Duration, authorize func(context.Context) error) {
+	if ctx == nil || authorize == nil || interval <= 0 || interval > maxSessionRecheckInterval {
+		_ = upstream.Close()
+		_ = client.Close()
+		return
+	}
+	streamCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-streamCtx.Done():
+				return
+			case <-ticker.C:
+				checkCtx, checkCancel := context.WithTimeout(streamCtx, 5*time.Second)
+				err := authorize(checkCtx)
+				checkCancel()
+				if err != nil {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	proxyStreams(streamCtx, client, upstream, maxPayload)
+	cancel()
+	<-done
 }
 
 func (g *Gateway) acquire(workspaceID domain.WorkspaceID, ticketID string) (func(), error) {

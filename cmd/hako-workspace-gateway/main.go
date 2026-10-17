@@ -41,22 +41,23 @@ const maxGatewayKeyFileBytes = 64 << 10
 var gatewayKeyIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 type deploymentConfig struct {
-	ResourcePlaneID       domain.ResourcePlaneID
-	ListenAddress         string
-	TLSCertFile           string
-	TLSKeyFile            string
-	SessionPublicKeysFile string
-	SessionLookupEndpoint string
-	SessionLookupKeyFile  string
-	AgentTicketKeyID      string
-	AgentTicketKeyFile    string
-	PublicOrigin          string
-	JournalBucket         string
-	JournalPrefix         string
-	Region                string
-	AllowedOrigins        []string
-	MaxConnections        int
-	MaxConnectionsPerWS   int
+	ResourcePlaneID        domain.ResourcePlaneID
+	ListenAddress          string
+	TLSCertFile            string
+	TLSKeyFile             string
+	SessionPublicKeysFile  string
+	SessionLookupEndpoint  string
+	SessionLookupKeyFile   string
+	AgentTicketKeyID       string
+	AgentTicketKeyFile     string
+	PublicOrigin           string
+	JournalBucket          string
+	JournalPrefix          string
+	Region                 string
+	AllowedOrigins         []string
+	MaxConnections         int
+	MaxConnectionsPerWS    int
+	SessionRecheckInterval time.Duration
 }
 
 func main() {
@@ -149,6 +150,7 @@ func buildGateway(awsCfg aws.Config, cfg deploymentConfig) (*workspacegateway.Ga
 		Verifier:        &workspacesession.Verifier{Keys: publicKeys, Audience: workspacesession.AudienceGateway, Lookup: lookup},
 		Dialer:          directory, AllowedOrigins: cfg.AllowedOrigins,
 		MaxConnections: cfg.MaxConnections, MaxConnectionsPerWorkspace: cfg.MaxConnectionsPerWS,
+		SessionRecheckInterval: cfg.SessionRecheckInterval,
 	})
 }
 
@@ -181,6 +183,11 @@ func loadDeploymentConfig(getenv func(string) string) (deploymentConfig, error) 
 	if cfg.MaxConnectionsPerWS, _ = strconv.Atoi(defaultValue(get("HAKO_GATEWAY_MAX_CONNECTIONS_PER_WORKSPACE"), "10")); cfg.MaxConnectionsPerWS < 1 || cfg.MaxConnectionsPerWS > cfg.MaxConnections {
 		return deploymentConfig{}, errors.New("HAKO_GATEWAY_MAX_CONNECTIONS_PER_WORKSPACE must be between 1 and the total connection limit")
 	}
+	recheckInterval, err := time.ParseDuration(defaultValue(get("HAKO_GATEWAY_SESSION_RECHECK_INTERVAL"), "15s"))
+	if err != nil || recheckInterval < time.Second || recheckInterval > time.Minute {
+		return deploymentConfig{}, errors.New("HAKO_GATEWAY_SESSION_RECHECK_INTERVAL must be between 1s and 1m")
+	}
+	cfg.SessionRecheckInterval = recheckInterval
 	for _, origin := range strings.Split(get("HAKO_GATEWAY_ALLOWED_ORIGINS"), ",") {
 		origin = strings.TrimSpace(origin)
 		if origin != "" {
