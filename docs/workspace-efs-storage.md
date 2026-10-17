@@ -104,15 +104,19 @@ The EFS mount targets must be private in the Resource Plane VPC. Security
 groups must allow NFS/TCP 2049 only from the approved MicroVM connector/security
 group; no public NFS ingress is permitted. The AP's POSIX identity and root
 restriction are defense in depth, not a substitute for network and IAM policy.
-At-rest encryption must be enabled on the filesystem. These infrastructure
-controls are not yet provisioned or verified by this repository's Resource
-Plane Terraform.
+At-rest encryption must be enabled on the filesystem. An opt-in standalone
+Terraform module now describes encrypted EFS, the Access Point IAM/TLS
+resource policy, private mount targets, and connector-SG-scoped NFS. It is not
+wired to the Resource Plane root and has not been applied; caller-provided
+subnet privacy, Lambda MicroVM connector compatibility, IAM Access Point
+isolation, and live mount behavior are not verified. See the
+[`workspace-storage` Terraform module](../infra/terraform/modules/workspace-storage/README.md).
 
 ## Backup, restore, quota, and deletion
 
-- Backups and retention are not configured by the current library. Before
-  production, select an EFS backup policy and retention window, then document
-  restore ownership/permissions and test a restore into a separate filesystem.
+- The Terraform module configures daily AWS Backup recovery points with a
+  35-day default retention window. Before production, validate restore
+  ownership/permissions and test a restore into a separate filesystem.
 - EFS capacity and throughput are shared at filesystem scope. Per-Workspace
   storage quotas are not enforced by Access Points; an AP is not a quota
   boundary. Capacity monitoring and tenant-level policy remain open work.
@@ -143,8 +147,10 @@ root init starts it with the Access Point UID/GID only after mounting EFS,
 waits for readiness, and terminates it before ownership-checked unmount. The
 image build requires a public verification-key JSON file. The Podman image
 build and real Lambda `/run` hook remain unverified. Test
-suspend/restart/replacement recovery plus orderly unmount. Add a Resource
-Plane EFS filesystem, encrypted-at-rest policy, private
-mount targets and least-privilege networking/IAM; add mount failure compensation
-and orphan reconciliation; and verify backup/restore, retention, and quotas.
+suspend/restart/replacement recovery plus orderly unmount. Add Resource Plane
+wiring for the standalone EFS module and dynamic per-Workspace runtime-role /
+Access Point IAM boundaries; add mount failure compensation and orphan
+reconciliation; and verify backup/restore, retention, and quotas.
 Live AWS validation remains subject to explicit approval.
+
+Authoritative references: [EFS Access Point IAM condition key](https://docs.aws.amazon.com/efs/latest/ug/access-points-iam-policy.html), [AWS Backup for EFS](https://docs.aws.amazon.com/efs/latest/ug/awsbackup.html), and [EFS lifecycle management](https://docs.aws.amazon.com/efs/latest/ug/enable-lifecycle-management.html).

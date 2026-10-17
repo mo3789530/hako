@@ -118,3 +118,5 @@ terraform-validate:
 terraform-test:
 	terraform -chdir=infra/terraform/modules/resource-plane init -backend=false -input=false
 	terraform -chdir=infra/terraform/modules/resource-plane test
+	terraform -chdir=infra/terraform/modules/workspace-storage init -backend=false -input=false
+	terraform -chdir=infra/terraform/modules/workspace-storage test
