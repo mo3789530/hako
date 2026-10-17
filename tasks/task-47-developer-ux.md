@@ -1,6 +1,6 @@
 # Task 47: Developer CLI and Service Catalog
 
-Status: In Progress. `hako shell <tenant-id> <workspace-id>` requests a short-lived RBAC-authorized shell ticket, connects directly to the TLS WSS Gateway, streams terminal input/output, and attempts session revocation on exit. On Linux terminals it uses character mode, sends the initial size, forwards resize signals, and restores terminal settings; framed stream decoding tolerates Gateway fragmentation. Cancellation closes the stream cleanly and revokes the session. `hako open <tenant-id> <workspace-id> [local-port]` starts a loopback-only browser tunnel with a dedicated `vscode` Session per TCP stream. The Lambda adapter and Guest Agent bridge only to fixed `127.0.0.1:8081`; the Workspace image does not yet start code-server. `hako ssh-proxy <tenant-id> <workspace-id>` provides an OpenSSH ProxyCommand over a dedicated TLS/WSS permission to fixed private loopback port 22. `hako cp`/`hako cp --from` use OpenSSH `scp`/SFTP through that proxy with per-Workspace host-key aliasing and paths restricted to `/workspace`. `hako forward <tenant-id> <workspace-id> <remote-port> [local-port]` binds loopback only, issues/revokes one short-lived ticket per TCP connection, and supports up to 16 concurrent local connections. `hako wait` polls an authorized Workspace GET until an observed stable state or timeout and prints state transitions. The versioned PostgreSQL/Redis Service Catalog is wired to authenticated catalog/list/add/action APIs and `hako add`, `hako services`, `hako service start|stop|remove`; changes persist desired state as pending and do not claim to start or physically remove containers. Tasks 44–46 remain partially open; code-server image startup, MicroVM SFTP/host-key provisioning, runtime reconciliation/health reporting, and production runtime routing remain. Priority: P1.
+Status: In Progress. `hako shell <tenant-id> <workspace-id>` requests a short-lived RBAC-authorized shell ticket, connects directly to the TLS WSS Gateway, streams terminal input/output, and attempts session revocation on exit. On Linux terminals it uses character mode, sends the initial size, forwards resize signals, and restores terminal settings; framed stream decoding tolerates Gateway fragmentation. Cancellation closes the stream cleanly and revokes the session. `hako open <tenant-id> <workspace-id> [local-port]` starts a loopback-only browser tunnel with a dedicated `vscode` Session per TCP stream. The Lambda adapter and Guest Agent bridge only to fixed `127.0.0.1:8081`; the Workspace image starts a pinned ARM64 code-server process as the EFS UID/GID, checks `/healthz`, and stops it with the Agent. It disables code-server auth only because the authenticated Hako Gateway is the sole ingress; no guest TCP port is exposed. `hako ssh-proxy <tenant-id> <workspace-id>` provides an OpenSSH ProxyCommand over a dedicated TLS/WSS permission to fixed private loopback port 22. `hako cp`/`hako cp --from` use OpenSSH `scp`/SFTP through that proxy with per-Workspace host-key aliasing and paths restricted to `/workspace`. `hako forward <tenant-id> <workspace-id> <remote-port> [local-port]` binds loopback only, issues/revokes one short-lived ticket per TCP connection, and supports up to 16 concurrent local connections. `hako wait` polls an authorized Workspace GET until an observed stable state or timeout and prints state transitions. The versioned PostgreSQL/Redis Service Catalog is wired to authenticated catalog/list/add/action APIs and `hako add`, `hako services`, `hako service start|stop|remove`; changes persist desired state as pending and do not claim to start or physically remove containers. Tasks 44–46 remain partially open; actual ARM64 image build/MicroVM validation, MicroVM SFTP/host-key provisioning, runtime reconciliation/health reporting, and production runtime routing remain. Priority: P1.
 
 ## Goal
 
@@ -48,8 +48,11 @@ Complete the basic interactive development flow and reproducible local-service t
   `vscode` Session per browser TCP connection. The Lambda MicroVM adapter and
   Guest Agent now use a distinct one-use `vscode` ticket and only forward to
   fixed `127.0.0.1:8081`. Local TLS API/Gateway tests cover the permission,
-  HTTP byte stream, and Session revocation. The Workspace image still needs a
-  trusted code-server process with its own authentication enabled.
+  HTTP byte stream, and Session revocation. The Workspace Agent now starts the
+  image-pinned ARM64 code-server after EFS identity binding, verifies its
+  `/healthz`, and shuts it down with the Agent. It binds only guest loopback;
+  `--auth none` is restricted to the authenticated Gateway tunnel. Image builds
+  require an explicit release version and matching archive SHA-256.
 - Added a versioned built-in Service Catalog (`postgres`, `redis`) with image
   version policy, bounded resources, private-only TCP ports, safe mount paths,
   fixed exec-form health checks, and generated-secret declarations (never
@@ -66,8 +69,8 @@ Complete the basic interactive development flow and reproducible local-service t
   name-reserving tombstone and must not be confused with physical cleanup.
   Public ingress is absent.
 - This is a first interactive transport, not the complete developer UX:
-  reconnectable PTY, code-server image startup, and production SSH/SFTP routing
-  are still open.
+  reconnectable PTY, actual ARM64 image build/MicroVM validation, and production
+  SSH/SFTP routing are still open.
 
 ## Acceptance criteria
 

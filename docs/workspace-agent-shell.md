@@ -62,10 +62,15 @@ The Guest Agent also exposes `/vscode` with an independently authorized,
 one-use ticket carrying only the `vscode` permission. It forwards bytes only
 to the fixed guest-loopback `127.0.0.1:8081`; the caller cannot choose a Host
 or port. The Lambda MicroVM Gateway adapter resolves this route only after
-Session authorization. The Workspace image does not yet start code-server, so
-the bridge has no backend until a trusted image/runtime launches code-server
-with its own authentication enabled. `hako open` binds locally only to
-`127.0.0.1` and requests a fresh Session Ticket per browser TCP stream.
+Session authorization. After the EFS Access Point identity is bound, the
+unprivileged Agent starts the image-pinned ARM64 code-server, binds it to that
+loopback address, and waits for `/healthz` before reporting Agent readiness.
+It uses `--auth none` because the only ingress is the authenticated Hako
+Gateway tunnel; no guest TCP port is exposed. The process uses the Workspace
+UID/GID, fixed `/workspace` root, disabled telemetry, and Workspace-persisted
+user-data/extensions paths. Agent shutdown terminates the code-server process
+group. `hako open` binds locally only to `127.0.0.1` and requests a fresh
+Session Ticket per browser TCP stream.
 
 The CLI/Agent shell stream uses an application-level binary frame with the
 `HAKS` magic, a type byte, and a four-byte big-endian payload length. Data
@@ -101,7 +106,10 @@ rotation/distribution is unresolved. Keep Workspace runtime exposure disabled
 until deployment gates are complete.
 
 Build the dedicated image with
-`make build-workspace-microvm-image HAKO_EFS_UTILS_RPM_VERSION=<pinned-version> HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE=<public-keys.json>`.
+`make build-workspace-microvm-image HAKO_EFS_UTILS_RPM_VERSION=<pinned-version> HAKO_CODE_SERVER_VERSION=4.141.0 HAKO_CODE_SERVER_SHA256=e5cc78da1d631c6cf6162f9b18eeaa8ee9d3239e1a88bb99d0602cdc5fa1852d HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE=<public-keys.json>`.
+The code-server archive is fetched from the upstream GitHub release and
+verified against the supplied ARM64 SHA-256 before it is copied into the
+runtime image. Keep both version and digest pinned together when updating it.
 The JSON contains only key-ID to unpadded base64url Ed25519 public-key values;
 the target fails when the file is absent or empty. Configure
 `HAKO_GATEWAY_ORIGIN` in the trusted Resource Plane MicroVM launch environment

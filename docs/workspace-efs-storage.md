@@ -42,17 +42,20 @@ so the hook currently mounts storage but does not start a PTY service.
 The dedicated `images/workspace-init` Workspace image runs
 `cmd/hako-workspace-init`, which serves the strict Workspace-specific `/run`
 hook as root and acknowledges only after the mount is verified. The image is
-separate from the Workload Agent image and does not yet launch the interactive
-Workspace Agent; that process must start unprivileged after the mount.
+separate from the Workload Agent image. It launches the interactive Workspace
+Agent and pinned code-server unprivileged after the mount and Workspace
+identity have been bound.
 `internal/workspaceagent`'s Linux executor invokes `/bin/mount` without a
 shell, with fixed `-t efs` arguments, TLS, IAM authorization, the exact Access
 Point, and the Resource Plane region; it writes a root-only idempotency marker before the
 side effect and verifies `/workspace` appears as an NFS mount. A pre-existing
 unowned mount fails closed. The process must run as root in the guest init
 layer, while the interactive Agent should run unprivileged after mount. The
-image build requires `HAKO_EFS_UTILS_RPM_VERSION` and pins that package
-version. AL2023 publishes the helper in its package repositories ([AWS AL2023
-EFS instructions](https://docs.aws.amazon.com/linux/al2023/ug/efs.html)). Build
+image build requires `HAKO_EFS_UTILS_RPM_VERSION`,
+`HAKO_CODE_SERVER_VERSION`, `HAKO_CODE_SERVER_SHA256`, and public Agent keys;
+package/archive versions and the code-server digest are pinned build inputs.
+AL2023 publishes the helper in its package repositories ([AWS AL2023 EFS
+instructions](https://docs.aws.amazon.com/linux/al2023/ug/efs.html)). Build
 locally with `make build-workspace-microvm-image`. The image
 build has not yet been executed and runtime hook behavior inside an actual
 Lambda MicroVM remains unverified. Do not use the existing

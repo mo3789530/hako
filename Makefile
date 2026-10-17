@@ -88,6 +88,8 @@ build-workload-microvm-artifact:
 # Builds a distinct root-owned Workspace init image with a separate unprivileged shell Agent. Both the EFS helper RPM and public verification keys are pinned inputs.
 build-workspace-microvm-image:
 	@test -n "$(HAKO_EFS_UTILS_RPM_VERSION)" || (echo "set HAKO_EFS_UTILS_RPM_VERSION to the pinned amazon-efs-utils RPM version" >&2; exit 1)
+	@test -n "$(HAKO_CODE_SERVER_VERSION)" || (echo "set HAKO_CODE_SERVER_VERSION to the pinned code-server version" >&2; exit 1)
+	@test -n "$(HAKO_CODE_SERVER_SHA256)" || (echo "set HAKO_CODE_SERVER_SHA256 to the pinned ARM64 archive SHA-256" >&2; exit 1)
 	@test -n "$(HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE)" || (echo "set HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE to a public-key JSON file" >&2; exit 1)
 	@test -s "$(HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE)" || (echo "Workspace Agent public-key JSON file is missing or empty" >&2; exit 1)
 	mkdir -p build/workspace-init
@@ -95,7 +97,7 @@ build-workspace-microvm-image:
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o build/workspace-init/hako-workspace-agent ./cmd/hako-workspace-agent
 	install -m 0644 "$(HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE)" build/workspace-init/trusted-keys.json
 	install -m 0644 images/workspace-init/Dockerfile build/workspace-init/Dockerfile
-	podman build --arch arm64 --build-arg EFS_UTILS_RPM_VERSION="$(HAKO_EFS_UTILS_RPM_VERSION)" --tag hako-workspace-init:local -f build/workspace-init/Dockerfile build/workspace-init
+	podman build --arch arm64 --build-arg EFS_UTILS_RPM_VERSION="$(HAKO_EFS_UTILS_RPM_VERSION)" --build-arg CODE_SERVER_VERSION="$(HAKO_CODE_SERVER_VERSION)" --build-arg CODE_SERVER_SHA256="$(HAKO_CODE_SERVER_SHA256)" --tag hako-workspace-init:local -f build/workspace-init/Dockerfile build/workspace-init
 
 # Builds an ARM64 ECS/Fargate image locally; publishing to ECR is a separate authorized step.
 build-github-checks-consumer-image:

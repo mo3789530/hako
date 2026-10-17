@@ -1,3 +1,21 @@
+# code-server is fetched as a versioned ARM64 standalone release. Keep the
+# download tools out of the final Workspace image.
+FROM public.ecr.aws/lambda/microvms:al2023-minimal AS code-server
+ARG CODE_SERVER_VERSION
+ARG CODE_SERVER_SHA256
+RUN test -n "${CODE_SERVER_VERSION}" \
+    && test -n "${CODE_SERVER_SHA256}" \
+    && dnf install -y --setopt=install_weak_deps=False curl-minimal tar gzip \
+    && curl --fail --location --silent --show-error --retry 3 \
+      "https://github.com/coder/code-server/releases/download/v${CODE_SERVER_VERSION}/code-server-${CODE_SERVER_VERSION}-linux-arm64.tar.gz" \
+      --output /tmp/code-server.tar.gz \
+    && echo "${CODE_SERVER_SHA256}  /tmp/code-server.tar.gz" | sha256sum --check \
+    && mkdir -p /opt/hako-code-server \
+    && tar -xzf /tmp/code-server.tar.gz --strip-components=1 -C /opt/hako-code-server \
+    && test -x /opt/hako-code-server/bin/code-server \
+    && rm -f /tmp/code-server.tar.gz \
+    && dnf clean all
+
 FROM public.ecr.aws/lambda/microvms:al2023-minimal
 
 # Pin the helper RPM version at image build time. The build fails closed if a
@@ -15,8 +33,10 @@ RUN test -n "${EFS_UTILS_RPM_VERSION}" \
 COPY hako-workspace-init /usr/local/bin/hako-workspace-init
 COPY hako-workspace-agent /usr/local/bin/hako-workspace-agent
 COPY trusted-keys.json /etc/hako/workspace-agent-public-keys.json
+COPY --from=code-server /opt/hako-code-server/ /opt/hako-code-server/
 
-RUN chmod 0755 /usr/local/bin/hako-workspace-init /usr/local/bin/hako-workspace-agent \
+RUN ln -s /opt/hako-code-server/bin/code-server /usr/local/bin/code-server \
+    && chmod 0755 /usr/local/bin/hako-workspace-init /usr/local/bin/hako-workspace-agent \
     && chmod 0444 /etc/hako/workspace-agent-public-keys.json
 
 EXPOSE 8080

@@ -50,6 +50,17 @@ func run() error {
 	if err := agent.BindWorkspaceRuntime(payload.MicroVMID, payload.Mount); err != nil {
 		return errors.New("bind Workspace shell Agent identity")
 	}
+	codeServer, err := workspaceagent.StartWorkspaceCodeServer(payload.Mount)
+	if err != nil {
+		return errors.New("start Workspace code-server")
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := codeServer.Stop(ctx); err != nil {
+			log.Printf("Workspace code-server shutdown did not finish cleanly")
+		}
+	}()
 	defer func() {
 		if err := agent.Close(); err != nil {
 			log.Printf("Workspace PTY shutdown did not finish cleanly")
