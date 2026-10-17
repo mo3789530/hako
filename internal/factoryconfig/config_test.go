@@ -220,6 +220,58 @@ func TestSelectEmptyBranchListMatchesAllBranches(t *testing.T) {
 	}
 }
 
+func TestPlanUsesOnlyFixedCatalogCommands(t *testing.T) {
+	config, err := Parse([]byte(`version: 1
+on: {push: {branches: [main]}}
+pipelines:
+  verify:
+    steps: [checkout, go-test, go-vet, golangci-lint, npm-test, npm-build, python-test]
+    services: [postgres, redis]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := Plan(config, "verify")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Command{
+		{Step: "go-test", Executable: "/usr/local/go/bin/go", Args: []string{"test", "./..."}},
+		{Step: "go-vet", Executable: "/usr/local/go/bin/go", Args: []string{"vet", "./..."}},
+		{Step: "golangci-lint", Executable: "/usr/local/bin/golangci-lint", Args: []string{"run", "--timeout=5m"}},
+		{Step: "npm-test", Executable: "/usr/bin/npm", Args: []string{"test"}},
+		{Step: "npm-build", Executable: "/usr/bin/npm", Args: []string{"run", "build"}},
+		{Step: "python-test", Executable: "/usr/bin/python3", Args: []string{"-m", "unittest", "discover"}},
+	}
+	if plan.Pipeline != "verify" || plan.RuntimeClass != "standard" || plan.TimeoutSecond != 1800 ||
+		plan.MemoryMB != 2048 || plan.CPUMillis != 1000 || plan.Network != "registry-only" ||
+		!equalStrings(plan.Services, []string{"postgres", "redis"}) || len(plan.Commands) != len(want) {
+		t.Fatalf("Plan() metadata = %+v", plan)
+	}
+	for index := range want {
+		got := plan.Commands[index]
+		if got.Step != want[index].Step || got.Executable != want[index].Executable || !equalStrings(got.Args, want[index].Args) {
+			t.Errorf("command[%d] = %+v, want %+v", index, got, want[index])
+		}
+	}
+	plan.Commands[0].Args[0] = "mutated"
+	plan.Services[0] = "mutated"
+	second, err := Plan(config, "verify")
+	if err != nil || second.Commands[0].Args[0] != "test" || second.Services[0] != "postgres" {
+		t.Fatalf("Plan() returned aliased data: %+v, %v", second, err)
+	}
+}
+
+func TestPlanRejectsUnknownPipeline(t *testing.T) {
+	config, err := Parse([]byte(manifest("    steps: [checkout]\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Plan(config, "missing"); !errors.Is(err, ErrManifest) {
+		t.Fatalf("Plan(unknown) error = %v, want ErrManifest", err)
+	}
+}
+
 func equalStrings(left, right []string) bool {
 	if len(left) != len(right) {
 		return false

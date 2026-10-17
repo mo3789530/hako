@@ -33,6 +33,12 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
 - Added `hako factory validate [--file path]`, which validates the default
   `.hako/factory.yaml` or an explicit file locally; output contains only the
   version and sorted pipeline names.
+- Added a deterministic `factoryconfig.Plan` which maps validated catalog
+  steps to fixed executable/argument vectors, omits checkout as a process,
+  and carries bounded runtime/network/service metadata without aliasing parser
+  memory. It does not evaluate shell text.
 - Added malicious YAML/resource-bound tests and documented the schema in
-  [`docs/software-factory.md`](../docs/software-factory.md). The parser is not
-  wired to scheduling; no workload is created by a manifest yet.
+  [`docs/software-factory.md`](../docs/software-factory.md). The plan is not
+  yet persisted on a Workload Run or connected to the Lambda MicroVM worker;
+  webhook scheduling still uses the legacy fixed Go-test path, and no native
+  manifest workload is created yet.

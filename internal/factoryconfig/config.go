@@ -61,6 +61,29 @@ type Pipeline struct {
 	CloudAccess   string   `yaml:"cloud_access,omitempty"`
 }
 
+// Command is a deterministic execution-plan entry. Executable and Args are
+// selected only from the versioned catalog below; manifest text is never
+// interpreted as a command or shell fragment.
+type Command struct {
+	Step       string
+	Executable string
+	Args       []string
+}
+
+// ExecutionPlan contains the static commands and declared local services for
+// one validated pipeline. It is a policy artifact only; a trusted worker must
+// still bind it to the immutable Run commit and enforce the runtime boundary.
+type ExecutionPlan struct {
+	Pipeline      string
+	RuntimeClass  string
+	TimeoutSecond int
+	MemoryMB      int
+	CPUMillis     int
+	Network       string
+	Services      []string
+	Commands      []Command
+}
+
 // Parse rejects YAML features that make manifests difficult to audit, then
 // decodes with unknown-field rejection and validates every executable choice.
 func Parse(data []byte) (Config, error) {
@@ -252,6 +275,53 @@ func Select(config Config, event webhookevent.RepositoryEvent) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// Plan converts one validated pipeline to catalog commands. Checkout is a
+// source-staging action and therefore intentionally has no process command.
+// The returned slices are newly allocated and safe for callers to modify.
+func Plan(config Config, name string) (ExecutionPlan, error) {
+	pipeline, ok := config.Pipelines[name]
+	if !ok || !namePattern.MatchString(name) {
+		return ExecutionPlan{}, manifestError("pipeline does not exist")
+	}
+	plan := ExecutionPlan{Pipeline: name, RuntimeClass: pipeline.RuntimeClass,
+		TimeoutSecond: pipeline.TimeoutSecond, MemoryMB: pipeline.MemoryMB,
+		CPUMillis: pipeline.CPUMillis, Network: pipeline.Network,
+		Services: append([]string(nil), pipeline.Services...),
+		Commands: make([]Command, 0, len(pipeline.Steps))}
+	for _, step := range pipeline.Steps {
+		command, ok := catalogCommand(step)
+		if !ok {
+			return ExecutionPlan{}, manifestError("pipeline contains an unsupported step")
+		}
+		if command.Step != "checkout" {
+			command.Args = append([]string(nil), command.Args...)
+			plan.Commands = append(plan.Commands, command)
+		}
+	}
+	return plan, nil
+}
+
+func catalogCommand(step string) (Command, bool) {
+	switch step {
+	case "checkout":
+		return Command{Step: step}, true
+	case "go-test":
+		return Command{Step: step, Executable: "/usr/local/go/bin/go", Args: []string{"test", "./..."}}, true
+	case "go-vet":
+		return Command{Step: step, Executable: "/usr/local/go/bin/go", Args: []string{"vet", "./..."}}, true
+	case "golangci-lint":
+		return Command{Step: step, Executable: "/usr/local/bin/golangci-lint", Args: []string{"run", "--timeout=5m"}}, true
+	case "npm-test":
+		return Command{Step: step, Executable: "/usr/bin/npm", Args: []string{"test"}}, true
+	case "npm-build":
+		return Command{Step: step, Executable: "/usr/bin/npm", Args: []string{"run", "build"}}, true
+	case "python-test":
+		return Command{Step: step, Executable: "/usr/bin/python3", Args: []string{"-m", "unittest", "discover"}}, true
+	default:
+		return Command{}, false
+	}
 }
 
 func matchesBranchFilter(patterns []string, branch string) bool {

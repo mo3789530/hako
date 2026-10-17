@@ -334,6 +334,15 @@ bounds are 30–3600 seconds, 256–8192 MiB, and 250–4000 CPU millis. Network
 either `none` or `registry-only`; public Internet access is not an option in
 this schema.
 
+The validated configuration can be converted to a deterministic execution
+plan. `checkout` is handled as source staging, not a process. Other catalog
+steps map to fixed absolute executable paths and argument vectors (for example
+`go-test` maps to `/usr/local/go/bin/go test ./...`); manifest strings are
+never passed to a shell or appended to arguments. The plan also carries the
+bounded runtime, network, and service metadata. This is only the translation
+boundary: the plan is not yet bound to persisted Run identity or executed by
+the Lambda MicroVM worker, and declared services are not provisioned yet.
+
 At least one of `on.push` or `on.pull_request` is required. Branch lists are
 optional (omission matches every branch) and accept only exact branch names or
 a trailing `/*` prefix pattern. Push triggers match non-deleted `refs/heads/*`
