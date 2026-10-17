@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/mo3789530/hako/internal/workloadjobs"
@@ -29,6 +30,8 @@ type Specification struct {
 	ImageDigest              string
 	SourceDigest             string
 	CommitSHA                string
+	TriggerEvent             string
+	TriggerBranch            string
 	Deadline                 time.Time
 	Predecessor              *workloadjournal.Command
 	ArtifactPrefix           string
@@ -308,7 +311,7 @@ func identity(j workloadjournal.Journal) workloadjournal.Command {
 
 func specificationHash(s Specification, id workloadjournal.Command) (string, error) {
 	if s.Identity != id || !digestPattern.MatchString(s.ImageDigest) || !digestPattern.MatchString(s.SourceDigest) ||
-		!commitPattern.MatchString(s.CommitSHA) || s.Deadline.IsZero() {
+		!commitPattern.MatchString(s.CommitSHA) || s.Deadline.IsZero() || !validTriggerSelection(s.TriggerEvent, s.TriggerBranch) {
 		return "", ErrSpecification
 	}
 	if id.Generation == 1 && s.Predecessor != nil {
@@ -329,6 +332,23 @@ func specificationHash(s Specification, id workloadjournal.Command) (string, err
 	}
 	digest := sha256.Sum256(b)
 	return hex.EncodeToString(digest[:]), nil
+}
+
+func validTriggerSelection(event, branch string) bool {
+	if event == "" && branch == "" {
+		return true
+	}
+	if event != "push" && event != "pull_request" || len(branch) == 0 || len(branch) > 255 ||
+		strings.Contains(branch, "..") || strings.Contains(branch, "//") || strings.HasSuffix(branch, "/") || strings.HasSuffix(branch, ".") ||
+		strings.Contains(branch, "@{") {
+		return false
+	}
+	for _, char := range branch {
+		if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || strings.ContainsRune("._/-", char)) {
+			return false
+		}
+	}
+	return true
 }
 
 func terminal(s workloadjournal.ExecutionState) bool {

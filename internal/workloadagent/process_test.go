@@ -16,21 +16,26 @@ import (
 	"time"
 
 	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/factoryconfig"
 	"github.com/mo3789530/hako/internal/workloadjobs"
 	"github.com/mo3789530/hako/internal/workloadjournal"
 	"github.com/mo3789530/hako/internal/workloadsource"
 )
 
-type fixedExecutionResolver struct{ plan ExecutionPlan }
+type fixedExecutionResolver struct {
+	plan ExecutionPlan
+	err  error
+}
 
 func (r fixedExecutionResolver) ResolveExecution(context.Context, TicketClaims) (ExecutionPlan, error) {
-	return r.plan, nil
+	return r.plan, r.err
 }
 
 func planTicketClaims(vm string, id workloadjournal.Command, operation Operation, plan ExecutionPlan) TicketClaims {
 	claims := TicketClaims{MicroVMID: vm, Identity: IdentityFromCommand(id), Operation: operation}
 	if operation == OperationStart || operation == OperationSource {
-		claims.Execution = &ExecutionBinding{SourceDigest: plan.SourceDigest, CommitSHA: plan.CommitSHA, Deadline: plan.Deadline.UTC()}
+		claims.Execution = &ExecutionBinding{SourceDigest: plan.SourceDigest, CommitSHA: plan.CommitSHA,
+			TriggerEvent: plan.TriggerEvent, TriggerBranch: plan.TriggerBranch, Deadline: plan.Deadline.UTC()}
 	}
 	return claims
 }
@@ -96,7 +101,7 @@ func TestProcessBackendPinsAttemptRunsBoundedFixedPlanAndReturnsRedactedResult(t
 	defer archive.Close()
 	plan := ExecutionPlan{Identity: id, RepositoryPath: filepath.Join(t.TempDir(), "installed-source"), SourceDigest: archive.SHA256(), CommitSHA: strings.Repeat("b", 40), Deadline: now.Add(time.Hour)}
 	factory := &fakeProcessFactory{output: []byte("tests passed ghp_123456789012345678901234567890\n")}
-	backend, err := NewProcessBackend(ProcessConfig{Resolver: fixedExecutionResolver{plan}, Factory: factory, Now: func() time.Time { return now }})
+	backend, err := NewProcessBackend(ProcessConfig{Resolver: fixedExecutionResolver{plan: plan}, Factory: factory, Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,6 +144,33 @@ func TestProcessBackendPinsAttemptRunsBoundedFixedPlanAndReturnsRedactedResult(t
 	}
 }
 
+func TestProcessBackendRecordsInvalidFactoryManifestAsTerminalRunFailure(t *testing.T) {
+	now := time.Now().UTC()
+	id := testIdentity()
+	plan := ExecutionPlan{Identity: id, RepositoryPath: "/workspace/source", SourceDigest: strings.Repeat("a", 64),
+		CommitSHA: strings.Repeat("b", 40), TriggerEvent: "push", TriggerBranch: "main", Deadline: now.Add(time.Hour)}
+	factory := &fakeProcessFactory{}
+	backend, err := NewProcessBackend(ProcessConfig{Resolver: fixedExecutionResolver{plan: plan, err: ErrFactoryManifest},
+		Factory: factory, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close(context.Background())
+	claims := planTicketClaims("microvm_1", id, OperationStart, plan)
+	request := StartRequest{Identity: IdentityFromCommand(id), SourceDigest: plan.SourceDigest, CommitSHA: plan.CommitSHA, Deadline: plan.Deadline}
+	if err := backend.Start(context.Background(), claims, request); err != nil {
+		t.Fatalf("record manifest failure: %v", err)
+	}
+	result, err := backend.Result(context.Background(), TicketClaims{MicroVMID: "microvm_1", Identity: IdentityFromCommand(id), Operation: OperationResult})
+	if err != nil || result.Status != domain.WorkloadFailed || result.ErrorCode != "factory_manifest_invalid" || factory.starts != 0 {
+		t.Fatalf("invalid manifest result = %+v, err=%v, executor starts=%d", result, err, factory.starts)
+	}
+	logs, err := backend.Logs(context.Background(), TicketClaims{MicroVMID: "microvm_1", Identity: IdentityFromCommand(id), Operation: OperationLogs})
+	if err != nil || !strings.Contains(string(logs), "factory manifest rejected") || strings.Contains(string(logs), "secret") {
+		t.Fatalf("invalid manifest logs = %q err=%v", logs, err)
+	}
+}
+
 func TestProcessBackendWithholdsLogsAtOutputBoundaryAndMapsFailures(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -155,7 +187,7 @@ func TestProcessBackendWithholdsLogsAtOutputBoundaryAndMapsFailures(t *testing.T
 			id := testIdentity()
 			plan := ExecutionPlan{Identity: id, RepositoryPath: "/workspace/checkout", SourceDigest: strings.Repeat("a", 64), CommitSHA: strings.Repeat("b", 40), Deadline: now.Add(time.Hour)}
 			factory := &fakeProcessFactory{output: tc.output}
-			backend, err := NewProcessBackend(ProcessConfig{Resolver: fixedExecutionResolver{plan}, Factory: factory, MaxOutput: tc.limit})
+			backend, err := NewProcessBackend(ProcessConfig{Resolver: fixedExecutionResolver{plan: plan}, Factory: factory, MaxOutput: tc.limit})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -187,7 +219,7 @@ func TestProcessBackendRejectsPlanMismatchAndShutdownCancelsProcess(t *testing.T
 	id := testIdentity()
 	plan := ExecutionPlan{Identity: id, RepositoryPath: "/workspace/checkout", SourceDigest: strings.Repeat("a", 64), CommitSHA: strings.Repeat("b", 40), Deadline: now.Add(time.Hour)}
 	factory := &fakeProcessFactory{}
-	backend, err := NewProcessBackend(ProcessConfig{Resolver: fixedExecutionResolver{plan}, Factory: factory})
+	backend, err := NewProcessBackend(ProcessConfig{Resolver: fixedExecutionResolver{plan: plan}, Factory: factory})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,6 +312,25 @@ func TestGoTestProcessFactoryVerifiesCommitAndRunsFixedCommand(t *testing.T) {
 	logs, _ := output.snapshot()
 	if err != nil || code != 0 || !strings.Contains(string(logs), "ok  ") || !strings.Contains(string(logs), "example.test/hako-agent-fixture") {
 		t.Fatalf("fixed go test command failed: code=%d err=%v output=%q", code, err, logs)
+	}
+	nativePlan := plan
+	nativePlan.TriggerEvent, nativePlan.TriggerBranch = "push", "main"
+	nativePlan.FactoryPipelines = []factoryconfig.ExecutionPlan{{Pipeline: "verify", RuntimeClass: "standard", TimeoutSecond: 30,
+		MemoryMB: 2048, CPUMillis: 1000, Network: "registry-only",
+		Commands: []factoryconfig.Command{{Step: "go-test", Executable: "/usr/local/go/bin/go", Args: []string{"test", "./..."}}}}}
+	nativeFactory := GoTestProcessFactory{GoBinary: goBinary, GoCache: filepath.Join(t.TempDir(), "native-gocache")}
+	nativeOutput := &boundedOutput{limit: 64 << 10}
+	nativeCtx, nativeCancel := context.WithTimeout(context.Background(), time.Minute)
+	nativeProcess, err := nativeFactory.Start(nativeCtx, nativePlan, nativeOutput)
+	if err != nil {
+		nativeCancel()
+		t.Fatal(err)
+	}
+	nativeCode, nativeErr := nativeProcess.Wait()
+	nativeCancel()
+	nativeLogs, _ := nativeOutput.snapshot()
+	if nativeErr != nil || nativeCode != 0 || !strings.Contains(string(nativeLogs), "pipeline verify") || !strings.Contains(string(nativeLogs), "step go-test") {
+		t.Fatalf("native manifest pipeline failed: code=%d err=%v output=%q", nativeCode, nativeErr, nativeLogs)
 	}
 
 	plan.CommitSHA = strings.Repeat("f", 40)

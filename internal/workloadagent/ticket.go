@@ -44,9 +44,11 @@ type TicketIssuer interface {
 // ExecutionBinding is signed into Start and Source tickets so request-body or
 // upload-header changes cannot alter the attempt's immutable execution input.
 type ExecutionBinding struct {
-	SourceDigest string    `json:"source_digest"`
-	CommitSHA    string    `json:"commit_sha"`
-	Deadline     time.Time `json:"deadline"`
+	SourceDigest  string    `json:"source_digest"`
+	CommitSHA     string    `json:"commit_sha"`
+	TriggerEvent  string    `json:"trigger_event,omitempty"`
+	TriggerBranch string    `json:"trigger_branch,omitempty"`
+	Deadline      time.Time `json:"deadline"`
 }
 
 type TicketClaims struct {
@@ -110,7 +112,11 @@ func (i *Ed25519TicketIssuer) issue(microVMID string, identity workloadjournal.C
 	if execution != nil && (!execution.Deadline.After(issued) || execution.Deadline.Sub(issued) > 8*time.Hour) {
 		return "", ErrAgentTicket
 	}
-	claims := TicketClaims{Version: 1, MicroVMID: microVMID, Identity: IdentityFromCommand(identity), Operation: operation, Execution: execution,
+	version := 1
+	if execution != nil && execution.TriggerEvent != "" {
+		version = 2
+	}
+	claims := TicketClaims{Version: version, MicroVMID: microVMID, Identity: IdentityFromCommand(identity), Operation: operation, Execution: execution,
 		IssuedAt: issued.Unix(), ExpiresAt: issued.Add(ttl).Unix(), Nonce: hex.EncodeToString(nonce[:])}
 	payload, err := json.Marshal(claims)
 	if err != nil || len(payload) > 4096 {
@@ -153,12 +159,16 @@ func VerifyTicketClaims(token string, keys map[string]ed25519.PublicKey, identit
 	var claims TicketClaims
 	decoder := json.NewDecoder(strings.NewReader(string(payload)))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&claims) != nil || decoder.Decode(new(any)) != io.EOF || claims.Version != 1 || !protocolID.MatchString(claims.MicroVMID) ||
+	if decoder.Decode(&claims) != nil || decoder.Decode(new(any)) != io.EOF || (claims.Version != 1 && claims.Version != 2) || !protocolID.MatchString(claims.MicroVMID) ||
 		claims.Identity.Command() != identity || claims.Operation != operation || !validOperation(claims.Operation) || len(claims.Nonce) != 32 ||
 		((claims.Operation == OperationStart || claims.Operation == OperationSource) != (claims.Execution != nil)) {
 		return TicketClaims{}, ErrAgentTicket
 	}
 	if claims.Execution != nil && !validExecutionBinding(*claims.Execution) {
+		return TicketClaims{}, ErrAgentTicket
+	}
+	if claims.Version == 1 && claims.Execution != nil && claims.Execution.TriggerEvent != "" ||
+		claims.Version == 2 && (claims.Execution == nil || claims.Execution.TriggerEvent == "") {
 		return TicketClaims{}, ErrAgentTicket
 	}
 	if nonce, err := hex.DecodeString(claims.Nonce); err != nil || len(nonce) != 16 {
@@ -182,6 +192,20 @@ func VerifyTicketClaims(token string, keys map[string]ed25519.PublicKey, identit
 }
 
 func validExecutionBinding(binding ExecutionBinding) bool {
-	return protocolDigest.MatchString(binding.SourceDigest) && protocolCommit.MatchString(binding.CommitSHA) && !binding.Deadline.IsZero() &&
-		binding.Deadline.Location() == time.UTC
+	if !protocolDigest.MatchString(binding.SourceDigest) || !protocolCommit.MatchString(binding.CommitSHA) || binding.Deadline.IsZero() || binding.Deadline.Location() != time.UTC {
+		return false
+	}
+	if (binding.TriggerEvent == "") != (binding.TriggerBranch == "") ||
+		(binding.TriggerEvent != "" && binding.TriggerEvent != "push" && binding.TriggerEvent != "pull_request") ||
+		len(binding.TriggerBranch) > 255 ||
+		strings.Contains(binding.TriggerBranch, "..") || strings.Contains(binding.TriggerBranch, "//") ||
+		strings.HasSuffix(binding.TriggerBranch, "/") || strings.HasSuffix(binding.TriggerBranch, ".") || strings.Contains(binding.TriggerBranch, "@{") {
+		return false
+	}
+	for _, char := range binding.TriggerBranch {
+		if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || strings.ContainsRune("._/-", char)) {
+			return false
+		}
+	}
+	return true
 }

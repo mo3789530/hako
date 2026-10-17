@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/factoryconfig"
 	"github.com/mo3789530/hako/internal/runtime/fake"
 	"github.com/mo3789530/hako/internal/workloadjobs"
 	"github.com/mo3789530/hako/internal/workloadjournal"
@@ -23,16 +24,20 @@ import (
 const defaultAgentOutputLimit = 1 << 20
 
 var (
-	ErrExecutionPlan = errors.New("trusted Workload execution plan is invalid")
-	ErrProcessExit   = errors.New("Workload process exited unsuccessfully")
+	ErrExecutionPlan   = errors.New("trusted Workload execution plan is invalid")
+	ErrFactoryManifest = errors.New("Hako factory manifest is invalid for this Run")
+	ErrProcessExit     = errors.New("Workload process exited unsuccessfully")
 )
 
 type ExecutionPlan struct {
-	Identity       workloadjournal.Command
-	RepositoryPath string
-	SourceDigest   string
-	CommitSHA      string
-	Deadline       time.Time
+	Identity         workloadjournal.Command
+	RepositoryPath   string
+	SourceDigest     string
+	CommitSHA        string
+	TriggerEvent     string
+	TriggerBranch    string
+	FactoryPipelines []factoryconfig.ExecutionPlan
+	Deadline         time.Time
 }
 
 // ExecutionResolver must resolve a repository path from the trusted attempt
@@ -115,13 +120,18 @@ func (b *ProcessBackend) Start(ctx context.Context, claims TicketClaims, req Sta
 	}
 	if b.attempt != nil {
 		if b.attempt.claims.MicroVMID != claims.MicroVMID || b.attempt.claims.Identity.Command() != claims.Identity.Command() ||
-			b.attempt.plan.SourceDigest != req.SourceDigest || b.attempt.plan.CommitSHA != req.CommitSHA || !b.attempt.plan.Deadline.Equal(req.Deadline) {
+			b.attempt.plan.SourceDigest != req.SourceDigest || b.attempt.plan.CommitSHA != req.CommitSHA || !b.attempt.plan.Deadline.Equal(req.Deadline) ||
+			b.attempt.plan.TriggerEvent != claims.Execution.TriggerEvent || b.attempt.plan.TriggerBranch != claims.Execution.TriggerBranch {
 			return ErrAttemptConflict
 		}
 		return nil
 	}
 	plan, err := b.config.Resolver.ResolveExecution(ctx, claims)
 	if err != nil {
+		if errors.Is(err, ErrFactoryManifest) {
+			b.recordFactoryManifestFailure(claims, req)
+			return nil
+		}
 		return err
 	}
 	if err := ctx.Err(); err != nil {
@@ -129,6 +139,7 @@ func (b *ProcessBackend) Start(ctx context.Context, claims TicketClaims, req Sta
 	}
 	deadlineIn := plan.Deadline.Sub(b.config.Now())
 	if plan.Identity != claims.Identity.Command() || plan.SourceDigest != req.SourceDigest || plan.CommitSHA != req.CommitSHA ||
+		plan.TriggerEvent != claims.Execution.TriggerEvent || plan.TriggerBranch != claims.Execution.TriggerBranch ||
 		!plan.Deadline.Equal(req.Deadline) || deadlineIn <= 0 || deadlineIn > 8*time.Hour {
 		return ErrExecutionPlan
 	}
@@ -145,6 +156,20 @@ func (b *ProcessBackend) Start(ctx context.Context, claims TicketClaims, req Sta
 	b.waitGroup.Add(1)
 	go b.wait(attempt, processCtx, process)
 	return nil
+}
+
+func (b *ProcessBackend) recordFactoryManifestFailure(claims TicketClaims, req StartRequest) {
+	completed := b.config.Now().UTC()
+	output := &boundedOutput{limit: b.config.MaxOutput}
+	_, _ = output.Write([]byte("[Hako] factory manifest rejected for this trigger\n"))
+	identity := claims.Identity.Command()
+	result := workloadjobs.WorkloadResult{SchemaVersion: 1, TenantID: domain.TenantID(identity.TenantID),
+		WorkloadRunID: domain.WorkloadRunID(identity.WorkloadRunID), AttemptID: identity.AttemptID, Generation: identity.Generation,
+		ResourcePlaneID: domain.ResourcePlaneID(identity.ResourcePlaneID), CommitSHA: req.CommitSHA,
+		Status: domain.WorkloadFailed, ExitCode: 1, ErrorCode: "factory_manifest_invalid", CompletedAt: completed}
+	b.attempt = &processAttempt{claims: claims, plan: ExecutionPlan{Identity: identity, SourceDigest: req.SourceDigest,
+		CommitSHA: req.CommitSHA, Deadline: req.Deadline.UTC()}, state: workloadjournal.Failed, result: result, output: output,
+		logs: []byte("[Hako] factory manifest rejected for this trigger\n")}
 }
 
 func (b *ProcessBackend) Status(_ context.Context, claims TicketClaims) (workloadjournal.ExecutionState, error) {
@@ -245,7 +270,7 @@ func (b *ProcessBackend) wait(a *processAttempt, processCtx context.Context, pro
 	completed := b.config.Now().UTC()
 	state := workloadjournal.Succeeded
 	errorCode := ""
-	if errors.Is(processCtx.Err(), context.DeadlineExceeded) {
+	if errors.Is(processCtx.Err(), context.DeadlineExceeded) || errors.Is(waitErr, context.DeadlineExceeded) {
 		state, exitCode, errorCode = workloadjournal.TimedOut, 124, "job_timeout"
 	} else if errors.Is(processCtx.Err(), context.Canceled) {
 		state, exitCode, errorCode = workloadjournal.Cancelled, 130, "cancelled"
@@ -341,6 +366,9 @@ func (f GoTestProcessFactory) Start(ctx context.Context, plan ExecutionPlan, out
 		verifyInstalledExecutionSource(ctx, plan, workloadsource.DefaultMaxArchiveBytes) != nil {
 		return nil, ErrExecutionPlan
 	}
+	if len(plan.FactoryPipelines) > 0 {
+		return f.startFactoryPipelines(ctx, plan, output)
+	}
 	goBinary := f.GoBinary
 	if goBinary == "" {
 		goBinary = "/usr/local/go/bin/go"
@@ -382,6 +410,127 @@ func (f GoTestProcessFactory) Start(ctx context.Context, plan ExecutionPlan, out
 		return nil, ErrAgentBusy
 	}
 	return &execManagedProcess{cmd: cmd}, nil
+}
+
+func (f GoTestProcessFactory) startFactoryPipelines(ctx context.Context, plan ExecutionPlan, output io.Writer) (ManagedProcess, error) {
+	if ctx == nil || output == nil || len(plan.FactoryPipelines) == 0 || len(plan.FactoryPipelines) > factoryconfig.MaxPipelines {
+		return nil, ErrExecutionPlan
+	}
+	previousName := ""
+	for _, pipeline := range plan.FactoryPipelines {
+		if factoryconfig.ValidateExecutionPlan(pipeline) != nil || pipeline.RuntimeClass != "standard" ||
+			pipeline.Network != "registry-only" || len(pipeline.Services) != 0 || (previousName != "" && pipeline.Pipeline <= previousName) {
+			// Service containers and alternate runtime profiles must be provisioned
+			// by their own trusted runtime adapters before this executor can accept them.
+			return nil, ErrExecutionPlan
+		}
+		previousName = pipeline.Pipeline
+	}
+	process := &factoryPipelineProcess{done: make(chan processExit, 1)}
+	go func() {
+		var result processExit
+		for _, pipeline := range plan.FactoryPipelines {
+			pipelineCtx, cancel := context.WithTimeout(ctx, time.Duration(pipeline.TimeoutSecond)*time.Second)
+			_, _ = fmt.Fprintf(output, "[Hako] pipeline %s\n", pipeline.Pipeline)
+			for _, command := range pipeline.Commands {
+				_, _ = fmt.Fprintf(output, "[Hako] step %s\n", command.Step)
+				executable := command.Executable
+				if command.Executable == "/usr/local/go/bin/go" && f.GoBinary != "" {
+					if !filepath.IsAbs(f.GoBinary) {
+						result = processExit{code: 1, err: ErrExecutionPlan}
+						break
+					}
+					executable = f.GoBinary
+				}
+				env := []string{"PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin", "HOME=/tmp", "TMPDIR=/tmp", "GOMAXPROCS=2"}
+				switch command.Step {
+				case "go-test", "go-vet":
+					cache := f.GoCache
+					if cache == "" {
+						cache = "/tmp/hako-go-cache"
+					}
+					env = append(env, "GOCACHE="+cache, "GOPROXY=off", "GOSUMDB=off", "GOTOOLCHAIN=local", "GOWORK=off")
+					if f.ModuleCache != "" {
+						moduleCache, err := filepath.EvalSymlinks(f.ModuleCache)
+						if err != nil {
+							result = processExit{code: 1, err: ErrExecutionPlan}
+							break
+						}
+						info, err := os.Stat(moduleCache)
+						if err != nil || !info.IsDir() {
+							result = processExit{code: 1, err: ErrExecutionPlan}
+							break
+						}
+						env = append(env, "GOMODCACHE="+moduleCache)
+					}
+				case "npm-test", "npm-build":
+					env = append(env, "NPM_CONFIG_UPDATE_NOTIFIER=false", "NPM_CONFIG_FUND=false")
+				case "python-test":
+					env = append(env, "PYTHONNOUSERSITE=1", "PYTHONDONTWRITEBYTECODE=1")
+				}
+				if result.err != nil {
+					break
+				}
+				if err := runCatalogCommand(pipelineCtx, plan.RepositoryPath, executable, command.Args, env, output); err != nil {
+					if errors.Is(pipelineCtx.Err(), context.DeadlineExceeded) {
+						result = processExit{code: 124, err: context.DeadlineExceeded}
+					} else {
+						result = processExit{code: catalogExitCode(err), err: err}
+					}
+					break
+				}
+			}
+			cancel()
+			if result.err != nil || ctx.Err() != nil {
+				if ctx.Err() != nil {
+					result = processExit{code: 130, err: ctx.Err()}
+				}
+				break
+			}
+		}
+		process.done <- result
+	}()
+	return process, nil
+}
+
+type processExit struct {
+	code int
+	err  error
+}
+
+type factoryPipelineProcess struct{ done chan processExit }
+
+func (p *factoryPipelineProcess) Wait() (int, error) {
+	result := <-p.done
+	return result.code, result.err
+}
+
+func runCatalogCommand(ctx context.Context, directory, executable string, args, env []string, output io.Writer) error {
+	cmd := exec.CommandContext(ctx, executable, args...)
+	cmd.Dir, cmd.Env, cmd.Stdout, cmd.Stderr = directory, env, output, output
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return os.ErrProcessDone
+		}
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			return err
+		}
+		return nil
+	}
+	cmd.WaitDelay = 2 * time.Second
+	if err := cmd.Start(); err != nil {
+		return ErrAgentBusy
+	}
+	return cmd.Wait()
+}
+
+func catalogExitCode(err error) int {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	return 1
 }
 
 type execManagedProcess struct{ cmd *exec.Cmd }

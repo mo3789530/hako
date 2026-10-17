@@ -121,11 +121,13 @@ func (r *LambdaMicroVM) input(spec Specification) (*lambdamicrovms.RunMicrovmInp
 	}
 	// Initialization contains immutable identifiers/digests/deadline only.
 	payload, err := json.Marshal(struct {
-		Identity     workloadjournal.Command `json:"identity"`
-		SourceDigest string                  `json:"source_digest"`
-		CommitSHA    string                  `json:"commit_sha"`
-		Deadline     time.Time               `json:"deadline"`
-	}{spec.Identity, spec.SourceDigest, spec.CommitSHA, spec.Deadline.UTC()})
+		Identity      workloadjournal.Command `json:"identity"`
+		SourceDigest  string                  `json:"source_digest"`
+		CommitSHA     string                  `json:"commit_sha"`
+		TriggerEvent  string                  `json:"trigger_event,omitempty"`
+		TriggerBranch string                  `json:"trigger_branch,omitempty"`
+		Deadline      time.Time               `json:"deadline"`
+	}{spec.Identity, spec.SourceDigest, spec.CommitSHA, spec.TriggerEvent, spec.TriggerBranch, spec.Deadline.UTC()})
 	if err != nil {
 		return nil, err
 	}
@@ -284,7 +286,7 @@ func (r *LambdaMicroVM) agentConnection(ctx context.Context, spec Specification,
 	var agentTicket string
 	if operation == workloadagent.OperationStart || operation == workloadagent.OperationSource {
 		agentTicket, err = r.config.AgentTicketIssuer.IssueExecution(handle, spec.Identity, operation, workloadagent.ExecutionBinding{
-			SourceDigest: spec.SourceDigest, CommitSHA: spec.CommitSHA, Deadline: spec.Deadline.UTC(),
+			SourceDigest: spec.SourceDigest, CommitSHA: spec.CommitSHA, TriggerEvent: spec.TriggerEvent, TriggerBranch: spec.TriggerBranch, Deadline: spec.Deadline.UTC(),
 		})
 	} else {
 		agentTicket, err = r.config.AgentTicketIssuer.Issue(handle, spec.Identity, operation)
@@ -296,7 +298,7 @@ func (r *LambdaMicroVM) agentConnection(ctx context.Context, spec Specification,
 	logTicket := ""
 	if operation == workloadagent.OperationStart {
 		sourceTicket, err = r.config.AgentTicketIssuer.IssueExecution(handle, spec.Identity, workloadagent.OperationSource, workloadagent.ExecutionBinding{
-			SourceDigest: spec.SourceDigest, CommitSHA: spec.CommitSHA, Deadline: spec.Deadline.UTC(),
+			SourceDigest: spec.SourceDigest, CommitSHA: spec.CommitSHA, TriggerEvent: spec.TriggerEvent, TriggerBranch: spec.TriggerBranch, Deadline: spec.Deadline.UTC(),
 		})
 		if err != nil || sourceTicket == "" || strings.ContainsAny(sourceTicket, " \t\r\n") {
 			return AgentConnection{}, ErrMicroVMNotReady

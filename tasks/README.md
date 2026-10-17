@@ -121,7 +121,7 @@ Claude Code Actionは**現在実装されていない**。Task 73は親の集約
 | 順序 | Task | 内容 | Depends on |
 |---|---|---|---|
 | 17 | [52 — GitHub Actions Runner Mode](task-52-ephemeral-actions-runner.md) | 進行中：Plane-specific mTLS broker deregistration、live cleanup lease revalidation、cleanup worker、Lambda MicroVM SDK terminatorを実装。runner launch、consumer deployment/live AWS検証が残る | 40, 41, 51 |
-| 18 | [53 — Native Pipeline/Agent](task-53-native-pipeline-agent.md) | **進行中**。安全なversion 1 manifest parserと`hako factory validate` CLIを実装・文書化。Run生成・Pipeline実行、Issue→Agent→PRは39/50/51の後 | 39, 50, 51 |
+| 18 | [53 — Native Pipeline/Agent](task-53-native-pipeline-agent.md) | **進行中**。version 1 manifest、triggerのRun→Lambda hook→署名ticket伝播、固定commit上のpipeline選択・固定catalog argv実行、invalid manifestのterminal failureまでローカル接続。選択pipelineのRun永続化/per-pipeline Checks、runtime resource enforcement/services、Issue→Agent→PRは未完了 | 39, 50, 51 |
 | 19 | [54 — Preview/Catalog/Deploy](task-54-preview-catalog-deploy.md) | Preview、Software Catalog、OIDC deploy policy | 43–46, 50, 51 |
 | 20 | [55 — Quota/Usage UX](task-55-quota-usage.md) | workload/service quota、利用量と操作UX | 40, 47, 50 |
 | 後続 | [73–77 — Claude Code Action](task-73-claude-code-action.md) | Task 52のephemeral runner上でworkflow provenance、Tenant model credential policy、実行/cleanup、local E2Eを実装 | 40, 41, 50–52 |

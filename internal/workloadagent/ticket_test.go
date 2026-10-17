@@ -64,6 +64,35 @@ func TestEd25519TicketIsShortLivedAndBoundToVMIdentityAndOperation(t *testing.T)
 	}
 }
 
+func TestAgentTicketV2SignsPipelineTriggerContextAndRetainsV1ForLegacy(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 17, 1, 2, 3, 0, time.UTC)
+	issuer := &Ed25519TicketIssuer{KeyID: "rp-key-v2", PrivateKey: privateKey, Now: func() time.Time { return now }}
+	id := testIdentity()
+	binding := ExecutionBinding{SourceDigest: strings.Repeat("a", 64), CommitSHA: strings.Repeat("b", 40),
+		TriggerEvent: "pull_request", TriggerBranch: "release/2026.10", Deadline: now.Add(time.Hour)}
+	ticket, err := issuer.IssueExecution("microvm_1", id, OperationStart, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := VerifyTicketClaims(ticket, map[string]ed25519.PublicKey{"rp-key-v2": publicKey}, id, OperationStart, now)
+	if err != nil || claims.Version != 2 || claims.Execution == nil || *claims.Execution != binding {
+		t.Fatalf("trigger-bound ticket claims = %+v, error=%v", claims, err)
+	}
+	legacy, err := issuer.IssueExecution("microvm_1", id, OperationStart, ExecutionBinding{SourceDigest: binding.SourceDigest,
+		CommitSHA: binding.CommitSHA, Deadline: binding.Deadline})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyClaims, err := VerifyTicketClaims(legacy, map[string]ed25519.PublicKey{"rp-key-v2": publicKey}, id, OperationStart, now)
+	if err != nil || legacyClaims.Version != 1 {
+		t.Fatalf("legacy ticket compatibility = %+v, error=%v", legacyClaims, err)
+	}
+}
+
 func TestTicketIssuerFailsClosedOnInvalidInputsAndClampsLifetime(t *testing.T) {
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

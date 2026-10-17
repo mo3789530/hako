@@ -324,6 +324,54 @@ func catalogCommand(step string) (Command, bool) {
 	}
 }
 
+// ValidateExecutionPlan verifies that a command plan still exactly matches
+// the built-in catalog. Runtime consumers must call this because plans may
+// cross a trust boundary after they are created.
+func ValidateExecutionPlan(plan ExecutionPlan) error {
+	if !namePattern.MatchString(plan.Pipeline) ||
+		(plan.RuntimeClass != "small" && plan.RuntimeClass != "standard") ||
+		plan.TimeoutSecond < 30 || plan.TimeoutSecond > 3600 || plan.MemoryMB < 256 || plan.MemoryMB > 8192 ||
+		plan.CPUMillis < 250 || plan.CPUMillis > 4000 || (plan.Network != "none" && plan.Network != "registry-only") ||
+		len(plan.Services) > 4 || len(plan.Commands) >= MaxSteps {
+		return manifestError("execution plan metadata is invalid")
+	}
+	seen := make(map[string]struct{}, len(plan.Commands)+1)
+	seen["checkout"] = struct{}{}
+	seenServices := make(map[string]struct{}, len(plan.Services))
+	for _, service := range plan.Services {
+		if _, ok := allowedServices[service]; !ok {
+			return manifestError("execution plan contains an unsupported service")
+		}
+		if _, duplicate := seenServices[service]; duplicate {
+			return manifestError("execution plan repeats a service")
+		}
+		seenServices[service] = struct{}{}
+	}
+	for _, command := range plan.Commands {
+		want, ok := catalogCommand(command.Step)
+		if !ok || command.Step == "checkout" || command.Executable != want.Executable || !equalStringSlices(command.Args, want.Args) {
+			return manifestError("execution plan command differs from the fixed catalog")
+		}
+		if _, duplicate := seen[command.Step]; duplicate {
+			return manifestError("execution plan repeats a step")
+		}
+		seen[command.Step] = struct{}{}
+	}
+	return nil
+}
+
+func equalStringSlices(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func matchesBranchFilter(patterns []string, branch string) bool {
 	if branch == "" {
 		return false

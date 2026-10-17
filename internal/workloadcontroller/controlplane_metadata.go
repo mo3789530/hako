@@ -174,9 +174,14 @@ func validExecutionMetadata(m ControlPlaneExecutionMetadata, now time.Time) bool
 	}
 	if (m.TriggerEvent == "") != (m.TriggerBranch == "") ||
 		(m.TriggerEvent != "" && m.TriggerEvent != "push" && m.TriggerEvent != "pull_request") ||
-		len(m.TriggerBranch) > 255 || strings.ContainsAny(m.TriggerBranch, "\r\n\x00") || strings.Contains(m.TriggerBranch, "..") ||
+		len(m.TriggerBranch) > 255 || strings.Contains(m.TriggerBranch, "..") ||
 		strings.Contains(m.TriggerBranch, "//") || strings.HasSuffix(m.TriggerBranch, "/") || strings.HasSuffix(m.TriggerBranch, ".") || strings.Contains(m.TriggerBranch, "@{") {
 		return false
+	}
+	for _, char := range m.TriggerBranch {
+		if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || strings.ContainsRune("._/-", char)) {
+			return false
+		}
 	}
 	return true
 }

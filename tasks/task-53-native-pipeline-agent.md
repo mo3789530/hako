@@ -1,6 +1,6 @@
 # Task 53: Native Pipeline and Issue-to-Agent Workflow
 
-Status: In Progress (strict versioned manifest parser and security tests implemented; Pipeline execution and Issue-to-Agent remain dependent on Tasks 39, 50, and 51). Priority: P3.
+Status: In Progress (versioned manifest selection is now bound from the immutable Run through the Lambda MicroVM hook and signed Agent ticket; fixed-catalog execution is implemented locally. Per-pipeline Checks, runtime resource enforcement, services, and Issue-to-Agent remain). Priority: P3.
 
 ## Goal
 
@@ -42,8 +42,19 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   them in the idempotency fingerprint, and exposed them in authenticated
   Resource Plane execution metadata schema v2 for later fixed-commit manifest
   selection. The client retains compatibility with v1 metadata for older Runs.
+- Signed the trigger context into Agent ticket schema v2 and Lambda MicroVM
+  run-hook identity; legacy tickets remain schema v1. The Workload Agent
+  verifies the source digest/install identity before reading `.hako/factory.yaml`,
+  selects matching pipelines deterministically, and runs only fixed catalog
+  executable/argument vectors in sorted pipeline order. Missing manifest uses
+  the legacy Go-test path; malformed or unmatched manifests fail closed.
+- Invalid manifests become a sanitized terminal Workload failure instead of a
+  retryable Agent error. Focused tests cover fixed-commit selection, ticket
+  compatibility, symlink rejection, deterministic catalog execution, and this
+  terminal failure path.
 - Added malicious YAML/resource-bound tests and documented the schema in
-  [`docs/software-factory.md`](../docs/software-factory.md). The deterministic
-  plan is not yet produced from staged source or connected to the Lambda
-  MicroVM worker; webhook scheduling still uses the legacy fixed Go-test path,
-  and no native manifest workload is created yet.
+  [`docs/software-factory.md`](../docs/software-factory.md). Run creation does
+  not yet persist selected pipeline names or report independent per-pipeline
+  Checks. The Agent currently rejects service containers, `network: none`,
+  non-standard runtime classes, and does not translate CPU/memory bounds into
+  MicroVM controls. Issue-to-Agent/PR workflow remains unimplemented.

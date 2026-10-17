@@ -334,14 +334,23 @@ bounds are 30–3600 seconds, 256–8192 MiB, and 250–4000 CPU millis. Network
 either `none` or `registry-only`; public Internet access is not an option in
 this schema.
 
-The validated configuration can be converted to a deterministic execution
-plan. `checkout` is handled as source staging, not a process. Other catalog
-steps map to fixed absolute executable paths and argument vectors (for example
-`go-test` maps to `/usr/local/go/bin/go test ./...`); manifest strings are
-never passed to a shell or appended to arguments. The plan also carries the
-bounded runtime, network, and service metadata. This is only the translation
-boundary: the plan is not yet generated from a staged Run commit or executed
-by the Lambda MicroVM worker, and declared services are not provisioned yet.
+The validated configuration is converted to a deterministic execution plan
+inside the Workload Agent, after it verifies the installed source archive
+against the Run's commit-bound digest. `checkout` is handled as source staging,
+not a process. Other catalog steps map to fixed absolute executable paths and
+argument vectors (for example `go-test` maps to `/usr/local/go/bin/go test
+./...`); manifest strings are never passed to a shell or appended to
+arguments. Pipeline names are sorted before execution, and the fixed catalog
+steps execute sequentially in the isolated Lambda MicroVM. A missing manifest
+retains the legacy fixed Go-test path; an invalid manifest or an event matching
+no pipeline fails the Run instead of silently falling back.
+
+The current Agent runtime supports only `standard` with `registry-only`
+network policy. It rejects manifests declaring service containers, `network:
+none`, or another runtime class because their provisioners/network profiles
+are not connected yet. Memory and CPU values are parsed and bounded, but are
+not yet translated to MicroVM allocation controls. Tool executables must exist
+in the selected immutable MicroVM image; missing tools fail the Run.
 
 Webhook-created Runs persist the normalized trigger kind and selection branch
 alongside the immutable commit: push events store the branch after
@@ -358,9 +367,11 @@ At least one of `on.push` or `on.pull_request` is required. Branch lists are
 optional (omission matches every branch) and accept only exact branch names or
 a trailing `/*` prefix pattern. Push triggers match non-deleted `refs/heads/*`
 events; pull-request triggers match opened, reopened, or synchronized open PRs
-by their base branch. Pipeline selection consumes the normalized webhook event
-schema and returns names in sorted order. This parser/selector is not connected
-to webhook scheduling yet, so the manifest does not currently admit workloads.
+by their base branch. The webhook processor stores the trigger kind and
+selection branch on the immutable Run; the Agent reconstructs the normalized
+selection context from those fields after source verification. The scheduler
+still creates a generic untrusted Job rather than persisting pipeline names,
+so branch-filter misses are discovered by the Agent and fail that Run.
 
 The parser rejects manifests larger than 64 KiB, multiple YAML documents,
 duplicate keys, aliases, anchors, explicit tags, nesting deeper than 20 levels,

@@ -26,10 +26,12 @@ type RuntimeBinding struct {
 }
 
 type runtimeHookPayload struct {
-	Identity     workloadjournal.Command `json:"identity"`
-	SourceDigest string                  `json:"source_digest"`
-	CommitSHA    string                  `json:"commit_sha"`
-	Deadline     time.Time               `json:"deadline"`
+	Identity      workloadjournal.Command `json:"identity"`
+	SourceDigest  string                  `json:"source_digest"`
+	CommitSHA     string                  `json:"commit_sha"`
+	TriggerEvent  string                  `json:"trigger_event,omitempty"`
+	TriggerBranch string                  `json:"trigger_branch,omitempty"`
+	Deadline      time.Time               `json:"deadline"`
 }
 
 type runtimeHookRequest struct {
@@ -74,7 +76,8 @@ func sameRuntimeBinding(left, right RuntimeBinding) bool {
 }
 
 func sameExecutionBinding(left, right ExecutionBinding) bool {
-	return left.SourceDigest == right.SourceDigest && left.CommitSHA == right.CommitSHA && left.Deadline.Equal(right.Deadline)
+	return left.SourceDigest == right.SourceDigest && left.CommitSHA == right.CommitSHA && left.TriggerEvent == right.TriggerEvent &&
+		left.TriggerBranch == right.TriggerBranch && left.Deadline.Equal(right.Deadline)
 }
 
 // NewMicroVMLifecycleHandler exposes the documented Lambda MicroVM image and
@@ -137,7 +140,8 @@ func lifecycleRun(w http.ResponseWriter, r *http.Request, binder interface {
 		http.Error(w, "invalid MicroVM lifecycle request", http.StatusBadRequest)
 		return
 	}
-	execution := ExecutionBinding{SourceDigest: payload.SourceDigest, CommitSHA: payload.CommitSHA, Deadline: payload.Deadline}
+	execution := ExecutionBinding{SourceDigest: payload.SourceDigest, CommitSHA: payload.CommitSHA,
+		TriggerEvent: payload.TriggerEvent, TriggerBranch: payload.TriggerBranch, Deadline: payload.Deadline}
 	if !validExecutionBinding(execution) {
 		http.Error(w, "invalid MicroVM lifecycle request", http.StatusBadRequest)
 		return

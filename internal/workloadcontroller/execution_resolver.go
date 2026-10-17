@@ -102,7 +102,8 @@ func (r *MetadataSpecificationResolver) Resolve(ctx context.Context, id workload
 		return Specification{}, ErrExecutionMaterialization
 	}
 	spec := Specification{Identity: id, ImageDigest: profile.ImageDigest, SourceDigest: source.Digest,
-		CommitSHA: metadata.CommitSHA, RequestedAt: metadata.RequestedAt.UTC(), Deadline: metadata.Deadline.UTC(),
+		CommitSHA: metadata.CommitSHA, TriggerEvent: metadata.TriggerEvent, TriggerBranch: metadata.TriggerBranch,
+		RequestedAt: metadata.RequestedAt.UTC(), Deadline: metadata.Deadline.UTC(),
 		ArtifactPrefix: source.ArtifactPrefix, ImageIdentifier: profile.ImageIdentifier, ImageVersion: profile.ImageVersion,
 		IngressNetworkConnectors: append([]string(nil), profile.IngressNetworkConnectors...),
 		EgressNetworkConnectors:  append([]string(nil), profile.EgressNetworkConnectors...)}

@@ -272,6 +272,34 @@ func TestPlanRejectsUnknownPipeline(t *testing.T) {
 	}
 }
 
+func TestValidateExecutionPlanRejectsMutatedCommandsAndDuplicateServices(t *testing.T) {
+	config, err := Parse([]byte(`version: 1
+on: {push: {branches: [main]}}
+pipelines:
+  verify:
+    steps: [checkout, go-test]
+    services: [postgres]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := Plan(config, "verify")
+	if err != nil || ValidateExecutionPlan(plan) != nil {
+		t.Fatalf("valid plan rejected: plan=%+v err=%v", plan, err)
+	}
+	mutated := plan
+	mutated.Commands = append([]Command(nil), plan.Commands...)
+	mutated.Commands[0].Args = []string{"test", "; touch /tmp/pwn"}
+	if !errors.Is(ValidateExecutionPlan(mutated), ErrManifest) {
+		t.Fatalf("mutated command plan accepted: %+v", mutated)
+	}
+	mutated = plan
+	mutated.Services = []string{"postgres", "postgres"}
+	if !errors.Is(ValidateExecutionPlan(mutated), ErrManifest) {
+		t.Fatalf("duplicate-service plan accepted: %+v", mutated)
+	}
+}
+
 func equalStrings(left, right []string) bool {
 	if len(left) != len(right) {
 		return false
