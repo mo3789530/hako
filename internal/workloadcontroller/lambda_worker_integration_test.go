@@ -66,6 +66,24 @@ type lambdaWorkerS3Journal struct {
 	versions map[string]int
 }
 
+type cancellationProcessFactory struct {
+	started   chan struct{}
+	stopped   chan struct{}
+	cancelled chan error
+}
+
+func (f *cancellationProcessFactory) Start(ctx context.Context, _ workloadagent.ExecutionPlan, _ io.Writer) (workloadagent.ManagedProcess, error) {
+	process := &compositionManagedProcess{done: make(chan struct{})}
+	close(f.started)
+	go func() {
+		<-ctx.Done()
+		process.finish(130, ctx.Err())
+		f.cancelled <- ctx.Err()
+		close(f.stopped)
+	}()
+	return process, nil
+}
+
 func newLambdaWorkerS3Journal() *lambdaWorkerS3Journal {
 	return &lambdaWorkerS3Journal{objects: make(map[string][]byte), versions: make(map[string]int)}
 }
@@ -420,7 +438,47 @@ func TestComposedLambdaWorkerCancellationOutboxTerminatesAndProjectsIntoPostgres
 		}
 	}
 
-	controller, runtime, api, agent, now := setupLambda(t)
+	controller, runtime, api, _, now := setupLambda(t)
+	checkout := t.TempDir()
+	if err := os.WriteFile(filepath.Join(checkout, "go.mod"), []byte("module example.invalid/hako-cancel-integration\n\ngo 1.27.2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	archive, err := workloadsource.CreateArchive(ctx, checkout, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.Close()
+	archiveBytes, err := io.ReadAll(archive.Reader())
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{9}, ed25519.SeedSize))
+	processFactory := &cancellationProcessFactory{started: make(chan struct{}), stopped: make(chan struct{}), cancelled: make(chan error, 1)}
+	guest, err := workloadagent.NewFilesystemAgent(workloadagent.FilesystemAgentConfig{SourceDirectory: filepath.Join(t.TempDir(), "installed"),
+		TrustedKeys: map[string]ed25519.PublicKey{"rp-v1": privateKey.Public().(ed25519.PublicKey)}, ProcessFactory: processFactory, Now: func() time.Time { return *now }})
+	if err != nil {
+		t.Fatalf("compose signed guest Agent: %v", err)
+	}
+	t.Cleanup(func() { _ = guest.Close(context.Background()) })
+	transport := &compositionAgentTransport{handler: guest.Handler()}
+	issuer := &workloadagent.Ed25519TicketIssuer{KeyID: "rp-v1", PrivateKey: privateKey, Now: func() time.Time { return *now }}
+	runtime.config.AgentTicketIssuer = issuer
+	runtime.agent = NewHTTPAgentRunner(workloadagent.NewClient(transport), compositionArchiveReader{archive: archiveBytes}, &compositionLogWriter{})
+	baseResolver := controller.resolver
+	boundResolver := resolveFunc(func(ctx context.Context, id workloadjournal.Command) (Specification, error) {
+		spec, err := baseResolver.Resolve(ctx, id)
+		spec.SourceDigest = archive.SHA256()
+		spec.Deadline = now.Add(7 * time.Hour)
+		spec.ArtifactPrefix = "s3://bucket/tenant_1/run_cancel/attempt_cancel/"
+		return spec, err
+	})
+	controller.resolver = boundResolver
+	runtime.resolver = boundResolver
+	api.onTerminate = func() {
+		if err := guest.Close(ctx); err != nil {
+			t.Errorf("terminate fake MicroVM guest process: %v", err)
+		}
+	}
 	identity := workloadjournal.Command{TenantID: "tenant_1", WorkloadRunID: "run_cancel", AttemptID: "attempt_cancel", Generation: 1,
 		ResourcePlaneID: "rp_1", IdempotencyToken: "token_cancel"}
 	dispatch := workloadjobs.DispatchCommand{SchemaVersion: 1, TenantID: domain.TenantID(identity.TenantID), WorkloadRunID: domain.WorkloadRunID(identity.WorkloadRunID),
@@ -432,8 +490,13 @@ func TestComposedLambdaWorkerCancellationOutboxTerminatesAndProjectsIntoPostgres
 	if _, err := controller.Ensure(ctx, commandBody); err != nil {
 		t.Fatalf("start fake running MicroVM before cancellation: %v", err)
 	}
-	if len(api.inputs) != 1 || agent.starts != 1 {
-		t.Fatalf("cancellation case did not start exactly one MicroVM/Agent: launches=%d agent_starts=%d", len(api.inputs), agent.starts)
+	select {
+	case <-processFactory.started:
+	case <-ctx.Done():
+		t.Fatal("signed guest Agent did not start its process")
+	}
+	if len(api.inputs) != 1 {
+		t.Fatalf("cancellation case did not start exactly one MicroVM: launches=%d", len(api.inputs))
 	}
 	requestAt := now.Add(time.Second)
 	if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (domain.WorkloadRun, error) {
@@ -471,8 +534,8 @@ func TestComposedLambdaWorkerCancellationOutboxTerminatesAndProjectsIntoPostgres
 	api.state = types.MicrovmStateRunning
 	logWriter := &compositionLogWriter{}
 	worker, err := NewLambdaWorkloadHandler(LambdaWorkloadHandlerConfig{ResourcePlaneID: "rp_1", Journal: controller.acceptor.store,
-		LambdaAPI: api, Resolver: controller.resolver, SourceArchives: compositionArchiveReader{}, AttemptLogs: logWriter,
-		AgentTransport: &compositionAgentTransport{}, Runtime: runtime.config, Now: func() time.Time { return *now }})
+		LambdaAPI: api, Resolver: controller.resolver, SourceArchives: compositionArchiveReader{archive: archiveBytes}, AttemptLogs: logWriter,
+		AgentTransport: transport, Runtime: runtime.config, Now: func() time.Time { return *now }})
 	if err != nil {
 		t.Fatalf("compose cancel-only Lambda Worker: %v", err)
 	}
@@ -481,6 +544,11 @@ func TestComposedLambdaWorkerCancellationOutboxTerminatesAndProjectsIntoPostgres
 		MessageAttributes: map[string]events.SQSMessageAttribute{"HakoEventType": {DataType: "String", StringValue: &eventType}}}}})
 	if err != nil || len(response.BatchItemFailures) != 0 || api.state != types.MicrovmStateTerminated {
 		t.Fatalf("Lambda Worker did not terminate the cancelled MicroVM: response=%+v state=%s err=%v", response, api.state, err)
+	}
+	select {
+	case <-processFactory.stopped:
+	case <-ctx.Done():
+		t.Fatal("terminating the Lambda MicroVM did not interrupt the signed Agent process")
 	}
 
 	resultHandler := workloadjobs.ResultHandler{Pool: pool, Policy: transaction.DefaultPolicy()}
@@ -496,6 +564,14 @@ func TestComposedLambdaWorkerCancellationOutboxTerminatesAndProjectsIntoPostgres
 	snapshot, err := worker.controller.Poll(ctx, commandBody, project)
 	if err != nil || resultPublishes != 1 || !snapshot.Journal.ResultPublished || snapshot.Journal.CleanupState != workloadjournal.CleanupConfirmed {
 		t.Fatalf("cancelled result/cleanup was not durably projected: snapshot=%+v publishes=%d err=%v", snapshot.Journal, resultPublishes, err)
+	}
+	select {
+	case processErr := <-processFactory.cancelled:
+		if !errors.Is(processErr, context.Canceled) {
+			t.Fatalf("signed Agent process stopped for unexpected reason: %v", processErr)
+		}
+	default:
+		t.Fatal("signed Agent process cancellation was not observed")
 	}
 	var runState, attemptState domain.WorkloadRunState
 	if err := pool.QueryRow(ctx, `SELECT state FROM workload_runs WHERE tenant_id='tenant_1' AND id='run_cancel'`).Scan(&runState); err != nil {

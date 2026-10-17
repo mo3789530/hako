@@ -23,6 +23,7 @@ type lambdaStub struct {
 	runErrOnce       bool
 	terminateErr     error
 	terminatePending bool
+	onTerminate      func()
 	role             string
 	endpoint         string
 	token            map[string]string
@@ -83,6 +84,9 @@ func (a *lambdaStub) TerminateMicrovm(context.Context, *lambdamicrovms.Terminate
 		a.state = types.MicrovmStateTerminating
 	} else {
 		a.state = types.MicrovmStateTerminated
+	}
+	if a.onTerminate != nil {
+		a.onTerminate()
 	}
 	return &lambdamicrovms.TerminateMicrovmOutput{}, nil
 }
