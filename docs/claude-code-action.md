@@ -49,3 +49,18 @@ IAM roles, or network selectors. Only Tenant Owners/Admins can change it.
 - This gate does not itself provision the runner, execute the Action, or issue a
   Claude model credential. Those paths remain separate tasks and are not
   implied by a successful provenance check.
+
+## Lambda MicroVM guest identity binding
+
+The Actions runner guest now has a local runtime handler for the Lambda
+MicroVM `/run` lifecycle hook. It strictly decodes the provider-supplied
+`microvmId` and non-secret `runHookPayload`, pins Workflow Job/Run/attempt,
+repository URL, runner name, and labels, then enables the one-time signed
+bootstrap route. The signed bootstrap must match that exact launch identity
+before the guest consumer runs. Identical `/run` retries are idempotent;
+conflicting VM or job identities are rejected.
+
+This is a tested library handler, not yet an executable/runner image or an
+official Actions runner process. The process consumer, result/Check connection,
+and cleanup lifecycle remain Task 76. AWS documents the `/run` hook body and
+per-MicroVM payload in [Running and using MicroVMs](https://docs.aws.amazon.com/lambda/latest/dg/microvms-launching.html).

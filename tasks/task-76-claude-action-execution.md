@@ -1,6 +1,6 @@
 # Task 76: Claude Action ephemeral execution and result lifecycle
 
-Status: Todo. Priority: P2. Parent: Task 73. Depends on: Tasks 40, 41, 52, 74, 75.
+Status: In Progress (Lambda MicroVM guest runtime now binds the provider `/run` microvmId and non-secret job payload to the signed one-time bootstrap; unit/race coverage validates identity and replay fences. Official runner process/image, job completion→Checks, and terminal cleanup composition remain). Priority: P2. Parent: Task 73. Depends on: Tasks 40, 41, 52, 74, 75.
 
 ## Goal
 

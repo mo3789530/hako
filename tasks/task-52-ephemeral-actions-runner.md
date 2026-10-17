@@ -179,6 +179,13 @@ Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Action
   PostgreSQL tests. This is a library-level startup worker: the guest
   listener/image is not wired, and no live AWS call has been made.
 
+- `RunnerGuestRuntime` now handles the Lambda MicroVM `/run` lifecycle wrapper,
+  validates its strict non-secret launch payload, and binds the exact provider
+  `microvmId` plus job/run/attempt/repository/runner-name/labels before
+  enabling the bootstrap route. Identical lifecycle retries are idempotent;
+  foreign job envelopes and conflicting rebinds fail closed. This remains a
+  tested library handler, not yet an executable or MicroVM image.
+
 - `cmd/hako-actions-runner-lambda` now provides the Resource Plane Lambda
   runtime entrypoint for the SQS startup handler. It requires an HTTPS broker,
   fixed MicroVM image/version, restricted egress connector, Resource Plane
