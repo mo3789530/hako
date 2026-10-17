@@ -9,12 +9,14 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	efsapi "github.com/aws/aws-sdk-go-v2/service/efs"
 	"github.com/aws/aws-sdk-go-v2/service/lambdamicrovms"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/mo3789530/hako/internal/resourcecontroller"
 	fakeruntime "github.com/mo3789530/hako/internal/runtime/fake"
 	"github.com/mo3789530/hako/internal/workspacejournal"
 	"github.com/mo3789530/hako/internal/workspaceruntime"
+	"github.com/mo3789530/hako/internal/workspacestorage"
 )
 
 const maxWorkspaceRuntimeProfileBytes = 16 << 10
@@ -22,6 +24,7 @@ const maxWorkspaceRuntimeProfileBytes = 16 << 10
 type workspaceRuntimeDeployment struct {
 	JournalBucket string
 	JournalPrefix string
+	FileSystemID  string
 	Spec          workspaceruntime.LaunchSpec
 	PollInterval  time.Duration
 	PollTimeout   time.Duration
@@ -44,7 +47,11 @@ func configuredRuntime(implementation string, awsCfg aws.Config, getenv func(str
 		if err != nil {
 			return nil, errors.New("configure trusted Workspace launch profile")
 		}
-		runtime, err := workspaceruntime.NewLambdaMicroVM(lambdamicrovms.NewFromConfig(awsCfg), journal, resolver,
+		storage, err := workspacestorage.NewEFS(efsapi.NewFromConfig(awsCfg), config.FileSystemID)
+		if err != nil {
+			return nil, errors.New("configure Workspace EFS Access Point manager")
+		}
+		runtime, err := workspaceruntime.NewLambdaMicroVMWithStorage(lambdamicrovms.NewFromConfig(awsCfg), journal, resolver, storage,
 			workspaceruntime.Config{SupportedRuntimeClasses: map[string]bool{config.Spec.RuntimeClass: true},
 				PollInterval: config.PollInterval, PollTimeout: config.PollTimeout}, nil)
 		if err != nil {
@@ -64,11 +71,12 @@ func configuredWorkspaceRuntime(getenv func(string) string, region string) (work
 	config := workspaceRuntimeDeployment{
 		JournalBucket: get("HAKO_WORKSPACE_RUNTIME_JOURNAL_BUCKET"),
 		JournalPrefix: get("HAKO_WORKSPACE_RUNTIME_JOURNAL_PREFIX"),
+		FileSystemID:  get("HAKO_WORKSPACE_EFS_FILE_SYSTEM_ID"),
 		PollInterval:  500 * time.Millisecond,
 		PollTimeout:   30 * time.Second,
 	}
-	if config.JournalBucket == "" || region == "" {
-		return workspaceRuntimeDeployment{}, errors.New("Workspace runtime journal bucket and AWS region are required")
+	if config.JournalBucket == "" || region == "" || config.FileSystemID == "" {
+		return workspaceRuntimeDeployment{}, errors.New("Workspace runtime journal bucket, EFS filesystem ID, and AWS region are required")
 	}
 	profileJSON := get("HAKO_WORKSPACE_RUNTIME_LAUNCH_SPEC_JSON")
 	if profileJSON == "" || len(profileJSON) > maxWorkspaceRuntimeProfileBytes {

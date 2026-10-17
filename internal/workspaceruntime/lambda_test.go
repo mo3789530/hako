@@ -2,6 +2,9 @@ package workspaceruntime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -13,6 +16,7 @@ import (
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/resourcecontroller"
 	"github.com/mo3789530/hako/internal/workspacejournal"
+	"github.com/mo3789530/hako/internal/workspacestorage"
 )
 
 type memoryStore struct {
@@ -73,6 +77,30 @@ type resolverFunc func(context.Context, resourcecontroller.Command) (LaunchSpec,
 
 func (f resolverFunc) Resolve(ctx context.Context, command resourcecontroller.Command) (LaunchSpec, error) {
 	return f(ctx, command)
+}
+
+type storageStub struct {
+	binding      workspacestorage.Binding
+	ensureCalls  int
+	deleteCalls  int
+	ensureErr    error
+	deleteErr    error
+	lastIdentity workspacestorage.Identity
+}
+
+func (s *storageStub) Ensure(_ context.Context, identity workspacestorage.Identity) (workspacestorage.Binding, error) {
+	s.ensureCalls++
+	s.lastIdentity = identity
+	return s.binding, s.ensureErr
+}
+
+func (s *storageStub) DeleteOwned(_ context.Context, identity workspacestorage.Identity, binding workspacestorage.Binding) error {
+	s.deleteCalls++
+	s.lastIdentity = identity
+	if binding != s.binding {
+		return errors.New("unexpected storage binding")
+	}
+	return s.deleteErr
 }
 
 type apiStub struct {
@@ -190,6 +218,83 @@ func TestEnsurePinsLaunchAndDuplicateDoesNotAllocateTwice(t *testing.T) {
 	if err != nil || len(stored.Journal.LaunchSpecPayload) == 0 || stored.Journal.ProviderID != "microvm-1" {
 		t.Fatalf("launch recovery state not durable: %+v, %v", stored.Journal, err)
 	}
+}
+
+func TestEnsureJournalsEFSBindingAndPassesOnlyMountMetadata(t *testing.T) {
+	api, store := &apiStub{state: types.MicrovmStateRunning}, newMemoryStore()
+	command := testCommand(domain.OperationEnsureRunning, 1, "op_efs")
+	storage := &storageStub{binding: runtimeTestBinding(command)}
+	resolver := resolverFunc(func(context.Context, resourcecontroller.Command) (LaunchSpec, error) { return validSpec(), nil })
+	runtime, err := NewLambdaMicroVMWithStorage(api, store, resolver, storage, Config{SupportedRuntimeClasses: map[string]bool{"standard": true}, PollInterval: 10 * time.Millisecond, PollTimeout: time.Second}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed, err := runtime.Execute(context.Background(), command); err != nil || observed != domain.ObservedWorkspaceRunning {
+		t.Fatalf("ensure with EFS = %q, %v", observed, err)
+	}
+	if storage.ensureCalls != 1 || storage.lastIdentity.TenantID != command.TenantID || api.runCalls != 1 {
+		t.Fatalf("storage provision/run calls = %d/%d identity=%+v", storage.ensureCalls, api.runCalls, storage.lastIdentity)
+	}
+	var hook map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(aws.ToString(api.lastRun.RunHookPayload)), &hook); err != nil {
+		t.Fatalf("decode generated run hook: %v", err)
+	}
+	var hako map[string]json.RawMessage
+	if err := json.Unmarshal(hook["hako"], &hako); err != nil {
+		t.Fatalf("decode Hako run hook: %v", err)
+	}
+	var mount struct {
+		WorkspaceMount struct {
+			FileSystemID  string `json:"file_system_id"`
+			AccessPointID string `json:"access_point_id"`
+			MountPath     string `json:"mount_path"`
+			TLS           bool   `json:"tls"`
+		} `json:"workspace_mount"`
+	}
+	if err := json.Unmarshal(hako["workspace_mount"], &mount.WorkspaceMount); err != nil ||
+		mount.WorkspaceMount.FileSystemID != storage.binding.FileSystemID || mount.WorkspaceMount.AccessPointID != storage.binding.AccessPointID ||
+		mount.WorkspaceMount.MountPath != "/workspace" || !mount.WorkspaceMount.TLS {
+		t.Fatalf("run hook did not carry the expected non-secret mount contract: %s err=%v", aws.ToString(api.lastRun.RunHookPayload), err)
+	}
+	snapshot, err := store.Get(context.Background(), command.TenantID, command.WorkspaceID, command.ResourcePlaneID)
+	if err != nil || snapshot.Journal.StorageBinding == nil || *snapshot.Journal.StorageBinding != storage.binding {
+		t.Fatalf("journal did not pin Workspace EFS identity: %+v err=%v", snapshot.Journal.StorageBinding, err)
+	}
+	if _, err := runtime.Execute(context.Background(), command); err != nil || storage.ensureCalls != 1 {
+		t.Fatalf("duplicate operation reprovisioned storage: calls=%d err=%v", storage.ensureCalls, err)
+	}
+}
+
+func TestDeleteRemovesEFSBindingOnlyAfterMicroVMTermination(t *testing.T) {
+	api, store := &apiStub{state: types.MicrovmStateRunning}, newMemoryStore()
+	ensureCommand := testCommand(domain.OperationEnsureRunning, 1, "op_efs_delete")
+	storage := &storageStub{binding: runtimeTestBinding(ensureCommand)}
+	resolver := resolverFunc(func(context.Context, resourcecontroller.Command) (LaunchSpec, error) { return validSpec(), nil })
+	runtime, err := NewLambdaMicroVMWithStorage(api, store, resolver, storage, Config{SupportedRuntimeClasses: map[string]bool{"standard": true}, PollInterval: 10 * time.Millisecond, PollTimeout: time.Second}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Execute(context.Background(), ensureCommand); err != nil {
+		t.Fatal(err)
+	}
+	if observed, err := runtime.Execute(context.Background(), testCommand(domain.OperationDelete, 2, "op_delete_efs")); err != nil || observed != domain.ObservedWorkspaceDeleted {
+		t.Fatalf("delete with EFS = %q, %v", observed, err)
+	}
+	if storage.deleteCalls != 1 || api.state != types.MicrovmStateTerminated || api.terminateCalls != 1 {
+		t.Fatalf("cleanup order/result wrong: AP deletes=%d VM state=%s terminate calls=%d", storage.deleteCalls, api.state, api.terminateCalls)
+	}
+}
+
+func runtimeTestBinding(command resourcecontroller.Command) workspacestorage.Binding {
+	identity := workspacestorage.Identity{TenantID: command.TenantID, WorkspaceID: command.WorkspaceID, ResourcePlaneID: command.ResourcePlaneID}
+	hash := func(value string) string {
+		sum := sha256.Sum256([]byte(value))
+		return hex.EncodeToString(sum[:8])
+	}
+	uidHash := sha256.Sum256([]byte(string(identity.TenantID) + ":" + string(identity.WorkspaceID)))
+	uid := (uint32(uidHash[0])<<16 | uint32(uidHash[1])<<8 | uint32(uidHash[2])) + 100000
+	return workspacestorage.Binding{FileSystemID: "fs-0123456789abcdef0", AccessPointID: "fsap-0123456789abcdef0",
+		RootPath: "/hako/" + hash(string(identity.ResourcePlaneID)) + "/" + hash(string(identity.TenantID)) + "/" + hash(string(identity.WorkspaceID)), UID: uid, GID: uid}
 }
 
 func TestAmbiguousLaunchRetryUsesPinnedRequestAfterResolverChanges(t *testing.T) {

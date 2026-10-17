@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/workspacestorage"
 )
 
 var (
@@ -55,24 +56,25 @@ const (
 // Workspace command revision. It contains no endpoint token, AWS credential,
 // image secret, or other secret material.
 type Journal struct {
-	SchemaVersion        int                    `json:"schema_version"`
-	TenantID             domain.TenantID        `json:"tenant_id"`
-	WorkspaceID          domain.WorkspaceID     `json:"workspace_id"`
-	ResourcePlaneID      domain.ResourcePlaneID `json:"resource_plane_id"`
-	WorkspaceRevision    int64                  `json:"workspace_revision"`
-	Revision             int64                  `json:"revision"`
-	OperationID          domain.OperationID     `json:"operation_id"`
-	OperationType        domain.OperationType   `json:"operation_type"`
-	State                State                  `json:"state"`
-	Tombstone            bool                   `json:"tombstone"`
-	AllocationGeneration int64                  `json:"allocation_generation"`
-	ProviderID           string                 `json:"provider_id,omitempty"`
-	LaunchToken          string                 `json:"launch_token,omitempty"`
-	LaunchSpecSHA256     string                 `json:"launch_spec_sha256,omitempty"`
-	LaunchSpecPayload    json.RawMessage        `json:"launch_spec_payload,omitempty"`
-	CleanupState         CleanupState           `json:"cleanup_state"`
-	CreatedAt            time.Time              `json:"created_at"`
-	UpdatedAt            time.Time              `json:"updated_at"`
+	SchemaVersion        int                       `json:"schema_version"`
+	TenantID             domain.TenantID           `json:"tenant_id"`
+	WorkspaceID          domain.WorkspaceID        `json:"workspace_id"`
+	ResourcePlaneID      domain.ResourcePlaneID    `json:"resource_plane_id"`
+	WorkspaceRevision    int64                     `json:"workspace_revision"`
+	Revision             int64                     `json:"revision"`
+	OperationID          domain.OperationID        `json:"operation_id"`
+	OperationType        domain.OperationType      `json:"operation_type"`
+	State                State                     `json:"state"`
+	Tombstone            bool                      `json:"tombstone"`
+	AllocationGeneration int64                     `json:"allocation_generation"`
+	ProviderID           string                    `json:"provider_id,omitempty"`
+	LaunchToken          string                    `json:"launch_token,omitempty"`
+	LaunchSpecSHA256     string                    `json:"launch_spec_sha256,omitempty"`
+	LaunchSpecPayload    json.RawMessage           `json:"launch_spec_payload,omitempty"`
+	StorageBinding       *workspacestorage.Binding `json:"storage_binding,omitempty"`
+	CleanupState         CleanupState              `json:"cleanup_state"`
+	CreatedAt            time.Time                 `json:"created_at"`
+	UpdatedAt            time.Time                 `json:"updated_at"`
 }
 
 type Snapshot struct {
@@ -130,6 +132,12 @@ func New(command Command, launchToken, launchSpecSHA256 string, now time.Time) (
 // This lets a restarted controller retry an ambiguous RunMicrovm call with
 // byte-for-byte identical parameters and the same client token.
 func NewWithLaunchSpec(command Command, launchToken string, payload []byte, now time.Time) (Journal, error) {
+	return NewWithLaunchSpecAndStorage(command, launchToken, payload, nil, now)
+}
+
+// NewWithLaunchSpecAndStorage durably pins the Workspace-scoped EFS binding
+// alongside the exact MicroVM launch request before any provider side effect.
+func NewWithLaunchSpecAndStorage(command Command, launchToken string, payload []byte, storage *workspacestorage.Binding, now time.Time) (Journal, error) {
 	if err := validateLaunchPayload(payload); err != nil {
 		return Journal{}, err
 	}
@@ -138,6 +146,10 @@ func NewWithLaunchSpec(command Command, launchToken string, payload []byte, now 
 		return Journal{}, err
 	}
 	j.LaunchSpecPayload = append(json.RawMessage(nil), payload...)
+	if storage != nil {
+		copy := *storage
+		j.StorageBinding = &copy
+	}
 	return j, j.Validate()
 }
 
@@ -314,6 +326,9 @@ func (j Journal) Validate() error {
 			return errors.New("Workspace runtime launch payload does not match its immutable digest")
 		}
 	}
+	if j.StorageBinding != nil && j.StorageBinding.ValidateFor(workspacestorage.Identity{TenantID: j.TenantID, WorkspaceID: j.WorkspaceID, ResourcePlaneID: j.ResourcePlaneID}) != nil {
+		return errors.New("Workspace runtime journal EFS binding is invalid")
+	}
 	if j.State == Provisioning || j.AllocationGeneration > 0 {
 		if j.AllocationGeneration < 1 || !validLaunch(j.LaunchToken, j.LaunchSpecSHA256) {
 			return errors.New("Workspace allocation requires a generation, launch token, and specification digest")
@@ -354,6 +369,9 @@ func ValidateUpdate(current Snapshot, next Journal) error {
 		next.UpdatedAt.Before(old.UpdatedAt) || (old.Tombstone && !next.Tombstone) {
 		return ErrConflict
 	}
+	if !sameStorageBinding(old.StorageBinding, next.StorageBinding) {
+		return ErrConflict
+	}
 	if next.WorkspaceRevision == old.WorkspaceRevision {
 		if next.OperationID != old.OperationID || next.OperationType != old.OperationType {
 			return ErrConflict
@@ -390,6 +408,13 @@ func ValidateUpdate(current Snapshot, next Journal) error {
 		return err
 	}
 	return nil
+}
+
+func sameStorageBinding(a, b *workspacestorage.Binding) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }
 
 func validateLaunchPayload(payload []byte) error {

@@ -31,6 +31,7 @@ func TestConfiguredLambdaMicroVMRuntimeRequiresExplicitTrustedConfiguration(t *t
 	values := map[string]string{
 		"HAKO_WORKSPACE_RUNTIME_JOURNAL_BUCKET":   "hako-rp-journal",
 		"HAKO_WORKSPACE_RUNTIME_JOURNAL_PREFIX":   "workspace-runtime/rp-test",
+		"HAKO_WORKSPACE_EFS_FILE_SYSTEM_ID":       "fs-0123456789abcdef0",
 		"HAKO_WORKSPACE_RUNTIME_LAUNCH_SPEC_JSON": string(profile),
 		"HAKO_WORKSPACE_RUNTIME_POLL_INTERVAL":    "100ms",
 		"HAKO_WORKSPACE_RUNTIME_POLL_TIMEOUT":     "5s",
@@ -53,7 +54,7 @@ func TestConfiguredLambdaMicroVMRuntimeRequiresExplicitTrustedConfiguration(t *t
 func TestWorkspaceRuntimeProfileRejectsSecretHookUnknownFieldsAndUnboundedInputs(t *testing.T) {
 	spec := controllerWorkspaceLaunchSpec()
 	profile, _ := json.Marshal(spec)
-	base := map[string]string{"HAKO_WORKSPACE_RUNTIME_JOURNAL_BUCKET": "bucket", "HAKO_WORKSPACE_RUNTIME_LAUNCH_SPEC_JSON": string(profile)}
+	base := map[string]string{"HAKO_WORKSPACE_RUNTIME_JOURNAL_BUCKET": "bucket", "HAKO_WORKSPACE_EFS_FILE_SYSTEM_ID": "fs-0123456789abcdef0", "HAKO_WORKSPACE_RUNTIME_LAUNCH_SPEC_JSON": string(profile)}
 	for name, value := range map[string]string{
 		"fixed per-Workspace hook": strings.TrimSuffix(string(profile), "}") + `,"run_hook_payload":"{}"}`,
 		"unknown field":            strings.TrimSuffix(string(profile), "}") + `,"public_ingress":true}`,

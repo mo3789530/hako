@@ -22,13 +22,21 @@ all ownership tags, root path, UID/GID, and permissions before deleting an AP.
 tagged entries; it returns metadata for comparison with durable Workspace
 bindings and never adopts or deletes discovered resources.
 
-The Resource Plane runtime must persist the returned binding before launching
-the MicroVM. On teardown it must first stop the allocation, confirm guest
-unmount/termination, durably record cleanup progress, and only then delete the
-AP. The library does not yet provide that orchestration or persist the binding
-in the Workspace runtime journal. A failed startup must retain enough durable
-state to retry cleanup; it must not delete an AP while an ambiguous MicroVM may
-still be using it.
+The runtime journal schema has an immutable `storage_binding` field and
+validates its shape across encode/decode. The Lambda MicroVM adapter now
+ensures the AP before first allocation, stores the binding with the immutable
+launch request, and passes filesystem/AP IDs, root path, POSIX IDs, `/workspace`,
+and TLS intent in the non-secret `/run` hook. Replacements reuse the journaled
+binding; an old terminated journal without one fails closed rather than
+silently starting with empty storage. Delete waits for MicroVM termination,
+deletes only the exact owned AP, then confirms the journal tombstone. A failed
+cleanup remains retryable.
+
+The guest image still does not implement or acknowledge the mount contract.
+Therefore the current adapter confirms MicroVM `RUNNING`, not that `/workspace`
+is mounted, and this is not production-ready. A failed startup before the
+runtime journal is created may leave a tagged AP; `DiscoverManaged` exposes it
+for reconciliation but no automated orphan deletion exists.
 
 ## Mount and network requirements
 

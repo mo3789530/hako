@@ -56,6 +56,32 @@ type EFS struct {
 	fileSystemID string
 }
 
+// Validate checks a journaled binding before it is consumed by another
+// Resource Plane component. It intentionally validates shape, not live AWS
+// state; ownership must still be checked through DescribeAccessPoints.
+func (b Binding) Validate() error {
+	if !fileSystemPattern.MatchString(b.FileSystemID) || !accessPointPattern.MatchString(b.AccessPointID) ||
+		!regexp.MustCompile(`^/hako/[a-f0-9]{16}/[a-f0-9]{16}/[a-f0-9]{16}$`).MatchString(b.RootPath) ||
+		b.UID < 100000 || b.GID != b.UID {
+		return errors.New("Workspace EFS binding is invalid")
+	}
+	return nil
+}
+
+// ValidateFor binds a journaled EFS mapping to one exact Resource Plane,
+// Tenant, and Workspace identity.
+func (b Binding) ValidateFor(identity Identity) error {
+	if !validIdentity(identity) || b.Validate() != nil {
+		return errors.New("Workspace EFS binding identity is invalid")
+	}
+	expectedRoot := "/hako/" + shortHash(string(identity.ResourcePlaneID)) + "/" + shortHash(string(identity.TenantID)) + "/" + shortHash(string(identity.WorkspaceID))
+	expectedUID := stablePOSIXID(string(identity.TenantID) + ":" + string(identity.WorkspaceID))
+	if b.RootPath != expectedRoot || b.UID != expectedUID || b.GID != expectedUID {
+		return errors.New("Workspace EFS binding does not belong to the requested identity")
+	}
+	return nil
+}
+
 func NewEFS(api EFSAPI, fileSystemID string) (*EFS, error) {
 	fileSystemID = strings.TrimSpace(fileSystemID)
 	if api == nil || !fileSystemPattern.MatchString(fileSystemID) {
@@ -169,7 +195,7 @@ func (e *EFS) DiscoverManaged(ctx context.Context) ([]ManagedAccessPoint, error)
 // Callers must first stop/unmount the MicroVM and durably tombstone its runtime.
 func (e *EFS) DeleteOwned(ctx context.Context, identity Identity, binding Binding) error {
 	if e == nil || ctx == nil || ctx.Err() != nil || !validIdentity(identity) ||
-		binding.FileSystemID != e.fileSystemID || !accessPointPattern.MatchString(binding.AccessPointID) {
+		binding.FileSystemID != e.fileSystemID || binding.ValidateFor(identity) != nil {
 		return errors.New("Workspace EFS deletion identity or binding is invalid")
 	}
 	output, err := e.api.DescribeAccessPoints(ctx, &efs.DescribeAccessPointsInput{AccessPointId: aws.String(binding.AccessPointID)})

@@ -20,6 +20,7 @@ import (
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/resourcecontroller"
 	"github.com/mo3789530/hako/internal/workspacejournal"
+	"github.com/mo3789530/hako/internal/workspacestorage"
 )
 
 const MaxMicroVMRuntime = 8 * time.Hour
@@ -58,6 +59,13 @@ type SpecResolver interface {
 	Resolve(context.Context, resourcecontroller.Command) (LaunchSpec, error)
 }
 
+// StorageProvisioner owns the durable Workspace EFS mapping. The provisioner
+// must not expose filesystem credentials or secret material to the guest.
+type StorageProvisioner interface {
+	Ensure(context.Context, workspacestorage.Identity) (workspacestorage.Binding, error)
+	DeleteOwned(context.Context, workspacestorage.Identity, workspacestorage.Binding) error
+}
+
 type Config struct {
 	SupportedRuntimeClasses map[string]bool
 	PollInterval            time.Duration
@@ -68,12 +76,17 @@ type LambdaMicroVM struct {
 	api      LambdaAPI
 	store    workspacejournal.Store
 	resolver SpecResolver
+	storage  StorageProvisioner
 	config   Config
 	now      func() time.Time
 	sleep    func(context.Context, time.Duration) error
 }
 
 func NewLambdaMicroVM(api LambdaAPI, store workspacejournal.Store, resolver SpecResolver, config Config, now func() time.Time) (*LambdaMicroVM, error) {
+	return NewLambdaMicroVMWithStorage(api, store, resolver, nil, config, now)
+}
+
+func NewLambdaMicroVMWithStorage(api LambdaAPI, store workspacejournal.Store, resolver SpecResolver, storage StorageProvisioner, config Config, now func() time.Time) (*LambdaMicroVM, error) {
 	if api == nil || store == nil || resolver == nil || len(config.SupportedRuntimeClasses) == 0 {
 		return nil, errors.New("Lambda MicroVM API, journal store, trusted spec resolver, and supported runtime classes are required")
 	}
@@ -94,7 +107,7 @@ func NewLambdaMicroVM(api LambdaAPI, store workspacejournal.Store, resolver Spec
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	return &LambdaMicroVM{api: api, store: store, resolver: resolver, config: config, now: now, sleep: sleepContext}, nil
+	return &LambdaMicroVM{api: api, store: store, resolver: resolver, storage: storage, config: config, now: now, sleep: sleepContext}, nil
 }
 
 func (r *LambdaMicroVM) Execute(ctx context.Context, command resourcecontroller.Command) (domain.ObservedWorkspaceState, error) {
@@ -108,12 +121,23 @@ func (r *LambdaMicroVM) Execute(ctx context.Context, command resourcecontroller.
 	if errors.Is(err, workspacejournal.ErrNotFound) {
 		var initial workspacejournal.Journal
 		if command.Type == domain.OperationEnsureRunning {
-			spec, payload, token, resolveErr := r.launchRequest(ctx, command)
+			spec, resolveErr := r.resolver.Resolve(ctx, command)
+			if resolveErr != nil || r.validateSpec(spec) != nil {
+				return domain.ObservedWorkspaceFailed, ErrSpecification
+			}
+			var storageBinding *workspacestorage.Binding
+			if r.storage != nil {
+				binding, storageErr := r.storage.Ensure(ctx, storageIdentity(command))
+				if storageErr != nil {
+					return domain.ObservedWorkspaceFailed, storageErr
+				}
+				storageBinding = &binding
+			}
+			payload, token, resolveErr := r.launchRequestForSpec(spec, command, storageBinding)
 			if resolveErr != nil {
 				return domain.ObservedWorkspaceFailed, resolveErr
 			}
-			_ = spec
-			initial, err = workspacejournal.NewWithLaunchSpec(identity, token, payload, r.now())
+			initial, err = workspacejournal.NewWithLaunchSpecAndStorage(identity, token, payload, storageBinding, r.now())
 		} else if command.Type == domain.OperationDelete {
 			initial, err = workspacejournal.New(identity, "", "", r.now())
 		} else {
@@ -138,7 +162,17 @@ func (r *LambdaMicroVM) Execute(ctx context.Context, command resourcecontroller.
 	var payload []byte
 	if command.Type == domain.OperationEnsureRunning {
 		if snapshot.Journal.State == workspacejournal.Terminated {
-			_, payload, token, err = r.launchRequest(ctx, command)
+			if r.storage != nil && snapshot.Journal.StorageBinding == nil {
+				return domain.ObservedWorkspaceFailed, errors.New("Workspace runtime journal has no durable EFS binding; refusing data-loss replacement")
+			}
+			var spec LaunchSpec
+			spec, err = r.resolver.Resolve(ctx, command)
+			if err == nil {
+				err = r.validateSpec(spec)
+			}
+			if err == nil {
+				payload, token, err = r.launchRequestForSpec(spec, command, snapshot.Journal.StorageBinding)
+			}
 			if err != nil {
 				return domain.ObservedWorkspaceFailed, err
 			}
@@ -274,6 +308,9 @@ func (r *LambdaMicroVM) reconcile(ctx context.Context, snapshot workspacejournal
 
 func (r *LambdaMicroVM) delete(ctx context.Context, snapshot workspacejournal.Snapshot) (domain.ObservedWorkspaceState, error) {
 	j := snapshot.Journal
+	if j.StorageBinding != nil && r.storage == nil {
+		return domain.ObservedWorkspaceFailed, errors.New("Workspace EFS binding exists but no storage provisioner is configured")
+	}
 	if j.ProviderID == "" {
 		if j.AllocationGeneration == 0 {
 			return domain.ObservedWorkspaceDeleted, nil
@@ -315,6 +352,12 @@ func (r *LambdaMicroVM) delete(ctx context.Context, snapshot workspacejournal.Sn
 			return domain.ObservedWorkspaceFailed, err
 		}
 		if output.State == types.MicrovmStateTerminated {
+			if j.StorageBinding != nil {
+				if err := r.storage.DeleteOwned(deadlineCtx, storageIdentityFromJournal(j), *j.StorageBinding); err != nil {
+					_ = r.markCleanupFailed(ctx, snapshot)
+					return domain.ObservedWorkspaceFailed, err
+				}
+			}
 			_, err := r.advance(deadlineCtx, snapshot, workspacejournal.Deleted, j.ProviderID, workspacejournal.CleanupConfirmed)
 			if err != nil {
 				return domain.ObservedWorkspaceFailed, err
@@ -418,7 +461,7 @@ func (r *LambdaMicroVM) advance(ctx context.Context, current workspacejournal.Sn
 	return r.store.CompareAndSwap(ctx, current, next)
 }
 
-func (r *LambdaMicroVM) launchRequest(ctx context.Context, command resourcecontroller.Command) (LaunchSpec, []byte, string, error) {
+func (r *LambdaMicroVM) launchRequest(ctx context.Context, command resourcecontroller.Command, storageBinding *workspacestorage.Binding) (LaunchSpec, []byte, string, error) {
 	spec, err := r.resolver.Resolve(ctx, command)
 	if err != nil {
 		return LaunchSpec{}, nil, "", err
@@ -426,13 +469,85 @@ func (r *LambdaMicroVM) launchRequest(ctx context.Context, command resourcecontr
 	if err := r.validateSpec(spec); err != nil {
 		return LaunchSpec{}, nil, "", err
 	}
+	payload, token, err := r.launchRequestForSpec(spec, command, storageBinding)
+	return spec, payload, token, err
+}
+
+func (r *LambdaMicroVM) launchRequestForSpec(spec LaunchSpec, command resourcecontroller.Command, storageBinding *workspacestorage.Binding) ([]byte, string, error) {
+	var err error
+	if storageBinding != nil {
+		if err := storageBinding.ValidateFor(storageIdentity(command)); err != nil {
+			return nil, "", err
+		}
+		spec.RunHookPayload, err = workspaceMountHook(spec.RunHookPayload, *storageBinding)
+		if err != nil {
+			return nil, "", err
+		}
+	}
 	payload, err := json.Marshal(spec)
 	if err != nil || len(payload) > 16<<10 {
-		return LaunchSpec{}, nil, "", ErrSpecification
+		return nil, "", ErrSpecification
 	}
 	identity := strings.Join([]string{string(command.TenantID), string(command.WorkspaceID), string(command.ResourcePlaneID), fmt.Sprint(command.WorkspaceRevision), string(command.OperationID), workspacejournal.DigestLaunchSpec(payload)}, "\x00")
 	digest := sha256.Sum256([]byte(identity))
-	return spec, payload, hex.EncodeToString(digest[:]), nil
+	return payload, hex.EncodeToString(digest[:]), nil
+}
+
+type workspaceMountHookPayload struct {
+	Hako struct {
+		WorkspaceMount struct {
+			FileSystemID  string `json:"file_system_id"`
+			AccessPointID string `json:"access_point_id"`
+			RootPath      string `json:"root_path"`
+			MountPath     string `json:"mount_path"`
+			UID           uint32 `json:"uid"`
+			GID           uint32 `json:"gid"`
+			TLS           bool   `json:"tls"`
+		} `json:"workspace_mount"`
+	} `json:"hako"`
+}
+
+func workspaceMountHook(existing string, binding workspacestorage.Binding) (string, error) {
+	if !safeRunHookPayload(existing) && existing != "" {
+		return "", ErrSpecification
+	}
+	var payload map[string]json.RawMessage
+	if existing != "" {
+		if err := json.Unmarshal([]byte(existing), &payload); err != nil || payload == nil {
+			return "", ErrSpecification
+		}
+	} else {
+		payload = make(map[string]json.RawMessage)
+	}
+	if _, exists := payload["hako"]; exists {
+		return "", errors.New("Workspace Runtime profile cannot override the reserved Hako run-hook namespace")
+	}
+	var mount workspaceMountHookPayload
+	mount.Hako.WorkspaceMount.FileSystemID = binding.FileSystemID
+	mount.Hako.WorkspaceMount.AccessPointID = binding.AccessPointID
+	mount.Hako.WorkspaceMount.RootPath = binding.RootPath
+	mount.Hako.WorkspaceMount.MountPath = "/workspace"
+	mount.Hako.WorkspaceMount.UID = binding.UID
+	mount.Hako.WorkspaceMount.GID = binding.GID
+	mount.Hako.WorkspaceMount.TLS = true
+	encoded, err := json.Marshal(mount.Hako)
+	if err != nil {
+		return "", ErrSpecification
+	}
+	payload["hako"] = json.RawMessage(encoded)
+	encoded, err = json.Marshal(payload)
+	if err != nil || len(encoded) > 16<<10 || !safeRunHookPayload(string(encoded)) {
+		return "", ErrSpecification
+	}
+	return string(encoded), nil
+}
+
+func storageIdentity(command resourcecontroller.Command) workspacestorage.Identity {
+	return workspacestorage.Identity{TenantID: command.TenantID, WorkspaceID: command.WorkspaceID, ResourcePlaneID: command.ResourcePlaneID}
+}
+
+func storageIdentityFromJournal(j workspacejournal.Journal) workspacestorage.Identity {
+	return workspacestorage.Identity{TenantID: j.TenantID, WorkspaceID: j.WorkspaceID, ResourcePlaneID: j.ResourcePlaneID}
 }
 
 func (r *LambdaMicroVM) validateSpec(spec LaunchSpec) error {

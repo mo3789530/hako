@@ -22,11 +22,14 @@ filesystem, identity tags, root path, and POSIX settings before calling EFS;
 tagged Access Points can be discovered for operator comparison without
 automatic adoption or deletion. See [Workspace EFS storage](../docs/workspace-efs-storage.md).
 
-This task is not complete: the Resource Plane lifecycle controller does not
-persist/use the binding, the guest does not mount `/workspace`, and Terraform
-does not create the encrypted filesystem, private mount targets, or scoped
-network/IAM rules. Backup/restore, retention, mount health, cleanup compensation,
-and live isolation checks remain open. No AWS changes were made.
+The Lambda MicroVM adapter now persists/reuses the EFS binding, supplies
+non-secret mount metadata through the run hook, and removes the AP only after
+MicroVM termination. It fails closed when a replacement has no binding or
+cleanup lacks an EFS provisioner. This task is not complete: the guest does not
+mount/ack `/workspace`, and Terraform does not create the encrypted filesystem,
+private mount targets, or scoped network/IAM rules. Backup/restore, retention,
+mount health, orphan cleanup, and live isolation checks remain open. No AWS
+changes were made.
 
 ## Acceptance criteria
 

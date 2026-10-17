@@ -2,12 +2,15 @@ package workspacejournal
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/workspacestorage"
 )
 
 func TestJournalPinsLaunchAndRoundTripsStrictly(t *testing.T) {
@@ -182,6 +185,51 @@ func TestLaunchPayloadIsValidatedAndImmutableAcrossRestartCheckpoint(t *testing.
 	if err := corrupt.Validate(); err == nil {
 		t.Fatal("journal accepted launch payload whose digest does not match")
 	}
+}
+
+func TestWorkspaceStorageBindingIsDurableAndImmutable(t *testing.T) {
+	now := time.Now().UTC()
+	cmd := command(domain.OperationEnsureRunning, 1, "op_storage")
+	binding := journalTestBinding(cmd)
+	created, err := NewWithLaunchSpecAndStorage(cmd, "token_storage", []byte(`{"image":"image-v1"}`), binding, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := Encode(created)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := Decode(encoded)
+	if err != nil || restarted.StorageBinding == nil || *restarted.StorageBinding != *binding {
+		t.Fatalf("storage binding did not survive journal restart: %+v, %v", restarted.StorageBinding, err)
+	}
+	current := Snapshot{Journal: restarted, ETag: `"v1"`}
+	next := restarted
+	next.Revision++
+	next.UpdatedAt = now.Add(time.Second)
+	changed := *binding
+	changed.AccessPointID = "fsap-1123456789abcdef0"
+	next.StorageBinding = &changed
+	if err := ValidateUpdate(current, next); !errors.Is(err, ErrConflict) {
+		t.Fatalf("journal accepted a changed Workspace storage binding: %v", err)
+	}
+	foreignWorkspace := restarted
+	foreignWorkspace.WorkspaceID = "ws_other"
+	if err := foreignWorkspace.Validate(); err == nil {
+		t.Fatal("journal accepted an EFS binding from a different Workspace")
+	}
+}
+
+func journalTestBinding(command Command) *workspacestorage.Binding {
+	identity := workspacestorage.Identity{TenantID: command.TenantID, WorkspaceID: command.WorkspaceID, ResourcePlaneID: command.ResourcePlaneID}
+	hash := func(value string) string {
+		sum := sha256.Sum256([]byte(value))
+		return hex.EncodeToString(sum[:8])
+	}
+	uidHash := sha256.Sum256([]byte(string(identity.TenantID) + ":" + string(identity.WorkspaceID)))
+	uid := (uint32(uidHash[0])<<16 | uint32(uidHash[1])<<8 | uint32(uidHash[2])) + 100000
+	return &workspacestorage.Binding{FileSystemID: "fs-0123456789abcdef0", AccessPointID: "fsap-0123456789abcdef0",
+		RootPath: "/hako/" + hash(string(identity.ResourcePlaneID)) + "/" + hash(string(identity.TenantID)) + "/" + hash(string(identity.WorkspaceID)), UID: uid, GID: uid}
 }
 
 func TestReplacementRequiresConfirmedPriorAllocationAndNewImmutableLaunch(t *testing.T) {

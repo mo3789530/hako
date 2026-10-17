@@ -18,7 +18,13 @@ Plane-owned static launch profile, and the AWS Lambda MicroVM SDK client. The
 launch profile is provided through
 `HAKO_WORKSPACE_RUNTIME_LAUNCH_SPEC_JSON`; the journal uses
 `HAKO_WORKSPACE_RUNTIME_JOURNAL_BUCKET` and optional
-`HAKO_WORKSPACE_RUNTIME_JOURNAL_PREFIX`. Optional poll settings are
+`HAKO_WORKSPACE_RUNTIME_JOURNAL_PREFIX`. EFS storage is configured with the
+exact Resource Plane filesystem ID in `HAKO_WORKSPACE_EFS_FILE_SYSTEM_ID`;
+lambda-microvm mode creates/reuses a Workspace Access Point, persists its
+binding in the journal, and adds non-secret mount metadata to the `/run` hook.
+The guest image still must implement and confirm the TLS-enabled mount before
+it is safe to report storage-ready; that integration is not yet complete.
+Optional poll settings are
 `HAKO_WORKSPACE_RUNTIME_POLL_INTERVAL` (default `500ms`, range `10ms`–`10s`)
 and `HAKO_WORKSPACE_RUNTIME_POLL_TIMEOUT` (default `30s`, range `1s`–`10m`).
 Unknown JSON fields, fixed per-Workspace hook payloads, unsupported classes,
