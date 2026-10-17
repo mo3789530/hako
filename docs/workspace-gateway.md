@@ -44,6 +44,22 @@ process-local, so production wiring must register/unregister entries from the
 Resource Plane runtime lifecycle and define behavior across Gateway replicas.
 No terminal/application payload is sent to the Control Plane.
 
+For Lambda MicroVM-backed Workspaces, `workspaceagent.LambdaMicroVMGatewayDialer`
+implements the Resource Plane's guest shell path. Its immutable binding
+contains Tenant/Workspace/Resource Plane IDs, MicroVM ID, Region, and the
+provider endpoint; constructor validation requires the exact AWS MicroVM host
+for that ID and Region. After Gateway Session authorization it issues a fresh
+two-minute Agent Ticket and asks the Lambda MicroVM SDK for a two-minute AWS
+auth token scoped only to TCP port 8080. It then opens the fixed WSS Guest shell
+route with the Hako ticket in `Authorization`, and AWS auth/port values in the
+Lambda-required `lambda-microvms.authentication.*` and `lambda-microvms.port.8080`
+WebSocket subprotocols (which Lambda strips before forwarding). Neither
+credential is persisted or logged. The token provider/dialer and
+authorization binding are locally tested, but Workspace lifecycle registration
+and a real Lambda endpoint connection remain unverified. This adapter currently
+supports shell only; VS Code and Guest-side port-forward channels require
+additional runtime endpoints.
+
 The Gateway bounds concurrent total and per-Workspace connections in-process,
 and applies a maximum payload size to every incoming WebSocket frame and every
 outgoing chunk (64 KiB default, 1 MiB maximum). Stream contents and tickets are

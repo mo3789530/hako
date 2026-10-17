@@ -60,10 +60,22 @@ configuration value.
 The supervisor, readiness, route restriction, socket permissions, binding,
 shutdown, and strict child-payload bounds have local tests. This does not verify
 the actual Lambda MicroVM image build, `/dev/pts`, or run-hook behavior. The
-Resource Plane Gateway still does not dial this Lambda MicroVM endpoint or mint
-its paired AWS port-8080 proxy token, and production key rotation/distribution
-is unresolved. Keep Workspace runtime exposure disabled until those transport
-and deployment gates are complete.
+Resource Plane now has a local `LambdaMicroVMGatewayDialer`: it checks the
+verified Tenant/Workspace/Resource Plane and shell permission, mints a fresh
+one-use Agent Ticket and an AWS auth token limited to this MicroVM's port 8080,
+then opens the fixed Guest shell WSS route. It sends AWS authentication and
+port selection using the `lambda-microvms.authentication.*` and
+`lambda-microvms.port.8080` WebSocket subprotocols (AWS removes these before
+forwarding) and keeps the Hako Agent Ticket in the `Authorization` header.
+Endpoint host
+validation is pinned to `{microvm-id}.lambda-microvm.{region}.on.aws`; caller
+input cannot choose an address. The SDK token provider, port/expiry scope,
+ticket binding, fixed route, AWS subprotocols, and rejection paths have local tests. The
+Gateway runtime router is not yet registered from Workspace lifecycle state,
+and no real MicroVM connection has been exercised. VS Code and Guest port
+forward streams also remain unsupported by this dialer. Production key
+rotation/distribution is unresolved. Keep Workspace runtime exposure disabled
+until lifecycle composition and deployment gates are complete.
 
 Build the dedicated image with
 `make build-workspace-microvm-image HAKO_EFS_UTILS_RPM_VERSION=<pinned-version> HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE=<public-keys.json>`.
@@ -73,6 +85,10 @@ the target fails when the file is absent or empty. Configure
 to the exact HTTPS origin; the guest rejects tickets presented with another
 Origin. The root init does not start when this setting or the image-owned key
 file path is missing. Do not place the Agent signing private key in this image.
+The AWS [CreateMicrovmAuthToken API](https://docs.aws.amazon.com/lambda/latest/microvm-api/API_CreateMicrovmAuthToken.html)
+supports one or more allowed ports and a 1–60 minute expiration; Hako requests
+only port 8080 for two minutes. AWS documents the required base protocol and
+authentication/port subprotocols in [Connecting to a MicroVM](https://docs.aws.amazon.com/lambda/latest/dg/microvms-launching.html#connecting-to-a-microvm).
 
 ## Verification
 
