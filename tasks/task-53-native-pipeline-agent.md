@@ -37,8 +37,13 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   steps to fixed executable/argument vectors, omits checkout as a process,
   and carries bounded runtime/network/service metadata without aliasing parser
   memory. It does not evaluate shell text.
+- Persisted the normalized webhook trigger event and selection branch on the
+  immutable Workload Run (push branch or pull-request base branch), included
+  them in the idempotency fingerprint, and exposed them in authenticated
+  Resource Plane execution metadata schema v2 for later fixed-commit manifest
+  selection. The client retains compatibility with v1 metadata for older Runs.
 - Added malicious YAML/resource-bound tests and documented the schema in
-  [`docs/software-factory.md`](../docs/software-factory.md). The plan is not
-  yet persisted on a Workload Run or connected to the Lambda MicroVM worker;
-  webhook scheduling still uses the legacy fixed Go-test path, and no native
-  manifest workload is created yet.
+  [`docs/software-factory.md`](../docs/software-factory.md). The deterministic
+  plan is not yet produced from staged source or connected to the Lambda
+  MicroVM worker; webhook scheduling still uses the legacy fixed Go-test path,
+  and no native manifest workload is created yet.

@@ -33,7 +33,7 @@ var (
 )
 
 const runColumns = `id, tenant_id, kind, COALESCE(requested_by, ''), COALESCE(github_installation_id, 0),
-COALESCE(github_repository_id, 0), COALESCE(github_integration_id, ''), COALESCE(github_config_revision, 0), COALESCE(github_credential_generation, 0), COALESCE(commit_sha, ''), ref, runtime_class, trust_level,
+COALESCE(github_repository_id, 0), COALESCE(github_integration_id, ''), COALESCE(github_config_revision, 0), COALESCE(github_credential_generation, 0), COALESCE(commit_sha, ''), ref, trigger_event, trigger_branch, runtime_class, trust_level,
 desired_state, state, COALESCE(resource_plane_id, ''), idempotency_key, request_hash, timeout_seconds,
 timeout_at, started_at, completed_at, COALESCE(error_code, ''), revision, created_at, updated_at`
 
@@ -77,7 +77,7 @@ func CreateOrGet(ctx context.Context, tx pgx.Tx, run domain.WorkloadRun) (domain
 	run.DesiredState = domain.WorkloadDesiredRunning
 	run.State = domain.WorkloadPending
 	run.Revision = 1
-	requestHash, err := idempotency.Fingerprint(struct {
+	legacyRequest := struct {
 		TenantID           domain.TenantID
 		Kind               domain.WorkloadKind
 		RequestedBy        domain.UserID
@@ -89,7 +89,26 @@ func CreateOrGet(ctx context.Context, tx pgx.Tx, run domain.WorkloadRun) (domain
 		TrustLevel         domain.WorkloadTrustLevel
 		ResourcePlaneID    domain.ResourcePlaneID
 		TimeoutSeconds     int64
-	}{run.TenantID, run.Kind, run.RequestedBy, run.GitHubInstallation, run.GitHubRepository, run.CommitSHA, run.Ref, run.RuntimeClass, run.TrustLevel, run.ResourcePlaneID, run.TimeoutSeconds})
+	}{run.TenantID, run.Kind, run.RequestedBy, run.GitHubInstallation, run.GitHubRepository, run.CommitSHA, run.Ref, run.RuntimeClass, run.TrustLevel, run.ResourcePlaneID, run.TimeoutSeconds}
+	requestHash, err := idempotency.Fingerprint(legacyRequest)
+	if run.TriggerEvent != "" && err == nil {
+		requestHash, err = idempotency.Fingerprint(struct {
+			TenantID           domain.TenantID
+			Kind               domain.WorkloadKind
+			RequestedBy        domain.UserID
+			GitHubInstallation int64
+			GitHubRepository   int64
+			CommitSHA          string
+			Ref                string
+			RuntimeClass       string
+			TrustLevel         domain.WorkloadTrustLevel
+			ResourcePlaneID    domain.ResourcePlaneID
+			TimeoutSeconds     int64
+			TriggerEvent       string
+			TriggerBranch      string
+		}{run.TenantID, run.Kind, run.RequestedBy, run.GitHubInstallation, run.GitHubRepository, run.CommitSHA, run.Ref,
+			run.RuntimeClass, run.TrustLevel, run.ResourcePlaneID, run.TimeoutSeconds, run.TriggerEvent, run.TriggerBranch})
+	}
 	if err != nil {
 		return domain.WorkloadRun{}, false, fmt.Errorf("fingerprint Workload Run request: %w", err)
 	}
@@ -139,13 +158,13 @@ func CreateOrGet(ctx context.Context, tx pgx.Tx, run domain.WorkloadRun) (domain
 		installationID, repositoryID = run.GitHubInstallation, run.GitHubRepository
 	}
 	tag, err := tx.Exec(ctx, `INSERT INTO workload_runs
-		(id, tenant_id, kind, requested_by, github_installation_id, github_repository_id, github_integration_id, github_config_revision, github_credential_generation, commit_sha, ref,
+		(id, tenant_id, kind, requested_by, github_installation_id, github_repository_id, github_integration_id, github_config_revision, github_credential_generation, commit_sha, ref, trigger_event, trigger_branch,
 		 runtime_class, trust_level, desired_state, state, resource_plane_id, idempotency_key, request_hash,
 		 timeout_seconds, timeout_at, revision, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'running', 'pending', $14, $15, $16, $17, $18, 1, $19, $19)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'running', 'pending', $16, $17, $18, $19, $20, 1, $21, $21)
 		ON CONFLICT (tenant_id, idempotency_key) DO NOTHING`,
 		run.ID, run.TenantID, run.Kind, requestedBy, installationID, repositoryID, integrationID, configRevision, credentialGeneration, commitSHA, run.Ref,
-		run.RuntimeClass, run.TrustLevel, resourcePlaneID, run.IdempotencyKey, requestHash, run.TimeoutSeconds, run.TimeoutAt, run.CreatedAt)
+		run.TriggerEvent, run.TriggerBranch, run.RuntimeClass, run.TrustLevel, resourcePlaneID, run.IdempotencyKey, requestHash, run.TimeoutSeconds, run.TimeoutAt, run.CreatedAt)
 	if err != nil {
 		return domain.WorkloadRun{}, false, fmt.Errorf("create Workload Run: %w", err)
 	}
@@ -184,6 +203,11 @@ func validateRun(run domain.WorkloadRun) error {
 	if len(run.RuntimeClass) > 100 || len(run.Ref) > 1024 || strings.ContainsAny(run.Ref, "\r\n\x00") {
 		return errors.New("Workload Run runtime class or ref exceeds its limit")
 	}
+	if (run.TriggerEvent == "") != (run.TriggerBranch == "") ||
+		(run.TriggerEvent != "" && run.TriggerEvent != "push" && run.TriggerEvent != "pull_request") ||
+		!validTriggerBranch(run.TriggerBranch) {
+		return errors.New("Workload Run trigger event or branch is invalid")
+	}
 	if (run.GitHubInstallation == 0) != (run.GitHubRepository == 0) || run.GitHubInstallation < 0 || run.GitHubRepository < 0 {
 		return errors.New("GitHub Installation and Repository IDs must both be positive or both be absent")
 	}
@@ -201,6 +225,21 @@ func validateRun(run domain.WorkloadRun) error {
 		return fmt.Errorf("Workload Run timeout must be between 1 second and %s", MaxTimeout)
 	}
 	return nil
+}
+
+func validTriggerBranch(branch string) bool {
+	if branch == "" {
+		return true
+	}
+	if len(branch) > 255 || strings.Contains(branch, "..") || strings.Contains(branch, "//") || strings.HasSuffix(branch, "/") || strings.HasSuffix(branch, ".") || strings.Contains(branch, "@{") {
+		return false
+	}
+	for _, char := range branch {
+		if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || strings.ContainsRune("._/-", char)) {
+			return false
+		}
+	}
+	return true
 }
 
 // resolveRunGitHubIntegration pins an active Tenant-owned App to a new Run
@@ -518,7 +557,7 @@ func scanRun(row rowScanner) (domain.WorkloadRun, error) {
 	var run domain.WorkloadRun
 	var requestedBy, commitSHA, resourcePlaneID string
 	err := row.Scan(&run.ID, &run.TenantID, &run.Kind, &requestedBy, &run.GitHubInstallation,
-		&run.GitHubRepository, &run.GitHubIntegrationID, &run.GitHubConfigRevision, &run.GitHubCredentialGeneration, &commitSHA, &run.Ref, &run.RuntimeClass, &run.TrustLevel, &run.DesiredState,
+		&run.GitHubRepository, &run.GitHubIntegrationID, &run.GitHubConfigRevision, &run.GitHubCredentialGeneration, &commitSHA, &run.Ref, &run.TriggerEvent, &run.TriggerBranch, &run.RuntimeClass, &run.TrustLevel, &run.DesiredState,
 		&run.State, &resourcePlaneID, &run.IdempotencyKey, &run.RequestHash, &run.TimeoutSeconds, &run.TimeoutAt, &run.StartedAt,
 		&run.CompletedAt, &run.ErrorCode, &run.Revision, &run.CreatedAt, &run.UpdatedAt)
 	if err != nil {

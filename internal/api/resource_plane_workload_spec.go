@@ -17,6 +17,7 @@ import (
 )
 
 const workloadSpecRequestIDHeader = "X-Hako-Request-ID"
+const resourcePlaneWorkloadSpecSchemaVersion = 2
 
 var workloadSpecRequestIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
 
@@ -41,6 +42,8 @@ type resourcePlaneWorkloadSpecResponse struct {
 	GitHubCredentialGen  int64                     `json:"github_credential_generation,omitempty"`
 	CommitSHA            string                    `json:"commit_sha"`
 	Ref                  string                    `json:"ref"`
+	TriggerEvent         string                    `json:"trigger_event,omitempty"`
+	TriggerBranch        string                    `json:"trigger_branch,omitempty"`
 	RuntimeClass         string                    `json:"runtime_class"`
 	TrustLevel           domain.WorkloadTrustLevel `json:"trust_level"`
 	RequestedAt          time.Time                 `json:"requested_at"`
@@ -95,13 +98,14 @@ func getResourcePlaneWorkloadSpecification(pool transaction.Beginner, resolveKey
 			return fmt.Errorf("resolve Resource Plane Workload specification: %w", err)
 		}
 		return c.JSON(http.StatusOK, resourcePlaneWorkloadSpecResponse{
-			SchemaVersion: 1, TenantID: metadata.TenantID, WorkloadRunID: metadata.WorkloadRunID,
+			SchemaVersion: resourcePlaneWorkloadSpecSchemaVersion, TenantID: metadata.TenantID, WorkloadRunID: metadata.WorkloadRunID,
 			AttemptID: metadata.AttemptID, Generation: metadata.Generation, ResourcePlaneID: metadata.ResourcePlaneID,
 			GitHubInstallationID: metadata.GitHubInstallationID, GitHubRepositoryID: metadata.GitHubRepositoryID,
 			GitHubOwner: metadata.GitHubOwner, GitHubRepository: metadata.GitHubRepository,
 			GitHubIntegrationID: metadata.GitHubIntegrationID, GitHubConfigRevision: metadata.GitHubConfigRevision,
 			GitHubCredentialGen: metadata.GitHubCredentialGen, CommitSHA: metadata.CommitSHA,
-			Ref: metadata.Ref, RuntimeClass: metadata.RuntimeClass, TrustLevel: metadata.TrustLevel,
+			Ref: metadata.Ref, TriggerEvent: metadata.TriggerEvent, TriggerBranch: metadata.TriggerBranch,
+			RuntimeClass: metadata.RuntimeClass, TrustLevel: metadata.TrustLevel,
 			RequestedAt: metadata.RequestedAt.UTC(), Deadline: metadata.Deadline.UTC(),
 		})
 	}

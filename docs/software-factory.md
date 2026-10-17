@@ -340,8 +340,19 @@ steps map to fixed absolute executable paths and argument vectors (for example
 `go-test` maps to `/usr/local/go/bin/go test ./...`); manifest strings are
 never passed to a shell or appended to arguments. The plan also carries the
 bounded runtime, network, and service metadata. This is only the translation
-boundary: the plan is not yet bound to persisted Run identity or executed by
-the Lambda MicroVM worker, and declared services are not provisioned yet.
+boundary: the plan is not yet generated from a staged Run commit or executed
+by the Lambda MicroVM worker, and declared services are not provisioned yet.
+
+Webhook-created Runs persist the normalized trigger kind and selection branch
+alongside the immutable commit: push events store the branch after
+`refs/heads/`, and pull requests store the base branch used for filtering. The
+values are included in Run idempotency and returned only through the
+authenticated Resource Plane specification endpoint. This is selection
+context, not execution authority; Tenant/Repository/commit authorization is
+still revalidated before a worker can receive the specification.
+The specification response is schema version 2 when served by this Control
+Plane. Resource Plane clients accept version 1 for old Runs that have no
+trigger context, and version 2 for the extended contract.
 
 At least one of `on.push` or `on.pull_request` is required. Branch lists are
 optional (omission matches every branch) and accept only exact branch names or

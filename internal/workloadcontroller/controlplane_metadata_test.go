@@ -29,10 +29,10 @@ func TestControlPlaneMetadataClientSignsBoundRequestAndValidatesResponse(t *test
 	transport := metadataRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		gotRequest = request
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{
-			"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_1","attempt_id":"attempt_1","generation":2,
+			"schema_version":2,"tenant_id":"tenant_1","workload_run_id":"run_1","attempt_id":"attempt_1","generation":2,
 			"resource_plane_id":"rp_1","github_installation_id":71,"github_repository_id":81,"github_owner":"acme","github_repository":"api",
 			"github_integration_id":"integration_1","github_config_revision":3,"github_credential_generation":5,
-			"commit_sha":"` + strings.Repeat("a", 40) + `","ref":"refs/heads/main","runtime_class":"standard","trust_level":"untrusted",
+			"commit_sha":"` + strings.Repeat("a", 40) + `","ref":"refs/heads/main","trigger_event":"push","trigger_branch":"main","runtime_class":"standard","trust_level":"untrusted",
 			"requested_at":"2026-10-12T12:00:00Z",
 			"deadline":"2026-10-12T13:00:00Z"}`))}, nil
 	})
@@ -42,7 +42,7 @@ func TestControlPlaneMetadataClientSignsBoundRequestAndValidatesResponse(t *test
 		t.Fatal(err)
 	}
 	metadata, err := client.Resolve(context.Background(), id)
-	if err != nil || metadata.GitHubOwner != "acme" || metadata.GitHubIntegrationID != "integration_1" || metadata.GitHubCredentialGen != 5 {
+	if err != nil || metadata.GitHubOwner != "acme" || metadata.GitHubIntegrationID != "integration_1" || metadata.GitHubCredentialGen != 5 || metadata.TriggerEvent != "push" || metadata.TriggerBranch != "main" {
 		t.Fatalf("trusted metadata = %+v, err=%v", metadata, err)
 	}
 	if gotRequest == nil || gotRequest.Method != http.MethodGet || gotRequest.URL.Path != "/v1/internal/resource-planes/rp_1/tenants/tenant_1/workloads/run_1/attempts/attempt_1/generations/2/specification" ||

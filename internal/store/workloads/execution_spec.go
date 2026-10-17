@@ -30,6 +30,8 @@ type ExecutionMetadata struct {
 	GitHubCredentialGen  int64
 	CommitSHA            string
 	Ref                  string
+	TriggerEvent         string
+	TriggerBranch        string
 	RuntimeClass         string
 	TrustLevel           domain.WorkloadTrustLevel
 	RequestedAt          time.Time
@@ -50,7 +52,7 @@ func ResolveExecutionMetadata(ctx context.Context, tx pgx.Tx, resourcePlaneID do
 		SELECT wr.tenant_id, wr.id, a.id, a.generation, a.resource_plane_id,
 		       wr.github_installation_id, wr.github_repository_id, repo.owner_login, repo.repository_name,
 		       COALESCE(wr.github_integration_id, ''), COALESCE(wr.github_config_revision, 0),
-		       COALESCE(wr.github_credential_generation, 0), wr.commit_sha, wr.ref, wr.runtime_class,
+		       COALESCE(wr.github_credential_generation, 0), wr.commit_sha, wr.ref, wr.trigger_event, wr.trigger_branch, wr.runtime_class,
 		       wr.trust_level, wr.created_at, wr.timeout_at
 		FROM workload_runs wr
 		JOIN workload_run_attempts a
@@ -99,7 +101,7 @@ func ResolveExecutionMetadata(ctx context.Context, tx pgx.Tx, resourcePlaneID do
 		&result.TenantID, &result.WorkloadRunID, &result.AttemptID, &result.Generation, &result.ResourcePlaneID,
 		&result.GitHubInstallationID, &result.GitHubRepositoryID, &result.GitHubOwner, &result.GitHubRepository,
 		&result.GitHubIntegrationID, &result.GitHubConfigRevision, &result.GitHubCredentialGen,
-		&result.CommitSHA, &result.Ref, &result.RuntimeClass, &result.TrustLevel, &result.RequestedAt, &result.Deadline)
+		&result.CommitSHA, &result.Ref, &result.TriggerEvent, &result.TriggerBranch, &result.RuntimeClass, &result.TrustLevel, &result.RequestedAt, &result.Deadline)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ExecutionMetadata{}, ErrExecutionSpecNotFound
 	}

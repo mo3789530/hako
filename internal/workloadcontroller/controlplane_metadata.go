@@ -29,6 +29,8 @@ var (
 const (
 	metadataRequestTimeout = 5 * time.Second
 	maxMetadataResponse    = 16 << 10
+	workloadSpecSchemaV1   = 1
+	workloadSpecSchemaV2   = 2
 )
 
 type ControlPlaneExecutionMetadata struct {
@@ -47,6 +49,8 @@ type ControlPlaneExecutionMetadata struct {
 	GitHubCredentialGen  int64                     `json:"github_credential_generation,omitempty"`
 	CommitSHA            string                    `json:"commit_sha"`
 	Ref                  string                    `json:"ref"`
+	TriggerEvent         string                    `json:"trigger_event,omitempty"`
+	TriggerBranch        string                    `json:"trigger_branch,omitempty"`
 	RuntimeClass         string                    `json:"runtime_class"`
 	TrustLevel           domain.WorkloadTrustLevel `json:"trust_level"`
 	RequestedAt          time.Time                 `json:"requested_at"`
@@ -147,7 +151,7 @@ func (c *ControlPlaneMetadataClient) Resolve(ctx context.Context, id workloadjou
 }
 
 func (m ControlPlaneExecutionMetadata) matches(id workloadjournal.Command) bool {
-	return m.SchemaVersion == 1 && m.TenantID == domain.TenantID(id.TenantID) && m.WorkloadRunID == domain.WorkloadRunID(id.WorkloadRunID) &&
+	return (m.SchemaVersion == workloadSpecSchemaV1 || m.SchemaVersion == workloadSpecSchemaV2) && m.TenantID == domain.TenantID(id.TenantID) && m.WorkloadRunID == domain.WorkloadRunID(id.WorkloadRunID) &&
 		m.AttemptID == id.AttemptID && m.Generation == id.Generation && m.ResourcePlaneID == domain.ResourcePlaneID(id.ResourcePlaneID)
 }
 
@@ -163,6 +167,15 @@ func validExecutionMetadata(m ControlPlaneExecutionMetadata, now time.Time) bool
 	}
 	if (m.GitHubIntegrationID == "") != (m.GitHubConfigRevision == 0) || (m.GitHubIntegrationID == "") != (m.GitHubCredentialGen == 0) ||
 		(m.GitHubIntegrationID != "" && !metadataIDPattern.MatchString(m.GitHubIntegrationID)) {
+		return false
+	}
+	if m.SchemaVersion == workloadSpecSchemaV1 && m.TriggerEvent != "" {
+		return false
+	}
+	if (m.TriggerEvent == "") != (m.TriggerBranch == "") ||
+		(m.TriggerEvent != "" && m.TriggerEvent != "push" && m.TriggerEvent != "pull_request") ||
+		len(m.TriggerBranch) > 255 || strings.ContainsAny(m.TriggerBranch, "\r\n\x00") || strings.Contains(m.TriggerBranch, "..") ||
+		strings.Contains(m.TriggerBranch, "//") || strings.HasSuffix(m.TriggerBranch, "/") || strings.HasSuffix(m.TriggerBranch, ".") || strings.Contains(m.TriggerBranch, "@{") {
 		return false
 	}
 	return true

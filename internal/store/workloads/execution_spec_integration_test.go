@@ -33,8 +33,8 @@ func TestResolveExecutionMetadataRevalidatesRunAttemptPlacementAndGitHubBinding(
 		{`INSERT INTO tenant_github_installations(tenant_id,installation_id,account_login,status,requested_by,requested_at,updated_at) VALUES ('tenant_spec',71,'acme','active','usr_spec',$1,$1)`, []any{now}},
 		{`INSERT INTO github_app_installation_bindings(installation_id,tenant_id,bound_at) VALUES (71,'tenant_spec',$1)`, []any{now}},
 		{`INSERT INTO tenant_github_repositories(tenant_id,installation_id,github_repository_id,owner_login,repository_name,default_branch,synchronized_at) VALUES ('tenant_spec',71,81,'acme','api','main',$1)`, []any{now}},
-		{`INSERT INTO workload_runs(id,tenant_id,kind,github_installation_id,github_repository_id,commit_sha,ref,runtime_class,trust_level,desired_state,state,resource_plane_id,idempotency_key,request_hash,timeout_seconds,timeout_at,revision,created_at,updated_at)
-		 VALUES ('run_spec','tenant_spec','job',71,81,$1,'refs/heads/main','standard','untrusted','running','provisioning','rp_spec','key_spec','hash_spec',600,$2,2,$3,$3)`, []any{strings.Repeat("a", 40), now.Add(10 * time.Minute), now}},
+		{`INSERT INTO workload_runs(id,tenant_id,kind,github_installation_id,github_repository_id,commit_sha,ref,trigger_event,trigger_branch,runtime_class,trust_level,desired_state,state,resource_plane_id,idempotency_key,request_hash,timeout_seconds,timeout_at,revision,created_at,updated_at)
+		 VALUES ('run_spec','tenant_spec','job',71,81,$1,'refs/heads/main','push','main','standard','untrusted','running','provisioning','rp_spec','key_spec','hash_spec',600,$2,2,$3,$3)`, []any{strings.Repeat("a", 40), now.Add(10 * time.Minute), now}},
 		{`INSERT INTO workload_run_attempts(id,tenant_id,workload_run_id,generation,attempt_number,resource_plane_id,idempotency_token,state,created_at,updated_at)
 		 VALUES ('attempt_spec','tenant_spec','run_spec',1,1,'rp_spec','token_spec','dispatch_pending',$1,$1)`, []any{now}},
 	} {
@@ -52,7 +52,7 @@ func TestResolveExecutionMetadataRevalidatesRunAttemptPlacementAndGitHubBinding(
 	if err != nil {
 		t.Fatalf("resolve active execution metadata: %v", err)
 	}
-	if metadata.GitHubOwner != "acme" || metadata.GitHubRepository != "api" || metadata.CommitSHA != strings.Repeat("a", 40) ||
+	if metadata.GitHubOwner != "acme" || metadata.GitHubRepository != "api" || metadata.CommitSHA != strings.Repeat("a", 40) || metadata.TriggerEvent != "push" || metadata.TriggerBranch != "main" ||
 		metadata.RuntimeClass != "standard" || metadata.ResourcePlaneID != "rp_spec" || !metadata.RequestedAt.Equal(now) || !metadata.Deadline.Equal(now.Add(10*time.Minute)) {
 		t.Fatalf("unexpected trusted metadata: %+v", metadata)
 	}

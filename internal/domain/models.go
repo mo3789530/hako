@@ -249,6 +249,8 @@ type WorkloadRun struct {
 	GitHubCredentialGeneration int64                `json:"github_credential_generation,omitempty"`
 	CommitSHA                  string               `json:"commit_sha,omitempty"`
 	Ref                        string               `json:"ref,omitempty"`
+	TriggerEvent               string               `json:"trigger_event,omitempty"`
+	TriggerBranch              string               `json:"trigger_branch,omitempty"`
 	RuntimeClass               string               `json:"runtime_class"`
 	TrustLevel                 WorkloadTrustLevel   `json:"trust_level"`
 	DesiredState               WorkloadDesiredState `json:"desired_state"`

@@ -50,12 +50,12 @@ func TestWebhookProcessorCreatesOneUntrustedRunCheckAndOutboxForEnabledRepositor
 	if err != nil || stats.Claimed != 1 || stats.Processed != 1 || stats.WorkloadRunsCreated != 1 {
 		t.Fatalf("trigger batch = %+v, error = %v", stats, err)
 	}
-	var runID, trust, state, commitSHA, ref string
-	if err := pool.QueryRow(ctx, `SELECT id,trust_level,state,commit_sha,ref FROM workload_runs WHERE tenant_id='tenant_webhook_trigger'`).Scan(&runID, &trust, &state, &commitSHA, &ref); err != nil {
+	var runID, trust, state, commitSHA, ref, triggerEvent, triggerBranch string
+	if err := pool.QueryRow(ctx, `SELECT id,trust_level,state,commit_sha,ref,trigger_event,trigger_branch FROM workload_runs WHERE tenant_id='tenant_webhook_trigger'`).Scan(&runID, &trust, &state, &commitSHA, &ref, &triggerEvent, &triggerBranch); err != nil {
 		t.Fatal(err)
 	}
-	if trust != "untrusted" || state != "pending" || commitSHA != strings.Repeat("a", 40) || ref != "refs/heads/main" {
-		t.Fatalf("scheduled run identity/policy = id=%s trust=%s state=%s sha=%s ref=%s", runID, trust, state, commitSHA, ref)
+	if trust != "untrusted" || state != "pending" || commitSHA != strings.Repeat("a", 40) || ref != "refs/heads/main" || triggerEvent != "push" || triggerBranch != "main" {
+		t.Fatalf("scheduled run identity/policy = id=%s trust=%s state=%s sha=%s ref=%s trigger=%s/%s", runID, trust, state, commitSHA, ref, triggerEvent, triggerBranch)
 	}
 	var checkCount, checkOutboxCount int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM workload_github_checks WHERE tenant_id='tenant_webhook_trigger' AND workload_run_id=$1`, runID).Scan(&checkCount); err != nil {
@@ -74,6 +74,22 @@ func TestWebhookProcessorCreatesOneUntrustedRunCheckAndOutboxForEnabledRepositor
 	duplicate, err := webhookstore.ProcessBatchWithRepositoryTriggers(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(2*time.Second), creator)
 	if err != nil || duplicate.WorkloadRunsCreated != 0 || duplicate.Processed != 0 {
 		t.Fatalf("duplicate trigger batch = %+v, error = %v", duplicate, err)
+	}
+	prDelivery := githubwebhook.VerifiedDelivery{IntegrationID: "shared", DeliveryID: "b2b2c3d4-e5f6-4789-8abc-def012345678", Event: "pull_request", Action: "opened",
+		Payload: []byte(`{"action":"opened","installation":{"id":9501},"repository":{"id":9502,"name":"api","default_branch":"main","owner":{"login":"acme"}},"pull_request":{"number":42,"state":"open","head":{"ref":"feature/add-api","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"base":{"ref":"release/2026.10"}}}`)}
+	if inserted, err := (webhookstore.Inbox{Pool: pool}).Record(ctx, prDelivery, now.Add(2*time.Second)); err != nil || !inserted {
+		t.Fatalf("record pull-request delivery: inserted=%v error=%v", inserted, err)
+	}
+	prBatch, err := webhookstore.ProcessBatchWithRepositoryTriggers(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(3*time.Second), creator)
+	if err != nil || prBatch.Processed != 1 || prBatch.WorkloadRunsCreated != 1 {
+		t.Fatalf("process pull-request trigger = %+v, error=%v", prBatch, err)
+	}
+	var prTrigger, prBranch, prHeadRef, prCommit string
+	if err := pool.QueryRow(ctx, `SELECT trigger_event,trigger_branch,ref,commit_sha FROM workload_runs WHERE tenant_id='tenant_webhook_trigger' AND id<>$1`, runID).Scan(&prTrigger, &prBranch, &prHeadRef, &prCommit); err != nil {
+		t.Fatal(err)
+	}
+	if prTrigger != "pull_request" || prBranch != "release/2026.10" || prHeadRef != "feature/add-api" || prCommit != strings.Repeat("b", 40) {
+		t.Fatalf("persisted pull-request trigger = %s/%s ref=%s sha=%s", prTrigger, prBranch, prHeadRef, prCommit)
 	}
 }
 

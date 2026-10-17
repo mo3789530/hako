@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/mo3789530/hako/internal/domain"
@@ -52,6 +53,7 @@ func CreateOrGetFromWebhookDelivery(ctx context.Context, tx pgx.Tx, integrationI
 	run.GitHubRepository = event.Repository.GitHubID
 	run.CommitSHA = event.CommitSHA
 	run.Ref = event.Ref
+	run.TriggerEvent, run.TriggerBranch = webhookPipelineTrigger(event)
 	run.IdempotencyKey = key
 	stored, created, err := CreateOrGet(ctx, tx, run)
 	if err != nil {
@@ -63,7 +65,25 @@ func CreateOrGetFromWebhookDelivery(ctx context.Context, tx pgx.Tx, integrationI
 	if stored.GitHubInstallation != event.InstallationID || stored.GitHubRepository != event.Repository.GitHubID || stored.CommitSHA != event.CommitSHA || stored.Ref != event.Ref {
 		return domain.WorkloadRun{}, false, fmt.Errorf("stored idempotent Workload Run identity differs from webhook event: %w", ErrWebhookDeliveryRunMismatch)
 	}
+	triggerEvent, triggerBranch := webhookPipelineTrigger(event)
+	if stored.TriggerEvent != triggerEvent || stored.TriggerBranch != triggerBranch {
+		return domain.WorkloadRun{}, false, fmt.Errorf("stored idempotent Workload Run trigger differs from webhook event: %w", ErrWebhookDeliveryRunMismatch)
+	}
 	return stored, created, nil
+}
+
+func webhookPipelineTrigger(event webhookevent.RepositoryEvent) (string, string) {
+	switch {
+	case event.GitHubEvent == "push" && event.Type == "repository.push" && !event.Deleted:
+		const prefix = "refs/heads/"
+		if strings.HasPrefix(event.Ref, prefix) && len(event.Ref) > len(prefix) {
+			return "push", strings.TrimPrefix(event.Ref, prefix)
+		}
+	case event.GitHubEvent == "pull_request" && event.PullRequest != nil && event.PullRequest.State == "open" &&
+		(event.Action == "opened" || event.Action == "reopened" || event.Action == "synchronize"):
+		return "pull_request", event.PullRequest.BaseRef
+	}
+	return "", ""
 }
 
 func eligibleRunTrigger(event webhookevent.RepositoryEvent) bool {

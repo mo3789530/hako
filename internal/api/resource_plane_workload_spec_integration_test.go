@@ -86,7 +86,7 @@ func TestResourcePlaneWorkloadSpecRouteAuthenticatesAndRevalidatesCurrentAttempt
 	if err := json.Unmarshal(valid.Body.Bytes(), &metadata); err != nil {
 		t.Fatal(err)
 	}
-	if metadata.SchemaVersion != 1 || metadata.TenantID != "tenant_spec_api" || metadata.WorkloadRunID != "run_spec_api" ||
+	if metadata.SchemaVersion != 2 || metadata.TenantID != "tenant_spec_api" || metadata.WorkloadRunID != "run_spec_api" ||
 		metadata.AttemptID != "attempt_spec_api" || metadata.Generation != 1 || metadata.ResourcePlaneID != "rp_spec_api" ||
 		metadata.GitHubOwner != "acme" || metadata.GitHubRepository != "api" || metadata.CommitSHA != strings.Repeat("b", 40) ||
 		metadata.RuntimeClass != "standard" || !metadata.RequestedAt.Equal(now) || !metadata.Deadline.Equal(now.Add(10*time.Minute)) {
