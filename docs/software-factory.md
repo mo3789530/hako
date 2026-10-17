@@ -297,6 +297,14 @@ E2E, so this remains a future milestone rather than a supported workflow.
 
 ```yaml
 version: 1
+on:
+  push:
+    branches:
+      - main
+      - "release/*"
+  pull_request:
+    branches:
+      - main
 pipelines:
   verify:
     steps:
@@ -325,6 +333,14 @@ Defaults are `standard`, 1800 seconds, 2048 MiB, 1000 CPU millis,
 bounds are 30–3600 seconds, 256–8192 MiB, and 250–4000 CPU millis. Network is
 either `none` or `registry-only`; public Internet access is not an option in
 this schema.
+
+At least one of `on.push` or `on.pull_request` is required. Branch lists are
+optional (omission matches every branch) and accept only exact branch names or
+a trailing `/*` prefix pattern. Push triggers match non-deleted `refs/heads/*`
+events; pull-request triggers match opened, reopened, or synchronized open PRs
+by their base branch. Pipeline selection consumes the normalized webhook event
+schema and returns names in sorted order. This parser/selector is not connected
+to webhook scheduling yet, so the manifest does not currently admit workloads.
 
 The parser rejects manifests larger than 64 KiB, multiple YAML documents,
 duplicate keys, aliases, anchors, explicit tags, nesting deeper than 20 levels,

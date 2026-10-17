@@ -32,6 +32,9 @@ func TestFactoryValidateCLIReportsOnlyValidatedPipelineNames(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "factory.yaml")
 	manifest := `version: 1
+on:
+  push:
+    branches: [main]
 pipelines:
   z-test:
     steps: [checkout, go-test]
@@ -53,7 +56,7 @@ pipelines:
 func TestFactoryValidateCLIDoesNotEchoInvalidManifest(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "factory.yaml")
-	malicious := "version: 1\npipelines: {verify: {steps: [checkout, 'go-test; echo secret']}}\n"
+	malicious := "version: 1\non: {push: {}}\npipelines: {verify: {steps: [checkout, 'go-test; echo secret']}}\n"
 	if err := os.WriteFile(path, []byte(malicious), 0600); err != nil {
 		t.Fatal(err)
 	}

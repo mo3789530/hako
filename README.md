@@ -1643,7 +1643,7 @@ Hakoは最初は **Lambda MicroVMを使ったRemote Development Environment** �
 - [ ] Fake Runtime上でRepository commitに対する`go test ./...` Jobを実行し、結果とredacted logsを保存する（commit照合・隔離Podman実行・redaction・DSQL状態/metadata保存と、SSE-S3/SSE-KMS対応のS3 writerまで実装。bucket/IAM provisioning、worker接続、scheduler連携は未実装）。[Workload Run設計](docs/software-factory-workloads.md)。
 - [ ] GitHub Checks APIでqueued/in-progress/completed check、commit SHA照合、summary/annotationを返す。
 - [ ] GitHub Actions `workflow_job.queued`を受け、専用権限でephemeral runnerを登録し、1 Job実行後にderegister・Runtime cleanupする。
-- [ ] `.hako/factory.yaml`のversioned strict schema、allowlisted step、network/secret policyを実装し、既存GitHub Actionsと共存させる（Task 53でstrict version 1 parserと`hako factory validate [--file path]`を追加済み。manifestからのRun生成・policy enforcement・Pipeline実行は未実装）。
+- [ ] `.hako/factory.yaml`のversioned strict schema、allowlisted step、network/secret policyを実装し、既存GitHub Actionsと共存させる（Task 53でstrict version 1 parser、push/PR branch trigger selectorと`hako factory validate [--file path]`を追加済み。manifestからのRun生成・policy enforcement・Pipeline実行は未実装）。
 - [ ] IssueからAgent Runを開始し、明示的な最小write permissionでbranch/PRを作成するworkflowを追加する。
 - [ ] PR Preview Workspace、artifact/SBOM storage、Software Catalog、OIDC deploy policyを分離タスクとして実装する。
 - [ ] GitHub App install→PR→Webhook→isolated `go test`→GitHub Check→logs保管→ephemeral Runtime破棄のSoftware Factory E2Eを追加する。

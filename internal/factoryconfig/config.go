@@ -9,7 +9,10 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"sort"
+	"strings"
 
+	webhookevent "github.com/mo3789530/hako/internal/githubwebhook"
 	"gopkg.in/yaml.v3"
 )
 
@@ -33,7 +36,17 @@ var (
 
 type Config struct {
 	Version   int                 `yaml:"version"`
+	On        Triggers            `yaml:"on"`
 	Pipelines map[string]Pipeline `yaml:"pipelines"`
+}
+
+type Triggers struct {
+	Push        *BranchFilter `yaml:"push,omitempty"`
+	PullRequest *BranchFilter `yaml:"pull_request,omitempty"`
+}
+
+type BranchFilter struct {
+	Branches []string `yaml:"branches,omitempty"`
 }
 
 type Pipeline struct {
@@ -115,6 +128,27 @@ func validate(config *Config) error {
 	if config == nil || config.Version != 1 || len(config.Pipelines) == 0 || len(config.Pipelines) > MaxPipelines {
 		return manifestError("version 1 and between 1 and 16 pipelines are required")
 	}
+	if config.On.Push == nil && config.On.PullRequest == nil {
+		return manifestError("at least one push or pull_request trigger is required")
+	}
+	for _, filter := range []*BranchFilter{config.On.Push, config.On.PullRequest} {
+		if filter == nil {
+			continue
+		}
+		if len(filter.Branches) > 32 {
+			return manifestError("each trigger may declare at most 32 branch filters")
+		}
+		seen := make(map[string]struct{}, len(filter.Branches))
+		for _, branch := range filter.Branches {
+			if !validBranchPattern(branch) {
+				return manifestError("branch filters must be exact names or end in /*")
+			}
+			if _, duplicate := seen[branch]; duplicate {
+				return manifestError("trigger branch filters must not be duplicated")
+			}
+			seen[branch] = struct{}{}
+		}
+	}
 	for name, pipeline := range config.Pipelines {
 		if !namePattern.MatchString(name) || len(pipeline.Steps) == 0 || len(pipeline.Steps) > MaxSteps {
 			return manifestError("pipeline names and step counts are invalid")
@@ -184,6 +218,79 @@ func validate(config *Config) error {
 		config.Pipelines[name] = pipeline
 	}
 	return nil
+}
+
+// Select returns configured pipeline names that match an authenticated,
+// normalized Repository push or pull-request event. The supplied config must
+// have been returned by Parse. Results are sorted for deterministic
+// idempotency and never use raw provider payload values.
+func Select(config Config, event webhookevent.RepositoryEvent) []string {
+	if event.SchemaVersion != webhookevent.RepositoryEventSchemaVersion {
+		return nil
+	}
+	var branch string
+	var filter *BranchFilter
+	switch {
+	case event.GitHubEvent == "push" && event.Type == "repository.push" && !event.Deleted:
+		const prefix = "refs/heads/"
+		if !strings.HasPrefix(event.Ref, prefix) || len(event.Ref) == len(prefix) {
+			return nil
+		}
+		branch, filter = strings.TrimPrefix(event.Ref, prefix), config.On.Push
+	case event.GitHubEvent == "pull_request" && (event.Action == "opened" || event.Action == "reopened" || event.Action == "synchronize") &&
+		event.Type == "repository.pull_request."+event.Action && event.PullRequest != nil && event.PullRequest.State == "open":
+		branch, filter = event.PullRequest.BaseRef, config.On.PullRequest
+	default:
+		return nil
+	}
+	if filter == nil || !matchesBranchFilter(filter.Branches, branch) {
+		return nil
+	}
+	names := make([]string, 0, len(config.Pipelines))
+	for name := range config.Pipelines {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func matchesBranchFilter(patterns []string, branch string) bool {
+	if branch == "" {
+		return false
+	}
+	if len(patterns) == 0 {
+		return true
+	}
+	for _, pattern := range patterns {
+		if strings.HasSuffix(pattern, "/*") {
+			prefix := strings.TrimSuffix(pattern, "*")
+			if strings.HasPrefix(branch, prefix) && len(branch) > len(prefix) {
+				return true
+			}
+		} else if pattern == branch {
+			return true
+		}
+	}
+	return false
+}
+
+func validBranchPattern(value string) bool {
+	if len(value) == 0 || len(value) > 255 || strings.TrimSpace(value) != value || strings.Contains(value, "..") || strings.HasPrefix(value, "/") || strings.ContainsAny(value, "\\ ~^:?[") {
+		return false
+	}
+	if strings.Count(value, "*") > 1 || (strings.Contains(value, "*") && !strings.HasSuffix(value, "/*")) {
+		return false
+	}
+	plain := strings.TrimSuffix(value, "/*")
+	if plain == "" || strings.HasSuffix(plain, "/") {
+		return false
+	}
+	for _, r := range plain {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || strings.ContainsRune("._/-", r)) {
+			return false
+		}
+	}
+	return true
 }
 
 func manifestError(message string) error { return fmt.Errorf("%w: %s", ErrManifest, message) }

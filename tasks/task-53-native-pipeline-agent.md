@@ -23,6 +23,9 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
 
 ## Local progress (2026-10-17)
 
+- Added `internal/factoryconfig` version 1 parser with strict `push` and
+  `pull_request` triggers, bounded branch filters, and a deterministic selector
+  over normalized webhook events. The selector is not connected to scheduling.
 - Added `internal/factoryconfig` version 1 parser with unknown-field rejection,
   duplicate-key detection, alias/anchor/tag rejection, single-document and
   structure-size limits, fixed catalog step/service allowlists, bounded runtime
