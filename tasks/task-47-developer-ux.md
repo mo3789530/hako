@@ -1,6 +1,6 @@
 # Task 47: Developer CLI and Service Catalog
 
-Status: In Progress. `hako shell <tenant-id> <workspace-id>` requests a short-lived RBAC-authorized shell ticket, connects directly to the TLS WSS Gateway, streams terminal input/output, and attempts session revocation on exit. Cancellation closes the stream cleanly and revokes the session. `hako ssh-proxy <tenant-id> <workspace-id>` provides an OpenSSH ProxyCommand over a dedicated TLS/WSS permission to fixed private loopback port 22. `hako forward <tenant-id> <workspace-id> <remote-port> [local-port]` binds loopback only, issues/revokes one short-lived ticket per TCP connection, and supports up to 16 concurrent local connections. The versioned PostgreSQL/Redis Service Catalog is wired to authenticated catalog/list/add/action APIs and `hako add`, `hako services`, `hako service start|stop|remove`; changes persist desired state as pending and do not claim to start or physically remove containers. Tasks 44–46 remain partially open; browser IDE, file transfer, runtime reconciliation/health reporting, and production runtime routing remain. Priority: P1.
+Status: In Progress. `hako shell <tenant-id> <workspace-id>` requests a short-lived RBAC-authorized shell ticket, connects directly to the TLS WSS Gateway, streams terminal input/output, and attempts session revocation on exit. Cancellation closes the stream cleanly and revokes the session. `hako ssh-proxy <tenant-id> <workspace-id>` provides an OpenSSH ProxyCommand over a dedicated TLS/WSS permission to fixed private loopback port 22. `hako cp`/`hako cp --from` use OpenSSH `scp`/SFTP through that proxy with per-Workspace host-key aliasing and paths restricted to `/workspace`. `hako forward <tenant-id> <workspace-id> <remote-port> [local-port]` binds loopback only, issues/revokes one short-lived ticket per TCP connection, and supports up to 16 concurrent local connections. The versioned PostgreSQL/Redis Service Catalog is wired to authenticated catalog/list/add/action APIs and `hako add`, `hako services`, `hako service start|stop|remove`; changes persist desired state as pending and do not claim to start or physically remove containers. Tasks 44–46 remain partially open; browser IDE, MicroVM SFTP/host-key provisioning, runtime reconciliation/health reporting, and production runtime routing remain. Priority: P1.
 
 ## Goal
 
@@ -8,7 +8,7 @@ Complete the basic interactive development flow and reproducible local-service t
 
 ## Work
 
-- Add CLI shell/SSH proxy, browser IDE open, port forward, file transfer, service list/add/remove, and clear lifecycle progress output. (`hako ssh-proxy` local TLS/WSS path is implemented; VS Code runtime, file transfer, and production router remain.)
+- Add CLI shell/SSH proxy, browser IDE open, port forward, file transfer, service list/add/remove, and clear lifecycle progress output. (`hako ssh-proxy` and `hako cp` command construction are implemented; VS Code runtime, MicroVM SFTP/host-key provisioning, and production router remain.)
 - Preserve current OAuth PKCE/keyring behavior; never request AWS access keys. Use the Gateway Session protocol, not public SSH.
 - Define a versioned Service Catalog schema and initial PostgreSQL/Redis templates with pinned images, resources, volume mounts, health checks, and safe default networks. (Catalog contract and built-ins implemented.)
 - Add authenticated Workspace-scoped catalog/list/add/action APIs and CLI with Tenant/Workspace visibility checks, idempotent state transitions, conflict handling, tombstones, and audit records. (Implemented locally; runtime execution remains.)
@@ -28,6 +28,12 @@ Complete the basic interactive development flow and reproducible local-service t
   raw bytes over TLS/WSS, and attempts revocation on exit. The Gateway has a
   dedicated route that always dials Workspace-local port 22 and does not
   accept caller-supplied host/port values. TCP/22 is not internet-exposed.
+- Added `hako cp` upload and `hako cp --from` download through OpenSSH 9+
+  `scp`/SFTP, using the same ticketed ProxyCommand, a Tenant/Workspace
+  `HostKeyAlias`, normal host-key validation, and lexical `/workspace` path
+  restrictions. Tests verify argument direction, identifier/path validation,
+  command quoting, and failure propagation. The guest SFTP subsystem and
+  trusted host-key provisioning remain unverified runtime prerequisites.
 - Added a local TLS API/Gateway integration test for ticket issuance, shell
   byte streaming, cancellation, authorization denial, TCP forwarding, and
   session revocation, plus configuration and invalid-port tests. Race tests
@@ -48,7 +54,7 @@ Complete the basic interactive development flow and reproducible local-service t
   name-reserving tombstone and must not be confused with physical cleanup.
   Public ingress is absent.
 - This is a first shell transport, not the complete developer UX: reconnectable
-  PTY, terminal resize, SSH/VS Code, and file transfer are still open.
+  PTY, terminal resize, VS Code, and production SSH/SFTP routing are still open.
 
 ## Acceptance criteria
 

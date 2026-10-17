@@ -77,6 +77,22 @@ func main() {
 			fmt.Fprintf(os.Stderr, "hako ssh-proxy: %v\n", err)
 			os.Exit(1)
 		}
+	case len(os.Args) == 6 && os.Args[1] == "cp":
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		fmt.Fprintf(os.Stderr, "Copying to Workspace %s...\n", os.Args[3])
+		if err := copyWorkspacePath(ctx, os.Args[2], os.Args[3], os.Args[4], os.Args[5], false); err != nil {
+			fmt.Fprintf(os.Stderr, "hako cp: %v\n", err)
+			os.Exit(1)
+		}
+	case len(os.Args) == 7 && os.Args[1] == "cp" && os.Args[2] == "--from":
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		fmt.Fprintf(os.Stderr, "Copying from Workspace %s...\n", os.Args[4])
+		if err := copyWorkspacePath(ctx, os.Args[3], os.Args[4], os.Args[5], os.Args[6], true); err != nil {
+			fmt.Fprintf(os.Stderr, "hako cp: %v\n", err)
+			os.Exit(1)
+		}
 	case (len(os.Args) == 5 || len(os.Args) == 6) && os.Args[1] == "forward":
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
@@ -246,7 +262,7 @@ func main() {
 		}
 		fmt.Fprintf(os.Stdout, "Workspace %s accepted: desired=%s observed=%s (operation=%s state=%s, request-key=%s)\n", result.Workspace.Workspace.ID, result.Workspace.Status.DesiredState, result.Workspace.Status.ObservedState, result.OperationID, result.OperationState, idempotencyKey)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: hako login | hako api health | hako tenant membership <tenant-id> | hako tenant placement-policy get <tenant-id> | hako tenant placement-policy set <tenant-id> '<policy-json>' | hako create <tenant-id> <workspace-name> [--idempotency-key <key>] | hako list <tenant-id> [limit] [offset] | hako get <tenant-id> <workspace-id> | hako shell <tenant-id> <workspace-id> | hako ssh-proxy <tenant-id> <workspace-id> | hako forward <tenant-id> <workspace-id> <remote-port> [local-port] | hako suspend|resume|delete <tenant-id> <workspace-id> [--idempotency-key <key>] | hako workload create --tenant <id> --installation <id> --repository <id> --commit <sha> [--ref <ref>] [--timeout-seconds <seconds>] [--idempotency-key <key>] | hako workload list <tenant-id> [limit] [offset] | hako workload show <tenant-id> <run-id> | hako workload cancel <tenant-id> <run-id>")
+		fmt.Fprintln(os.Stderr, "usage: hako login | hako api health | hako tenant membership <tenant-id> | hako tenant placement-policy get <tenant-id> | hako tenant placement-policy set <tenant-id> '<policy-json>' | hako create <tenant-id> <workspace-name> [--idempotency-key <key>] | hako list <tenant-id> [limit] [offset] | hako get <tenant-id> <workspace-id> | hako shell <tenant-id> <workspace-id> | hako ssh-proxy <tenant-id> <workspace-id> | hako cp <tenant-id> <workspace-id> <local-path> <workspace-path> | hako cp --from <tenant-id> <workspace-id> <workspace-path> <local-path> | hako forward <tenant-id> <workspace-id> <remote-port> [local-port] | hako suspend|resume|delete <tenant-id> <workspace-id> [--idempotency-key <key>] | hako workload create --tenant <id> --installation <id> --repository <id> --commit <sha> [--ref <ref>] [--timeout-seconds <seconds>] [--idempotency-key <key>] | hako workload list <tenant-id> [limit] [offset] | hako workload show <tenant-id> <run-id> | hako workload cancel <tenant-id> <run-id>")
 		os.Exit(2)
 	}
 }

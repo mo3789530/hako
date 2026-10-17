@@ -8,6 +8,8 @@ export HAKO_API_URL=https://api.example.test
 export HAKO_GATEWAY_URL=https://gateway.example.test
 hako shell <tenant-id> <workspace-id>
 hako ssh-proxy <tenant-id> <workspace-id>
+hako cp <tenant-id> <workspace-id> <local-path> <workspace-path>
+hako cp --from <tenant-id> <workspace-id> <workspace-path> <local-path>
 ```
 
 `hako shell` uses the saved Cognito access token to ask the Control Plane for a
@@ -36,6 +38,25 @@ choose a host or port. TCP/22 remains private and is never exposed publicly.
 The SSH daemon must be present and configured inside the Workspace image. The
 ProxyCommand emits no protocol text on stdout; diagnostics go to stderr. It
 attempts session revocation when the stream closes or the process is cancelled.
+
+Copy files through the same private SSH tunnel:
+
+```sh
+hako cp acme ws_api ./config.yaml /workspace/config.yaml
+hako cp --from acme ws_api /workspace/logs/app.log ./app.log
+```
+
+`hako cp` delegates transfer to the system OpenSSH `scp` client and requires
+OpenSSH 9.0 or newer so transfers use SFTP rather than the legacy remote-shell
+protocol. It configures the Hako ProxyCommand plus a unique
+`HostKeyAlias` for the Tenant/Workspace pair. The remote path must be absolute
+and remain lexically under `/workspace`; the command never accepts a remote
+host. Normal SSH host-key checking remains enabled: verify and provision the
+Workspace host key in `known_hosts` before unattended copies. The SSH daemon
+must expose the SFTP subsystem. No file contents pass through the Control
+Plane, and the CLI does not add credential flags or place Hako tickets in the
+scp argument list. The actual MicroVM sshd/SFTP and host-key provisioning are
+still runtime deployment gates.
 
 Forward one allowed Workspace loopback service port with:
 
@@ -89,8 +110,9 @@ cannot choose a runtime hostname or destination port. The SSH route is always
 the dedicated `ssh-proxy` channel to port 22.
 
 The shell command is currently a single-stream transport. It does not yet
-provide a reconnectable PTY, terminal resize signaling, a production
-SSH/VS Code runtime router, or file transfer. The Service Catalog API/CLI currently persists
+provide a reconnectable PTY, terminal resize signaling, or a production
+SSH/VS Code runtime router. File transfer uses the local OpenSSH `scp` client
+through the same unverified MicroVM SSH runtime path. The Service Catalog API/CLI currently persists
 desired state only; runtime start/health/stop/remove execution and
 persistent-data behavior are not yet implemented. The local forwarding CLI and Gateway protocol have a local
 E2E, but production Resource Plane routing remains unfinished. Deployment
