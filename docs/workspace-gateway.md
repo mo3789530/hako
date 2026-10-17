@@ -27,9 +27,12 @@ ports: it checks the signed Workspace ID, opens `/bin/sh` in that Workspace,
 and dials only `127.0.0.1:{port}` after Gateway `PortAuthorizer` approval. The
 SSH route has a separate signed permission and always dials `127.0.0.1:22`; it
 does not use the caller-controlled port route or public SSH ingress. It
-rejects VS Code until that runtime adapter is supplied. A Resource Plane
-router still needs to map signed Workspace claims to the right runtime;
-caller-provided hostnames are never accepted. Active session/revocation state
+rejects VS Code until that runtime adapter is supplied. The Resource Plane
+must map signed Workspace claims to the right runtime; caller-provided
+hostnames are never accepted. Static local registrations are provided by
+`workspaceagent.WorkspaceRouter`; Lambda MicroVM runtimes can instead use the
+durable-journal-backed `WorkspaceLambdaMicroVMStreamDirectory` described
+below. Active session/revocation state
 is checked through the verifier's injected `ActiveSessionLookup`; the local
 `HTTPActiveSessionLookup` uses the signed HTTPS/HMAC Control Plane endpoint,
 which checks the complete claims identity against PostgreSQL and returns only
@@ -38,10 +41,9 @@ that selects the registered single-Workspace dialer using the verified
 Workspace claim. It rejects duplicate live registrations, and cleanup must
 compare against the expected dialer so a delayed removal cannot unregister a
 replacement. Unknown Workspace IDs fail closed. Registration is an internal
-Resource Plane responsibility; it does not accept host/port destinations and
-does not yet discover runtimes or consume lifecycle events. The map is
-process-local, so production wiring must register/unregister entries from the
-Resource Plane runtime lifecycle and define behavior across Gateway replicas.
+Resource Plane responsibility; it does not accept host/port destinations or
+discover runtimes. It is intended for local/runtime-bound adapters, not as the
+Lambda MicroVM fleet directory.
 No terminal/application payload is sent to the Control Plane.
 
 For Lambda MicroVM-backed Workspaces, `workspaceagent.LambdaMicroVMGatewayDialer`
@@ -55,10 +57,16 @@ route with the Hako ticket in `Authorization`, and AWS auth/port values in the
 Lambda-required `lambda-microvms.authentication.*` and `lambda-microvms.port.8080`
 WebSocket subprotocols (which Lambda strips before forwarding). Neither
 credential is persisted or logged. The token provider/dialer and
-authorization binding are locally tested, but Workspace lifecycle registration
+authorization binding are locally tested, but production Gateway composition
 and a real Lambda endpoint connection remain unverified. This adapter currently
 supports shell only; VS Code and Guest-side port-forward channels require
-additional runtime endpoints.
+additional runtime endpoints. The directory reads the matching Workspace
+journal from the Resource Plane store and calls `GetMicrovm` for each new
+connection, requiring exact Tenant/Workspace/Plane identity, a non-tombstoned
+`running` journal, and the same running provider ID before creating the
+ephemeral dialer. It resolves lifecycle state without process-local
+registration or client routing hints; production Gateway composition, IAM,
+store wiring, and live MicroVM connectivity remain unverified.
 
 The Gateway bounds concurrent total and per-Workspace connections in-process,
 and applies a maximum payload size to every incoming WebSocket frame and every
@@ -76,6 +84,6 @@ port-forward byte round-trip to an ephemeral `127.0.0.1` listener,
 wrong channel/Workspace/Origin, plaintext rejection, denied/allowed port
 forwarding, per-Workspace connection cap, concurrent ticket replay rejection
 with reconnect-after-close, upstream failure, and oversized frames. The concrete authenticated
-Resource Plane runtime lifecycle registration, distributed limits, metrics/audit events,
-long-running service deployment, IDE process bridge, and Lambda MicroVM
-end-to-end stream PoC remain open Task 46/47 work.
+Production Gateway composition/deployment, distributed limits, metrics/audit
+events, IDE process bridge, and Lambda MicroVM end-to-end stream PoC remain
+open Task 46/47 work.

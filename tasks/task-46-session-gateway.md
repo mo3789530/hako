@@ -1,6 +1,6 @@
 # Task 46: Hako Session Tickets and Gateway
 
-Status: In Progress (Ed25519 Gateway-audience ticket claims, channel permissions, RBAC-backed create/revoke API routes, an HTTPS/HMAC active-session API/client with PostgreSQL identity matching, and a TLS-only WSS Gateway core with signed-Workspace-bound PTY/loopback-port adapters and local shell/port E2E now exist. A local in-process multi-Workspace router selects only from verified Workspace claims, rejects duplicate registration, and fences delayed unregister against a replacement; a TLS WSS E2E now passes through this router to a real local PTY. A ticket allows one concurrent stream per process and can reconnect after close; cross-replica coordination is not implemented. Production signer/lookup-key provisioning and Gateway configuration, runtime lifecycle registration, VS Code adapter, fleet-wide revocation/rate limits, metrics, deployment, and MicroVM connectivity remain). Priority: P1.
+Status: In Progress (Ed25519 Gateway-audience ticket claims, channel permissions, RBAC-backed create/revoke API routes, an HTTPS/HMAC active-session API/client with PostgreSQL identity matching, and a TLS-only WSS Gateway core with signed-Workspace-bound PTY/loopback-port adapters and local shell/port E2E now exist. A local in-process multi-Workspace router selects only from verified Workspace claims, rejects duplicate registration, and fences delayed unregister against a replacement; a TLS WSS E2E now passes through this router to a real local PTY. A ticket allows one concurrent stream per process and can reconnect after close; cross-replica coordination is not implemented. Production signer/lookup-key provisioning and Gateway configuration, production Gateway composition, VS Code adapter, fleet-wide revocation/rate limits, metrics, deployment, and live MicroVM connectivity remain). Priority: P1.
 
 ## Goal
 
@@ -23,7 +23,7 @@ Connect CLI/Browser to the correct Workspace through a zero-trust HTTPS/WSS prox
 - `internal/workspacegateway` now handles TLS-only shell, VS Code, and port-forward WSS routes. It verifies ticket/active session before upgrade, matches the signed Workspace and local Resource Plane, rejects URL query parameters and untrusted browser origins, resolves port allowlists through an injected policy, and routes only to an injected private `StreamDialer`. In-process global/per-Workspace connection caps and bounded WebSocket frame/chunk sizes are enforced. The Control Plane is not in the data-stream path. See [Workspace HTTPS/WSS Gateway](../docs/workspace-gateway.md).
 - `workspaceagent.GatewayDialer` binds the signed Workspace claim to its Workspace-local PTY manager and starts only the configured fixed shell. A TLS WSS test sends a command through the Gateway and checks its output from the real local PTY. Port-forwarding is allowed only to `127.0.0.1:{port}` after the injected `PortAuthorizer` approves it; a TLS WSS integration test round-trips bytes through an ephemeral loopback listener. No client-controlled host or Control Plane data path is used. VS Code remains unavailable until its runtime adapter exists.
 - Added `workspaceagent.WorkspaceRouter`, a concurrency-safe process-local selector from verified Workspace ID to a Workspace-bound stream dialer. Duplicate registration fails closed; unregister is compare-and-delete so a delayed runtime cleanup cannot remove a replacement. Unit tests cover routing, unknown/empty claims, duplicate binding and stale cleanup, and a TLS WSS E2E exercises Gateway → router → real PTY composition. The router is not yet attached to Resource Plane lifecycle events or Gateway production deployment, and it does not provide cross-process discovery. See [Workspace HTTPS/WSS Gateway](../docs/workspace-gateway.md).
-- Gateway tests cover active-session verifier integration, shell/PTY relay through the multi-Workspace router, route spoofing, wrong channels/origins, port policy and loopback port relay, oversized frames, per-Workspace connection cap, concurrent same-ticket replay rejection/reconnect, plaintext rejection, invalid upgrade preflight, and upstream failure. Production signer/lookup-key provisioning and Gateway configuration, runtime lifecycle registration, VS Code runtime adapter, distributed connection/rate controls, metrics/audit, deployment and active-stream revocation remain. See [Workspace HTTPS/WSS Gateway](../docs/workspace-gateway.md) and [Workspace Session Ticket](../docs/workspace-session-ticket.md).
+- Gateway tests cover active-session verifier integration, shell/PTY relay through the multi-Workspace router, route spoofing, wrong channels/origins, port policy and loopback port relay, oversized frames, per-Workspace connection cap, concurrent same-ticket replay rejection/reconnect, plaintext rejection, invalid upgrade preflight, and upstream failure. Production signer/lookup-key provisioning and Gateway configuration, production Gateway composition of the journal-backed resolver, VS Code runtime adapter, distributed connection/rate controls, metrics/audit, deployment and active-stream revocation remain. See [Workspace HTTPS/WSS Gateway](../docs/workspace-gateway.md) and [Workspace Session Ticket](../docs/workspace-session-ticket.md).
 
 ## Progress update (2026-10-17)
 
@@ -32,11 +32,15 @@ Resource Plane shell path. It validates an immutable MicroVM endpoint against
 the bound VM ID/Region, rechecks verified Tenant/Workspace/Resource Plane and
 shell permission claims, mints a fresh 2-minute port-8080-only Lambda auth token
 and one-use guest Agent Ticket, then opens the fixed WSS shell route with both
-credentials. SDK-request scope, ticket identity, subprotocol/route construction,
-invalid endpoints, and foreign claims have local tests. Runtime lifecycle
-registration, the production Gateway deployment, AWS token/IAM provisioning,
-and a live MicroVM stream remain open; VS Code and guest port-forward are not
-implemented by this adapter. See
+credentials. A per-stream directory resolves the Workspace's exact current
+ProviderID from its Resource Plane journal and verifies `GetMicrovm` reports
+that same VM as running before dialing; this removes the need for an in-process
+lifecycle registration map. SDK request scope, ticket identity,
+subprotocol/route construction, invalid endpoints, foreign claims, journal
+identity/state, and provider mismatch have local tests. Production Gateway
+composition/deployment, AWS token/IAM provisioning, and a live MicroVM stream
+remain open; VS Code and guest port-forward are not implemented by this
+adapter. See
 [`Workspace HTTPS/WSS Gateway`](../docs/workspace-gateway.md).
 
 ## Acceptance criteria

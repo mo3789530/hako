@@ -70,12 +70,15 @@ forwarding) and keeps the Hako Agent Ticket in the `Authorization` header.
 Endpoint host
 validation is pinned to `{microvm-id}.lambda-microvm.{region}.on.aws`; caller
 input cannot choose an address. The SDK token provider, port/expiry scope,
-ticket binding, fixed route, AWS subprotocols, and rejection paths have local tests. The
-Gateway runtime router is not yet registered from Workspace lifecycle state,
-and no real MicroVM connection has been exercised. VS Code and Guest port
-forward streams also remain unsupported by this dialer. Production key
+ticket binding, fixed route, AWS subprotocols, and rejection paths have local
+tests. `WorkspaceLambdaMicroVMStreamDirectory` now resolves the current
+allocation from the Resource Plane journal and verifies provider state for
+each new shell stream, removing the need for process-local lifecycle
+registration. Production Gateway composition, AWS IAM/configuration, and a
+real MicroVM connection remain unverified. VS Code and Guest port-forward
+streams also remain unsupported by this dialer. Production key
 rotation/distribution is unresolved. Keep Workspace runtime exposure disabled
-until lifecycle composition and deployment gates are complete.
+until deployment gates are complete.
 
 Build the dedicated image with
 `make build-workspace-microvm-image HAKO_EFS_UTILS_RPM_VERSION=<pinned-version> HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE=<public-keys.json>`.
