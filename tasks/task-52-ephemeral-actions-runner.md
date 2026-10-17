@@ -157,6 +157,13 @@ Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Action
   `POST /v1/actions-runner/startup-failed` route. That route atomically marks
   only the exact live starting claim failed and writes its cleanup outbox row;
   retries are idempotent only when that Plane's failure cleanup already exists.
+- `RunnerStartupHandler` exposes the ordered worker as an AWS Lambda SQS event
+  handler. It accepts only the claim key fields, rejects oversized/unknown
+  message properties, and returns per-record batch failures so a malformed or
+  transiently failed record does not replay successful records in the same
+  batch. Tests verify the worker sequence and poison-record isolation. A
+  production SQS event-source mapping, command publisher/dispatcher and Lambda
+  runtime composition remain unimplemented and default-off.
 - `RunnerBootstrapper` now requests a Lambda MicroVM auth token scoped to the
   fixed runner-bootstrap port 8080 and at most five minutes (one minute when
   the claim lease is short), then posts a signed,
