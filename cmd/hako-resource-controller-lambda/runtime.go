@@ -47,7 +47,7 @@ func configuredRuntime(implementation string, awsCfg aws.Config, getenv func(str
 		if err != nil {
 			return nil, errors.New("configure trusted Workspace launch profile")
 		}
-		storage, err := workspacestorage.NewEFS(efsapi.NewFromConfig(awsCfg), config.FileSystemID)
+		storage, err := workspacestorage.NewEFS(efsapi.NewFromConfig(awsCfg), config.FileSystemID, awsCfg.Region)
 		if err != nil {
 			return nil, errors.New("configure Workspace EFS Access Point manager")
 		}

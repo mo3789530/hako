@@ -22,6 +22,7 @@ var (
 	idPattern          = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 	fileSystemPattern  = regexp.MustCompile(`^fs-[0-9a-f]{8,40}$`)
 	accessPointPattern = regexp.MustCompile(`^fsap-[0-9a-f]{8,40}$`)
+	regionPattern      = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)+$`)
 )
 
 type EFSAPI interface {
@@ -40,6 +41,7 @@ type Identity struct {
 // AP and mountpoint but contains no credentials or AWS secret material.
 type Binding struct {
 	FileSystemID  string `json:"file_system_id"`
+	Region        string `json:"region"`
 	AccessPointID string `json:"access_point_id"`
 	RootPath      string `json:"root_path"`
 	UID           uint32 `json:"uid"`
@@ -54,13 +56,14 @@ type ManagedAccessPoint struct {
 type EFS struct {
 	api          EFSAPI
 	fileSystemID string
+	region       string
 }
 
 // Validate checks a journaled binding before it is consumed by another
 // Resource Plane component. It intentionally validates shape, not live AWS
 // state; ownership must still be checked through DescribeAccessPoints.
 func (b Binding) Validate() error {
-	if !fileSystemPattern.MatchString(b.FileSystemID) || !accessPointPattern.MatchString(b.AccessPointID) ||
+	if !fileSystemPattern.MatchString(b.FileSystemID) || !regionPattern.MatchString(b.Region) || !accessPointPattern.MatchString(b.AccessPointID) ||
 		!regexp.MustCompile(`^/hako/[a-f0-9]{16}/[a-f0-9]{16}/[a-f0-9]{16}$`).MatchString(b.RootPath) ||
 		b.UID < 100000 || b.GID != b.UID {
 		return errors.New("Workspace EFS binding is invalid")
@@ -82,12 +85,13 @@ func (b Binding) ValidateFor(identity Identity) error {
 	return nil
 }
 
-func NewEFS(api EFSAPI, fileSystemID string) (*EFS, error) {
+func NewEFS(api EFSAPI, fileSystemID, region string) (*EFS, error) {
 	fileSystemID = strings.TrimSpace(fileSystemID)
-	if api == nil || !fileSystemPattern.MatchString(fileSystemID) {
-		return nil, errors.New("EFS API and valid Workspace file system ID are required")
+	region = strings.TrimSpace(region)
+	if api == nil || !fileSystemPattern.MatchString(fileSystemID) || !regionPattern.MatchString(region) {
+		return nil, errors.New("EFS API, valid Workspace file system ID, and AWS region are required")
 	}
-	return &EFS{api: api, fileSystemID: fileSystemID}, nil
+	return &EFS{api: api, fileSystemID: fileSystemID, region: region}, nil
 }
 
 // Ensure creates one POSIX-confined Access Point per Tenant/Workspace. EFS's
@@ -143,7 +147,7 @@ func (e *EFS) Ensure(ctx context.Context, identity Identity) (Binding, error) {
 		!matchesDescription(output.PosixUser, output.RootDirectory, output.Tags, identity, root, uid, gid) {
 		return Binding{}, errors.New("EFS returned an Access Point that does not match the requested Workspace isolation")
 	}
-	return Binding{FileSystemID: e.fileSystemID, AccessPointID: aws.ToString(output.AccessPointId), RootPath: root, UID: uid, GID: gid}, nil
+	return Binding{FileSystemID: e.fileSystemID, Region: e.region, AccessPointID: aws.ToString(output.AccessPointId), RootPath: root, UID: uid, GID: gid}, nil
 }
 
 // DiscoverManaged lists only Hako-tagged Access Points on this exact
@@ -177,7 +181,7 @@ func (e *EFS) DiscoverManaged(ctx context.Context) ([]ManagedAccessPoint, error)
 			if !accessPointPattern.MatchString(aws.ToString(point.AccessPointId)) || !matchesDescription(point.PosixUser, point.RootDirectory, point.Tags, identity, root, uid, uid) {
 				return nil, errors.New("Hako-tagged EFS Access Point failed ownership or POSIX isolation checks")
 			}
-			found = append(found, ManagedAccessPoint{Identity: identity, Binding: Binding{FileSystemID: e.fileSystemID, AccessPointID: aws.ToString(point.AccessPointId), RootPath: root, UID: uid, GID: uid}})
+			found = append(found, ManagedAccessPoint{Identity: identity, Binding: Binding{FileSystemID: e.fileSystemID, Region: e.region, AccessPointID: aws.ToString(point.AccessPointId), RootPath: root, UID: uid, GID: uid}})
 		}
 		if output.NextToken == nil || strings.TrimSpace(*output.NextToken) == "" {
 			return found, nil
@@ -195,7 +199,7 @@ func (e *EFS) DiscoverManaged(ctx context.Context) ([]ManagedAccessPoint, error)
 // Callers must first stop/unmount the MicroVM and durably tombstone its runtime.
 func (e *EFS) DeleteOwned(ctx context.Context, identity Identity, binding Binding) error {
 	if e == nil || ctx == nil || ctx.Err() != nil || !validIdentity(identity) ||
-		binding.FileSystemID != e.fileSystemID || binding.ValidateFor(identity) != nil {
+		binding.FileSystemID != e.fileSystemID || binding.Region != e.region || binding.ValidateFor(identity) != nil {
 		return errors.New("Workspace EFS deletion identity or binding is invalid")
 	}
 	output, err := e.api.DescribeAccessPoints(ctx, &efs.DescribeAccessPointsInput{AccessPointId: aws.String(binding.AccessPointID)})

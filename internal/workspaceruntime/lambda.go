@@ -497,12 +497,14 @@ type workspaceMountHookPayload struct {
 	Hako struct {
 		WorkspaceMount struct {
 			FileSystemID  string `json:"file_system_id"`
+			Region        string `json:"region"`
 			AccessPointID string `json:"access_point_id"`
 			RootPath      string `json:"root_path"`
 			MountPath     string `json:"mount_path"`
 			UID           uint32 `json:"uid"`
 			GID           uint32 `json:"gid"`
 			TLS           bool   `json:"tls"`
+			IAM           bool   `json:"iam"`
 		} `json:"workspace_mount"`
 	} `json:"hako"`
 }
@@ -524,12 +526,14 @@ func workspaceMountHook(existing string, binding workspacestorage.Binding) (stri
 	}
 	var mount workspaceMountHookPayload
 	mount.Hako.WorkspaceMount.FileSystemID = binding.FileSystemID
+	mount.Hako.WorkspaceMount.Region = binding.Region
 	mount.Hako.WorkspaceMount.AccessPointID = binding.AccessPointID
 	mount.Hako.WorkspaceMount.RootPath = binding.RootPath
 	mount.Hako.WorkspaceMount.MountPath = "/workspace"
 	mount.Hako.WorkspaceMount.UID = binding.UID
 	mount.Hako.WorkspaceMount.GID = binding.GID
 	mount.Hako.WorkspaceMount.TLS = true
+	mount.Hako.WorkspaceMount.IAM = true
 	encoded, err := json.Marshal(mount.Hako)
 	if err != nil {
 		return "", ErrSpecification

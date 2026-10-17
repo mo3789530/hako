@@ -30,8 +30,8 @@ func TestWorkspaceRunHookMountsExactAccessPointBeforeSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec := WorkspaceMountSpec{FileSystemID: "fs-0123456789abcdef0", AccessPointID: "fsap-0123456789abcdef0",
-		RootPath: "/hako/0123456789abcdef/1123456789abcdef/2123456789abcdef", MountPath: "/workspace", UID: 100123, GID: 100123, TLS: true}
+	spec := WorkspaceMountSpec{FileSystemID: "fs-0123456789abcdef0", Region: "us-east-1", AccessPointID: "fsap-0123456789abcdef0",
+		RootPath: "/hako/0123456789abcdef/1123456789abcdef/2123456789abcdef", MountPath: "/workspace", UID: 100123, GID: 100123, TLS: true, IAM: true}
 	payload, err := json.Marshal(struct {
 		Hako struct {
 			WorkspaceMount WorkspaceMountSpec `json:"workspace_mount"`
@@ -56,10 +56,11 @@ func TestWorkspaceRunHookFailsClosedAndDoesNotAcknowledgeFailedMount(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	valid := `{"microvmId":"microvm-1","runHookPayload":"{\"hako\":{\"workspace_mount\":{\"file_system_id\":\"fs-0123456789abcdef0\",\"access_point_id\":\"fsap-0123456789abcdef0\",\"root_path\":\"/hako/0123456789abcdef/1123456789abcdef/2123456789abcdef\",\"mount_path\":\"/workspace\",\"uid\":100123,\"gid\":100123,\"tls\":true}}}"}`
+	valid := `{"microvmId":"microvm-1","runHookPayload":"{\"hako\":{\"workspace_mount\":{\"file_system_id\":\"fs-0123456789abcdef0\",\"region\":\"us-east-1\",\"access_point_id\":\"fsap-0123456789abcdef0\",\"root_path\":\"/hako/0123456789abcdef/1123456789abcdef/2123456789abcdef\",\"mount_path\":\"/workspace\",\"uid\":100123,\"gid\":100123,\"tls\":true,\"iam\":true}}}"}`
 	for name, body := range map[string]string{
 		"unknown wrapper field": strings.Replace(valid, `"microvmId"`, `"extra":true,"microvmId"`, 1),
 		"TLS disabled":          strings.Replace(valid, `\"tls\":true`, `\"tls\":false`, 1),
+		"IAM disabled":          strings.Replace(valid, `\"iam\":true`, `\"iam\":false`, 1),
 		"wrong mount path":      strings.Replace(valid, `\"/workspace\"`, `\"/tmp/workspace\"`, 1),
 		"trailing JSON":         valid + `{}`,
 	} {

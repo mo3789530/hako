@@ -246,14 +246,17 @@ func TestEnsureJournalsEFSBindingAndPassesOnlyMountMetadata(t *testing.T) {
 	var mount struct {
 		WorkspaceMount struct {
 			FileSystemID  string `json:"file_system_id"`
+			Region        string `json:"region"`
 			AccessPointID string `json:"access_point_id"`
 			MountPath     string `json:"mount_path"`
 			TLS           bool   `json:"tls"`
+			IAM           bool   `json:"iam"`
 		} `json:"workspace_mount"`
 	}
 	if err := json.Unmarshal(hako["workspace_mount"], &mount.WorkspaceMount); err != nil ||
 		mount.WorkspaceMount.FileSystemID != storage.binding.FileSystemID || mount.WorkspaceMount.AccessPointID != storage.binding.AccessPointID ||
-		mount.WorkspaceMount.MountPath != "/workspace" || !mount.WorkspaceMount.TLS {
+		mount.WorkspaceMount.Region != storage.binding.Region || mount.WorkspaceMount.MountPath != "/workspace" ||
+		!mount.WorkspaceMount.TLS || !mount.WorkspaceMount.IAM {
 		t.Fatalf("run hook did not carry the expected non-secret mount contract: %s err=%v", aws.ToString(api.lastRun.RunHookPayload), err)
 	}
 	snapshot, err := store.Get(context.Background(), command.TenantID, command.WorkspaceID, command.ResourcePlaneID)
@@ -293,7 +296,7 @@ func runtimeTestBinding(command resourcecontroller.Command) workspacestorage.Bin
 	}
 	uidHash := sha256.Sum256([]byte(string(identity.TenantID) + ":" + string(identity.WorkspaceID)))
 	uid := (uint32(uidHash[0])<<16 | uint32(uidHash[1])<<8 | uint32(uidHash[2])) + 100000
-	return workspacestorage.Binding{FileSystemID: "fs-0123456789abcdef0", AccessPointID: "fsap-0123456789abcdef0",
+	return workspacestorage.Binding{FileSystemID: "fs-0123456789abcdef0", Region: "us-east-1", AccessPointID: "fsap-0123456789abcdef0",
 		RootPath: "/hako/" + hash(string(identity.ResourcePlaneID)) + "/" + hash(string(identity.TenantID)) + "/" + hash(string(identity.WorkspaceID)), UID: uid, GID: uid}
 }
 

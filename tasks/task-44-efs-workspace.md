@@ -26,12 +26,16 @@ The Lambda MicroVM adapter now persists/reuses the EFS binding, supplies
 non-secret mount metadata through the run hook, and removes the AP only after
 MicroVM termination. It fails closed when a replacement has no binding or
 cleanup lacks an EFS provisioner. A strict Workspace-only `/run` hook handler
-validates mount metadata and acknowledges only after an injected mount executor
-succeeds. There is not yet a concrete `mount.efs` executor or Workspace image;
-the existing Workload Agent image uses an incompatible hook schema. This task
-is not complete: guest mounting, encrypted EFS/private mount target/scoped
-network-IAM Terraform, backup/restore, retention, automated orphan cleanup,
-and live isolation checks remain open. No AWS changes were made.
+and Linux EFS mount executor now validate metadata, run `/bin/mount` with fixed
+TLS/IAM/Access Point/region parameters, and acknowledge only after `/workspace`
+is seen as mounted. The executor is not wired into a guest executable/image
+and `amazon-efs-utils` is not installed; the existing Workload Agent image uses
+an incompatible hook schema. Current Workspaces also share one static execution
+role, so IAM authorization does not yet enforce per-Workspace AP isolation.
+This task is not complete: guest image integration, Workspace-scoped role and
+EFS policies, encrypted EFS/private mount target/scoped network Terraform,
+backup/restore, retention, automated orphan cleanup, and live isolation checks
+remain open. No AWS changes were made.
 
 ## Acceptance criteria
 

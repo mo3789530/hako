@@ -25,19 +25,23 @@ bindings and never adopts or deletes discovered resources.
 The runtime journal schema has an immutable `storage_binding` field and
 validates its shape across encode/decode. The Lambda MicroVM adapter now
 ensures the AP before first allocation, stores the binding with the immutable
-launch request, and passes filesystem/AP IDs, root path, POSIX IDs, `/workspace`,
-and TLS intent in the non-secret `/run` hook. Replacements reuse the journaled
+launch request, and passes filesystem/AP IDs, region, root path, POSIX IDs,
+`/workspace`, TLS, and IAM-auth intent in the non-secret `/run` hook. Replacements reuse the journaled
 binding; an old terminated journal without one fails closed rather than
 silently starting with empty storage. Delete waits for MicroVM termination,
 deletes only the exact owned AP, then confirms the journal tombstone. A failed
 cleanup remains retryable.
 
 The guest image still does not implement or acknowledge the mount contract.
-`internal/workspaceagent` now exposes a strict Workspace-specific `/run` hook
-handler that validates the Access Point contract and responds successfully only
-after an injected `MountAndVerify` executor returns success. It has not yet
-been wired into a guest executable, and there is no concrete `mount.efs`
-executor or Workspace MicroVM image in the repository. Do not use the existing
+`internal/workspaceagent` exposes a strict Workspace-specific `/run` hook
+handler and a Linux executor. The executor invokes `/bin/mount` without a
+shell, with fixed `-t efs` arguments, TLS, IAM authorization, the exact Access
+Point, and the Resource Plane region; it writes a root-only idempotency marker before the
+side effect and verifies `/workspace` appears as an NFS mount. A pre-existing
+unowned mount fails closed. The process must run as root in the guest init
+layer, while the interactive Agent should run unprivileged after mount. The
+executor is not yet wired into a guest executable and the Workspace MicroVM
+image does not yet install `amazon-efs-utils`. Do not use the existing
 `images/workload-agent` for Workspace storage: its lifecycle hook accepts a
 different, Workload-specific schema. Therefore the current Runtime adapter
 confirms MicroVM `RUNNING`, not that `/workspace` is mounted, and this is not
@@ -45,14 +49,34 @@ production-ready. A failed startup before the
 runtime journal is created may leave a tagged AP; `DiscoverManaged` exposes it
 for reconciliation but no automated orphan deletion exists.
 
+AWS documents Access Point mounts through the EFS mount helper using `tls` and
+`accesspoint=` options, and requires TLS when IAM authorization is used. The
+helper supports selecting the AWS Region explicitly, which is required here
+because a MicroVM guest must not depend on EC2 instance metadata. See [AWS
+Access Point mount instructions](https://docs.aws.amazon.com/efs/latest/ug/mounting-access-points.html),
+[AWS IAM mount instructions](https://docs.aws.amazon.com/efs/latest/ug/mounting-IAM-option.html),
+and the [official EFS mount-helper source](https://github.com/aws/efs-utils).
+
+An Access Point is not, by itself, a Tenant network/IAM boundary. Current
+Runtime launch profiles use one static execution role for all Workspaces, so
+the new `iam` mount option does not yet distinguish one Workspace from another.
+Production must remain disabled until each MicroVM is given a Workspace-scoped
+IAM identity/policy restricted to its exact Access Point, the filesystem
+policy rejects direct or non-TLS access, and private mount-target security
+groups restrict NFS to the reviewed Resource Plane network path. Those policies
+and per-Workspace roles are not implemented here; a shared role must not be
+treated as sufficient Tenant isolation.
+
 ## Mount and network requirements
 
 The Lambda MicroVM `RunMicrovm` request has no EFS mount field. A future guest
-bootstrap contract must receive the filesystem ID, AP ID, and mount target
+bootstrap contract must receive the filesystem ID, region, AP ID, and mount target
 through trusted Resource Plane configuration, then mount `/workspace` before
 the controller reports `running`. Mount must use the AP and TLS/in-transit
 encryption; credentials or secret values must not be placed in the launch
-payload. A bounded mount timeout and explicit health check are required.
+payload. Mounts use the EFS IAM option in addition to TLS; the caller role must
+be scoped as described above. A bounded mount timeout and explicit health check
+are required.
 
 The EFS mount targets must be private in the Resource Plane VPC. Security
 groups must allow NFS/TCP 2049 only from the approved MicroVM connector/security
@@ -81,16 +105,20 @@ Plane Terraform.
 
 ## Local verification
 
-Run `GOCACHE=/tmp/hako-go-cache go test ./internal/workspacestorage -count=1`.
+Run `GOCACHE=/tmp/hako-go-cache go test ./internal/workspacestorage ./internal/workspaceagent -count=1`.
 Tests cover deterministic Workspace separation, retry identity, malformed AWS
-responses, ownership-fenced deletion, absent-AP idempotency, and tagged AP
-discovery. They use an in-memory EFS API fake and do not contact AWS.
+responses, ownership-fenced deletion, absent-AP idempotency, tagged AP
+discovery, exact fixed mount arguments, bounded mount-table confirmation,
+intent-marker retries, and rejection of an unowned or non-NFS mount. They use
+an in-memory EFS API/mount-command fake and do not contact AWS or mount a real
+filesystem.
 
 ## Remaining Task 44 work
 
-Integrate the provisioner with the durable Workspace journal and lifecycle
-controller; implement guest mounting and unmount confirmation; add a Resource
-Plane EFS filesystem, encrypted-at-rest policy, private mount targets and
-least-privilege networking/IAM; add mount failure compensation and orphan
-reconciliation; and verify backup/restore, retention, and quotas. Live AWS
-validation remains subject to explicit approval.
+Wire the Linux mount lifecycle handler into a dedicated root init/Workspace
+image, separate it from the unprivileged Agent, install and pin
+`amazon-efs-utils`, and test suspend/restart/replacement recovery plus orderly
+unmount. Add a Resource Plane EFS filesystem, encrypted-at-rest policy, private
+mount targets and least-privilege networking/IAM; add mount failure compensation
+and orphan reconciliation; and verify backup/restore, retention, and quotas.
+Live AWS validation remains subject to explicit approval.

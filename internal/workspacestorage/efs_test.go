@@ -59,7 +59,7 @@ func (s *efsStub) DeleteAccessPoint(_ context.Context, _ *efs.DeleteAccessPointI
 func TestEnsureAccessPointIsWorkspaceScopedAndIdempotent(t *testing.T) {
 	identity := testIdentity()
 	stub := &efsStub{}
-	client, err := NewEFS(stub, "fs-0123456789abcdef0")
+	client, err := NewEFS(stub, "fs-0123456789abcdef0", "us-east-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestEnsureRejectsMismatchedEFSResponse(t *testing.T) {
 	stub := &efsStub{point: types.AccessPointDescription{
 		AccessPointId: aws.String("fsap-0123456789abcdef0"), FileSystemId: aws.String("fs-fffffffffffffffff"),
 	}, preservePoint: true}
-	client, _ := NewEFS(stub, "fs-0123456789abcdef0")
+	client, _ := NewEFS(stub, "fs-0123456789abcdef0", "us-east-1")
 	if _, err := client.Ensure(context.Background(), testIdentity()); err == nil {
 		t.Fatal("accepted an Access Point created on a different filesystem")
 	}
@@ -110,7 +110,7 @@ func TestEnsureRejectsMismatchedEFSResponse(t *testing.T) {
 func TestDeleteOwnedRequiresExactWorkspaceOwnership(t *testing.T) {
 	identity := testIdentity()
 	stub := &efsStub{}
-	client, _ := NewEFS(stub, "fs-0123456789abcdef0")
+	client, _ := NewEFS(stub, "fs-0123456789abcdef0", "us-east-1")
 	binding, err := client.Ensure(context.Background(), identity)
 	if err != nil {
 		t.Fatal(err)
@@ -136,7 +136,7 @@ func TestDeleteOwnedRequiresExactWorkspaceOwnership(t *testing.T) {
 func TestDeleteOwnedIsIdempotentWhenAlreadyAbsent(t *testing.T) {
 	identity := testIdentity()
 	stub := &efsStub{}
-	client, _ := NewEFS(stub, "fs-0123456789abcdef0")
+	client, _ := NewEFS(stub, "fs-0123456789abcdef0", "us-east-1")
 	binding, _ := client.Ensure(context.Background(), identity)
 	stub.noPoint = true
 	if err := client.DeleteOwned(context.Background(), identity, binding); err != nil {
@@ -150,7 +150,7 @@ func TestDeleteOwnedIsIdempotentWhenAlreadyAbsent(t *testing.T) {
 func TestDiscoverManagedListsAndValidatesTaggedWorkspaces(t *testing.T) {
 	identity := testIdentity()
 	stub := &efsStub{}
-	client, _ := NewEFS(stub, "fs-0123456789abcdef0")
+	client, _ := NewEFS(stub, "fs-0123456789abcdef0", "us-east-1")
 	binding, err := client.Ensure(context.Background(), identity)
 	if err != nil {
 		t.Fatal(err)

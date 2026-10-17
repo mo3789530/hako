@@ -228,7 +228,7 @@ func journalTestBinding(command Command) *workspacestorage.Binding {
 	}
 	uidHash := sha256.Sum256([]byte(string(identity.TenantID) + ":" + string(identity.WorkspaceID)))
 	uid := (uint32(uidHash[0])<<16 | uint32(uidHash[1])<<8 | uint32(uidHash[2])) + 100000
-	return &workspacestorage.Binding{FileSystemID: "fs-0123456789abcdef0", AccessPointID: "fsap-0123456789abcdef0",
+	return &workspacestorage.Binding{FileSystemID: "fs-0123456789abcdef0", Region: "us-east-1", AccessPointID: "fsap-0123456789abcdef0",
 		RootPath: "/hako/" + hash(string(identity.ResourcePlaneID)) + "/" + hash(string(identity.TenantID)) + "/" + hash(string(identity.WorkspaceID)), UID: uid, GID: uid}
 }
 
