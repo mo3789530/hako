@@ -57,16 +57,17 @@ route with the Hako ticket in `Authorization`, and AWS auth/port values in the
 Lambda-required `lambda-microvms.authentication.*` and `lambda-microvms.port.8080`
 WebSocket subprotocols (which Lambda strips before forwarding). Neither
 credential is persisted or logged. The token provider/dialer and
-authorization binding are locally tested, but production Gateway composition
-and a real Lambda endpoint connection remain unverified. This adapter currently
+authorization binding are locally tested, and `cmd/hako-workspace-gateway`
+composes them with mounted keys and the journal-backed resolver; a real Lambda endpoint connection remains unverified. This adapter currently
 supports shell only; VS Code and Guest-side port-forward channels require
 additional runtime endpoints. The directory reads the matching Workspace
 journal from the Resource Plane store and calls `GetMicrovm` for each new
 connection, requiring exact Tenant/Workspace/Plane identity, a non-tombstoned
 `running` journal, and the same running provider ID before creating the
 ephemeral dialer. It resolves lifecycle state without process-local
-registration or client routing hints; production Gateway composition, IAM,
-store wiring, and live MicroVM connectivity remain unverified.
+registration or client routing hints. The Gateway process wires this resolver
+to the S3 store and AWS SDK; least-privilege deployment IAM and live MicroVM
+connectivity remain unverified.
 
 The Gateway bounds concurrent total and per-Workspace connections in-process,
 and applies a maximum payload size to every incoming WebSocket frame and every
@@ -84,6 +85,45 @@ port-forward byte round-trip to an ephemeral `127.0.0.1` listener,
 wrong channel/Workspace/Origin, plaintext rejection, denied/allowed port
 forwarding, per-Workspace connection cap, concurrent ticket replay rejection
 with reconnect-after-close, upstream failure, and oversized frames. The concrete authenticated
-Production Gateway composition/deployment, distributed limits, metrics/audit
-events, IDE process bridge, and Lambda MicroVM end-to-end stream PoC remain
+Gateway composition exists in the local service entrypoint; Terraform
+deployment, distributed limits, metrics/audit events, IDE process bridge, and
+Lambda MicroVM end-to-end stream PoC remain
 open Task 46/47 work.
+
+## Resource Plane Gateway process
+
+`cmd/hako-workspace-gateway` is the long-running HTTPS/WSS process entrypoint.
+It composes the session verifier, signed HTTPS/HMAC active-session client,
+S3-backed Workspace runtime journal, Lambda MicroVM lookup/auth-token client,
+and one-use Agent-ticket signer. It resolves a fresh runtime allocation per
+shell connection and never reads Aurora DSQL or accepts AWS credentials from
+environment variables. AWS SDK default credentials are expected to come from
+the Resource Plane ECS task role. The included
+`cmd/hako-workspace-gateway/Dockerfile` builds a non-root ARM64 image, and
+`make build-workspace-gateway-image` builds it locally with Podman.
+
+The process requires these deployment inputs:
+
+| Setting | Purpose |
+| --- | --- |
+| `HAKO_RESOURCE_PLANE_ID`, `AWS_REGION` | Bind this Gateway to one Resource Plane and AWS region |
+| `HAKO_GATEWAY_LISTEN_ADDRESS` | HTTPS bind address; defaults to `:8443` |
+| `HAKO_GATEWAY_TLS_CERT_FILE`, `HAKO_GATEWAY_TLS_KEY_FILE` | Mounted TLS certificate and private key |
+| `HAKO_GATEWAY_PUBLIC_ORIGIN` | Fixed HTTPS origin sent to the Workspace Agent |
+| `HAKO_GATEWAY_ALLOWED_ORIGINS` | Comma-separated exact browser origins |
+| `HAKO_GATEWAY_SESSION_PUBLIC_KEYS_FILE` | JSON map of signing key ID to raw-base64 Ed25519 public key; supports verification key overlap |
+| `HAKO_GATEWAY_SESSION_LOOKUP_ENDPOINT` | HTTPS Control Plane origin for active-session revalidation |
+| `HAKO_GATEWAY_SESSION_LOOKUP_KEY_FILE` | Raw per-Resource-Plane HMAC key bytes (at least 32 bytes), mounted as a secret |
+| `HAKO_GATEWAY_AGENT_TICKET_KEY_ID`, `HAKO_GATEWAY_AGENT_TICKET_KEY_FILE` | Active signing key ID and mounted Ed25519 PKCS#8 PEM private key |
+| `HAKO_WORKSPACE_RUNTIME_JOURNAL_BUCKET`, optional `HAKO_WORKSPACE_RUNTIME_JOURNAL_PREFIX` | Resource Plane journal location |
+| `HAKO_GATEWAY_MAX_CONNECTIONS`, `HAKO_GATEWAY_MAX_CONNECTIONS_PER_WORKSPACE` | In-process caps; defaults to 500 and 10 |
+
+Private/HMAC key paths must be regular non-symlink files and not group/world
+writable. Secrets are not logged. A restart is currently required to rotate
+mounted keys; coordinate Session signer verification overlap and Guest Agent
+public-key image updates operationally. No Terraform service/task role/listener
+is provisioned yet, and no real Secret/AWS API/MicroVM was accessed. The
+process currently enables the shell adapter only; VS Code and guest port
+forward fail closed. `/healthz` is an unauthenticated static liveness check,
+not proof of downstream AWS or Control Plane reachability. See Task 46 for
+remaining deployment and live-validation gates.
