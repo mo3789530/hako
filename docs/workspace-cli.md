@@ -6,6 +6,7 @@ The first interactive CLI command is:
 hako login
 export HAKO_API_URL=https://api.example.test
 export HAKO_GATEWAY_URL=https://gateway.example.test
+hako wait <tenant-id> <workspace-id> --state running
 hako shell <tenant-id> <workspace-id>
 hako ssh-proxy <tenant-id> <workspace-id>
 hako cp <tenant-id> <workspace-id> <local-path> <workspace-path>
@@ -21,6 +22,19 @@ ticket in memory and does not print it. On normal stream completion, input EOF,
 or interruption, it attempts to revoke the session with a bounded cleanup
 request. `Ctrl-C` disconnects; terminal EOF (`Ctrl-D`) sends EOT to the remote
 shell. A new invocation obtains a new ticket.
+
+Workspace lifecycle API requests are asynchronous: an accepted create,
+suspend, resume, or delete request is not proof that the observed state has
+changed. `hako wait <tenant-id> <workspace-id>` polls the authorized Workspace
+GET endpoint until the observed state becomes `running` (the default).
+`--state suspended` and `--state deleted` select the other stable targets.
+Progress is printed only when the observed state changes. It exits immediately
+on `failed`, on deletion while waiting for another target, API errors, or
+Ctrl-C. The default timeout is 10 minutes and can be changed up to 30 minutes
+with `--timeout`; `--interval` defaults to 2 seconds and is bounded between
+250 milliseconds and 30 seconds. This command reports the Control Plane's
+observed state; it does not make the Lambda MicroVM runtime available where
+the Resource Plane executor is not deployed.
 
 Configure OpenSSH or VS Code Remote SSH to use Hako as a ProxyCommand:
 
