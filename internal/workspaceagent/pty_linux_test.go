@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -113,6 +114,14 @@ func TestShellManagerRejectsInvalidConfigAndTerminalSize(t *testing.T) {
 	if _, err := NewShellManager(ShellConfig{WorkspaceRoot: temp, MaxSessions: 65}); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("oversized session limit error = %v", err)
 	}
+	if _, err := NewShellManager(ShellConfig{WorkspaceRoot: temp, RunAsUID: 0, RunAsGID: 1}); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("root shell identity error = %v", err)
+	}
+	if os.Geteuid() != 0 {
+		if _, err := NewShellManager(ShellConfig{WorkspaceRoot: temp, RunAsUID: 65532, RunAsGID: 65532}); !errors.Is(err, ErrInvalidConfig) {
+			t.Fatalf("foreign shell identity from unprivileged manager error = %v", err)
+		}
+	}
 	manager := newTestShellManager(t, 1, time.Minute)
 	defer manager.Close()
 	if _, err := manager.Open(context.Background(), TerminalSize{Columns: 0, Rows: 24}); !errors.Is(err, ErrInvalidConfig) {
@@ -127,7 +136,8 @@ func TestShellManagerRejectsInvalidConfigAndTerminalSize(t *testing.T) {
 
 func TestShellRunsWithWorkspaceRootAndMinimalEnvironment(t *testing.T) {
 	root := t.TempDir()
-	manager, err := NewShellManager(ShellConfig{WorkspaceRoot: root, MaxSessions: 1, SessionTTL: time.Minute})
+	uid, gid := testShellIdentity(t, root)
+	manager, err := NewShellManager(ShellConfig{WorkspaceRoot: root, RunAsUID: uid, RunAsGID: gid, MaxSessions: 1, SessionTTL: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +147,7 @@ func TestShellRunsWithWorkspaceRootAndMinimalEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer session.Close()
-	if _, err := io.WriteString(session, "pwd; env; exit\n"); err != nil {
+	if _, err := io.WriteString(session, "printf 'hako-identity=%s:%s\\n' \"$(id -u)\" \"$(id -g)\"; pwd; env; exit\n"); err != nil {
 		t.Fatal(err)
 	}
 	buf := make([]byte, 4096)
@@ -163,6 +173,9 @@ func TestShellRunsWithWorkspaceRootAndMinimalEnvironment(t *testing.T) {
 	if !strings.Contains(output.String(), root) {
 		t.Fatalf("shell did not start in workspace root: %q", output.String())
 	}
+	if !strings.Contains(output.String(), "hako-identity="+strconv.FormatUint(uint64(uid), 10)+":"+strconv.FormatUint(uint64(gid), 10)) {
+		t.Fatalf("shell did not run as the configured Workspace POSIX identity: %q", output.String())
+	}
 	if strings.Contains(output.String(), "AWS_") || strings.Contains(output.String(), "HOME=/root") {
 		t.Fatalf("shell inherited a sensitive or host environment value: %q", output.String())
 	}
@@ -174,10 +187,23 @@ func newTestShellManager(t *testing.T, max int, ttl time.Duration) *ShellManager
 	if err := os.Mkdir(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	manager, err := NewShellManager(ShellConfig{WorkspaceRoot: root, MaxSessions: max, SessionTTL: ttl})
+	uid, gid := testShellIdentity(t, root)
+	manager, err := NewShellManager(ShellConfig{WorkspaceRoot: root, RunAsUID: uid, RunAsGID: gid, MaxSessions: max, SessionTTL: ttl})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = manager.Close() })
 	return manager
+}
+
+func testShellIdentity(t *testing.T, root string) (uint32, uint32) {
+	t.Helper()
+	uid, gid := os.Geteuid(), os.Getegid()
+	if uid == 0 {
+		uid, gid = 65532, 65532
+		if err := os.Chown(root, uid, gid); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return uint32(uid), uint32(gid)
 }

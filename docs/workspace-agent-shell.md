@@ -10,8 +10,11 @@ interactive capability authorized by a Workspace session.
 The Linux PTY manager starts only the image-owned `/bin/sh -i`; callers cannot
 select a binary, arguments, environment, or working directory. The root is an
 absolute directory supplied by the image/runtime composition and must already
-exist. The shell starts there with a minimal `HOME`, `PATH`, `TERM`, and `LANG`
-environment. Each session receives a cryptographically random 192-bit ID and
+exist. The manager accepts a fixed UID/GID for the shell process. A root guest
+init may use this to drop shells to the Workspace EFS Access Point's POSIX
+identity; it rejects UID/GID 0. An unprivileged manager may use only its own
+identity. The shell starts there with a minimal `HOME`, `PATH`, `TERM`, and
+`LANG` environment. Each session receives a cryptographically random 192-bit ID and
 has a configurable lifetime (default eight hours, maximum 24 hours). The
 manager limits concurrent sessions (default four, maximum 64), terminal
 dimensions (500 columns × 500 rows), and individual input frames (64 KiB).

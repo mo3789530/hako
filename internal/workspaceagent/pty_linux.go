@@ -41,6 +41,8 @@ const (
 
 type ShellConfig struct {
 	WorkspaceRoot string
+	RunAsUID      uint32
+	RunAsGID      uint32
 	MaxSessions   int
 	SessionTTL    time.Duration
 	Now           func() time.Time
@@ -51,6 +53,8 @@ type ShellConfig struct {
 type ShellManager struct {
 	mu       sync.Mutex
 	root     string
+	uid      uint32
+	gid      uint32
 	max      int
 	ttl      time.Duration
 	now      func() time.Time
@@ -84,6 +88,17 @@ func NewShellManager(config ShellConfig) (*ShellManager, error) {
 	if err != nil || !info.IsDir() {
 		return nil, ErrInvalidConfig
 	}
+	if config.RunAsUID == 0 && config.RunAsGID == 0 {
+		if os.Geteuid() == 0 {
+			return nil, ErrInvalidConfig
+		}
+		config.RunAsUID = uint32(os.Geteuid())
+		config.RunAsGID = uint32(os.Getegid())
+	}
+	if config.RunAsUID == 0 || config.RunAsGID == 0 ||
+		(os.Geteuid() != 0 && (config.RunAsUID != uint32(os.Geteuid()) || config.RunAsGID != uint32(os.Getegid()))) {
+		return nil, ErrInvalidConfig
+	}
 	if config.MaxSessions == 0 {
 		config.MaxSessions = defaultSessionLimit
 	}
@@ -99,7 +114,7 @@ func NewShellManager(config ShellConfig) (*ShellManager, error) {
 	if config.Now == nil {
 		config.Now = time.Now
 	}
-	return &ShellManager{root: root, max: config.MaxSessions, ttl: config.SessionTTL,
+	return &ShellManager{root: root, uid: config.RunAsUID, gid: config.RunAsGID, max: config.MaxSessions, ttl: config.SessionTTL,
 		now: config.Now, sessions: make(map[string]*ShellSession)}, nil
 }
 
@@ -145,6 +160,9 @@ func (m *ShellManager) Open(ctx context.Context, size TerminalSize) (*ShellSessi
 	command.Env = []string{"HOME=" + m.root, "PATH=/usr/local/bin:/usr/bin:/bin", "TERM=xterm-256color", "LANG=C.UTF-8"}
 	command.Stdin, command.Stdout, command.Stderr = slave, slave, slave
 	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0, Pdeathsig: syscall.SIGKILL}
+	if uint32(os.Geteuid()) != m.uid || uint32(os.Getegid()) != m.gid {
+		command.SysProcAttr.Credential = &syscall.Credential{Uid: m.uid, Gid: m.gid, Groups: []uint32{}}
+	}
 	if err := command.Start(); err != nil {
 		master.Close()
 		slave.Close()
