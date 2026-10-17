@@ -1,6 +1,6 @@
 # Task 52: GitHub Actions Ephemeral Runner Mode
 
-Status: In Progress (2026-10-17: signed `workflow_job.queued` deliveries are retained but excluded from the generic push/PR Go-test trigger. Normalized events preserve run attempt, workflow name, bounded labels, and optional assigned runner/group identity. Tenant Owner/Admin repository opt-in is stored via API/CLI and audited. A separate default-off admission flag revalidates Tenant/Installation/Repository policy and persists deduplicated queued job admissions; worker claims use expiring leases with recovery. A Control Plane-only mTLS broker endpoint now consumes a claim and mints the repository-scoped registration token. GitHub-observed runner assignment and completion are persisted against the exact admitted job. The starting claim can now pin one immutable Lambda MicroVM ID, which is copied transactionally into the terminal cleanup outbox and returned to cleanup leases; launch, deregistration, and physical cleanup consumers remain unimplemented). Priority: P3.
+Status: In Progress (2026-10-17: signed `workflow_job.queued` deliveries are retained but excluded from the generic push/PR Go-test trigger. Normalized events preserve run attempt, workflow name, bounded labels, and optional assigned runner/group identity. Tenant Owner/Admin repository opt-in is stored via API/CLI and audited. A separate default-off admission flag revalidates Tenant/Installation/Repository policy and persists deduplicated queued job admissions; worker claims use expiring leases with recovery. A Control Plane-only mTLS broker endpoint now consumes a claim and mints the repository-scoped registration token. GitHub-observed runner assignment and completion are persisted against the exact admitted job. The starting claim pins the Lambda MicroVM and Resource Plane identities; terminal cleanup outbox records preserve both, and cleanup leases are Resource Plane-scoped. Runner launch, deregistration, and physical cleanup consumers remain unimplemented. Priority: P3.
 
 Claude Code Action support is tracked separately in [Task 73](task-73-claude-code-action.md), including Tenant-scoped model credentials, untrusted PR denial, and action-specific E2E.
 
@@ -61,17 +61,23 @@ Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Action
   plumbing only: the Lambda MicroVM cleanup/deregister worker still needs
   implementation.
 - The starting Runner claim can bind a single immutable Lambda MicroVM provider
-  ID under its live claim lease. Repeating the same binding is idempotent;
-  replacing it with another provider ID or binding from a stale/terminal claim
-  is rejected. Terminal status processing copies that ID into the cleanup
-  outbox transaction, and the cleanup lease returns it to the future worker.
+  ID and Resource Plane ID under its live claim lease. Repeating the same
+  binding is idempotent; replacing either identity or binding from a
+  stale/terminal claim is rejected. Terminal status processing copies both
+  identities into the cleanup outbox transaction. Cleanup claims are scoped
+  to the worker's exact Resource Plane; unbound jobs with no VM may be claimed
+  for repository-scoped runner deregistration only, while a VM ID without a
+  Resource Plane pin fails closed.
   This is only the durable identity handoff: no Lambda MicroVM launch,
   GitHub deregistration, or physical cleanup API is invoked yet.
 - If registration-token issuance or startup fails after the claim enters
   `starting`, the broker's failure transition now inserts the cleanup outbox
   row in the same PostgreSQL transaction and preserves any already-bound
-  Lambda MicroVM ID. This closes the failure window between VM allocation and
-  runner readiness; a cleanup consumer is still needed to act on the record.
+  Resource Plane/Lambda MicroVM pair. If no MicroVM was allocated, the cleanup
+  lease can still be used for repository-scoped deregistration; a MicroVM ID
+  without its Resource Plane is never made claimable. This closes the failure
+  window between VM allocation and runner readiness; a cleanup consumer is
+  still needed to act on the record.
 - The Tenant App token client now supports exact repository runner removal via
   GitHub's repository self-hosted-runner API using only a short-lived,
   repository-scoped `administration:write` Installation token. Cleanup remains

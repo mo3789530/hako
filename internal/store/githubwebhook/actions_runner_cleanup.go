@@ -13,6 +13,7 @@ import (
 type ActionsRunnerCleanupJob struct {
 	IntegrationID   string
 	TenantID        domain.TenantID
+	ResourcePlaneID *string
 	Installation    int64
 	Repository      int64
 	WorkflowJobID   int64
@@ -33,8 +34,8 @@ func enqueueActionsRunnerCleanup(ctx context.Context, tx pgx.Tx, integrationID s
 		return errors.New("valid terminal Actions runner identity and time are required for cleanup")
 	}
 	_, err := tx.Exec(ctx, `INSERT INTO github_actions_runner_cleanup_outbox
-		(integration_id,workflow_job_id,run_attempt,tenant_id,installation_id,repository_id,runner_id,lambda_microvm_id,reason,state,available_at,created_at,updated_at)
-		SELECT integration_id,workflow_job_id,run_attempt,tenant_id,installation_id,repository_id,runner_id,lambda_microvm_id,$4,'pending',$5,$5,$5
+		(integration_id,workflow_job_id,run_attempt,tenant_id,installation_id,repository_id,runner_id,resource_plane_id,lambda_microvm_id,reason,state,available_at,created_at,updated_at)
+		SELECT integration_id,workflow_job_id,run_attempt,tenant_id,installation_id,repository_id,runner_id,resource_plane_id,lambda_microvm_id,$4,'pending',$5,$5,$5
 		FROM github_actions_runner_jobs WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=$3 AND state=$4
 		ON CONFLICT (integration_id,workflow_job_id,run_attempt) DO NOTHING`, integrationID, workflowJobID, runAttempt, reason, now.UTC())
 	if err != nil {
@@ -45,25 +46,27 @@ func enqueueActionsRunnerCleanup(ctx context.Context, tx pgx.Tx, integrationID s
 
 // ClaimNextActionsRunnerCleanup leases one transactional cleanup request.
 // Expired leases are recoverable; callers must execute cleanup idempotently.
-func ClaimNextActionsRunnerCleanup(ctx context.Context, tx pgx.Tx, claimID string, now time.Time, lease time.Duration) (ActionsRunnerCleanupJob, bool, error) {
-	if ctx == nil || tx == nil || !validActionsRunnerClaimID(claimID) || now.IsZero() || lease < 5*time.Second || lease > 10*time.Minute {
-		return ActionsRunnerCleanupJob{}, false, errors.New("transaction, claim ID, current time, and a cleanup lease between 5 seconds and 10 minutes are required")
+func ClaimNextActionsRunnerCleanup(ctx context.Context, tx pgx.Tx, resourcePlaneID, claimID string, now time.Time, lease time.Duration) (ActionsRunnerCleanupJob, bool, error) {
+	if ctx == nil || tx == nil || !actionsRunnerResourcePlaneIDPattern.MatchString(resourcePlaneID) || !validActionsRunnerClaimID(claimID) || now.IsZero() || lease < 5*time.Second || lease > 10*time.Minute {
+		return ActionsRunnerCleanupJob{}, false, errors.New("transaction, Resource Plane, claim ID, current time, and a cleanup lease between 5 seconds and 10 minutes are required")
 	}
 	var job ActionsRunnerCleanupJob
 	err := tx.QueryRow(ctx, `WITH candidate AS (
 		SELECT integration_id,workflow_job_id,run_attempt FROM github_actions_runner_cleanup_outbox
-		WHERE (state='pending' AND available_at<=$1) OR (state='claimed' AND lease_expires_at<=$1)
+		WHERE (resource_plane_id=$1 OR (resource_plane_id IS NULL AND lambda_microvm_id IS NULL))
+		  AND ((state='pending' AND available_at<=$2) OR (state='claimed' AND lease_expires_at<=$2))
 		ORDER BY available_at,created_at,integration_id,workflow_job_id,run_attempt LIMIT 1
 	)
 	UPDATE github_actions_runner_cleanup_outbox o
-	SET state='claimed',claim_id=$2,lease_expires_at=$3,attempt_count=o.attempt_count+1,updated_at=$1
+	SET state='claimed',claim_id=$3,lease_expires_at=$4,attempt_count=o.attempt_count+1,updated_at=$2
 	FROM candidate c
 	WHERE o.integration_id=c.integration_id AND o.workflow_job_id=c.workflow_job_id AND o.run_attempt=c.run_attempt
-	  AND ((o.state='pending' AND o.available_at<=$1) OR (o.state='claimed' AND o.lease_expires_at<=$1))
-	RETURNING o.integration_id,o.tenant_id,o.installation_id,o.repository_id,o.workflow_job_id,o.run_attempt,o.runner_id,o.lambda_microvm_id,
+	  AND (o.resource_plane_id=$1 OR (o.resource_plane_id IS NULL AND o.lambda_microvm_id IS NULL))
+	  AND ((o.state='pending' AND o.available_at<=$2) OR (o.state='claimed' AND o.lease_expires_at<=$2))
+	RETURNING o.integration_id,o.tenant_id,o.resource_plane_id,o.installation_id,o.repository_id,o.workflow_job_id,o.run_attempt,o.runner_id,o.lambda_microvm_id,
 	          o.reason,o.state,o.claim_id,o.lease_expires_at,o.attempt_count,o.created_at`,
-		now.UTC(), claimID, now.Add(lease).UTC()).Scan(
-		&job.IntegrationID, &job.TenantID, &job.Installation, &job.Repository, &job.WorkflowJobID, &job.RunAttempt, &job.RunnerID,
+		resourcePlaneID, now.UTC(), claimID, now.Add(lease).UTC()).Scan(
+		&job.IntegrationID, &job.TenantID, &job.ResourcePlaneID, &job.Installation, &job.Repository, &job.WorkflowJobID, &job.RunAttempt, &job.RunnerID,
 		&job.LambdaMicroVMID, &job.Reason, &job.State, &job.ClaimID, &job.LeaseExpires, &job.AttemptCount, &job.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ActionsRunnerCleanupJob{}, false, nil
@@ -108,8 +111,15 @@ func RetryActionsRunnerCleanup(ctx context.Context, tx pgx.Tx, job ActionsRunner
 }
 
 func validActionsRunnerCleanupJob(job ActionsRunnerCleanupJob) bool {
-	return validStoredIntegrationID(job.IntegrationID) && job.WorkflowJobID > 0 && job.RunAttempt > 0 &&
+	return validStoredIntegrationID(job.IntegrationID) && validRunnerCleanupResourcePlane(job) && job.WorkflowJobID > 0 && job.RunAttempt > 0 &&
 		job.ClaimID != "" && job.State == "claimed" && job.TenantID != "" && job.Installation > 0 && job.Repository > 0
+}
+
+func validRunnerCleanupResourcePlane(job ActionsRunnerCleanupJob) bool {
+	if job.LambdaMicroVMID == nil {
+		return job.ResourcePlaneID == nil || actionsRunnerResourcePlaneIDPattern.MatchString(*job.ResourcePlaneID)
+	}
+	return job.ResourcePlaneID != nil && actionsRunnerResourcePlaneIDPattern.MatchString(*job.ResourcePlaneID)
 }
 
 func validCleanupErrorCode(value string) bool {
