@@ -44,6 +44,22 @@ capacity/region placement or persist a selected Plane before dispatch.
 Multi-plane routing must add a durable placement decision and per-Plane queue
 mapping before production use.
 
+## Claude Action workflow provenance (implementation in progress)
+
+Claude Code Action remains a user-authored GitHub Actions workflow; Hako does
+not translate issue or pull-request comments into commands. The local
+`actionsrunner.VerifyRunnerWorkflowProvenance` contract accepts only a
+Tenant-owned, data-only policy and authoritative run/job metadata. It compares
+Tenant, integration, Installation, repository, workflow file, approved ref,
+commit, run ID/attempt, job ID, event, source repository and required runner
+labels, and rejects fork-originated work. Policy values cannot select a
+command, credential, image, execution role, or network connector.
+
+This verifier is currently a tested library contract only. It is not yet backed
+by DSQL policy storage, GitHub Actions Run/Job API reads, or wired before
+MicroVM launch. Therefore Claude Action workflows must not be considered
+eligible for production runner admission until those checks are integrated.
+
 ## Local verification
 
 ```sh
