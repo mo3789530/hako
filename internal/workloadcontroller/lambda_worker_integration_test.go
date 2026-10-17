@@ -8,15 +8,22 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/lambdamicrovms/types"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 	"github.com/jackc/pgx/v5"
 	"github.com/mo3789530/hako/internal/dispatcher"
 	"github.com/mo3789530/hako/internal/domain"
@@ -49,6 +56,84 @@ type lambdaWorkerScheduleQueue struct {
 	delivery workloadjobs.ScheduleDelivery
 	received bool
 	deleted  int
+}
+
+// lambdaWorkerS3Journal is a conditional, in-memory S3 API fake. It exercises
+// the production S3Store and recovery listing without contacting AWS.
+type lambdaWorkerS3Journal struct {
+	mu       sync.Mutex
+	objects  map[string][]byte
+	versions map[string]int
+}
+
+func newLambdaWorkerS3Journal() *lambdaWorkerS3Journal {
+	return &lambdaWorkerS3Journal{objects: make(map[string][]byte), versions: make(map[string]int)}
+}
+
+func (s *lambdaWorkerS3Journal) GetObject(_ context.Context, input *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := aws.ToString(input.Key)
+	body, ok := s.objects[key]
+	if !ok {
+		return nil, &smithy.GenericAPIError{Code: "NoSuchKey", Message: "object not found"}
+	}
+	return &s3.GetObjectOutput{Body: io.NopCloser(bytes.NewReader(append([]byte(nil), body...))), ETag: aws.String(s.etag(key))}, nil
+}
+
+func (s *lambdaWorkerS3Journal) PutObject(_ context.Context, input *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := aws.ToString(input.Key)
+	_, exists := s.objects[key]
+	if input.IfNoneMatch != nil && *input.IfNoneMatch == "*" && exists {
+		return nil, &smithy.GenericAPIError{Code: "PreconditionFailed", Message: "object already exists"}
+	}
+	if input.IfMatch != nil && (!exists || *input.IfMatch != s.etag(key)) {
+		return nil, &smithy.GenericAPIError{Code: "PreconditionFailed", Message: "object ETag changed"}
+	}
+	var body bytes.Buffer
+	if _, err := io.Copy(&body, input.Body); err != nil {
+		return nil, err
+	}
+	s.objects[key] = body.Bytes()
+	s.versions[key]++
+	return &s3.PutObjectOutput{ETag: aws.String(s.etag(key))}, nil
+}
+
+func (s *lambdaWorkerS3Journal) ListObjectsV2(_ context.Context, input *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	keys := make([]string, 0, len(s.objects))
+	for key := range s.objects {
+		if strings.HasPrefix(key, aws.ToString(input.Prefix)) {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	start := 0
+	if input.ContinuationToken != nil && *input.ContinuationToken != "" {
+		for start < len(keys) && keys[start] <= *input.ContinuationToken {
+			start++
+		}
+	}
+	limit := len(keys)
+	if input.MaxKeys != nil && int(*input.MaxKeys) < limit-start {
+		limit = start + int(*input.MaxKeys)
+	}
+	contents := make([]s3types.Object, 0, limit-start)
+	for _, key := range keys[start:limit] {
+		contents = append(contents, s3types.Object{Key: aws.String(key)})
+	}
+	result := &s3.ListObjectsV2Output{Contents: contents, IsTruncated: aws.Bool(limit < len(keys))}
+	if limit < len(keys) && limit > start {
+		result.NextContinuationToken = aws.String(keys[limit-1])
+	}
+	return result, nil
+}
+
+func (s *lambdaWorkerS3Journal) etag(key string) string {
+	return `"s3-version-` + fmt.Sprint(s.versions[key]) + `"`
 }
 
 func (q *lambdaWorkerScheduleQueue) Receive(context.Context, int, time.Duration) ([]workloadjobs.ScheduleDelivery, error) {
@@ -199,7 +284,11 @@ func TestComposedLambdaWorkerResultAndCleanupProjectIntoPostgres(t *testing.T) {
 	issuer := &workloadagent.Ed25519TicketIssuer{KeyID: "rp-v1", PrivateKey: privateKey, Now: func() time.Time { return now }}
 	logs := &compositionLogWriter{}
 	agentTransport := &compositionAgentTransport{handler: agent.Handler()}
-	journal := &journalDB{rows: make(map[string]workloadjournal.Snapshot)}
+	s3JournalAPI := newLambdaWorkerS3Journal()
+	journal, err := workloadjournal.NewS3Store(s3JournalAPI, "hako-test-journals", "workloads/rp_1")
+	if err != nil {
+		t.Fatalf("create production S3 journal adapter over fake S3: %v", err)
+	}
 	workerConfig := LambdaWorkloadHandlerConfig{ResourcePlaneID: "rp_1", Journal: journal,
 		LambdaAPI: api, Resolver: resolveFunc(func(_ context.Context, id workloadjournal.Command) (Specification, error) {
 			spec.Identity = id
@@ -257,30 +346,33 @@ func TestComposedLambdaWorkerResultAndCleanupProjectIntoPostgres(t *testing.T) {
 		}
 		return nil
 	})
-	var snapshot workloadjournal.Snapshot
-	for until := time.Now().Add(2 * time.Second); time.Now().Before(until); {
-		snapshot, err = worker.controller.Poll(ctx, body, publisher)
-		if errors.Is(err, lostAck) {
-			break
-		}
-		if err != nil {
-			t.Fatalf("poll composed Worker result: %v", err)
-		}
-		if snapshot.Journal.CleanupState == workloadjournal.CleanupConfirmed && snapshot.Journal.ResultPublished {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
-	// The lost-ack error is intentionally opaque to this test; replay once after
-	// the worker has durably frozen its result to prove Control Plane idempotency.
-	if sends == 0 {
-		t.Fatalf("composed Worker did not publish its result: journal=%+v err=%v", snapshot.Journal, err)
-	}
+	// Recreate the Worker and run its scheduled Recovery composition against
+	// the S3-backed journal after the Agent has completed. The first result
+	// publish applies to PostgreSQL but loses its acknowledgement; a later
+	// scheduled sweep reloads the frozen result from S3 and safely replays it.
+	recoveryWorker, err := NewLambdaWorkloadRecoveryHandler(LambdaWorkloadRecoveryHandlerConfig{
+		Workload: workerConfig, Leases: &recoveryLeaseStub{}, Publisher: publisher,
+		Recovery: RecoveryLambdaConfig{PageSize: 10, MaxPages: 2, LeaseTTL: time.Minute},
+	})
 	if err != nil {
-		snapshot, err = worker.controller.Poll(ctx, body, publisher)
+		t.Fatalf("compose scheduled recovery over S3 journal: %v", err)
 	}
-	if err != nil || sends != 2 || !snapshot.Journal.ResultPublished || snapshot.Journal.CleanupState != workloadjournal.CleanupConfirmed {
-		t.Fatalf("composed Worker result/cleanup replay incomplete: sends=%d snapshot=%+v err=%v", sends, snapshot.Journal, err)
+	report, err := recoveryWorker.Handle(ctx, events.CloudWatchEvent{})
+	if err != nil || report.Scanned != 1 || report.FailedCount != 1 || sends != 1 {
+		t.Fatalf("first scheduled recovery should retain result after lost ack: report=%+v sends=%d err=%v", report, sends, err)
+	}
+	recoveryWorker, err = NewLambdaWorkloadRecoveryHandler(LambdaWorkloadRecoveryHandlerConfig{
+		Workload: workerConfig, Leases: &recoveryLeaseStub{}, Publisher: publisher,
+		Recovery: RecoveryLambdaConfig{PageSize: 10, MaxPages: 2, LeaseTTL: time.Minute},
+	})
+	if err != nil {
+		t.Fatalf("recreate scheduled recovery after process restart: %v", err)
+	}
+	report, err = recoveryWorker.Handle(ctx, events.CloudWatchEvent{})
+	snapshot, loadErr := journal.Get(ctx, "tenant_1", "run_1", command.AttemptID)
+	if err != nil || loadErr != nil || !report.Complete || report.Scanned != 1 || report.Handled != 1 || report.FailedCount != 0 || sends != 2 ||
+		!snapshot.Journal.ResultPublished || snapshot.Journal.CleanupState != workloadjournal.CleanupConfirmed {
+		t.Fatalf("scheduled recovery replay incomplete: report=%+v sends=%d journal=%+v err=%v get_err=%v", report, sends, snapshot.Journal, err, loadErr)
 	}
 	var state domain.WorkloadRunState
 	var artifactCount int
