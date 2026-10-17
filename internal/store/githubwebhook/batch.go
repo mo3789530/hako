@@ -35,8 +35,10 @@ func ProcessBatch(ctx context.Context, pool BatchPool, policy transaction.Policy
 }
 
 // ProcessBatchWithRepositoryTriggers additionally drains push/pull-request
-// events. The run creator is injected to keep inbox storage independent of the
-// Workload Run store while allowing both changes to share one DB transaction.
+// events. Workflow Job events are deliberately excluded: they require a
+// separately authorized ephemeral-runner policy and must never be converted
+// into a generic test Run. The run creator is injected to keep inbox storage
+// independent of the Workload Run store while sharing one DB transaction.
 func ProcessBatchWithRepositoryTriggers(ctx context.Context, pool BatchPool, policy transaction.Policy, batchSize int, processedAt time.Time, createRun RepositoryRunCreator) (BatchStats, error) {
 	var stats BatchStats
 	if pool == nil || batchSize < 1 || batchSize > MaxRepositoryEventBatchSize {

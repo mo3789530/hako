@@ -66,12 +66,12 @@ func TestWebhookDeliveryIdempotencyIsStableAndIntegrationScoped(t *testing.T) {
 }
 
 func TestEligibleWebhookRunTriggersAreExplicit(t *testing.T) {
-	for _, eventType := range []string{"repository.push", "repository.pull_request.opened", "repository.pull_request.reopened", "repository.pull_request.synchronize", "repository.workflow_job.queued"} {
+	for _, eventType := range []string{"repository.push", "repository.pull_request.opened", "repository.pull_request.reopened", "repository.pull_request.synchronize"} {
 		if !eligibleRunTrigger(githubwebhook.RepositoryEvent{Type: eventType}) {
 			t.Errorf("supported trigger %q rejected", eventType)
 		}
 	}
-	for _, eventType := range []string{"repository.pull_request.closed", "repository.pull_request.edited", "repository.workflow_job.completed", "github.installation.deleted", "arbitrary.command"} {
+	for _, eventType := range []string{"repository.pull_request.closed", "repository.pull_request.edited", "repository.workflow_job.queued", "repository.workflow_job.in_progress", "repository.workflow_job.completed", "github.installation.deleted", "arbitrary.command"} {
 		if eligibleRunTrigger(githubwebhook.RepositoryEvent{Type: eventType}) {
 			t.Errorf("unsupported trigger %q accepted", eventType)
 		}

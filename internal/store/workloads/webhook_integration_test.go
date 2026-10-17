@@ -42,10 +42,10 @@ func TestWebhookDeliveryCreatesOnePinnedWorkloadRun(t *testing.T) {
 		}
 	}
 	delivery := githubwebhook.VerifiedDelivery{IntegrationID: "integration_webhook_run", CredentialGeneration: 4,
-		DeliveryID: "f1b2c3d4-e5f6-4789-8abc-def012345678", Event: "workflow_job", Action: "queued",
-		Payload: []byte(`{"action":"queued","installation":{"id":9401,"app_id":9403},"repository":{"id":9402,"name":"api","owner":{"login":"acme"}},"workflow_job":{"id":9404,"run_id":9405,"name":"Claude Review","head_branch":"feature/review","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"queued"}}`)}
+		DeliveryID: "f1b2c3d4-e5f6-4789-8abc-def012345678", Event: "push",
+		Payload: []byte(`{"ref":"refs/heads/feature/review","after":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","installation":{"id":9401,"app_id":9403},"repository":{"id":9402,"name":"api","owner":{"login":"acme"}}}`)}
 	if inserted, err := (webhookstore.Inbox{Pool: pool}).Record(ctx, delivery, now); err != nil || !inserted {
-		t.Fatalf("record workflow_job webhook: inserted=%v err=%v", inserted, err)
+		t.Fatalf("record push webhook: inserted=%v err=%v", inserted, err)
 	}
 	makeRun := func(id string) domain.WorkloadRun {
 		return domain.WorkloadRun{ID: domain.WorkloadRunID(id), TenantID: "tenant_webhook_run", Kind: domain.WorkloadJob,
@@ -65,7 +65,7 @@ func TestWebhookDeliveryCreatesOnePinnedWorkloadRun(t *testing.T) {
 	}
 	wantKey := WebhookDeliveryIdempotencyKey(delivery.IntegrationID, delivery.DeliveryID)
 	if first.run.IdempotencyKey != wantKey || first.run.GitHubIntegrationID != delivery.IntegrationID || first.run.GitHubCredentialGeneration != 4 ||
-		first.run.GitHubInstallation != 9401 || first.run.GitHubRepository != 9402 || first.run.Ref != "feature/review" || first.run.CommitSHA != strings.Repeat("a", 40) {
+		first.run.GitHubInstallation != 9401 || first.run.GitHubRepository != 9402 || first.run.Ref != "refs/heads/feature/review" || first.run.CommitSHA != strings.Repeat("a", 40) {
 		t.Fatalf("webhook Run did not pin delivery identity: %+v", first.run)
 	}
 	second, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (result, error) {
@@ -95,5 +95,22 @@ func TestWebhookDeliveryCreatesOnePinnedWorkloadRun(t *testing.T) {
 	}
 	if runs != 1 || checks != 1 || checkOutbox != 1 {
 		t.Fatalf("duplicate webhook delivery created runs=%d checks=%d check_outbox=%d; want one each", runs, checks, checkOutbox)
+	}
+
+	queuedJob := githubwebhook.VerifiedDelivery{IntegrationID: "integration_webhook_run", CredentialGeneration: 4,
+		DeliveryID: "f2b2c3d4-e5f6-4789-8abc-def012345678", Event: "workflow_job", Action: "queued",
+		Payload: []byte(`{"action":"queued","installation":{"id":9401,"app_id":9403},"repository":{"id":9402,"name":"api","owner":{"login":"acme"}},"workflow_job":{"id":9410,"run_id":9411,"name":"Claude Review","head_branch":"feature/review","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"queued"}}`)}
+	if inserted, err := (webhookstore.Inbox{Pool: pool}).Record(ctx, queuedJob, now.Add(time.Second)); err != nil || !inserted {
+		t.Fatalf("retain queued workflow_job delivery for dedicated runner: inserted=%v err=%v", inserted, err)
+	}
+	if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (struct{}, error) {
+		_, _, err := CreateOrGetFromWebhookDelivery(ctx, tx, queuedJob.IntegrationID, queuedJob.DeliveryID, makeRun("run_workflow_job_must_not_be_generic_test"))
+		return struct{}{}, err
+	}); !errors.Is(err, ErrWebhookDeliveryRunMismatch) {
+		t.Fatalf("queued Actions event was accepted as a generic Hako Go-test Run: %v", err)
+	}
+	var queuedJobStatus string
+	if err := pool.QueryRow(ctx, `SELECT processing_status FROM github_webhook_deliveries WHERE integration_id=$1 AND delivery_id=$2`, queuedJob.IntegrationID, queuedJob.DeliveryID).Scan(&queuedJobStatus); err != nil || queuedJobStatus != "received" {
+		t.Fatalf("queued Actions delivery was consumed instead of retained for the dedicated runner: status=%q err=%v", queuedJobStatus, err)
 	}
 }

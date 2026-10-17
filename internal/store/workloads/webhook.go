@@ -71,7 +71,7 @@ func eligibleRunTrigger(event webhookevent.RepositoryEvent) bool {
 		return false
 	}
 	switch event.Type {
-	case "repository.push", "repository.pull_request.opened", "repository.pull_request.reopened", "repository.pull_request.synchronize", "repository.workflow_job.queued":
+	case "repository.push", "repository.pull_request.opened", "repository.pull_request.reopened", "repository.pull_request.synchronize":
 		return true
 	default:
 		return false
