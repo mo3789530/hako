@@ -55,6 +55,11 @@ commit, run ID/attempt, job ID, event, source repository and required runner
 labels, and rejects fork-originated work. Policy values cannot select a
 command, credential, image, execution role, or network connector.
 
+The trusted Tenant App token client can now mint a repository-only
+`actions:read` + `contents:read` Installation token for that lookup. The
+repository opt-in is checked both before and after token minting; the token is
+distinct from checkout, runner-registration, and deregistration credentials.
+
 This verifier is currently a tested library contract only. It is not yet backed
 by DSQL policy storage, GitHub Actions Run/Job API reads, or wired before
 MicroVM launch. Therefore Claude Action workflows must not be considered

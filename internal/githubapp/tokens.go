@@ -420,6 +420,50 @@ func (c *TokenClient) ActionsRunnerRegistrationToken(ctx context.Context, tenant
 	return RunnerRegistrationToken{value: response.Token, expiresAt: response.ExpiresAt}, access, nil
 }
 
+// ActionsRunnerProvenanceToken mints a repository-scoped read-only token for
+// authoritative Actions Run/Job and workflow-file metadata lookups. It never
+// grants workflow dispatch, write, administration, or runner registration
+// permissions, and the repository runner opt-in is revalidated on each use.
+func (c *TokenClient) ActionsRunnerProvenanceToken(ctx context.Context, tenant domain.TenantID, installationID, repositoryID int64) (InstallationToken, RepositoryAccess, error) {
+	if c == nil || ctx == nil || c.config.IntegrationID == "" || c.tenantAppAuth == nil || tenant == "" || installationID <= 0 || repositoryID <= 0 {
+		return InstallationToken{}, RepositoryAccess{}, credentialError("invalid_request")
+	}
+	runnerAuthorizer, ok := c.authorizer.(ActionsRunnerRepositoryAuthorizer)
+	if !ok || tenant != c.config.TenantID {
+		return InstallationToken{}, RepositoryAccess{}, credentialError("repository_not_authorized")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	select {
+	case c.gate <- struct{}{}:
+	case <-ctx.Done():
+		return InstallationToken{}, RepositoryAccess{}, ctx.Err()
+	}
+	defer func() { <-c.gate }()
+	identity := TenantAppIdentity{TenantID: c.config.TenantID, IntegrationID: c.config.IntegrationID, GitHubAppID: c.config.AppID,
+		ConfigRevision: c.config.ConfigRevision, CredentialGeneration: c.config.CredentialGeneration}
+	access, err := runnerAuthorizer.AuthorizeActionsRunnerRepository(ctx, identity, installationID, repositoryID)
+	if ctx.Err() != nil {
+		return InstallationToken{}, RepositoryAccess{}, ctx.Err()
+	}
+	if err != nil || !validLogin(access.Owner) || !validCredentialRepositoryName(access.Name) {
+		return InstallationToken{}, RepositoryAccess{}, credentialError("repository_not_authorized")
+	}
+	key := tokenCacheKey{tenant: tenant, integration: c.config.IntegrationID, appID: c.config.AppID,
+		configRevision: c.config.ConfigRevision, credentialGeneration: c.config.CredentialGeneration,
+		installation: installationID, repository: repositoryID, permissionScope: "actions:read,contents:read"}
+	token, err := c.scopedInstallationToken(ctx, key, map[string]string{"actions": "read", "contents": "read"})
+	if err != nil {
+		delete(c.cache, key)
+		return InstallationToken{}, RepositoryAccess{}, err
+	}
+	if _, err := runnerAuthorizer.AuthorizeActionsRunnerRepository(ctx, identity, installationID, repositoryID); err != nil {
+		delete(c.cache, key)
+		return InstallationToken{}, RepositoryAccess{}, credentialError("repository_not_authorized")
+	}
+	return token, access, nil
+}
+
 // DeregisterActionsRunner removes one exact repository runner using a
 // short-lived, repository-scoped administration:write Installation token.
 // It deliberately authorizes against the active Tenant App and repository
