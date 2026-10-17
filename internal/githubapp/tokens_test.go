@@ -335,6 +335,7 @@ func TestActionsRunnerRegistrationTokenDeniesRepositoryWithoutRunnerOptInBeforeG
 func TestDeregisterActionsRunnerUsesExactRepositoryScopeAfterRunnerOptOut(t *testing.T) {
 	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
 	deleteCalled := false
+	deleteStatus := http.StatusNoContent
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -356,7 +357,7 @@ func TestDeregisterActionsRunnerUsesExactRepositoryScopeAfterRunnerOptOut(t *tes
 			if r.Method != http.MethodDelete || r.Header.Get("Authorization") != "Bearer "+testTokenValue {
 				t.Errorf("deregister request method/credential = %s / %q", r.Method, r.Header.Get("Authorization"))
 			}
-			w.WriteHeader(http.StatusNoContent)
+			w.WriteHeader(deleteStatus)
 		default:
 			t.Errorf("unexpected GitHub endpoint %s", r.URL.Path)
 		}
@@ -380,6 +381,10 @@ func TestDeregisterActionsRunnerUsesExactRepositoryScopeAfterRunnerOptOut(t *tes
 	client.wait = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 	if err := client.DeregisterActionsRunner(context.Background(), "tenant_one", 77, 88, 9810); err != nil {
 		t.Fatalf("DeregisterActionsRunner() error=%v", err)
+	}
+	deleteStatus = http.StatusNotFound
+	if err := client.DeregisterActionsRunner(context.Background(), "tenant_one", 77, 88, 9810); err != nil {
+		t.Fatalf("idempotent DeregisterActionsRunner() after runner removal error=%v", err)
 	}
 	if !deleteCalled {
 		t.Fatal("GitHub runner deregistration endpoint was not called")

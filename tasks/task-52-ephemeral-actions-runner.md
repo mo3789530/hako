@@ -77,7 +77,9 @@ Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Action
   repository-scoped `administration:write` Installation token. Cleanup remains
   authorized by the active Tenant App/repository binding even after the Runner
   admission opt-in is turned off; the runner ID must come from the durable
-  cleanup job. The real consumer and its transport are not yet connected.
+  cleanup job. An already-absent runner is treated as idempotent completion
+  after the exact Installation token and repository authorization are checked.
+  The real consumer and its transport are not yet connected.
 - `HAKO_GITHUB_ACTIONS_RUNNER_ADMISSIONS_ENABLED` defaults off. When enabled,
   the webhook processor admits only queued jobs whose current Tenant-owned
   Installation and Repository opt-in were active before receipt. Admission is

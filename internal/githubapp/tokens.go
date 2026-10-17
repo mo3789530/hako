@@ -466,7 +466,14 @@ func (c *TokenClient) DeregisterActionsRunner(ctx context.Context, tenant domain
 		return credentialError("repository_not_authorized")
 	}
 	path := "/repos/" + url.PathEscape(access.Owner) + "/" + url.PathEscape(access.Name) + "/actions/runners/" + strconv.FormatInt(runnerID, 10)
-	return c.request(ctx, http.MethodDelete, path, installationToken.Value(), nil, nil)
+	err = c.request(ctx, http.MethodDelete, path, installationToken.Value(), nil, nil)
+	var credentialErr *CredentialError
+	if errors.As(err, &credentialErr) && credentialErr.Status == http.StatusNotFound {
+		// A retry after a lost 204 response must converge when GitHub has
+		// already removed the exact runner.
+		return nil
+	}
+	return err
 }
 
 // ChecksRunToken enforces the immutable credential pin captured by a Workload
