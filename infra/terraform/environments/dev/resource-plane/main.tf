@@ -12,6 +12,7 @@ module "resource_plane" {
   enable_workload_result_queue                    = var.enable_workload_result_queue
   actions_runner_vpc_config                       = var.actions_runner_vpc_config
   actions_runner_deployment                       = var.actions_runner_deployment
+  actions_runner_cleanup_deployment               = var.actions_runner_cleanup_deployment
   max_receive_count                               = var.max_receive_count
   command_visibility_timeout_seconds              = var.command_visibility_timeout_seconds
   result_visibility_timeout_seconds               = var.result_visibility_timeout_seconds

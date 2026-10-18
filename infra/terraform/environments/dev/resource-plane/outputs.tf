@@ -82,6 +82,18 @@ output "actions_runner_worker_event_source_mapping_uuid" {
   value = module.resource_plane.actions_runner_worker_event_source_mapping_uuid
 }
 
+output "actions_runner_cleanup_lambda_arn" {
+  value = module.resource_plane.actions_runner_cleanup_lambda_arn
+}
+
+output "actions_runner_cleanup_schedule_arn" {
+  value = module.resource_plane.actions_runner_cleanup_schedule_arn
+}
+
+output "actions_runner_cleanup_errors_alarm_name" {
+  value = module.resource_plane.actions_runner_cleanup_errors_alarm_name
+}
+
 output "workload_controller_lambda_arn" {
   value = module.resource_plane.workload_controller_lambda_arn
 }

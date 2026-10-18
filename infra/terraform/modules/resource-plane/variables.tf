@@ -287,6 +287,51 @@ variable "actions_runner_deployment" {
   }
 }
 
+variable "actions_runner_cleanup_deployment" {
+  description = "Optional default-off scheduled cleanup for Actions Runner MicroVMs. Requires the startup deployment's reviewed ZIP, broker URL, exact mTLS Secrets, image ARN, and private VPC configuration."
+  type = object({
+    schedule_expression            = optional(string, "rate(5 minutes)")
+    lambda_timeout_seconds         = optional(number, 900)
+    lambda_memory_size             = optional(number, 1024)
+    reserved_concurrent_executions = optional(number, 1)
+    batch_size                     = optional(number, 4)
+    lease_duration_seconds         = optional(number, 120)
+    operation_timeout_seconds      = optional(number, 60)
+    poll_interval_milliseconds     = optional(number, 250)
+    poll_timeout_seconds           = optional(number, 30)
+    secret_kms_key_arns            = optional(list(string), [])
+  })
+  default = null
+
+  validation {
+    condition = var.actions_runner_cleanup_deployment == null || (
+      var.actions_runner_deployment != null && var.actions_runner_vpc_config != null &&
+      can(regex("^rate\\([1-9][0-9]* (minute|minutes|hour|hours)\\)$", var.actions_runner_cleanup_deployment.schedule_expression)) &&
+      var.actions_runner_cleanup_deployment.lambda_timeout_seconds >= 60 && var.actions_runner_cleanup_deployment.lambda_timeout_seconds <= 900 &&
+      floor(var.actions_runner_cleanup_deployment.lambda_timeout_seconds) == var.actions_runner_cleanup_deployment.lambda_timeout_seconds &&
+      var.actions_runner_cleanup_deployment.lambda_memory_size >= 1024 && var.actions_runner_cleanup_deployment.lambda_memory_size <= 10240 &&
+      floor(var.actions_runner_cleanup_deployment.lambda_memory_size) == var.actions_runner_cleanup_deployment.lambda_memory_size &&
+      var.actions_runner_cleanup_deployment.reserved_concurrent_executions == 1 &&
+      var.actions_runner_cleanup_deployment.batch_size >= 1 && var.actions_runner_cleanup_deployment.batch_size <= 100 &&
+      floor(var.actions_runner_cleanup_deployment.batch_size) == var.actions_runner_cleanup_deployment.batch_size &&
+      var.actions_runner_cleanup_deployment.lease_duration_seconds >= 5 && var.actions_runner_cleanup_deployment.lease_duration_seconds <= 600 &&
+      floor(var.actions_runner_cleanup_deployment.lease_duration_seconds) == var.actions_runner_cleanup_deployment.lease_duration_seconds &&
+      var.actions_runner_cleanup_deployment.operation_timeout_seconds >= 1 && var.actions_runner_cleanup_deployment.operation_timeout_seconds <= 300 &&
+      floor(var.actions_runner_cleanup_deployment.operation_timeout_seconds) == var.actions_runner_cleanup_deployment.operation_timeout_seconds &&
+      var.actions_runner_cleanup_deployment.operation_timeout_seconds + 5 <= var.actions_runner_cleanup_deployment.lease_duration_seconds &&
+      var.actions_runner_cleanup_deployment.poll_interval_milliseconds >= 10 && var.actions_runner_cleanup_deployment.poll_interval_milliseconds <= 60000 &&
+      floor(var.actions_runner_cleanup_deployment.poll_interval_milliseconds) == var.actions_runner_cleanup_deployment.poll_interval_milliseconds &&
+      var.actions_runner_cleanup_deployment.poll_timeout_seconds >= ceil(var.actions_runner_cleanup_deployment.poll_interval_milliseconds / 1000) &&
+      var.actions_runner_cleanup_deployment.poll_timeout_seconds <= var.actions_runner_cleanup_deployment.operation_timeout_seconds &&
+      floor(var.actions_runner_cleanup_deployment.poll_timeout_seconds) == var.actions_runner_cleanup_deployment.poll_timeout_seconds &&
+      var.actions_runner_cleanup_deployment.batch_size * (var.actions_runner_cleanup_deployment.operation_timeout_seconds + 15) <= var.actions_runner_cleanup_deployment.lambda_timeout_seconds &&
+      alltrue([for arn in var.actions_runner_cleanup_deployment.secret_kms_key_arns : can(regex("^arn:(aws|aws-us-gov|aws-cn):kms:[a-z0-9-]+:[0-9]{12}:key/[A-Fa-f0-9-]+$", arn))]) &&
+      length(var.actions_runner_cleanup_deployment.secret_kms_key_arns) == length(toset(var.actions_runner_cleanup_deployment.secret_kms_key_arns))
+    )
+    error_message = "Actions Runner cleanup requires its opt-in startup deployment/private VPC, a rate schedule, concurrency 1, bounded lease/operation/poll/batch settings, enough Lambda timeout for a full batch, and valid optional KMS key ARNs."
+  }
+}
+
 variable "max_receive_count" {
   description = "Receives before SQS moves a command/result message to its DLQ."
   type        = number

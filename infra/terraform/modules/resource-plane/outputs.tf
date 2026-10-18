@@ -103,6 +103,21 @@ output "actions_runner_worker_event_source_mapping_uuid" {
   value       = try(aws_lambda_event_source_mapping.actions_runner_worker[0].uuid, null)
 }
 
+output "actions_runner_cleanup_lambda_arn" {
+  description = "ARN of the separately opted-in scheduled Actions Runner cleanup Lambda."
+  value       = try(aws_lambda_function.actions_runner_cleanup[0].arn, null)
+}
+
+output "actions_runner_cleanup_schedule_arn" {
+  description = "EventBridge schedule ARN for Actions Runner cleanup; null unless explicitly enabled."
+  value       = try(aws_cloudwatch_event_rule.actions_runner_cleanup[0].arn, null)
+}
+
+output "actions_runner_cleanup_errors_alarm_name" {
+  description = "CloudWatch alarm for scheduled Actions Runner cleanup invocation errors."
+  value       = try(aws_cloudwatch_metric_alarm.actions_runner_cleanup_errors[0].alarm_name, null)
+}
+
 output "resource_controller_role_arn" {
   description = "ARN of the least-privilege Resource Controller execution role."
   value       = aws_iam_role.resource_controller.arn

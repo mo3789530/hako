@@ -58,6 +58,23 @@ variable "actions_runner_deployment" {
   default = null
 }
 
+variable "actions_runner_cleanup_deployment" {
+  description = "Optional default-off scheduled Actions Runner cleanup configuration; requires actions_runner_deployment and exact broker Secrets there. Never provide Secret values."
+  type = object({
+    schedule_expression            = optional(string, "rate(5 minutes)")
+    lambda_timeout_seconds         = optional(number, 900)
+    lambda_memory_size             = optional(number, 1024)
+    reserved_concurrent_executions = optional(number, 1)
+    batch_size                     = optional(number, 4)
+    lease_duration_seconds         = optional(number, 120)
+    operation_timeout_seconds      = optional(number, 60)
+    poll_interval_milliseconds     = optional(number, 250)
+    poll_timeout_seconds           = optional(number, 30)
+    secret_kms_key_arns            = optional(list(string), [])
+  })
+  default = null
+}
+
 variable "control_plane_workload_result_consumer_role_arn" {
   description = "Exact Control Plane role allowed to consume Workload Run results; required when the queue is enabled."
   type        = string

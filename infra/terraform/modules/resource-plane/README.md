@@ -59,3 +59,20 @@ connector, logs, and the provided VPC resources. The queue URL is exposed for
 the Control Plane Resource Plane manifest. The manifest currently permits only
 one Actions Runner queue until durable multi-Plane runner placement exists.
 This remains opt-in and does not create a runner image or apply infrastructure.
+
+`actions_runner_cleanup_deployment` is an independent opt-in on top of the
+startup deployment. It creates a scheduled ARM64 Lambda using the same reviewed
+ZIP in `cleanup` mode, with its own concurrency-one role, private subnet/SG
+attachment, EventBridge schedule, invoke permission, and Lambda error alarm.
+The cleanup role reads only the broker certificate/key/CA Secrets and grants
+`lambda:GetMicrovm`/`lambda:TerminateMicrovm` against only the configured runner
+image ARN; it has no SQS, launch, token-minting, or execution-role permissions.
+Optional KMS decrypt keys are supplied explicitly for those broker Secrets.
+The default schedule is `rate(5 minutes)`, with a four-job batch, 120-second
+lease, and 60-second operation budget; validation ensures a full batch fits
+inside the Lambda timeout. The schedule remains absent unless this variable is
+explicitly set. No apply is performed by module tests.
+
+AWS lists `GetMicrovm` and `TerminateMicrovm` against the `microvmImage`
+resource type, so the cleanup actions are scoped to the configured image ARN
+([Lambda Service Authorization Reference](https://docs.aws.amazon.com/service-authorization/latest/reference/list_lambda.html)).

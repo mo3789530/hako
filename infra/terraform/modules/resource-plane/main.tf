@@ -409,6 +409,203 @@ resource "aws_lambda_event_source_mapping" "actions_runner_worker" {
   enabled                 = true
 }
 
+# Terminal runner cleanup is a separately opt-in scheduled function with a
+# narrower role than the startup worker. It only reads the three mTLS Secrets,
+# calls the Broker, and terminates MicroVMs created from the pinned runner image.
+resource "aws_cloudwatch_log_group" "actions_runner_cleanup" {
+  count = var.actions_runner_cleanup_deployment == null ? 0 : 1
+
+  name              = "/aws/lambda/${var.resource_plane_id}-actions-runner-cleanup"
+  retention_in_days = var.log_retention_days
+  tags              = merge(local.common_tags, { "hako:component" = "actions-runner-cleanup" })
+}
+
+data "aws_iam_policy_document" "actions_runner_cleanup_assume_role" {
+  count = var.actions_runner_cleanup_deployment == null ? 0 : 1
+
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["lambda.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values   = ["arn:${data.aws_partition.current.partition}:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:${var.resource_plane_id}-actions-runner-cleanup"]
+    }
+  }
+}
+
+resource "aws_iam_role" "actions_runner_cleanup" {
+  count = var.actions_runner_cleanup_deployment == null ? 0 : 1
+
+  name               = "${var.resource_plane_id}-actions-runner-cleanup"
+  assume_role_policy = data.aws_iam_policy_document.actions_runner_cleanup_assume_role[0].json
+  tags               = merge(local.common_tags, { "hako:component" = "actions-runner-cleanup" })
+}
+
+resource "aws_iam_role_policy" "actions_runner_cleanup" {
+  count = var.actions_runner_cleanup_deployment == null ? 0 : 1
+
+  name = "${var.resource_plane_id}-actions-runner-cleanup"
+  role = aws_iam_role.actions_runner_cleanup[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = concat([
+      {
+        Sid    = "ReadOnlyExactActionsRunnerBrokerSecrets"
+        Effect = "Allow"
+        Action = ["secretsmanager:GetSecretValue"]
+        Resource = [
+          var.actions_runner_deployment.broker_client_cert_secret_arn,
+          var.actions_runner_deployment.broker_client_key_secret_arn,
+          var.actions_runner_deployment.broker_ca_secret_arn
+        ]
+      },
+      {
+        Sid      = "TerminateOnlyPinnedRunnerImageMicroVMs"
+        Effect   = "Allow"
+        Action   = ["lambda:GetMicrovm", "lambda:TerminateMicrovm"]
+        Resource = var.actions_runner_deployment.microvm_image_arn
+      },
+      {
+        Sid      = "WriteOnlyActionsRunnerCleanupLogs"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "${aws_cloudwatch_log_group.actions_runner_cleanup[0].arn}:*"
+      },
+      {
+        Sid    = "CreateLambdaVpcNetworkInterfaces"
+        Effect = "Allow"
+        Action = ["ec2:CreateNetworkInterface"]
+        Resource = concat(
+          ["arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:network-interface/*"],
+          [for id in var.actions_runner_vpc_config.subnet_ids : "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:subnet/${id}"],
+          [for id in var.actions_runner_vpc_config.security_group_ids : "arn:${data.aws_partition.current.partition}:ec2:${data.aws_caller_identity.current.account_id}:security-group/${id}"]
+        )
+      },
+      {
+        Sid      = "ManageLambdaVpcNetworkInterfaces"
+        Effect   = "Allow"
+        Action   = ["ec2:AssignPrivateIpAddresses", "ec2:DeleteNetworkInterface", "ec2:UnassignPrivateIpAddresses"]
+        Resource = ["arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:network-interface/*"]
+      },
+      {
+        Sid      = "DescribeLambdaVpcNetworkInterfaces"
+        Effect   = "Allow"
+        Action   = ["ec2:DescribeNetworkInterfaces"]
+        Resource = "*"
+      }
+      ], length(var.actions_runner_cleanup_deployment.secret_kms_key_arns) == 0 ? [] : [{
+        Sid      = "DecryptOnlyConfiguredRunnerBrokerSecretKeys"
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt"]
+        Resource = var.actions_runner_cleanup_deployment.secret_kms_key_arns
+    }])
+  })
+}
+
+resource "aws_lambda_function" "actions_runner_cleanup" {
+  count = var.actions_runner_cleanup_deployment == null ? 0 : 1
+
+  function_name                  = "${var.resource_plane_id}-actions-runner-cleanup"
+  role                           = aws_iam_role.actions_runner_cleanup[0].arn
+  runtime                        = "provided.al2023"
+  handler                        = "bootstrap"
+  architectures                  = ["arm64"]
+  filename                       = var.actions_runner_deployment.zip_path
+  source_code_hash               = filebase64sha256(var.actions_runner_deployment.zip_path)
+  timeout                        = var.actions_runner_cleanup_deployment.lambda_timeout_seconds
+  memory_size                    = var.actions_runner_cleanup_deployment.lambda_memory_size
+  reserved_concurrent_executions = 1
+
+  environment {
+    variables = {
+      HAKO_ACTIONS_RUNNER_MODE                          = "cleanup"
+      HAKO_RESOURCE_PLANE_ID                            = var.resource_plane_id
+      HAKO_ACTIONS_RUNNER_BROKER_URL                    = var.actions_runner_deployment.broker_url
+      HAKO_ACTIONS_RUNNER_BROKER_CLIENT_CERT_SECRET_ARN = var.actions_runner_deployment.broker_client_cert_secret_arn
+      HAKO_ACTIONS_RUNNER_BROKER_CLIENT_KEY_SECRET_ARN  = var.actions_runner_deployment.broker_client_key_secret_arn
+      HAKO_ACTIONS_RUNNER_BROKER_CA_SECRET_ARN          = var.actions_runner_deployment.broker_ca_secret_arn
+      HAKO_ACTIONS_RUNNER_CLEANUP_BATCH_SIZE            = tostring(var.actions_runner_cleanup_deployment.batch_size)
+      HAKO_ACTIONS_RUNNER_CLEANUP_LEASE                 = "${var.actions_runner_cleanup_deployment.lease_duration_seconds}s"
+      HAKO_ACTIONS_RUNNER_CLEANUP_OPERATION_TIMEOUT     = "${var.actions_runner_cleanup_deployment.operation_timeout_seconds}s"
+      HAKO_ACTIONS_RUNNER_CLEANUP_POLL_INTERVAL         = "${var.actions_runner_cleanup_deployment.poll_interval_milliseconds}ms"
+      HAKO_ACTIONS_RUNNER_CLEANUP_POLL_TIMEOUT          = "${var.actions_runner_cleanup_deployment.poll_timeout_seconds}s"
+    }
+  }
+
+  vpc_config {
+    subnet_ids         = var.actions_runner_vpc_config.subnet_ids
+    security_group_ids = var.actions_runner_vpc_config.security_group_ids
+  }
+
+  depends_on = [aws_iam_role_policy.actions_runner_cleanup]
+  tags       = merge(local.common_tags, { "hako:component" = "actions-runner-cleanup" })
+}
+
+resource "aws_cloudwatch_event_rule" "actions_runner_cleanup" {
+  count = var.actions_runner_cleanup_deployment == null ? 0 : 1
+
+  name                = "${var.resource_plane_id}-actions-runner-cleanup"
+  description         = "Poll the mTLS Broker for durable Actions Runner cleanup leases."
+  schedule_expression = var.actions_runner_cleanup_deployment.schedule_expression
+  state               = "ENABLED"
+  tags                = merge(local.common_tags, { "hako:component" = "actions-runner-cleanup" })
+}
+
+resource "aws_cloudwatch_event_target" "actions_runner_cleanup" {
+  count = var.actions_runner_cleanup_deployment == null ? 0 : 1
+
+  rule      = aws_cloudwatch_event_rule.actions_runner_cleanup[0].name
+  target_id = "actions-runner-cleanup-lambda"
+  arn       = aws_lambda_function.actions_runner_cleanup[0].arn
+  retry_policy {
+    maximum_event_age_in_seconds = 3600
+    maximum_retry_attempts       = 2
+  }
+}
+
+resource "aws_lambda_permission" "actions_runner_cleanup_events" {
+  count = var.actions_runner_cleanup_deployment == null ? 0 : 1
+
+  statement_id   = "AllowActionsRunnerCleanupSchedule"
+  action         = "lambda:InvokeFunction"
+  function_name  = aws_lambda_function.actions_runner_cleanup[0].function_name
+  principal      = "events.amazonaws.com"
+  source_arn     = aws_cloudwatch_event_rule.actions_runner_cleanup[0].arn
+  source_account = data.aws_caller_identity.current.account_id
+}
+
+resource "aws_cloudwatch_metric_alarm" "actions_runner_cleanup_errors" {
+  count = var.actions_runner_cleanup_deployment == null ? 0 : 1
+
+  alarm_name          = "${var.resource_plane_id}-actions-runner-cleanup-errors"
+  alarm_description   = "Scheduled Actions Runner cleanup Lambda invocation errors."
+  namespace           = "AWS/Lambda"
+  metric_name         = "Errors"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  datapoints_to_alarm = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  dimensions = {
+    FunctionName = aws_lambda_function.actions_runner_cleanup[0].function_name
+  }
+  alarm_actions = var.alarm_actions
+  ok_actions    = var.alarm_actions
+  tags          = merge(local.common_tags, { "hako:component" = "actions-runner-cleanup" })
+}
+
 resource "aws_cloudwatch_metric_alarm" "actions_runner_startup_dlq_visible" {
   count = var.actions_runner_deployment == null ? 0 : 1
 

@@ -82,8 +82,9 @@ run "workload_controller_is_disabled_by_default" {
 
   assert {
     condition = (length(aws_sqs_queue.actions_runner_startup) == 0 && length(aws_lambda_function.actions_runner_worker) == 0 &&
-    length(aws_lambda_event_source_mapping.actions_runner_worker) == 0)
-    error_message = "Actions Runner queues, worker, and event source mapping must remain disabled by default."
+      length(aws_lambda_event_source_mapping.actions_runner_worker) == 0 && length(aws_lambda_function.actions_runner_cleanup) == 0 &&
+    length(aws_cloudwatch_event_rule.actions_runner_cleanup) == 0)
+    error_message = "Actions Runner queues, startup worker, cleanup worker, and schedules must remain disabled by default."
   }
 }
 
@@ -119,6 +120,7 @@ run "actions_runner_worker_consumes_only_its_opt_in_queue" {
       lambda_memory_size             = 2048
       reserved_concurrent_executions = 3
     }
+    actions_runner_cleanup_deployment = {}
   }
 
   assert {
@@ -147,6 +149,27 @@ run "actions_runner_worker_consumes_only_its_opt_in_queue" {
       statement.Sid == "ReadOnlyExactActionsRunnerSecrets" && length(statement.Resource) == 4 && !contains(statement.Resource, "*")
     ])
     error_message = "Runner worker queue and Secret permissions must be explicitly scoped."
+  }
+
+  assert {
+    condition = (aws_lambda_function.actions_runner_cleanup[0].timeout == 900 &&
+      aws_lambda_function.actions_runner_cleanup[0].reserved_concurrent_executions == 1 &&
+      aws_cloudwatch_event_rule.actions_runner_cleanup[0].schedule_expression == "rate(5 minutes)" &&
+      aws_cloudwatch_event_target.actions_runner_cleanup[0].arn == aws_lambda_function.actions_runner_cleanup[0].arn &&
+    aws_lambda_permission.actions_runner_cleanup_events[0].source_arn == aws_cloudwatch_event_rule.actions_runner_cleanup[0].arn)
+    error_message = "Scheduled cleanup must target its single-concurrency, bounded Lambda under an exact EventBridge invoke grant."
+  }
+
+  assert {
+    condition = anytrue([for statement in jsondecode(aws_iam_role_policy.actions_runner_cleanup[0].policy).Statement :
+      statement.Sid == "ReadOnlyExactActionsRunnerBrokerSecrets" && length(statement.Resource) == 3 &&
+      !contains(statement.Resource, "*")
+      ]) && anytrue([for statement in jsondecode(aws_iam_role_policy.actions_runner_cleanup[0].policy).Statement :
+      statement.Sid == "TerminateOnlyPinnedRunnerImageMicroVMs" &&
+      statement.Resource == "arn:aws:lambda:ap-northeast-1:123456789012:microvm-image:hako-actions-runner" &&
+      contains(statement.Action, "lambda:GetMicrovm") && contains(statement.Action, "lambda:TerminateMicrovm")
+    ])
+    error_message = "Cleanup IAM must read only the three broker Secrets and terminate MicroVMs only for the pinned runner image."
   }
 }
 
