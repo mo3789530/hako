@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/githubapp"
 	"github.com/mo3789530/hako/internal/githubbroker"
 	hakowebhook "github.com/mo3789530/hako/internal/githubwebhook"
 	"github.com/mo3789530/hako/internal/store/dsql"
@@ -23,9 +25,10 @@ import (
 	"github.com/mo3789530/hako/internal/testutil"
 )
 
-// This composes the authenticated-inbox boundary, terminal status transaction,
-// Broker HTTP queue and cleanup worker. Provider operations are stateful fakes;
-// it does not exercise GitHub signature verification or AWS networking.
+// This composes authorized queued admission, the startup worker, observed runner
+// status, terminal Check state, Broker HTTP cleanup leases and cleanup recovery.
+// External providers are fakes; HTTP signature ingress and outgoing Checks API
+// delivery are verified by separate integrations.
 func TestActionsRunnerTerminalWebhookCleanupRecovery(t *testing.T) {
 	for _, conclusion := range []string{"success", "failure", "cancelled", "timed_out"} {
 		t.Run(conclusion, func(t *testing.T) {
@@ -41,21 +44,76 @@ func TestActionsRunnerTerminalWebhookCleanupRecovery(t *testing.T) {
 				`INSERT INTO tenant_github_installations(tenant_id,installation_id,account_login,status,requested_by,requested_at,updated_at) VALUES ('tenant_cleanup',8801,'acme','active','usr_cleanup',now(),now())`,
 				`INSERT INTO github_app_installation_bindings(installation_id,tenant_id,bound_at) VALUES (8801,'tenant_cleanup',now())`,
 				`INSERT INTO tenant_github_repositories(tenant_id,installation_id,github_repository_id,owner_login,repository_name,default_branch,synchronized_at,actions_runner_enabled,actions_runner_enabled_at) VALUES ('tenant_cleanup',8801,8802,'acme','api','main',now(),true,now()-interval '1 minute')`,
-				`INSERT INTO github_actions_runner_jobs(integration_id,delivery_id,tenant_id,installation_id,repository_id,workflow_job_id,workflow_run_id,run_attempt,workflow_name,job_name,head_branch,head_sha,labels,state,runner_id,runner_name,resource_plane_id,lambda_microvm_id,created_at,updated_at) VALUES ('shared','queued-cleanup','tenant_cleanup',8801,8802,9901,9902,1,'CI','test','main','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','["self-hosted","hako"]','running',9810,'hako-9901-1','rp-tokyo-01','microvm-cleanup',now(),now())`,
-				`INSERT INTO github_actions_runner_checks(integration_id,workflow_job_id,run_attempt,tenant_id,installation_id,repository_id,workflow_run_id,commit_sha,check_name,external_id,status,started_at,output_title,output_summary,revision,updated_at) VALUES ('shared',9901,1,'tenant_cleanup',8801,8802,9902,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','Hako Actions Runner','hako-actions-runner/shared/9901/1','in_progress',now(),'Hako Actions Runner','Running',2,now())`,
 			} {
 				if _, err := pool.Exec(ctx, query); err != nil {
 					t.Fatal(err)
 				}
 			}
-			now := time.Now().UTC().Truncate(time.Microsecond)
-			payload := []byte(fmt.Sprintf(`{"action":"completed","installation":{"id":8801},"repository":{"id":8802,"name":"api","owner":{"login":"acme"}},"workflow_job":{"id":9901,"run_id":9902,"run_attempt":1,"workflow_name":"CI","name":"test","head_branch":"main","head_sha":%q,"status":"completed","conclusion":%q,"labels":["self-hosted","hako"],"runner_id":9810,"runner_name":"hako-9901-1"}}`, strings.Repeat("a", 40), conclusion))
+			now := time.Now().UTC().Add(-10 * time.Second).Truncate(time.Microsecond)
 			inbox := githubwebhook.Inbox{Pool: pool, Policy: transaction.DefaultPolicy()}
-			for _, deliveryID := range []string{"143b2c3d-4e5f-4789-8abc-def012345678", "243b2c3d-4e5f-4789-8abc-def012345678"} {
-				if inserted, err := inbox.Record(ctx, hakowebhook.VerifiedDelivery{DeliveryID: deliveryID, Event: "workflow_job", Action: "completed", Payload: payload}, now); err != nil || !inserted {
+			queuedPayload := []byte(fmt.Sprintf(`{"action":"queued","installation":{"id":8801},"repository":{"id":8802,"name":"api","owner":{"login":"acme"}},"workflow_job":{"id":9901,"run_id":9902,"run_attempt":1,"workflow_name":"CI","name":"test","head_branch":"main","head_sha":%q,"status":"queued","labels":["self-hosted","hako"]}}`, strings.Repeat("a", 40)))
+			if inserted, err := inbox.Record(ctx, hakowebhook.VerifiedDelivery{DeliveryID: "043b2c3d-4e5f-4789-8abc-def012345679", Event: "workflow_job", Action: "queued", Payload: queuedPayload}, now); err != nil || !inserted {
+				t.Fatalf("record authorized queued workflow job: inserted=%v err=%v", inserted, err)
+			}
+			admission, err := githubwebhook.ProcessBatchWithActionsRunnerAdmissions(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(time.Second), nil)
+			if err != nil || admission.ActionsRunnerJobsAdmitted != 1 {
+				t.Fatalf("admit authorized workflow job: stats=%+v err=%v", admission, err)
+			}
+			claimTx, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			claimed, found, err := githubwebhook.ClaimNextActionsRunnerJob(ctx, claimTx, "runner-cleanup-claim", now.Add(2*time.Second), 5*time.Minute)
+			if err != nil || !found || claimed.State != "claimed" || claimed.TenantID != "tenant_cleanup" || claimed.JobID != 9901 {
+				_ = claimTx.Rollback(ctx)
+				t.Fatalf("claim authorized workflow job: job=%+v found=%v err=%v", claimed, found, err)
+			}
+			if err := claimTx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			// Model the Resource Plane launch broker's atomic claimed→starting
+			// transition, then run the real startup worker over injected providers.
+			launchAt := time.Now().UTC()
+			if _, err := pool.Exec(ctx, `UPDATE github_actions_runner_jobs SET state='starting',resource_plane_id='rp-tokyo-01',updated_at=$1
+				WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1 AND state='claimed' AND claim_id=$2`, launchAt, claimed.ClaimID); err != nil {
+				t.Fatal(err)
+			}
+			request := githubbroker.ActionsRunnerRegistrationRequest{IntegrationID: claimed.IntegrationID, WorkflowJobID: claimed.JobID, RunAttempt: claimed.RunAttempt, ClaimID: claimed.ClaimID}
+			command := githubbroker.ActionsRunnerLaunchCommand{ResourcePlaneID: "rp-tokyo-01", IntegrationID: claimed.IntegrationID, TenantID: domain.TenantID(claimed.TenantID),
+				Installation: claimed.Installation, Repository: claimed.Repository, WorkflowJobID: claimed.JobID, WorkflowRunID: claimed.WorkflowRunID,
+				RunAttempt: claimed.RunAttempt, WorkflowName: claimed.WorkflowName, JobName: claimed.JobName, HeadBranch: claimed.HeadBranch, HeadSHA: claimed.HeadSHA,
+				Labels: append([]string(nil), claimed.Labels...), ClaimID: claimed.ClaimID, LeaseExpires: claimed.LeaseExpires, Owner: "acme", Name: "api", State: "starting"}
+			instance := LambdaRunnerInstance{ResourcePlaneID: "rp-tokyo-01", MicroVMID: "microvm-cleanup", Endpoint: "https://microvm-cleanup.lambda-microvm.ap-northeast-1.on.aws"}
+			runnerToken, err := githubapp.NewRunnerRegistrationToken("synthetic-github-runner-token", time.Now().Add(time.Hour))
+			if err != nil {
+				t.Fatal(err)
+			}
+			events := []string{}
+			startup, err := NewRunnerStartupWorker(RunnerStartupWorkerConfig{OperationTimeout: time.Minute}, startBrokerStub{command: command, events: &events},
+				runnerLauncherStub{instance: instance, events: &events}, postgresRunnerBinder{pool: pool},
+				runnerTokenIssuerStub{grant: githubbroker.ActionsRunnerRegistrationGrant{Token: runnerToken, Repository: githubapp.RepositoryAccess{Owner: "acme", Name: "api"}}, events: &events},
+				&guestBootstrapStub{events: &events}, startupFailureStub{events: &events}, "rp-tokyo-01")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := startup.Start(ctx, request); err != nil || !strings.Contains(strings.Join(events, ","), "bootstrap") {
+				t.Fatalf("start authorized workflow runner: events=%v err=%v", events, err)
+			}
+			inProgressPayload := []byte(fmt.Sprintf(`{"action":"in_progress","installation":{"id":8801},"repository":{"id":8802,"name":"api","owner":{"login":"acme"}},"workflow_job":{"id":9901,"run_id":9902,"run_attempt":1,"workflow_name":"CI","name":"test","head_branch":"main","head_sha":%q,"status":"in_progress","labels":["self-hosted","hako"],"runner_id":9810,"runner_name":"hako-9901-1"}}`, strings.Repeat("a", 40)))
+			if inserted, err := inbox.Record(ctx, hakowebhook.VerifiedDelivery{DeliveryID: "143b2c3d-4e5f-4789-8abc-def012345678", Event: "workflow_job", Action: "in_progress", Payload: inProgressPayload}, now.Add(3*time.Second)); err != nil || !inserted {
+				t.Fatalf("record GitHub runner assignment: inserted=%v err=%v", inserted, err)
+			}
+			statusStats, err := githubwebhook.ProcessBatchWithActionsRunnerAdmissions(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(4*time.Second), nil)
+			if err != nil || statusStats.Processed != 1 {
+				t.Fatalf("apply GitHub runner assignment: stats=%+v err=%v", statusStats, err)
+			}
+			payload := []byte(fmt.Sprintf(`{"action":"completed","installation":{"id":8801},"repository":{"id":8802,"name":"api","owner":{"login":"acme"}},"workflow_job":{"id":9901,"run_id":9902,"run_attempt":1,"workflow_name":"CI","name":"test","head_branch":"main","head_sha":%q,"status":"completed","conclusion":%q,"labels":["self-hosted","hako"],"runner_id":9810,"runner_name":"hako-9901-1"}}`, strings.Repeat("a", 40), conclusion))
+			for attempt, deliveryID := range []string{"243b2c3d-4e5f-4789-8abc-def012345679", "343b2c3d-4e5f-4789-8abc-def012345679"} {
+				terminalAt := now.Add(time.Duration(5+attempt*2) * time.Second)
+				if inserted, err := inbox.Record(ctx, hakowebhook.VerifiedDelivery{DeliveryID: deliveryID, Event: "workflow_job", Action: "completed", Payload: payload}, terminalAt); err != nil || !inserted {
 					t.Fatalf("record terminal webhook: inserted=%v err=%v", inserted, err)
 				}
-				stats, err := githubwebhook.ProcessBatchWithActionsRunnerAdmissions(ctx, pool, transaction.DefaultPolicy(), 10, now, nil)
+				stats, err := githubwebhook.ProcessBatchWithActionsRunnerAdmissions(ctx, pool, transaction.DefaultPolicy(), 10, terminalAt.Add(time.Second), nil)
 				if err != nil || stats.Processed != 1 {
 					t.Fatalf("apply terminal webhook: stats=%+v err=%v", stats, err)
 				}
@@ -150,6 +208,27 @@ func TestActionsRunnerTerminalWebhookCleanupRecovery(t *testing.T) {
 			}
 		})
 	}
+}
+
+type postgresRunnerBinder struct {
+	pool transaction.Beginner
+}
+
+func (b postgresRunnerBinder) Bind(ctx context.Context, job githubwebhook.ActionsRunnerJob, microVMID string) error {
+	tx, err := b.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	bound, err := githubwebhook.BindActionsRunnerMicroVM(ctx, tx, job.IntegrationID, job.JobID, job.RunAttempt,
+		job.ClaimID, "rp-tokyo-01", microVMID, time.Now().UTC())
+	if err != nil || !bound {
+		_ = tx.Rollback(ctx)
+		if err != nil {
+			return err
+		}
+		return ErrMicroVMIdentityMismatch
+	}
+	return tx.Commit(ctx)
 }
 
 type runnerCleanupHTTPTransport func(*http.Request) (*http.Response, error)
