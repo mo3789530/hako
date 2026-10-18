@@ -1,6 +1,6 @@
 # Task 76: Claude Action ephemeral execution and result lifecycle
 
-Status: In Progress (guest `/run` runtime and signed identity-bound bootstrap start a one-shot official Actions runner through a fake-tested process consumer; a composed local guest→signed bootstrap→runner process E2E verifies job identity, model-key scope, failure result, replay rejection, and local cleanup. Configure/start/run failures emit bounded identity+phase+exit metadata. Durable per-attempt GitHub Actions Runner Check state uses transactional admission/status outbox events, the shared Checks dispatcher/consumer, a Control Plane-only mTLS broker token endpoint, and startup-failure terminalization; PostgreSQL outbox→dispatcher→fake-GitHub Check delivery and Check ID persistence are tested. The full Go suite, focused broker/dispatcher/consumer tests, Runner admission/claim/cleanup PostgreSQL tests, and the new Check delivery PostgreSQL E2E pass locally. Terminal webhook cleanup has a bounded scheduled Lambda handler composed into the ARM64 runner binary's `cleanup` mode, using only Broker mTLS queue/deregistration APIs and the Lambda MicroVM SDK terminator. A separately opted-in Terraform schedule/function role scopes the Secret reads, VPC permissions and MicroVM lifecycle actions; AWS-mock plan coverage verifies default-off and least-privilege wiring. The Task 77 lifecycle suite passes. Pinned image artifact, broker→worker→guest/PostgreSQL full E2E and real AWS/GitHub verification remain. No AWS apply or real Secret retrieval was performed). Priority: P2. Parent: Task 73. Depends on: Tasks 40, 41, 52, 74, 75.
+Status: In Progress (guest `/run` runtime and signed identity-bound bootstrap start a one-shot official Actions runner through a fake-tested process consumer. A composed PostgreSQL E2E now covers signed webhook admission→startup worker→model-credential HTTP client/Broker handler→signed Lambda MicroVM guest bootstrap→actual runner process consumer→terminal Check delivery→durable cleanup for success, failure, cancellation, and timeout. The model-credential broker route and DB resolver are real; its test transport supplies a synthetic verified Resource Plane certificate, while Lambda MicroVM launch, runner registration-token issuance, and GitHub providers remain fakes. Configure/start/run failures emit bounded identity+phase+exit metadata. Durable per-attempt GitHub Actions Runner Check state uses transactional admission/status outbox events, the shared Checks dispatcher/consumer, a Control Plane-only mTLS broker token endpoint, and startup-failure terminalization. Terminal webhook cleanup has a bounded scheduled Lambda handler composed into the ARM64 runner binary's `cleanup` mode, using Broker mTLS queue/deregistration APIs and the Lambda MicroVM SDK terminator. A separately opted-in Terraform schedule/function role scopes Secret reads, VPC permissions, and MicroVM lifecycle actions; AWS-mock plan coverage verifies default-off and least-privilege wiring. Pinned image artifact and real AWS/GitHub TLS, IAM, network, and deployment verification remain. No AWS apply or real Secret retrieval was performed). Priority: P2. Parent: Task 73. Depends on: Tasks 40, 41, 52, 74, 75.
 
 ## Goal
 
@@ -22,6 +22,14 @@ Run one authorized Claude Code Action workflow job on one isolated Lambda MicroV
 - Tests prove no runner or credential is reused across jobs/Tenants; Lambda MicroVM remains the execution substrate and EC2 is not introduced.
 
 ## Local cleanup progress (2026-10-18)
+
+- The focused lifecycle E2E now uses the production HTTP model-credential client
+  and Broker route backed by the PostgreSQL resolver, then the production
+  signed bootstrapper, guest `/run` handler, and runner process consumer. A
+  synthetic verified SPIFFE certificate exercises Broker authorization at the
+  HTTP boundary; it does not claim a real TLS handshake or AWS MicroVM run.
+  Success, failure, cancellation, and timeout each assert the exact workflow
+  identity and process result before the existing Check/cleanup path.
 
 - Terminal success/failure/cancel/timeout webhook events are composed with the
   real PostgreSQL cleanup queue and worker plus stateful fake MicroVM/runner

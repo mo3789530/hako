@@ -4,7 +4,9 @@ package actionsrunner
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -15,10 +17,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/service/lambdamicrovms"
 	"github.com/mo3789530/hako/internal/dispatcher"
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/githubapp"
@@ -170,7 +175,8 @@ func TestActionsRunnerTerminalWebhookCleanupRecovery(t *testing.T) {
 				Installation: claimed.Installation, Repository: claimed.Repository, WorkflowJobID: claimed.JobID, WorkflowRunID: claimed.WorkflowRunID,
 				RunAttempt: claimed.RunAttempt, WorkflowName: claimed.WorkflowName, JobName: claimed.JobName, HeadBranch: claimed.HeadBranch, HeadSHA: claimed.HeadSHA,
 				Labels: append([]string(nil), claimed.Labels...), ClaimID: claimed.ClaimID, LeaseExpires: claimed.LeaseExpires, Owner: "acme", Name: "api", State: "starting"}
-			instance := LambdaRunnerInstance{ResourcePlaneID: "rp-tokyo-01", MicroVMID: "microvm-cleanup", Endpoint: "https://microvm-cleanup.lambda-microvm.ap-northeast-1.on.aws"}
+			instance := LambdaRunnerInstance{ResourcePlaneID: "rp-tokyo-01", MicroVMID: "microvm-cleanup", Endpoint: "https://microvm-cleanup.lambda-microvm.ap-northeast-1.on.aws",
+				ImageIdentifier: "arn:aws:lambda:ap-northeast-1:123456789012:microvm-image:hako-actions-runner"}
 			runnerToken, err := githubapp.NewRunnerRegistrationToken("synthetic-github-runner-token", time.Now().Add(time.Hour))
 			if err != nil {
 				t.Fatal(err)
@@ -181,7 +187,20 @@ func TestActionsRunnerTerminalWebhookCleanupRecovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			modelCredentialIssuer := postgresRunnerModelCredentialIssuer{resolver: modelResolver}
+			modelCredentialService, err := githubbroker.NewPostgresActionsRunnerModelCredentialService([]string{"rp-tokyo-01"}, pool,
+				transaction.DefaultPolicy(), modelReader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			modelBroker := githubbroker.HandlerWithActionsRunnerExecutionLifecycle(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+				nil, []string{"spiffe://hako/resource-plane/rp-tokyo-01"}, nil, nil, modelCredentialService)
+			modelBrokerClient, err := githubbroker.NewHTTPActionsRunnerModelCredentialClient("https://broker.invalid", &http.Client{
+				Transport: cleanupModelCredentialBrokerTransport{handler: modelBroker},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			modelCredentialIssuer := brokerRunnerModelCredentialIssuer{client: modelBrokerClient}
 			foreignIdentity := modelcredentials.RunnerClaimIdentity{IntegrationID: "integration_foreign", WorkflowJobID: 9901, RunAttempt: 1,
 				ClaimID: claimed.ClaimID, ResourcePlaneID: "rp-tokyo-01", LambdaMicroVMID: instance.MicroVMID}
 			if err := modelResolver.WithCredential(ctx, foreignIdentity, func(context.Context, []byte) error {
@@ -190,21 +209,89 @@ func TestActionsRunnerTerminalWebhookCleanupRecovery(t *testing.T) {
 			}); err == nil || modelReader.reads != 0 {
 				t.Fatalf("foreign Tenant attempted model Secret retrieval: reads=%d err=%v", modelReader.reads, err)
 			}
-			bootstrap := &guestBootstrapStub{events: &events}
-			startup, err := NewRunnerStartupWorker(RunnerStartupWorkerConfig{OperationTimeout: time.Minute}, startBrokerStub{command: command, events: &events},
-				runnerLauncherStub{instance: instance, events: &events}, postgresRunnerBinder{pool: pool},
-				cleanupRunnerTokenIssuer{runnerTokenIssuerStub: runnerTokenIssuerStub{grant: githubbroker.ActionsRunnerRegistrationGrant{Token: runnerToken, Repository: githubapp.RepositoryAccess{Owner: "acme", Name: "api"}}, events: &events}, model: modelCredentialIssuer},
-				bootstrap, startupFailureStub{events: &events}, "rp-tokyo-01")
+			guestRoot := t.TempDir()
+			writeRunnerScript(t, filepath.Join(guestRoot, "config.sh"), "#!/bin/sh\nprintf '%s' \"$*\" > config.args\ntouch .credentials\n")
+			runnerExit := 0
+			runnerScript := "#!/bin/sh\ntest \"$ANTHROPIC_API_KEY\" = 'sk-ant-cleanup-synthetic' || exit 77\ntouch model-key-present\nmkdir -p _work/repository _temp _diag\n"
+			switch conclusion {
+			case "failure":
+				runnerExit = 1
+			case "cancelled", "timed_out":
+				runnerScript += "sleep 30\n"
+			}
+			runnerScript += fmt.Sprintf("exit %d\n", runnerExit)
+			writeRunnerScript(t, filepath.Join(guestRoot, "run.sh"), runnerScript)
+			processResults := make(chan RunnerProcessResult, 1)
+			processConsumer, err := NewRunnerProcessConsumer(RunnerProcessConfig{RootDirectory: guestRoot, SetupTimeout: time.Second, MaximumRun: time.Minute,
+				OnExit: func(result RunnerProcessResult) { processResults <- result }})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := startup.Start(ctx, request); err != nil || !strings.Contains(strings.Join(events, ","), "bootstrap") {
+			if conclusion == "timed_out" {
+				// Exercise the real timeout path without a one-minute integration test.
+				processConsumer.config.MaximumRun = 150 * time.Millisecond
+			}
+			publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			guest, err := NewRunnerGuestRuntime(publicKey, processConsumer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			launchPayload := RunnerLaunchPayload{SchemaVersion: 1, WorkflowJobID: command.WorkflowJobID, WorkflowRunID: command.WorkflowRunID,
+				RunAttempt: command.RunAttempt, RepositoryURL: "https://github.com/acme/api", RunnerName: "hako-9901-1", Labels: append([]string(nil), command.Labels...)}
+			if response := sendRunnerRunHook(guest, instance.MicroVMID, launchPayload); response.Code != http.StatusOK {
+				t.Fatalf("bind actual guest /run lifecycle: status=%d body=%s", response.Code, response.Body.String())
+			}
+			proxyAuth := &cleanupRunnerBootstrapAuth{}
+			bootstrapTransport := cleanupGuestBootstrapTransport{guest: guest}
+			bootstrapper, err := NewRunnerBootstrapper(proxyAuth, &http.Client{Transport: &bootstrapTransport}, privateKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			startup, err := NewRunnerStartupWorker(RunnerStartupWorkerConfig{OperationTimeout: time.Minute}, startBrokerStub{command: command, events: &events},
+				runnerLauncherStub{instance: instance, events: &events}, postgresRunnerBinder{pool: pool},
+				cleanupRunnerTokenIssuer{runnerTokenIssuerStub: runnerTokenIssuerStub{grant: githubbroker.ActionsRunnerRegistrationGrant{Token: runnerToken, Repository: githubapp.RepositoryAccess{Owner: "acme", Name: "api"}}, events: &events}, model: modelCredentialIssuer},
+				bootstrapper, startupFailureStub{events: &events}, "rp-tokyo-01")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := startup.Start(ctx, request); err != nil {
 				t.Fatalf("start authorized workflow runner: events=%v err=%v", events, err)
 			}
-			if got := string(bootstrap.request.ModelCredential); got != "sk-ant-cleanup-synthetic" || modelReader.reads != 1 || len(modelReader.tenantIDs) != 1 || modelReader.tenantIDs[0] != "tenant_cleanup" {
-				t.Fatalf("Tenant model credential was not isolated and handed to guest bootstrap: credential=%q tenant_reads=%v read_count=%d", got, modelReader.tenantIDs, modelReader.reads)
+			if modelReader.reads != 1 || len(modelReader.tenantIDs) != 1 || modelReader.tenantIDs[0] != "tenant_cleanup" || proxyAuth.calls != 1 || !bootstrapTransport.called {
+				t.Fatalf("Tenant model credential/bootstrap boundary mismatch: tenant_reads=%v read_count=%d auth_calls=%d guest_called=%v", modelReader.tenantIDs, modelReader.reads, proxyAuth.calls, bootstrapTransport.called)
 			}
-			clear(bootstrap.request.ModelCredential)
+			waitForRunnerMarker(t, filepath.Join(guestRoot, "model-key-present"))
+			if conclusion == "cancelled" {
+				processConsumer.Stop()
+			}
+			processResult := awaitRunnerProcessResult(t, processResults)
+			if arguments, err := os.ReadFile(filepath.Join(guestRoot, "config.args")); err != nil || strings.Contains(string(arguments), "sk-ant-cleanup-synthetic") {
+				t.Fatalf("model key leaked to runner registration arguments: args=%q err=%v", arguments, err)
+			}
+			if processResult.IntegrationID != integrationID || processResult.WorkflowJobID != 9901 || processResult.WorkflowRunID != 9902 || processResult.RunAttempt != 1 {
+				t.Fatalf("ephemeral runner result escaped workflow identity: %+v", processResult)
+			}
+			switch conclusion {
+			case "success":
+				if processResult.ExitCode != 0 || processResult.Cancelled || processResult.TimedOut {
+					t.Fatalf("successful ephemeral runner result mismatch: %+v", processResult)
+				}
+			case "failure":
+				if processResult.ExitCode != 1 || processResult.Cancelled || processResult.TimedOut {
+					t.Fatalf("failed ephemeral runner result mismatch: %+v", processResult)
+				}
+			case "cancelled":
+				if !processResult.Cancelled || processResult.TimedOut {
+					t.Fatalf("cancelled workflow did not stop the guest process: %+v", processResult)
+				}
+			case "timed_out":
+				if !processResult.TimedOut || processResult.Cancelled {
+					t.Fatalf("timed-out workflow did not stop the guest process: %+v", processResult)
+				}
+			}
 			inProgressPayload := []byte(fmt.Sprintf(`{"action":"in_progress","installation":{"id":8801,"app_id":9900},"repository":{"id":8802,"name":"api","owner":{"login":"acme"}},"workflow_job":{"id":9901,"run_id":9902,"run_attempt":1,"workflow_name":"CI","name":"test","head_branch":"main","head_sha":%q,"status":"in_progress","labels":["self-hosted","hako"],"runner_id":9810,"runner_name":"hako-9901-1"}}`, strings.Repeat("a", 40)))
 			postWebhook("143b2c3d-4e5f-4789-8abc-def012345678", inProgressPayload)
 			statusStats, err := githubwebhook.ProcessBatchWithActionsRunnerAdmissions(ctx, pool, transaction.DefaultPolicy(), 10, time.Now().UTC(), nil)
@@ -493,6 +580,58 @@ type runnerChecksHTTPTransport func(*http.Request) (*http.Response, error)
 
 func (f runnerChecksHTTPTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+func waitForRunnerMarker(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("ephemeral runner did not write expected marker %q", path)
+}
+
+type cleanupRunnerBootstrapAuth struct {
+	calls int
+	input *lambdamicrovms.CreateMicrovmAuthTokenInput
+}
+
+func (a *cleanupRunnerBootstrapAuth) CreateMicrovmAuthToken(_ context.Context, input *lambdamicrovms.CreateMicrovmAuthTokenInput, _ ...func(*lambdamicrovms.Options)) (*lambdamicrovms.CreateMicrovmAuthTokenOutput, error) {
+	a.calls++
+	a.input = input
+	return &lambdamicrovms.CreateMicrovmAuthTokenOutput{AuthToken: map[string]string{"X-aws-proxy-auth": "synthetic-microvm-proxy-token"}}, nil
+}
+
+type cleanupGuestBootstrapTransport struct {
+	guest  http.Handler
+	called bool
+}
+
+func (t *cleanupGuestBootstrapTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	if t == nil || t.guest == nil || request.Method != http.MethodPost || request.URL.Scheme != "https" || request.URL.Path != runnerBootstrapPath ||
+		request.Header.Get("X-aws-proxy-auth") != "synthetic-microvm-proxy-token" || request.Header.Get("Cache-Control") != "no-store" {
+		return nil, errors.New("invalid fake Lambda MicroVM bootstrap request")
+	}
+	t.called = true
+	recorder := httptest.NewRecorder()
+	t.guest.ServeHTTP(recorder, request)
+	return recorder.Result(), nil
+}
+
+type cleanupModelCredentialBrokerTransport struct{ handler http.Handler }
+
+func (t cleanupModelCredentialBrokerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	if t.handler == nil || request.Method != http.MethodPost || request.URL.Scheme != "https" || request.URL.Path != "/v1/actions-runner/model-credential" {
+		return nil, errors.New("invalid model credential broker request")
+	}
+	certificate := &x509.Certificate{URIs: []*url.URL{{Scheme: "spiffe", Host: "hako", Path: "/resource-plane/rp-tokyo-01"}}}
+	request.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{certificate}, VerifiedChains: [][]*x509.Certificate{{certificate}}}
+	recorder := httptest.NewRecorder()
+	t.handler.ServeHTTP(recorder, request)
+	return recorder.Result(), nil
+}
+
 type cleanupModelSecretReader struct {
 	tenantID  string
 	secret    []byte
@@ -509,28 +648,17 @@ func (r *cleanupModelSecretReader) ReadSecret(_ context.Context, access modelcre
 	return append([]byte(nil), r.secret...), nil
 }
 
-type postgresRunnerModelCredentialIssuer struct {
-	resolver *modelcredentialbroker.Resolver
+type brokerRunnerModelCredentialIssuer struct {
+	client *githubbroker.HTTPActionsRunnerModelCredentialClient
 }
 
-func (i postgresRunnerModelCredentialIssuer) IssueModelCredential(ctx context.Context, request githubbroker.ActionsRunnerRegistrationRequest, microVMID string) ([]byte, error) {
-	identity := modelcredentials.RunnerClaimIdentity{IntegrationID: request.IntegrationID, WorkflowJobID: request.WorkflowJobID,
-		RunAttempt: request.RunAttempt, ClaimID: request.ClaimID, ResourcePlaneID: "rp-tokyo-01", LambdaMicroVMID: microVMID}
-	var credential []byte
-	err := i.resolver.WithCredential(ctx, identity, func(_ context.Context, secret []byte) error {
-		credential = append([]byte(nil), secret...)
-		return nil
-	})
-	if err != nil {
-		clear(credential)
-		return nil, err
-	}
-	return credential, nil
+func (i brokerRunnerModelCredentialIssuer) IssueModelCredential(ctx context.Context, request githubbroker.ActionsRunnerRegistrationRequest, microVMID string) ([]byte, error) {
+	return i.client.IssueModelCredential(ctx, request, microVMID)
 }
 
 type cleanupRunnerTokenIssuer struct {
 	runnerTokenIssuerStub
-	model postgresRunnerModelCredentialIssuer
+	model brokerRunnerModelCredentialIssuer
 }
 
 func (i cleanupRunnerTokenIssuer) IssueModelCredential(ctx context.Context, request githubbroker.ActionsRunnerRegistrationRequest, microVMID string) ([]byte, error) {

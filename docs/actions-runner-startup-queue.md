@@ -135,8 +135,15 @@ The composed cleanup integration seeds an active Tenant-owned GitHub App and
 starts by proving a tampered HMAC is rejected. It then sends signed
 `workflow_job.queued`, `in_progress`, and duplicate `completed` deliveries
 through the production Tenant HTTP handler and DB-backed Installation
-authorizer. After admission and lease, it runs the startup worker with fake
-MicroVM/token/bootstrap providers. All queued/in-progress/terminal Check
+authorizer. After admission and lease, it runs the startup worker with a fake
+MicroVM launcher and runner-token provider. The model-credential path uses the
+production HTTP client, Broker route, and PostgreSQL resolver; an in-memory
+transport supplies a synthetic verified SPIFFE certificate. The production
+signed bootstrapper, guest `/run` handler, and runner process consumer then
+run a fake runner script, covering success, failure, cancellation, and
+timeout. This exercises application-level Broker identity authorization but
+not a cryptographic TLS handshake, real Lambda MicroVM, or live GitHub API.
+All queued/in-progress/terminal Check
 Outbox revisions pass through the production Dispatcher and Checks consumer to
 a fake GitHub Checks API; Check identity/result and durable Check Run ID are
 verified in PostgreSQL. The consumer's credential path uses the production
@@ -151,7 +158,8 @@ authoritative-SHA provenance variants are denied before the model Secret
 reader runs. A foreign Tenant integration paired with Tenant A's job is also
 denied without reading either model Secret. Only after a valid provenance
 policy hash and exact MicroVM binding are persisted does the fake reader return
-a synthetic key, which is passed into the guest bootstrap and then wiped. No
+a synthetic key, which passes through the Broker HTTP response and signed
+guest bootstrap into the runner process environment and is then wiped. No
 real Secret Manager access or provider credential is used. The cleanup worker
 uses the production HTTP queue client and Broker handler backed by PostgreSQL to terminate a stateful fake
 MicroVM and deregister its fake runner. Both external operations fail once,
