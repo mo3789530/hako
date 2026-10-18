@@ -50,6 +50,40 @@ type CleanupWorker struct {
 	now           func() time.Time
 }
 
+// CleanupScheduleHandler drains a bounded number of durable cleanup leases per
+// scheduled Lambda invocation. Deferred provider failures are recorded by the
+// worker and do not fail the entire batch; persistence and lease errors do.
+type CleanupScheduleHandler struct {
+	worker *CleanupWorker
+	limit  int
+}
+
+func NewCleanupScheduleHandler(worker *CleanupWorker, limit int) (*CleanupScheduleHandler, error) {
+	if worker == nil || limit < 1 || limit > 100 {
+		return nil, ErrInvalidCleanupConfig
+	}
+	return &CleanupScheduleHandler{worker: worker, limit: limit}, nil
+}
+
+func (h *CleanupScheduleHandler) Handle(ctx context.Context) error {
+	if h == nil || h.worker == nil || ctx == nil {
+		return ErrInvalidCleanupConfig
+	}
+	for range h.limit {
+		processed, err := h.worker.ProcessOne(ctx)
+		if errors.Is(err, ErrCleanupDeferred) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !processed {
+			return nil
+		}
+	}
+	return nil
+}
+
 func NewCleanupWorker(config CleanupWorkerConfig, queue CleanupQueue, deregistrator RunnerDeregistrator, terminator LambdaMicroVMTerminator, now func() time.Time) (*CleanupWorker, error) {
 	if !validResourcePlaneID(config.ResourcePlaneID) || !validWorkerID(config.WorkerID) ||
 		config.LeaseDuration < 5*time.Second || config.LeaseDuration > 10*time.Minute ||

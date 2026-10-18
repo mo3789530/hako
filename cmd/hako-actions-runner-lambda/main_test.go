@@ -16,6 +16,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/lambdamicrovms"
+	microvmtypes "github.com/aws/aws-sdk-go-v2/service/lambdamicrovms/types"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 )
@@ -39,6 +40,15 @@ type fakeRunnerLambdaAPI struct{}
 
 func (fakeRunnerLambdaAPI) RunMicrovm(context.Context, *lambdamicrovms.RunMicrovmInput, ...func(*lambdamicrovms.Options)) (*lambdamicrovms.RunMicrovmOutput, error) {
 	return nil, nil
+}
+
+type fakeCleanupLambdaAPI struct{}
+
+func (fakeCleanupLambdaAPI) GetMicrovm(context.Context, *lambdamicrovms.GetMicrovmInput, ...func(*lambdamicrovms.Options)) (*lambdamicrovms.GetMicrovmOutput, error) {
+	return &lambdamicrovms.GetMicrovmOutput{MicrovmId: aws.String("unused"), State: microvmtypes.MicrovmStateTerminated}, nil
+}
+func (fakeCleanupLambdaAPI) TerminateMicrovm(context.Context, *lambdamicrovms.TerminateMicrovmInput, ...func(*lambdamicrovms.Options)) (*lambdamicrovms.TerminateMicrovmOutput, error) {
+	return &lambdamicrovms.TerminateMicrovmOutput{}, nil
 }
 func (fakeRunnerLambdaAPI) CreateMicrovmAuthToken(context.Context, *lambdamicrovms.CreateMicrovmAuthTokenInput, ...func(*lambdamicrovms.Options)) (*lambdamicrovms.CreateMicrovmAuthTokenOutput, error) {
 	return nil, nil
@@ -103,6 +113,55 @@ func TestBuildHandlerUsesFakeSecretsAndPlaneBoundMTLS(t *testing.T) {
 	handler, err := buildHandler(context.Background(), config, secrets, fakeRunnerLambdaAPI{})
 	if err != nil || handler == nil || secrets.calls != 4 {
 		t.Fatalf("buildHandler() handler=%v secretReads=%d error=%v", handler != nil, secrets.calls, err)
+	}
+}
+
+func TestConfiguredCleanupDeploymentBoundsWorkerAndRequiresSeparateSecrets(t *testing.T) {
+	values := map[string]string{
+		"HAKO_RESOURCE_PLANE_ID": "rp-tokyo-01", "HAKO_ACTIONS_RUNNER_BROKER_URL": "https://broker.example",
+		"HAKO_ACTIONS_RUNNER_BROKER_CLIENT_CERT_SECRET_ARN": "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:broker-cert",
+		"HAKO_ACTIONS_RUNNER_BROKER_CLIENT_KEY_SECRET_ARN":  "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:broker-key",
+		"HAKO_ACTIONS_RUNNER_BROKER_CA_SECRET_ARN":          "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:broker-ca",
+	}
+	config, err := configuredCleanupDeployment(func(key string) string { return values[key] })
+	if err != nil || config.BatchSize != 20 || config.LeaseDuration != 2*time.Minute || config.OperationTimeout != 90*time.Second {
+		t.Fatalf("configuredCleanupDeployment() = %+v, %v", config, err)
+	}
+	for name, mutate := range map[string]func(map[string]string){
+		"unsafe broker": func(env map[string]string) { env["HAKO_ACTIONS_RUNNER_BROKER_URL"] = "http://broker.example" },
+		"duplicate secret": func(env map[string]string) {
+			env["HAKO_ACTIONS_RUNNER_BROKER_CA_SECRET_ARN"] = env["HAKO_ACTIONS_RUNNER_BROKER_CLIENT_KEY_SECRET_ARN"]
+		},
+		"operation exceeds lease": func(env map[string]string) {
+			env["HAKO_ACTIONS_RUNNER_CLEANUP_OPERATION_TIMEOUT"] = "2m"
+		},
+		"batch out of bounds":    func(env map[string]string) { env["HAKO_ACTIONS_RUNNER_CLEANUP_BATCH_SIZE"] = "101" },
+		"poll exceeds operation": func(env map[string]string) { env["HAKO_ACTIONS_RUNNER_CLEANUP_POLL_TIMEOUT"] = "2m" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			copyEnv := make(map[string]string, len(values))
+			for key, value := range values {
+				copyEnv[key] = value
+			}
+			mutate(copyEnv)
+			if _, err := configuredCleanupDeployment(func(key string) string { return copyEnv[key] }); err == nil {
+				t.Fatal("invalid cleanup deployment configuration accepted")
+			}
+		})
+	}
+}
+
+func TestBuildCleanupHandlerUsesFakeSecretsAndPlaneBoundClients(t *testing.T) {
+	config := cleanupDeploymentConfig{ResourcePlaneID: "rp-tokyo-01", BrokerURL: "https://broker.example",
+		BrokerClientCertARN: "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:broker-cert",
+		BrokerClientKeyARN:  "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:broker-key",
+		BrokerCAARN:         "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:broker-ca",
+		LeaseDuration:       2 * time.Minute, OperationTimeout: 90 * time.Second, PollInterval: 10 * time.Millisecond, PollTimeout: time.Second, BatchSize: 2}
+	certPEM, keyPEM, caPEM := testBrokerCertificate(t, "spiffe://hako/resource-plane/rp-tokyo-01")
+	secrets := &fakeSecretAPI{values: map[string][]byte{config.BrokerClientCertARN: certPEM, config.BrokerClientKeyARN: keyPEM, config.BrokerCAARN: caPEM}}
+	handler, err := buildCleanupHandler(context.Background(), config, secrets, fakeCleanupLambdaAPI{})
+	if err != nil || handler == nil || secrets.calls != 3 {
+		t.Fatalf("buildCleanupHandler() handler=%v secretReads=%d error=%v", handler != nil, secrets.calls, err)
 	}
 }
 

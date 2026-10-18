@@ -59,6 +59,13 @@ func main() {
 }
 
 func run() error {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("HAKO_ACTIONS_RUNNER_MODE")))
+	if mode == "cleanup" {
+		return runCleanup()
+	}
+	if mode != "" && mode != "startup" {
+		return errors.New("HAKO_ACTIONS_RUNNER_MODE must be startup or cleanup")
+	}
 	config, err := configuredDeployment(os.Getenv)
 	if err != nil {
 		return err

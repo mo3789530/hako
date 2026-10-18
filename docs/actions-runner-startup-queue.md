@@ -171,8 +171,17 @@ attempt and pinned Plane/MicroVM/runner IDs, inspect `state`, `attempt_count`,
 `available_at` and `last_error`, and verify provider absence before considering
 an incident resolved. Do not clear a pending row or reuse a runtime to hide a
 cleanup failure. The local PostgreSQL queue adapter is a Control Plane/library
-component. Broker-mediated claim/ack/retry transport is locally implemented;
-scheduled worker composition and deployment remain required before activation.
+component. Broker-mediated claim/ack/retry transport and the scheduled Lambda
+composition are locally implemented in `hako-actions-runner-lambda` cleanup
+mode. It drains at most 100 jobs per invocation (default 20), records
+provider-level failures with durable backoff, and fails the invocation for
+lease or persistence errors. Configuration requires a private Broker HTTPS
+endpoint, three distinct exact mTLS Secret ARNs, a Resource Plane identity,
+and bounded lease/operation/poll settings. The same ARM64 ZIP supports
+`HAKO_ACTIONS_RUNNER_MODE=cleanup`; default/`startup` mode remains the SQS
+startup consumer. The scheduled function role, EventBridge schedule, networking
+and Secret provisioning are not deployed yet; keep admission disabled until
+those are reviewed and enabled deliberately.
 
 ## Private cleanup queue API
 

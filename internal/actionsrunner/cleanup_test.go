@@ -158,6 +158,35 @@ func TestCleanupWorkerValidatesPlaneAndWorkerIdentity(t *testing.T) {
 	}
 }
 
+func TestCleanupScheduleHandlerBoundsBatchAndContinuesDeferredJobs(t *testing.T) {
+	queue := &fakeCleanupQueue{job: cleanupJob("rp-tokyo-01", "microvm-1", 1234), claimed: true}
+	worker := cleanupWorker(t, queue, func(context.Context, string, string) error { return errors.New("provider unavailable") },
+		func(context.Context, githubwebhook.ActionsRunnerCleanupJob) error { return nil }, time.Now)
+	handler, err := NewCleanupScheduleHandler(worker, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := handler.Handle(context.Background()); err != nil {
+		t.Fatalf("Handle() should persist deferred retries and continue: %v", err)
+	}
+	if len(queue.claimIDs) != 3 || queue.retryCode != "microvm_terminate_failed" {
+		t.Fatalf("scheduled batch was not bounded or retried: claims=%d retry=%q", len(queue.claimIDs), queue.retryCode)
+	}
+}
+
+func TestCleanupScheduleHandlerStopsWhenQueueIsEmpty(t *testing.T) {
+	queue := &fakeCleanupQueue{job: cleanupJob("rp-tokyo-01", "microvm-1", 1234)}
+	worker := cleanupWorker(t, queue, func(context.Context, string, string) error { return nil },
+		func(context.Context, githubwebhook.ActionsRunnerCleanupJob) error { return nil }, time.Now)
+	handler, err := NewCleanupScheduleHandler(worker, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := handler.Handle(context.Background()); err != nil || len(queue.claimIDs) != 1 {
+		t.Fatalf("empty schedule Handle() = %v, claims=%d", err, len(queue.claimIDs))
+	}
+}
+
 func cleanupWorker(t *testing.T, queue CleanupQueue, terminate func(context.Context, string, string) error, deregister func(context.Context, githubwebhook.ActionsRunnerCleanupJob) error, now func() time.Time) *CleanupWorker {
 	t.Helper()
 	worker, err := NewCleanupWorker(CleanupWorkerConfig{ResourcePlaneID: "rp-tokyo-01", WorkerID: "cleanup-worker-1", LeaseDuration: time.Minute, OperationTimeout: 30 * time.Second},

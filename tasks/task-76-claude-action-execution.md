@@ -1,6 +1,6 @@
 # Task 76: Claude Action ephemeral execution and result lifecycle
 
-Status: In Progress (guest `/run` runtime and signed identity-bound bootstrap start a one-shot official Actions runner through a fake-tested process consumer; a composed local guest→signed bootstrap→runner process E2E verifies job identity, model-key scope, failure result, replay rejection, and local cleanup. Configure/start/run failures emit bounded identity+phase+exit metadata. Durable per-attempt GitHub Actions Runner Check state uses transactional admission/status outbox events, the shared Checks dispatcher/consumer, a Control Plane-only mTLS broker token endpoint, and startup-failure terminalization; PostgreSQL outbox→dispatcher→fake-GitHub Check delivery and Check ID persistence are tested. The full Go suite, focused broker/dispatcher/consumer tests, Runner admission/claim/cleanup PostgreSQL tests, and the new Check delivery PostgreSQL E2E pass locally. Pinned image artifact, durable terminal MicroVM cleanup integration, and broker→worker→guest/PostgreSQL composed E2E remain. AWS apply, real Secret retrieval, and live GitHub verification were not performed). Priority: P2. Parent: Task 73. Depends on: Tasks 40, 41, 52, 74, 75.
+Status: In Progress (guest `/run` runtime and signed identity-bound bootstrap start a one-shot official Actions runner through a fake-tested process consumer; a composed local guest→signed bootstrap→runner process E2E verifies job identity, model-key scope, failure result, replay rejection, and local cleanup. Configure/start/run failures emit bounded identity+phase+exit metadata. Durable per-attempt GitHub Actions Runner Check state uses transactional admission/status outbox events, the shared Checks dispatcher/consumer, a Control Plane-only mTLS broker token endpoint, and startup-failure terminalization; PostgreSQL outbox→dispatcher→fake-GitHub Check delivery and Check ID persistence are tested. The full Go suite, focused broker/dispatcher/consumer tests, Runner admission/claim/cleanup PostgreSQL tests, and the new Check delivery PostgreSQL E2E pass locally. Terminal webhook cleanup now has a bounded scheduled Lambda handler composed into the ARM64 runner binary's `cleanup` mode, using only Broker mTLS queue/deregistration APIs and the Lambda MicroVM SDK terminator. The Task 77 lifecycle suite passes. Pinned image artifact, separate schedule/function IAM and Terraform wiring, broker→worker→guest/PostgreSQL full E2E remain. AWS apply, real Secret retrieval, and live GitHub verification were not performed). Priority: P2. Parent: Task 73. Depends on: Tasks 40, 41, 52, 74, 75.
 
 ## Goal
 
@@ -39,5 +39,7 @@ Run one authorized Claude Code Action workflow job on one isolated Lambda MicroV
   mutation coordinates are resolved server-side and retries use the Broker's
   clock. Worker→HTTP client→Broker→PostgreSQL recovery is locally tested,
   including foreign/expired/modified leases and same-name worker recovery.
-- Scheduled cleanup executable composition and deployment, image, full
-  authorized-flow E2E and real AWS/GitHub gates remain open.
+- Scheduled cleanup Lambda composition is locally implemented in the existing
+  ARM64 binary's `HAKO_ACTIONS_RUNNER_MODE=cleanup` mode. Separate schedule/
+  function IAM wiring, pinned image, full authorized-flow E2E and real
+  AWS/GitHub gates remain open.
