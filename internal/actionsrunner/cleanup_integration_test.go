@@ -25,9 +25,11 @@ import (
 	"github.com/mo3789530/hako/internal/githubbroker"
 	"github.com/mo3789530/hako/internal/githubchecks"
 	hakowebhook "github.com/mo3789530/hako/internal/githubwebhook"
+	"github.com/mo3789530/hako/internal/modelcredentialbroker"
 	"github.com/mo3789530/hako/internal/store/dsql"
 	"github.com/mo3789530/hako/internal/store/githubregistry"
 	"github.com/mo3789530/hako/internal/store/githubwebhook"
+	"github.com/mo3789530/hako/internal/store/modelcredentials"
 	"github.com/mo3789530/hako/internal/store/outbox"
 	"github.com/mo3789530/hako/internal/store/transaction"
 	"github.com/mo3789530/hako/internal/testutil"
@@ -47,7 +49,16 @@ func TestActionsRunnerTerminalWebhookCleanupRecovery(t *testing.T) {
 			}
 			for _, query := range []string{
 				`INSERT INTO tenants(id,name,created_at) VALUES ('tenant_cleanup','Cleanup',now())`,
+				`INSERT INTO tenants(id,name,created_at) VALUES ('tenant_foreign','Foreign',now())`,
 				`INSERT INTO users(id,cognito_subject,email,created_at) VALUES ('usr_cleanup','cleanup','',now())`,
+				`INSERT INTO users(id,cognito_subject,email,created_at) VALUES ('usr_foreign','foreign','',now())`,
+				`INSERT INTO github_app_registrations(id,github_app_id,mode,owner_tenant_id,slug,client_id,created_at) VALUES ('registration_foreign','9901','tenant_owned','tenant_foreign','foreign','foreign-client',now())`,
+				`INSERT INTO github_credential_bindings(id,tenant_id,github_app_id,status,private_key_secret_ref,oauth_secret_ref,webhook_secret_ref,approved_at,private_key_reader_role_arn,private_key_secret_version_id) VALUES ('binding_foreign','tenant_foreign',9901,'approved','arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:foreign-key','foreign-oauth','foreign-webhook',now(),'arn:aws:iam::123456789012:role/hako/foreign-key-reader','22222222222222222222222222222222')`,
+				`INSERT INTO tenant_github_integrations(id,tenant_id,app_registration_id,github_app_id,credential_binding_id,status,config_revision,credential_generation,idempotency_key,request_sha256,created_by,created_at,updated_at) VALUES ('integration_foreign','tenant_foreign','registration_foreign',9901,'binding_foreign','active',1,1,'foreign-key','` + strings.Repeat("f", 64) + `','usr_foreign',now(),now())`,
+				`INSERT INTO tenant_github_installations(tenant_id,installation_id,github_app_id,account_login,status,requested_by,requested_at,updated_at) VALUES ('tenant_foreign',9902,9901,'foreign','active','usr_foreign',now(),now())`,
+				`INSERT INTO github_app_installation_bindings(installation_id,tenant_id,bound_at) VALUES (9902,'tenant_foreign',now())`,
+				`INSERT INTO tenant_github_app_installation_bindings(tenant_id,integration_id,installation_id,bound_at) VALUES ('tenant_foreign','integration_foreign',9902,now())`,
+				`INSERT INTO tenant_github_repositories(tenant_id,installation_id,github_repository_id,owner_login,repository_name,default_branch,synchronized_at,actions_runner_enabled,actions_runner_enabled_at) VALUES ('tenant_foreign',9902,9903,'foreign','api','main',now(),true,now())`,
 				`INSERT INTO github_app_registrations(id,github_app_id,mode,owner_tenant_id,slug,client_id,created_at) VALUES ('registration_cleanup',9900,'tenant_owned','tenant_cleanup','cleanup','client-cleanup',now())`,
 				`INSERT INTO github_credential_bindings(id,tenant_id,github_app_id,status,private_key_secret_ref,oauth_secret_ref,webhook_secret_ref,approved_at,private_key_reader_role_arn,private_key_secret_version_id) VALUES ('binding_cleanup','tenant_cleanup',9900,'approved','arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:cleanup-key','oauth-cleanup','webhook-cleanup',now(),'arn:aws:iam::123456789012:role/hako/cleanup-key-reader','0123456789abcdef0123456789abcdef')`,
 				`INSERT INTO tenant_github_integrations(id,tenant_id,app_registration_id,github_app_id,credential_binding_id,status,config_revision,credential_generation,idempotency_key,request_sha256,created_by,created_at,updated_at) VALUES ('integration_cleanup','tenant_cleanup','registration_cleanup',9900,'binding_cleanup','active',1,1,'cleanup-key','` + strings.Repeat("c", 64) + `','usr_cleanup',now(),now())`,
@@ -55,12 +66,49 @@ func TestActionsRunnerTerminalWebhookCleanupRecovery(t *testing.T) {
 				`INSERT INTO github_app_installation_bindings(installation_id,tenant_id,bound_at) VALUES (8801,'tenant_cleanup',now())`,
 				`INSERT INTO tenant_github_app_installation_bindings(tenant_id,integration_id,installation_id,bound_at) VALUES ('tenant_cleanup','integration_cleanup',8801,now())`,
 				`INSERT INTO tenant_github_repositories(tenant_id,installation_id,github_repository_id,owner_login,repository_name,default_branch,synchronized_at,actions_runner_enabled,actions_runner_enabled_at) VALUES ('tenant_cleanup',8801,8802,'acme','api','main',now(),true,now()-interval '1 minute')`,
+				`INSERT INTO tenant_model_credential_bindings(id,tenant_id,provider,secret_arn,reader_role_arn,status,created_at,updated_at) VALUES ('model_binding_clean','tenant_cleanup','anthropic','arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:cleanup-model','arn:aws:iam::123456789012:role/hako/cleanup-model-reader','approved',now(),now())`,
+				`INSERT INTO tenant_model_credentials(id,tenant_id,provider,binding_id,secret_version_id,status,credential_generation,created_by,updated_by,created_at,updated_at) VALUES ('mcred_cleanup01','tenant_cleanup','anthropic','model_binding_clean','11111111111111111111111111111111','active',1,'usr_cleanup','usr_cleanup',now(),now())`,
+				`INSERT INTO tenant_model_credential_bindings(id,tenant_id,provider,secret_arn,reader_role_arn,status,created_at,updated_at) VALUES ('model_binding_foreign','tenant_foreign','anthropic','arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:foreign-model','arn:aws:iam::123456789012:role/hako/foreign-model-reader','approved',now(),now())`,
+				`INSERT INTO tenant_model_credentials(id,tenant_id,provider,binding_id,secret_version_id,status,credential_generation,created_by,updated_by,created_at,updated_at) VALUES ('mcred_foreign01','tenant_foreign','anthropic','model_binding_foreign','22222222222222222222222222222222','active',1,'usr_foreign','usr_foreign',now(),now())`,
 			} {
 				if _, err := pool.Exec(ctx, query); err != nil {
 					t.Fatal(err)
 				}
 			}
 			now := time.Now().UTC().Add(-10 * time.Second).Truncate(time.Microsecond)
+			workflowPolicy := RunnerWorkflowPolicy{TenantID: "tenant_cleanup", IntegrationID: "integration_cleanup", InstallationID: 8801, RepositoryID: 8802,
+				Owner: "acme", Repository: "api", WorkflowPath: ".github/workflows/claude.yml", AllowedRefs: []string{"refs/heads/main"},
+				AllowedEvents: []string{"push"}, RequiredLabels: []string{"self-hosted", "hako"}, AllowedLabels: []string{"self-hosted", "hako"}}
+			workflowPolicyJSON := []byte(`{"workflow_path":".github/workflows/claude.yml","allowed_refs":["refs/heads/main"],"allowed_events":["push"],"required_labels":["self-hosted","hako"],"allowed_labels":["self-hosted","hako"]}`)
+			if _, err := pool.Exec(ctx, `UPDATE tenant_github_repositories SET actions_runner_workflow_policy=$1::jsonb WHERE tenant_id='tenant_cleanup' AND installation_id=8801 AND github_repository_id=8802`, workflowPolicyJSON); err != nil {
+				t.Fatal(err)
+			}
+			var canonicalWorkflowPolicy []byte
+			if err := pool.QueryRow(ctx, `SELECT actions_runner_workflow_policy FROM tenant_github_repositories WHERE tenant_id='tenant_cleanup' AND installation_id=8801 AND github_repository_id=8802`).Scan(&canonicalWorkflowPolicy); err != nil {
+				t.Fatal(err)
+			}
+			policyDigest := sha256.Sum256(canonicalWorkflowPolicy)
+			policyHash := hex.EncodeToString(policyDigest[:])
+			queuedProvenance := QueuedWorkflowJob{RunID: 9902, RunAttempt: 1, JobID: 9901, WorkflowRef: "refs/heads/main", HeadSHA: strings.Repeat("a", 40)}
+			authoritativeRun := AuthoritativeWorkflowRun{TenantID: "tenant_cleanup", IntegrationID: "integration_cleanup", InstallationID: 8801, RepositoryID: 8802,
+				Owner: "acme", Repository: "api", WorkflowPath: ".github/workflows/claude.yml", WorkflowRef: "refs/heads/main", HeadSHA: strings.Repeat("a", 40),
+				RunID: 9902, RunAttempt: 1, JobID: 9901, Event: "push", HeadRepository: 8802, Labels: []string{"self-hosted", "hako"}}
+			if err := VerifyRunnerWorkflowProvenance(workflowPolicy, queuedProvenance, authoritativeRun); err != nil {
+				t.Fatalf("valid authoritative workflow provenance was rejected: %v", err)
+			}
+			for name, mutate := range map[string]func(*AuthoritativeWorkflowRun){
+				"fork":                    func(run *AuthoritativeWorkflowRun) { run.Fork = true },
+				"pull request target":     func(run *AuthoritativeWorkflowRun) { run.Event = "pull_request_target" },
+				"foreign head repo":       func(run *AuthoritativeWorkflowRun) { run.HeadRepository = 9900 },
+				"cross tenant":            func(run *AuthoritativeWorkflowRun) { run.TenantID = "tenant_foreign" },
+				"wrong authoritative sha": func(run *AuthoritativeWorkflowRun) { run.HeadSHA = strings.Repeat("b", 40) },
+			} {
+				candidate := authoritativeRun
+				mutate(&candidate)
+				if err := VerifyRunnerWorkflowProvenance(workflowPolicy, queuedProvenance, candidate); err == nil {
+					t.Errorf("%s provenance was accepted", name)
+				}
+			}
 			inbox := githubwebhook.Inbox{Pool: pool, Policy: transaction.DefaultPolicy()}
 			const integrationID, webhookSecret = "integration_cleanup", "synthetic-cleanup-webhook-secret"
 			webhookHandler, err := hakowebhook.NewTenantHTTPHandler(cleanupWebhookCredentials{secret: webhookSecret}, githubregistry.CredentialAuthorizer{Pool: pool, Policy: transaction.DefaultPolicy()}, inbox, hakowebhook.DefaultMaxBodyBytes)
@@ -113,8 +161,8 @@ func TestActionsRunnerTerminalWebhookCleanupRecovery(t *testing.T) {
 			// Model the Resource Plane launch broker's atomic claimed→starting
 			// transition, then run the real startup worker over injected providers.
 			launchAt := time.Now().UTC()
-			if _, err := pool.Exec(ctx, `UPDATE github_actions_runner_jobs SET state='starting',resource_plane_id='rp-tokyo-01',updated_at=$1
-				WHERE integration_id='integration_cleanup' AND workflow_job_id=9901 AND run_attempt=1 AND state='claimed' AND claim_id=$2`, launchAt, claimed.ClaimID); err != nil {
+			if _, err := pool.Exec(ctx, `UPDATE github_actions_runner_jobs SET state='starting',resource_plane_id='rp-tokyo-01',provenance_verified_at=$1,provenance_policy_sha256=$2,updated_at=$1
+				WHERE integration_id='integration_cleanup' AND workflow_job_id=9901 AND run_attempt=1 AND state='claimed' AND claim_id=$3`, launchAt, policyHash, claimed.ClaimID); err != nil {
 				t.Fatal(err)
 			}
 			request := githubbroker.ActionsRunnerRegistrationRequest{IntegrationID: claimed.IntegrationID, WorkflowJobID: claimed.JobID, RunAttempt: claimed.RunAttempt, ClaimID: claimed.ClaimID}
@@ -128,16 +176,35 @@ func TestActionsRunnerTerminalWebhookCleanupRecovery(t *testing.T) {
 				t.Fatal(err)
 			}
 			events := []string{}
+			modelReader := &cleanupModelSecretReader{tenantID: "tenant_cleanup", secret: []byte("sk-ant-cleanup-synthetic")}
+			modelResolver, err := modelcredentialbroker.New(pool, transaction.DefaultPolicy(), modelReader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			modelCredentialIssuer := postgresRunnerModelCredentialIssuer{resolver: modelResolver}
+			foreignIdentity := modelcredentials.RunnerClaimIdentity{IntegrationID: "integration_foreign", WorkflowJobID: 9901, RunAttempt: 1,
+				ClaimID: claimed.ClaimID, ResourcePlaneID: "rp-tokyo-01", LambdaMicroVMID: instance.MicroVMID}
+			if err := modelResolver.WithCredential(ctx, foreignIdentity, func(context.Context, []byte) error {
+				t.Fatal("foreign Tenant integration resolved the model credential")
+				return nil
+			}); err == nil || modelReader.reads != 0 {
+				t.Fatalf("foreign Tenant attempted model Secret retrieval: reads=%d err=%v", modelReader.reads, err)
+			}
+			bootstrap := &guestBootstrapStub{events: &events}
 			startup, err := NewRunnerStartupWorker(RunnerStartupWorkerConfig{OperationTimeout: time.Minute}, startBrokerStub{command: command, events: &events},
 				runnerLauncherStub{instance: instance, events: &events}, postgresRunnerBinder{pool: pool},
-				runnerTokenIssuerStub{grant: githubbroker.ActionsRunnerRegistrationGrant{Token: runnerToken, Repository: githubapp.RepositoryAccess{Owner: "acme", Name: "api"}}, events: &events},
-				&guestBootstrapStub{events: &events}, startupFailureStub{events: &events}, "rp-tokyo-01")
+				cleanupRunnerTokenIssuer{runnerTokenIssuerStub: runnerTokenIssuerStub{grant: githubbroker.ActionsRunnerRegistrationGrant{Token: runnerToken, Repository: githubapp.RepositoryAccess{Owner: "acme", Name: "api"}}, events: &events}, model: modelCredentialIssuer},
+				bootstrap, startupFailureStub{events: &events}, "rp-tokyo-01")
 			if err != nil {
 				t.Fatal(err)
 			}
 			if err := startup.Start(ctx, request); err != nil || !strings.Contains(strings.Join(events, ","), "bootstrap") {
 				t.Fatalf("start authorized workflow runner: events=%v err=%v", events, err)
 			}
+			if got := string(bootstrap.request.ModelCredential); got != "sk-ant-cleanup-synthetic" || modelReader.reads != 1 || len(modelReader.tenantIDs) != 1 || modelReader.tenantIDs[0] != "tenant_cleanup" {
+				t.Fatalf("Tenant model credential was not isolated and handed to guest bootstrap: credential=%q tenant_reads=%v read_count=%d", got, modelReader.tenantIDs, modelReader.reads)
+			}
+			clear(bootstrap.request.ModelCredential)
 			inProgressPayload := []byte(fmt.Sprintf(`{"action":"in_progress","installation":{"id":8801,"app_id":9900},"repository":{"id":8802,"name":"api","owner":{"login":"acme"}},"workflow_job":{"id":9901,"run_id":9902,"run_attempt":1,"workflow_name":"CI","name":"test","head_branch":"main","head_sha":%q,"status":"in_progress","labels":["self-hosted","hako"],"runner_id":9810,"runner_name":"hako-9901-1"}}`, strings.Repeat("a", 40)))
 			postWebhook("143b2c3d-4e5f-4789-8abc-def012345678", inProgressPayload)
 			statusStats, err := githubwebhook.ProcessBatchWithActionsRunnerAdmissions(ctx, pool, transaction.DefaultPolicy(), 10, time.Now().UTC(), nil)
@@ -425,3 +492,47 @@ func (t cleanupCheckToken) ExpiresAt() time.Time { return t.expiresAt }
 type runnerChecksHTTPTransport func(*http.Request) (*http.Response, error)
 
 func (f runnerChecksHTTPTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type cleanupModelSecretReader struct {
+	tenantID  string
+	secret    []byte
+	reads     int
+	tenantIDs []string
+}
+
+func (r *cleanupModelSecretReader) ReadSecret(_ context.Context, access modelcredentials.SecretAccess) ([]byte, error) {
+	r.reads++
+	r.tenantIDs = append(r.tenantIDs, string(access.TenantID))
+	if string(access.TenantID) != r.tenantID {
+		return nil, errors.New("fake Secret reader refused a foreign Tenant")
+	}
+	return append([]byte(nil), r.secret...), nil
+}
+
+type postgresRunnerModelCredentialIssuer struct {
+	resolver *modelcredentialbroker.Resolver
+}
+
+func (i postgresRunnerModelCredentialIssuer) IssueModelCredential(ctx context.Context, request githubbroker.ActionsRunnerRegistrationRequest, microVMID string) ([]byte, error) {
+	identity := modelcredentials.RunnerClaimIdentity{IntegrationID: request.IntegrationID, WorkflowJobID: request.WorkflowJobID,
+		RunAttempt: request.RunAttempt, ClaimID: request.ClaimID, ResourcePlaneID: "rp-tokyo-01", LambdaMicroVMID: microVMID}
+	var credential []byte
+	err := i.resolver.WithCredential(ctx, identity, func(_ context.Context, secret []byte) error {
+		credential = append([]byte(nil), secret...)
+		return nil
+	})
+	if err != nil {
+		clear(credential)
+		return nil, err
+	}
+	return credential, nil
+}
+
+type cleanupRunnerTokenIssuer struct {
+	runnerTokenIssuerStub
+	model postgresRunnerModelCredentialIssuer
+}
+
+func (i cleanupRunnerTokenIssuer) IssueModelCredential(ctx context.Context, request githubbroker.ActionsRunnerRegistrationRequest, microVMID string) ([]byte, error) {
+	return i.model.IssueModelCredential(ctx, request, microVMID)
+}

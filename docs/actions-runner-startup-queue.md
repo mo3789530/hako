@@ -143,9 +143,17 @@ verified in PostgreSQL. The consumer's credential path uses the production
 PostgreSQL Actions Runner Checks resolver and issuance fence with only the
 token minter faked: unknown integration, wrong job and revoked App requests
 must fail before minting, while generation rotation during mint invalidates
-the grant. The test uses only synthetic token values and performs no Secret
-Manager access. The cleanup worker uses the production HTTP queue
-client and Broker handler backed by PostgreSQL to terminate a stateful fake
+the grant. The same startup test uses the production `modelcredentialbroker`
+resolver against PostgreSQL, with separate active Tenant A and Tenant B model
+credential rows and a fake Secret reader that refuses any Tenant except A.
+Fork, `pull_request_target`, foreign head-repository, cross-Tenant and wrong
+authoritative-SHA provenance variants are denied before the model Secret
+reader runs. A foreign Tenant integration paired with Tenant A's job is also
+denied without reading either model Secret. Only after a valid provenance
+policy hash and exact MicroVM binding are persisted does the fake reader return
+a synthetic key, which is passed into the guest bootstrap and then wiped. No
+real Secret Manager access or provider credential is used. The cleanup worker
+uses the production HTTP queue client and Broker handler backed by PostgreSQL to terminate a stateful fake
 MicroVM and deregister its fake runner. Both external operations fail once,
 and recreated workers recover with durable backoff until both resources are
 absent. Duplicate completion events do not create another cleanup request.

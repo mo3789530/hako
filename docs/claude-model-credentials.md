@@ -123,10 +123,15 @@ buffer after process start and removes runner credentials, diagnostics, temp,
 and checkout work state after the job exits. Unit tests use fake runner scripts.
 
 The guest executable and ARM64 Dockerfile recipe exist, but the image has not
-been built or published. Full broker→worker→image→process E2E, GitHub Check
-result/cleanup integration, broker/Resource Plane IAM, certificate provisioning,
-and deployment review remain gated follow-up work (Tasks 52, 75–77). The image
-build requires an explicitly reviewed runner archive/version/hash and a public
-verification key. No real Secret was read or provisioned for local tests.
-Credentials are read-only by default; repository write access requires a
-separate explicit capability and is not implied by the model API key.
+been built or published. Task 77's PostgreSQL E2E now composes the production
+model credential resolver with a synthetic Secret reader, Tenant A/B credential
+rows, provenance-denial cases and guest bootstrap; the integration proves that
+foreign identity cannot reach the reader and the valid key is scoped to one
+bound fake MicroVM. It does not exercise the live mTLS broker, a built/published
+image, or real runner process in Lambda. Broker/Resource Plane IAM, certificate
+provisioning, image verification, restricted egress and deployment review
+remain gated follow-up work (Tasks 40, 52, 75–77). The image build requires an
+explicitly reviewed runner archive/version/hash and a public verification key.
+No real Secret was read or provisioned for local tests. Credentials are
+read-only by default; repository write access requires a separate explicit
+capability and is not implied by the model API key.
