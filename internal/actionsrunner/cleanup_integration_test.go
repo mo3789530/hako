@@ -4,12 +4,18 @@ package actionsrunner
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/mo3789530/hako/internal/githubbroker"
 	hakowebhook "github.com/mo3789530/hako/internal/githubwebhook"
 	"github.com/mo3789530/hako/internal/store/dsql"
 	"github.com/mo3789530/hako/internal/store/githubwebhook"
@@ -18,8 +24,8 @@ import (
 )
 
 // This composes the authenticated-inbox boundary, terminal status transaction,
-// durable queue and cleanup worker. Provider operations are stateful fakes;
-// it does not claim to exercise GitHub signature verification or AWS networking.
+// Broker HTTP queue and cleanup worker. Provider operations are stateful fakes;
+// it does not exercise GitHub signature verification or AWS networking.
 func TestActionsRunnerTerminalWebhookCleanupRecovery(t *testing.T) {
 	for _, conclusion := range []string{"success", "failure", "cancelled", "timed_out"} {
 		t.Run(conclusion, func(t *testing.T) {
@@ -42,7 +48,7 @@ func TestActionsRunnerTerminalWebhookCleanupRecovery(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			now := time.Now().UTC().Truncate(time.Microsecond).Add(time.Second)
+			now := time.Now().UTC().Truncate(time.Microsecond)
 			payload := []byte(fmt.Sprintf(`{"action":"completed","installation":{"id":8801},"repository":{"id":8802,"name":"api","owner":{"login":"acme"}},"workflow_job":{"id":9901,"run_id":9902,"run_attempt":1,"workflow_name":"CI","name":"test","head_branch":"main","head_sha":%q,"status":"completed","conclusion":%q,"labels":["self-hosted","hako"],"runner_id":9810,"runner_name":"hako-9901-1"}}`, strings.Repeat("a", 40), conclusion))
 			inbox := githubwebhook.Inbox{Pool: pool, Policy: transaction.DefaultPolicy()}
 			for _, deliveryID := range []string{"143b2c3d-4e5f-4789-8abc-def012345678", "243b2c3d-4e5f-4789-8abc-def012345678"} {
@@ -59,7 +65,18 @@ func TestActionsRunnerTerminalWebhookCleanupRecovery(t *testing.T) {
 			if err := pool.QueryRow(ctx, `SELECT conclusion,revision FROM github_actions_runner_checks WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`).Scan(&checkConclusion, &checkRevision); err != nil || checkConclusion != conclusion || checkRevision != 3 {
 				t.Fatalf("terminal Check identity/conclusion: conclusion=%q revision=%d err=%v", checkConclusion, checkRevision, err)
 			}
-			queue, err := NewPostgresCleanupQueue(pool, transaction.DefaultPolicy())
+			service, err := githubbroker.NewActionsRunnerCleanupQueueService(pool, transaction.DefaultPolicy(), []string{"rp-tokyo-01"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			handler := githubbroker.WithActionsRunnerCleanupQueue(http.NotFoundHandler(), service)
+			queue, err := githubbroker.NewHTTPActionsRunnerCleanupQueueClient("https://broker.invalid", "rp-tokyo-01", &http.Client{Transport: runnerCleanupHTTPTransport(func(r *http.Request) (*http.Response, error) {
+				cert := &x509.Certificate{URIs: []*url.URL{{Scheme: "spiffe", Host: "hako", Path: "/resource-plane/rp-tokyo-01"}}}
+				r.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}, VerifiedChains: [][]*x509.Certificate{{cert}}}
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, r)
+				return rec.Result(), nil
+			})})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -90,7 +107,7 @@ func TestActionsRunnerTerminalWebhookCleanupRecovery(t *testing.T) {
 				return nil
 			}
 			for attempt := 1; attempt <= 3; attempt++ {
-				worker := cleanupWorker(t, queue, terminate, deregister, func() time.Time { return now })
+				worker := cleanupWorker(t, queue, terminate, deregister, time.Now)
 				processed, err := worker.ProcessOne(ctx)
 				if !processed || (attempt < 3 && !errors.Is(err, ErrCleanupDeferred)) || (attempt == 3 && err != nil) {
 					t.Fatalf("cleanup attempt %d: processed=%v err=%v", attempt, processed, err)
@@ -115,7 +132,11 @@ func TestActionsRunnerTerminalWebhookCleanupRecovery(t *testing.T) {
 					if processed, err := worker.ProcessOne(ctx); err != nil || processed {
 						t.Fatalf("cleanup retried before its backoff: processed=%v err=%v", processed, err)
 					}
-					now = available.Add(time.Microsecond)
+					// Make the isolated test row due; the Broker still controls
+					// lease/retry timestamps, without wall-clock sleeps in CI.
+					if _, err := pool.Exec(ctx, `UPDATE github_actions_runner_cleanup_outbox SET available_at=now()-interval '1 second'`); err != nil {
+						t.Fatal(err)
+					}
 				} else if state != "completed" || code != "" || vmExists || runnerExists {
 					t.Fatalf("cleanup incomplete: state=%q code=%q vm=%v runner=%v", state, code, vmExists, runnerExists)
 				}
@@ -123,10 +144,14 @@ func TestActionsRunnerTerminalWebhookCleanupRecovery(t *testing.T) {
 			if terminateCalls != 3 || deregisterCalls != 2 {
 				t.Fatalf("unexpected provider cleanup calls: termination=%d deregistration=%d", terminateCalls, deregisterCalls)
 			}
-			worker := cleanupWorker(t, queue, terminate, deregister, func() time.Time { return now })
+			worker := cleanupWorker(t, queue, terminate, deregister, time.Now)
 			if processed, err := worker.ProcessOne(ctx); err != nil || processed {
 				t.Fatalf("completed cleanup was re-executed: processed=%v err=%v", processed, err)
 			}
 		})
 	}
 }
+
+type runnerCleanupHTTPTransport func(*http.Request) (*http.Response, error)
+
+func (f runnerCleanupHTTPTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

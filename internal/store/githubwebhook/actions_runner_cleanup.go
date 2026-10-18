@@ -11,21 +11,21 @@ import (
 )
 
 type ActionsRunnerCleanupJob struct {
-	IntegrationID   string
-	TenantID        domain.TenantID
-	ResourcePlaneID *string
-	Installation    int64
-	Repository      int64
-	WorkflowJobID   int64
-	RunAttempt      int64
-	RunnerID        *int64
-	LambdaMicroVMID *string
-	Reason          string
-	State           string
-	ClaimID         string
-	LeaseExpires    time.Time
-	AttemptCount    int
-	CreatedAt       time.Time
+	IntegrationID   string          `json:"integration_id"`
+	TenantID        domain.TenantID `json:"tenant_id"`
+	ResourcePlaneID *string         `json:"resource_plane_id"`
+	Installation    int64           `json:"installation_id"`
+	Repository      int64           `json:"repository_id"`
+	WorkflowJobID   int64           `json:"workflow_job_id"`
+	RunAttempt      int64           `json:"run_attempt"`
+	RunnerID        *int64          `json:"runner_id"`
+	LambdaMicroVMID *string         `json:"lambda_microvm_id"`
+	Reason          string          `json:"reason"`
+	State           string          `json:"state"`
+	ClaimID         string          `json:"claim_id"`
+	LeaseExpires    time.Time       `json:"lease_expires_at"`
+	AttemptCount    int             `json:"attempt_count"`
+	CreatedAt       time.Time       `json:"created_at"`
 }
 
 func enqueueActionsRunnerCleanup(ctx context.Context, tx pgx.Tx, integrationID string, workflowJobID, runAttempt int64, reason string, now time.Time) error {
@@ -58,7 +58,8 @@ func ClaimNextActionsRunnerCleanup(ctx context.Context, tx pgx.Tx, resourcePlane
 		ORDER BY available_at,created_at,integration_id,workflow_job_id,run_attempt LIMIT 1
 	)
 	UPDATE github_actions_runner_cleanup_outbox o
-	SET state='claimed',claim_id=$3,lease_expires_at=$4,attempt_count=o.attempt_count+1,updated_at=$2
+	SET state='claimed',claim_id=$3,lease_expires_at=$4,attempt_count=o.attempt_count+1,updated_at=$2,
+	    resource_plane_id=COALESCE(o.resource_plane_id,$1)
 	FROM candidate c
 	WHERE o.integration_id=c.integration_id AND o.workflow_job_id=c.workflow_job_id AND o.run_attempt=c.run_attempt
 	  AND (o.resource_plane_id=$1 OR (o.resource_plane_id IS NULL AND o.lambda_microvm_id IS NULL))

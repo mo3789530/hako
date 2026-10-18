@@ -84,6 +84,8 @@ func (w *CleanupWorker) ProcessOne(ctx context.Context) (bool, error) {
 	if err != nil || !ok {
 		return ok, err
 	}
+	// Acquiring a remote Broker lease can consume part of its lifetime.
+	now = w.now().UTC()
 	if job.ClaimID != claimID || job.AttemptCount < 1 || job.State != "claimed" || job.TenantID == "" ||
 		job.IntegrationID == "" || job.WorkflowJobID <= 0 || job.RunAttempt <= 0 || job.Installation <= 0 || job.Repository <= 0 ||
 		!job.LeaseExpires.After(now.Add(5*time.Second)) {

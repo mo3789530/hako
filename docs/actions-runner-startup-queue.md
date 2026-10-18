@@ -133,8 +133,9 @@ The suite includes admission/claim/binding, signed guest bootstrap and a fake
 runner process, Check outbox delivery, and terminal webhook cleanup recovery.
 The cleanup integration starts with an already-running job fixture and feeds
 success, failure, cancellation, and timeout webhook conclusions through the
-real inbox/status transaction. A real PostgreSQL cleanup queue and worker then
-terminate a stateful fake MicroVM and deregister its fake runner. Both external
+real inbox/status transaction. The cleanup worker uses the production HTTP
+queue client and Broker handler backed by PostgreSQL to terminate a stateful
+fake MicroVM and deregister its fake runner. Both external
 operations fail once, and recreated workers recover with durable backoff until
 both resources are absent. Duplicate completion events do not create another
 cleanup request. These tests are component compositions; the complete authorized
@@ -170,8 +171,47 @@ attempt and pinned Plane/MicroVM/runner IDs, inspect `state`, `attempt_count`,
 `available_at` and `last_error`, and verify provider absence before considering
 an incident resolved. Do not clear a pending row or reuse a runtime to hide a
 cleanup failure. The local PostgreSQL queue adapter is a Control Plane/library
-component; production Resource Plane cleanup still requires broker-mediated
-claim/ack/retry transport and scheduled worker deployment before activation.
+component. Broker-mediated claim/ack/retry transport is locally implemented;
+scheduled worker composition and deployment remain required before activation.
+
+## Private cleanup queue API
+
+The GitHub Broker mounts these routes when
+`HAKO_GITHUB_BROKER_ACTIONS_RUNNER_RESOURCE_PLANE_IDS` contains an approved
+Plane. Each request requires its verified Resource Plane mTLS identity:
+
+- `POST /v1/actions-runner/cleanup-queue/claim`: a fresh claim ID and lease
+  duration (5–600 seconds); returns at most one cleanup job for that Plane.
+- `POST /v1/actions-runner/cleanup-queue/complete`: integration/job/attempt,
+  claim ID, attempt count and exact lease expiry.
+- `POST /v1/actions-runner/cleanup-queue/retry`: the same lease identity,
+  a relative delay (1–900 seconds) and a fixed safe error category.
+
+Plane identity comes only from the certificate. The Broker resolves Tenant,
+repository, runner and MicroVM from the database; callers cannot supply these
+coordinates in mutation requests. Acquisition and acknowledgement use the
+Broker's clock, and retry delays are applied to that clock. Cross-Plane,
+expired, replaced or altered leases cannot mutate state. Queue access remains
+available after a repository or integration is disabled, allowing MicroVM
+termination to proceed. GitHub deregistration still requires an active App and
+Installation credential binding; revoked access leaves the cleanup pending for
+operator resolution rather than bypassing revocation. A row with no Plane and
+no MicroVM is pinned to the acquiring Plane when leased; no runtime termination
+is needed for it. A row pinned to another Plane cannot be claimed.
+
+Successful responses use `Cache-Control: no-store`; `applied=false` means an
+empty queue or stale mutation. Transient database failures return a fixed 503
+response. The HTTP client bounds requests, disables redirects, validates
+responses and implements the worker queue interface. It requires no database
+credential in the Resource Plane. Queue responses contain lifecycle metadata
+only, never registration, App or model credentials.
+
+The focused integration suite covers worker→HTTP client→Broker→PostgreSQL
+cleanup/recovery plus denied certificate identities, foreign Planes, modified
+leases, reused claim IDs, caller clock manipulation and expired-lease recovery.
+These tests use an in-process transport with synthetic verified certificate
+state; the separate Broker mTLS suite tests cryptographic handshakes. No new
+route has been deployed or verified against live AWS/GitHub resources.
 
 ## Not yet deployable
 

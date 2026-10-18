@@ -34,6 +34,10 @@ Run one authorized Claude Code Action workflow job on one isolated Lambda MicroV
   database acknowledgement. Invalid or nearly expired claims cause no provider
   call. The focused local/CI command is
   `make test-actions-runner-lifecycle-integration`.
-- The PostgreSQL queue remains a CP/library adapter. Production RP cleanup needs
-  a broker-mediated queue client and scheduled executable composition; image,
-  full authorized-flow E2E and real AWS/GitHub gates remain open.
+- The PostgreSQL queue remains a CP/library adapter. The Broker now exposes
+  Plane-authenticated claim/complete/retry routes and an HTTP queue client;
+  mutation coordinates are resolved server-side and retries use the Broker's
+  clock. Worker→HTTP client→Broker→PostgreSQL recovery is locally tested,
+  including foreign/expired/modified leases and same-name worker recovery.
+- Scheduled cleanup executable composition and deployment, image, full
+  authorized-flow E2E and real AWS/GitHub gates remain open.

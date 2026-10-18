@@ -205,7 +205,15 @@ func run() error {
 	if addr == "" {
 		addr = defaultListenAddr
 	}
-	server := &http.Server{Addr: addr, Handler: githubbroker.HandlerWithActionsRunnerChecksLifecycle(oauth, checkout, checks, checkoutCallers, actionsRunner, runnerCleanup, runnerCleanupCallers, runnerBinding, runnerCleanupCallers, runnerBootstrapToken, runnerCleanupCallers, runnerLaunch, runnerCleanupCallers, runnerStartupFailure, runnerCleanupCallers, runnerModelCredential, runnerChecks), TLSConfig: tlsConfig,
+	handler := githubbroker.HandlerWithActionsRunnerChecksLifecycle(oauth, checkout, checks, checkoutCallers, actionsRunner, runnerCleanup, runnerCleanupCallers, runnerBinding, runnerCleanupCallers, runnerBootstrapToken, runnerCleanupCallers, runnerLaunch, runnerCleanupCallers, runnerStartupFailure, runnerCleanupCallers, runnerModelCredential, runnerChecks)
+	if len(runnerBindingIDs) > 0 {
+		cleanupQueue, err := githubbroker.NewActionsRunnerCleanupQueueService(pool, policy, runnerBindingIDs)
+		if err != nil {
+			return errors.New("configure Actions runner cleanup queue broker")
+		}
+		handler = githubbroker.WithActionsRunnerCleanupQueue(handler, cleanupQueue)
+	}
+	server := &http.Server{Addr: addr, Handler: handler, TLSConfig: tlsConfig,
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 60 * time.Second,
 		IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
 	go func() {

@@ -1,6 +1,6 @@
 # Task 77: Claude Action local E2E, operations and security evidence
 
-Status: In Progress (focused local/CI lifecycle command, terminal webhook→PostgreSQL cleanup-worker recovery tests for success/failure/cancel/timeout, stale-lease rejection and cleanup recovery notes are added alongside Task 76 Check delivery coverage. The complete authorized webhook→runner→terminal Check→verified cleanup PostgreSQL E2E, negative trust/rotation cases, and the full Tenant setup/security runbook remain). Priority: P2. Parent: Task 73. Depends on: Tasks 74–76.
+Status: In Progress (focused local/CI lifecycle command, terminal webhook→worker→Broker HTTP queue→PostgreSQL recovery tests for success/failure/cancel/timeout, foreign/expired/modified-lease rejection and cleanup recovery notes are added alongside Task 76 Check delivery coverage. The complete authorized webhook→runner→terminal Check→verified cleanup PostgreSQL E2E, negative trust/rotation cases, and the full Tenant setup/security runbook remain). Priority: P2. Parent: Task 73. Depends on: Tasks 74–76.
 
 ## Goal
 
