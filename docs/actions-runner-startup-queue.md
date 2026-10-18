@@ -7,6 +7,33 @@ event-source mapping are implemented. AWS resources have not been applied.
 Multi-Resource-Plane placement and live AWS delivery remain unimplemented.
 Runner admission and dispatch remain opt-in.
 
+## Durable GitHub Check lifecycle
+
+For admitted jobs, Hako creates a `Hako Actions Runner` desired Check in the
+same PostgreSQL transaction as the admission row and initial Check outbox
+event. Exact `workflow_job.in_progress` and `workflow_job.completed` webhook
+events advance that Check by `(integration_id, workflow_job_id, run_attempt)`;
+GitHub's completed event is authoritative for its terminal conclusion. A
+Control Plane Outbox Dispatcher routes those events to the existing GitHub
+Checks queue, and its consumer reloads the latest durable revision before
+publishing, so stale or duplicate queue deliveries cannot overwrite newer
+state. The returned GitHub Check Run ID is persisted only after the API
+response succeeds. If MicroVM startup fails before GitHub reports a job start,
+the exact admitted attempt gets a durable failure Check in the same transaction
+as its startup-failure/cleanup transition.
+
+Check publication credentials are issued by the Control Plane-only mTLS broker
+endpoint `POST /v1/actions-runner/checks-token`. The broker resolves the exact
+Tenant, integration, Installation, repository, job, attempt and credential
+generation from durable state, requires the repository Actions Runner opt-in,
+then mints only repository-scoped `checks:write`. It re-resolves identity after
+minting to fence concurrent credential changes. The Resource Plane does not
+receive this Check token. The feature uses the existing Checks queue and
+consumer; it adds no public endpoint or new AWS runtime. Local unit and
+PostgreSQL integration tests cover the outbox-to-dispatcher-to-fake-GitHub
+delivery and Check ID persistence. AWS deployment, certificates, Secrets
+Manager provisioning and live GitHub verification remain unperformed.
+
 ## Flow
 
 ```text

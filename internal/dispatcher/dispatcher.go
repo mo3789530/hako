@@ -74,6 +74,14 @@ type githubCheckEnvelope struct {
 	Revision      int64  `json:"revision"`
 }
 
+type actionsRunnerCheckEnvelope struct {
+	SchemaVersion int    `json:"schema_version"`
+	IntegrationID string `json:"integration_id"`
+	WorkflowJobID int64  `json:"workflow_job_id"`
+	RunAttempt    int64  `json:"run_attempt"`
+	Revision      int64  `json:"revision"`
+}
+
 type workloadDispatchEnvelope struct {
 	SchemaVersion    int    `json:"schema_version"`
 	TenantID         string `json:"tenant_id"`
@@ -193,6 +201,21 @@ func (d *Dispatcher) route(event outbox.Event) (string, error) {
 		if message.SchemaVersion != 1 || message.TenantID == "" || message.WorkloadRunID == "" ||
 			message.WorkloadRunID != event.AggregateID || message.Revision < 1 {
 			return "", errors.New("GitHub Check request has an unsupported or inconsistent envelope")
+		}
+		if d.config.GitHubChecksQueueURL == "" {
+			return "", errors.New("GitHub Checks result queue is not configured")
+		}
+		return d.config.GitHubChecksQueueURL, nil
+	}
+	if event.AggregateType == "github_actions_runner_job" && event.EventType == "github_actions_runner_job.github_check_requested" {
+		var message actionsRunnerCheckEnvelope
+		if err := json.Unmarshal(event.Payload, &message); err != nil {
+			return "", fmt.Errorf("decode Actions Runner Check request: %w", err)
+		}
+		aggregateID := fmt.Sprintf("%s:%d:%d", message.IntegrationID, message.WorkflowJobID, message.RunAttempt)
+		if message.SchemaVersion != 1 || message.IntegrationID == "" || message.WorkflowJobID <= 0 || message.RunAttempt <= 0 ||
+			message.Revision < 1 || aggregateID != event.AggregateID {
+			return "", errors.New("Actions Runner Check request has an unsupported or inconsistent envelope")
 		}
 		if d.config.GitHubChecksQueueURL == "" {
 			return "", errors.New("GitHub Checks result queue is not configured")

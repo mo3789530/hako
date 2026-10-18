@@ -29,7 +29,10 @@ var resourcePlaneIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 type request struct {
 	Pin            githubregistry.SetupAppPin `json:"pin"`
 	TenantID       domain.TenantID            `json:"tenant_id,omitempty"`
+	IntegrationID  string                     `json:"integration_id,omitempty"`
 	RunID          domain.WorkloadRunID       `json:"run_id,omitempty"`
+	WorkflowJobID  int64                      `json:"workflow_job_id,omitempty"`
+	RunAttempt     int64                      `json:"run_attempt,omitempty"`
 	State          string                     `json:"state,omitempty"`
 	CodeVerifier   string                     `json:"code_verifier,omitempty"`
 	Code           string                     `json:"code,omitempty"`
@@ -239,6 +242,37 @@ func HandlerWithActionsRunnerExecutionLifecycle(service *OAuthService, checkout 
 	runnerLaunch *ActionsRunnerLaunchService, runnerLaunchCallers []string,
 	runnerStartupFailure *ActionsRunnerStartupFailureService, failureCallers []string,
 	modelCredential ...ActionsRunnerModelCredentialIssuer) http.Handler {
+	if len(modelCredential) > 1 {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusServiceUnavailable) })
+	}
+	var issuer ActionsRunnerModelCredentialIssuer
+	if len(modelCredential) == 1 {
+		issuer = modelCredential[0]
+	}
+	return handlerWithActionsRunnerExecutionLifecycle(service, checkout, checks, checkoutCallers, actionsRunner, runnerCleanup, cleanupCallers,
+		runnerBinding, bindingCallers, runnerBootstrapToken, runnerTokenCallers, runnerLaunch, runnerLaunchCallers, runnerStartupFailure, failureCallers, issuer, nil)
+}
+
+// HandlerWithActionsRunnerChecksLifecycle additionally enables a Control
+// Plane-only Tenant-pinned Checks credential route for durable Runner Checks.
+func HandlerWithActionsRunnerChecksLifecycle(service *OAuthService, checkout *CheckoutService, checks *ChecksService, checkoutCallers []string,
+	actionsRunner *ActionsRunnerRegistrationService, runnerCleanup *ActionsRunnerCleanupService, cleanupCallers []string,
+	runnerBinding *ActionsRunnerBindingService, bindingCallers []string,
+	runnerBootstrapToken *ActionsRunnerBootstrapTokenService, runnerTokenCallers []string,
+	runnerLaunch *ActionsRunnerLaunchService, runnerLaunchCallers []string,
+	runnerStartupFailure *ActionsRunnerStartupFailureService, failureCallers []string,
+	modelCredential ActionsRunnerModelCredentialIssuer, runnerChecks *ActionsRunnerChecksService) http.Handler {
+	return handlerWithActionsRunnerExecutionLifecycle(service, checkout, checks, checkoutCallers, actionsRunner, runnerCleanup, cleanupCallers,
+		runnerBinding, bindingCallers, runnerBootstrapToken, runnerTokenCallers, runnerLaunch, runnerLaunchCallers, runnerStartupFailure, failureCallers, modelCredential, runnerChecks)
+}
+
+func handlerWithActionsRunnerExecutionLifecycle(service *OAuthService, checkout *CheckoutService, checks *ChecksService, checkoutCallers []string,
+	actionsRunner *ActionsRunnerRegistrationService, runnerCleanup *ActionsRunnerCleanupService, cleanupCallers []string,
+	runnerBinding *ActionsRunnerBindingService, bindingCallers []string,
+	runnerBootstrapToken *ActionsRunnerBootstrapTokenService, runnerTokenCallers []string,
+	runnerLaunch *ActionsRunnerLaunchService, runnerLaunchCallers []string,
+	runnerStartupFailure *ActionsRunnerStartupFailureService, failureCallers []string,
+	modelCredential ActionsRunnerModelCredentialIssuer, runnerChecks *ActionsRunnerChecksService) http.Handler {
 	allowedCheckoutCallers := map[string]struct{}{controlPlaneURI: {}}
 	for _, caller := range checkoutCallers {
 		if caller != controlPlaneURI && !strings.HasPrefix(caller, resourcePlaneURIPrefix) {
@@ -535,11 +569,8 @@ func HandlerWithActionsRunnerExecutionLifecycle(service *OAuthService, checkout 
 			writeResponse(w, struct{}{})
 		})
 	}
-	if len(modelCredential) > 1 {
-		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { writeError(w, http.StatusServiceUnavailable) })
-	}
-	if len(modelCredential) == 1 && modelCredential[0] != nil && len(allowedRunnerLaunchCallers) > 0 {
-		issuer := modelCredential[0]
+	if modelCredential != nil && len(allowedRunnerLaunchCallers) > 0 {
+		issuer := modelCredential
 		mux.HandleFunc("POST /v1/actions-runner/model-credential", func(w http.ResponseWriter, r *http.Request) {
 			caller, err := authenticatedCleanupCaller(r, allowedRunnerLaunchCallers)
 			if err != nil {
@@ -577,7 +608,53 @@ func HandlerWithActionsRunnerExecutionLifecycle(service *OAuthService, checkout 
 			_, _ = w.Write(body)
 		})
 	}
+	if runnerChecks != nil {
+		mux.HandleFunc("POST /v1/actions-runner/checks-token", func(w http.ResponseWriter, r *http.Request) {
+			caller, err := authenticatedCaller(r)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized)
+				return
+			}
+			input, ok := decodeActionsRunnerChecksRequest(r)
+			if !ok {
+				writeError(w, http.StatusBadRequest)
+				return
+			}
+			grant, err := runnerChecks.Issue(r.Context(), caller, input)
+			if err != nil {
+				writeError(w, http.StatusForbidden)
+				return
+			}
+			repository := grant.Repository()
+			w.Header().Set("Cache-Control", "no-store")
+			writeResponse(w, response{Token: grant.Token(), ExpiresAt: grant.ExpiresAt(), Repository: &repositoryResponse{Owner: repository.Owner, Name: repository.Name}})
+		})
+	}
 	return mux
+}
+
+func decodeActionsRunnerChecksRequest(r *http.Request) (ActionsRunnerChecksRequest, bool) {
+	var input ActionsRunnerChecksRequest
+	if r == nil || r.Body == nil || r.ContentLength > 2048 || !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		return input, false
+	}
+	data, err := io.ReadAll(io.LimitReader(r.Body, 2049))
+	if err != nil || len(data) > 2048 {
+		return input, false
+	}
+	defer clear(data)
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&input) != nil || !validActionsRunnerRegistrationRequest(ActionsRunnerRegistrationRequest{
+		IntegrationID: input.IntegrationID, WorkflowJobID: input.WorkflowJobID, RunAttempt: input.RunAttempt, ClaimID: "checks-request",
+	}) || input.RunAttempt <= 0 {
+		return ActionsRunnerChecksRequest{}, false
+	}
+	var trailing any
+	if decoder.Decode(&trailing) != io.EOF {
+		return ActionsRunnerChecksRequest{}, false
+	}
+	return input, true
 }
 
 func decodeActionsRunnerModelCredentialRequest(r *http.Request) (ActionsRunnerModelCredentialRequest, bool) {
@@ -981,6 +1058,7 @@ func (c *HTTPChecksCredentialProvider) ChecksRunToken(ctx context.Context, run d
 	if err != nil || len(data) > brokerMaxBody || res.StatusCode < 200 || res.StatusCode >= 300 || res.Header.Get("Cache-Control") != "no-store" {
 		return nil, githubapp.RepositoryAccess{}, ErrUnavailable
 	}
+	defer clear(data)
 	var out response
 	if json.Unmarshal(data, &out) != nil || out.Repository == nil || !validBrokerToken(out.Token, out.ExpiresAt, time.Now()) ||
 		out.ExpiresAt.After(time.Now().Add(65*time.Minute)) || !validBrokerLogin(out.Repository.Owner) || !validCredentialRepository(out.Repository.Name) {
@@ -988,6 +1066,39 @@ func (c *HTTPChecksCredentialProvider) ChecksRunToken(ctx context.Context, run d
 	}
 	token := brokerChecksToken{value: out.Token, expiresAt: out.ExpiresAt}
 	return token, githubapp.RepositoryAccess{Owner: out.Repository.Owner, Name: out.Repository.Name}, nil
+}
+
+func (c *HTTPChecksCredentialProvider) ActionsRunnerChecksToken(ctx context.Context, integrationID string, workflowJobID, runAttempt int64) (githubapp.CheckToken, githubapp.RepositoryAccess, error) {
+	if c == nil || c.client == nil || ctx == nil || len(integrationID) < 3 || len(integrationID) > 128 || workflowJobID <= 0 || runAttempt <= 0 {
+		return nil, githubapp.RepositoryAccess{}, ErrUnavailable
+	}
+	body, err := json.Marshal(ActionsRunnerChecksRequest{IntegrationID: integrationID, WorkflowJobID: workflowJobID, RunAttempt: runAttempt})
+	if err != nil {
+		return nil, githubapp.RepositoryAccess{}, ErrUnavailable
+	}
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/v1/actions-runner/checks-token", strings.NewReader(string(body)))
+	if err != nil {
+		return nil, githubapp.RepositoryAccess{}, ErrUnavailable
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := c.client.Do(req)
+	if err != nil {
+		return nil, githubapp.RepositoryAccess{}, ErrUnavailable
+	}
+	defer res.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(res.Body, brokerMaxBody+1))
+	if err != nil || len(data) > brokerMaxBody || res.StatusCode < 200 || res.StatusCode >= 300 || res.Header.Get("Cache-Control") != "no-store" {
+		return nil, githubapp.RepositoryAccess{}, ErrUnavailable
+	}
+	defer clear(data)
+	var out response
+	if json.Unmarshal(data, &out) != nil || out.Repository == nil || !validBrokerToken(out.Token, out.ExpiresAt, time.Now()) ||
+		out.ExpiresAt.After(time.Now().Add(65*time.Minute)) || !validBrokerLogin(out.Repository.Owner) || !validCredentialRepository(out.Repository.Name) {
+		return nil, githubapp.RepositoryAccess{}, ErrUnavailable
+	}
+	return brokerChecksToken{value: out.Token, expiresAt: out.ExpiresAt}, githubapp.RepositoryAccess{Owner: out.Repository.Owner, Name: out.Repository.Name}, nil
 }
 
 func validBrokerLogin(value string) bool {

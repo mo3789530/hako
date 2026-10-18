@@ -32,6 +32,7 @@ func TestPostgresActionsRunnerLaunchAndBootstrapRequireExactClaimPlaneAndMicroVM
 		`INSERT INTO tenant_github_repositories (tenant_id,installation_id,github_repository_id,owner_login,repository_name,default_branch,synchronized_at,actions_runner_enabled,actions_runner_enabled_at) VALUES ('tenant_runner_start',7121,7122,'acme','runner-api','main',now(),true,now()-interval '1 minute')`,
 		`INSERT INTO github_webhook_deliveries (integration_id,delivery_id,event_type,action,payload_json,payload_sha256,received_at,processing_status,event_schema_version,normalized_event_json,installation_id,credential_generation,payload_expires_at) VALUES ('integration_runner_start','a3b2c3d4-e5f6-4789-8abc-def012345678','workflow_job','queued','{}','hash',now(),'processed',1,'{}',7121,7,now()+interval '7 days')`,
 		`INSERT INTO github_actions_runner_jobs (integration_id,delivery_id,tenant_id,installation_id,repository_id,workflow_job_id,workflow_run_id,run_attempt,workflow_name,job_name,head_branch,head_sha,labels,state,created_at,updated_at,claim_id,lease_expires_at,claim_attempts) VALUES ('integration_runner_start','a3b2c3d4-e5f6-4789-8abc-def012345678','tenant_runner_start',7121,7122,7130,7131,1,'CI','test','main','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','["self-hosted","hako"]','claimed',now(),now(),'controller-claim-1',now()+interval '1 minute',1)`,
+		`INSERT INTO github_actions_runner_checks (integration_id,workflow_job_id,run_attempt,tenant_id,installation_id,repository_id,workflow_run_id,commit_sha,check_name,external_id,status,started_at,output_title,output_summary,revision,updated_at) VALUES ('integration_runner_start',7130,1,'tenant_runner_start',7121,7122,7131,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','Hako Actions Runner','hako-actions-runner/integration_runner_start/7130/1','queued',now(),'Hako Actions Runner','Runner admission is queued.',1,now())`,
 	} {
 		if _, err := pool.Exec(ctx, statement); err != nil {
 			t.Fatal(err)
@@ -115,6 +116,13 @@ func TestPostgresActionsRunnerLaunchAndBootstrapRequireExactClaimPlaneAndMicroVM
 	}
 	if err := pool.QueryRow(ctx, `SELECT state FROM github_actions_runner_jobs WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=1`, request.IntegrationID, request.WorkflowJobID).Scan(&state); err != nil || state != "failed" {
 		t.Fatalf("registration mint failure did not become terminal: state=%q err=%v", state, err)
+	}
+	var checkStatus, checkConclusion string
+	var checkRevision int64
+	if err := pool.QueryRow(ctx, `SELECT status,conclusion,revision FROM github_actions_runner_checks
+		WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=1`, request.IntegrationID, request.WorkflowJobID).
+		Scan(&checkStatus, &checkConclusion, &checkRevision); err != nil || checkStatus != "completed" || checkConclusion != "failure" || checkRevision != 2 {
+		t.Fatalf("startup failure Check did not terminalize durably: status=%q conclusion=%q revision=%d err=%v", checkStatus, checkConclusion, checkRevision, err)
 	}
 	var cleanupState, cleanupReason string
 	var cleanupMicroVM *string

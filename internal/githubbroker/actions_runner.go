@@ -13,6 +13,7 @@ import (
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/githubapp"
 	"github.com/mo3789530/hako/internal/store/githubregistry"
+	hakowebhookstore "github.com/mo3789530/hako/internal/store/githubwebhook"
 	"github.com/mo3789530/hako/internal/store/transaction"
 )
 
@@ -145,6 +146,9 @@ func NewPostgresActionsRunnerJobFailure(pool transaction.Beginner, policy transa
 				FROM github_actions_runner_jobs WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=$3 AND state='failed'
 				ON CONFLICT (integration_id,workflow_job_id,run_attempt) DO NOTHING`,
 				identity.IntegrationID, identity.WorkflowJobID, identity.RunAttempt, now)
+			if err == nil {
+				err = hakowebhookstore.FailActionsRunnerCheck(ctx, tx, identity.IntegrationID, identity.WorkflowJobID, identity.RunAttempt, now)
+			}
 			return struct{}{}, err
 		})
 		if err != nil {

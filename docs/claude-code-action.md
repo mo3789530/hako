@@ -65,7 +65,11 @@ official runner as ephemeral, pass the Tenant model key only in the runner
 process environment, and remove local credentials, diagnostic, temp, and
 checkout state after exit. A composed local test covers `/run` binding through
 signed bootstrap and fake runner execution, including a failure result, replay
-rejection, and local cleanup. A pinned ARM64 image recipe is provided, but no
-runner archive/image has been built or published; job completion→Checks and
-durable cleanup are also not yet integrated. AWS documents the `/run` hook body
+rejection, and local cleanup. A separate durable Check path correlates the
+admitted job attempt with GitHub's `workflow_job` status, writes Check state and
+Outbox events transactionally, and publishes through the shared Checks worker;
+PostgreSQL/fake-GitHub delivery is covered. This does not yet prove the full
+runner-to-cleanup composition. A pinned ARM64 image recipe is provided, but no
+runner archive/image has been built or published; durable MicroVM cleanup is
+still incomplete. AWS documents the `/run` hook body
 and per-MicroVM payload in [Running and using MicroVMs](https://docs.aws.amazon.com/lambda/latest/dg/microvms-launching.html).

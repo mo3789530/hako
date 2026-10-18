@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/githubwebhook"
 )
 
@@ -162,10 +163,14 @@ func ProcessActionsRunnerStatusDelivery(ctx context.Context, tx pgx.Tx, integrat
 		if action == "in_progress" {
 			if job.RunnerID != nil && (state == "starting" || state == "assigned" || state == "running") &&
 				(runnerID == nil || *runnerID == *job.RunnerID) {
-				_, err = tx.Exec(ctx, `UPDATE github_actions_runner_jobs SET state='running',runner_id=$4,runner_name=$5,
+				var changed pgconn.CommandTag
+				changed, err = tx.Exec(ctx, `UPDATE github_actions_runner_jobs SET state='running',runner_id=$4,runner_name=$5,
 					claim_id=NULL,lease_expires_at=NULL,updated_at=$6
 					WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=$3 AND state IN ('starting','assigned','running')`,
 					integrationID, job.ID, job.RunAttempt, *job.RunnerID, job.RunnerName, updatedAt.UTC())
+				if err == nil && changed.RowsAffected() == 1 {
+					err = updateActionsRunnerCheck(ctx, tx, integrationID, event, domain.TenantID(tenantID), updatedAt)
+				}
 			} else if (state == "admitted" || state == "claimed") && updatedAt.Sub(deliveryReceivedAt) < 24*time.Hour {
 				// A runner assignment may be observed before the Controller has
 				// committed its `starting` checkpoint. Retry after that checkpoint
@@ -199,6 +204,9 @@ func ProcessActionsRunnerStatusDelivery(ctx context.Context, tx pgx.Tx, integrat
 					integrationID, job.ID, job.RunAttempt, terminalState, eventRunnerID, job.RunnerName, job.Conclusion, updatedAt.UTC())
 				if err == nil && changed.RowsAffected() == 1 {
 					err = enqueueActionsRunnerCleanup(ctx, tx, integrationID, job.ID, job.RunAttempt, terminalState, updatedAt)
+					if err == nil {
+						err = updateActionsRunnerCheck(ctx, tx, integrationID, event, domain.TenantID(tenantID), updatedAt)
+					}
 				}
 			}
 		}

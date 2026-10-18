@@ -164,6 +164,23 @@ func TestRunOnceRoutesGitHubCheckRequestToDedicatedQueue(t *testing.T) {
 	}
 }
 
+func TestRunOnceRoutesActionsRunnerCheckRequestToDedicatedQueue(t *testing.T) {
+	store := &fakeStore{events: []outbox.Event{{
+		ID: "evt_runner_check", AggregateType: "github_actions_runner_job", AggregateID: "integration_1:42:2",
+		EventType: "github_actions_runner_job.github_check_requested", Attempt: 1,
+		Payload: []byte(`{"schema_version":1,"integration_id":"integration_1","workflow_job_id":42,"run_attempt":2,"revision":3}`),
+	}}}
+	publisher := &fakePublisher{}
+	d, err := New(store, publisher, map[string]string{"rp_tokyo": "rp-queue"}, Config{GitHubChecksQueueURL: "checks-queue"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := d.RunOnce(context.Background())
+	if err != nil || stats != (Stats{Claimed: 1, Published: 1}) || len(publisher.queueURLs) != 1 || publisher.queueURLs[0] != "checks-queue" {
+		t.Fatalf("Actions Runner Check request was not routed to dedicated queue: stats=%+v queues=%v err=%v", stats, publisher.queueURLs, err)
+	}
+}
+
 func TestRunOnceRejectsInvalidGitHubCheckEnvelope(t *testing.T) {
 	store := &fakeStore{events: []outbox.Event{{
 		ID: "evt_check", AggregateType: "workload_run", AggregateID: "run_1", EventType: "workload_run.github_check_requested", Attempt: 1,

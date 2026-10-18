@@ -247,10 +247,26 @@ func TestBrokerMTLSHandshakeAndHTTPResolver(t *testing.T) {
 		t.Fatal(err)
 	}
 	runnerCleanup.clock = func() time.Time { return runnerNow }
+	runnerCheckIdentity := ActionsRunnerCheckIdentity{IntegrationID: runnerIdentity.IntegrationID, TenantID: runnerIdentity.TenantID,
+		Installation: runnerIdentity.Installation, Repository: runnerIdentity.Repository, WorkflowJobID: runnerIdentity.WorkflowJobID,
+		WorkflowRunID: runnerIdentity.WorkflowRunID, RunAttempt: runnerIdentity.RunAttempt, CommitSHA: runnerIdentity.HeadSHA, Revision: 3,
+		Credential: runnerIdentity.Credential, RepositoryURL: githubapp.RepositoryAccess{Owner: "acme", Name: "runner-repo"}}
+	runnerChecks, err := NewActionsRunnerChecksService(func(_ context.Context, request ActionsRunnerChecksRequest) (ActionsRunnerCheckIdentity, error) {
+		if request.IntegrationID != runnerCheckIdentity.IntegrationID || request.WorkflowJobID != runnerCheckIdentity.WorkflowJobID || request.RunAttempt != runnerCheckIdentity.RunAttempt {
+			return ActionsRunnerCheckIdentity{}, ErrActionsRunnerChecksDenied
+		}
+		return runnerCheckIdentity, nil
+	}, func(context.Context, ActionsRunnerCheckIdentity) (githubapp.CheckToken, githubapp.RepositoryAccess, error) {
+		return fakeBrokerChecksToken{value: "ghs_mtls_runner_checks_token", expiry: runnerNow.Add(time.Hour)}, runnerCheckIdentity.RepositoryURL, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runnerChecks.now = func() time.Time { return runnerNow }
 	runnerCleanupCallers := []string{"spiffe://hako/resource-plane/rp-tokyo-01"}
-	server := httptest.NewUnstartedServer(HandlerWithActionsRunnerExecutionLifecycle(service, checkout, checksService, nil, runnerService, runnerCleanup,
+	server := httptest.NewUnstartedServer(HandlerWithActionsRunnerChecksLifecycle(service, checkout, checksService, nil, runnerService, runnerCleanup,
 		runnerCleanupCallers, runnerBinding, runnerCleanupCallers, runnerBootstrapTokenService, runnerCleanupCallers, launchService, runnerCleanupCallers,
-		runnerFailureService, runnerCleanupCallers))
+		runnerFailureService, runnerCleanupCallers, nil, runnerChecks))
 	serverCAs, _ := ServerTLSConfig(clientRoots)
 	server.TLS = serverCAs
 	server.StartTLS()
@@ -297,6 +313,11 @@ func TestBrokerMTLSHandshakeAndHTTPResolver(t *testing.T) {
 	}
 	if fmt.Sprint(checkToken) == checkToken.Value() {
 		t.Fatal("HTTP Checks credential formatting exposed the token")
+	}
+	runnerCheckToken, runnerCheckRepository, err := checksProvider.ActionsRunnerChecksToken(context.Background(), runnerIdentity.IntegrationID,
+		runnerIdentity.WorkflowJobID, runnerIdentity.RunAttempt)
+	if err != nil || runnerCheckToken.Value() != "ghs_mtls_runner_checks_token" || runnerCheckRepository != runnerCheckIdentity.RepositoryURL {
+		t.Fatalf("mTLS Actions Runner Checks credential request failed: repository=%+v err=%v", runnerCheckRepository, err)
 	}
 	runnerClient, err := NewActionsRunnerMTLSClient(issue(controlPlaneURI), brokerRoots)
 	if err != nil {

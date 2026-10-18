@@ -122,6 +122,9 @@ func ProcessActionsRunnerDelivery(ctx context.Context, tx pgx.Tx, integrationID,
 			existingRun != job.RunID || existingJob != job.ID || existingBranch != job.HeadBranch || existingSHA != job.HeadSHA {
 			return false, false, ErrWorkflowJobIdentityConflict
 		}
+	} else if err := createActionsRunnerCheck(ctx, tx, integrationID, domain.TenantID(tenantID), event.InstallationID, event.Repository.GitHubID,
+		job.ID, job.RunID, job.RunAttempt, job.HeadSHA, admittedAt); err != nil {
+		return false, false, fmt.Errorf("create Actions Runner GitHub Check: %w", err)
 	}
 	updated, err := tx.Exec(ctx, `UPDATE github_webhook_deliveries SET processing_status='processed'
 		WHERE integration_id=$1 AND delivery_id=$2 AND processing_status='received' AND event_schema_version=$3`, integrationID, deliveryID, schemaVersion)

@@ -13,6 +13,7 @@ import (
 
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/githubapp"
+	"github.com/mo3789530/hako/internal/store/githubwebhook"
 	"github.com/mo3789530/hako/internal/store/workloads"
 )
 
@@ -38,10 +39,13 @@ type DesiredCheck struct {
 type Store interface {
 	Load(context.Context, domain.TenantID, domain.WorkloadRunID) (DesiredCheck, error)
 	SaveID(context.Context, domain.TenantID, domain.WorkloadRunID, string, int64, time.Time) error
+	LoadActionsRunner(context.Context, string, int64, int64) (githubwebhook.ActionsRunnerCheck, error)
+	SaveActionsRunnerID(context.Context, githubwebhook.ActionsRunnerCheck, int64, time.Time) error
 }
 
 type CredentialProvider interface {
 	ChecksRunToken(context.Context, domain.WorkloadRun) (githubapp.CheckToken, githubapp.RepositoryAccess, error)
+	ActionsRunnerChecksToken(context.Context, string, int64, int64) (githubapp.CheckToken, githubapp.RepositoryAccess, error)
 }
 
 type Config struct {
@@ -69,6 +73,9 @@ type request struct {
 	SchemaVersion int    `json:"schema_version"`
 	TenantID      string `json:"tenant_id"`
 	WorkloadRunID string `json:"workload_run_id"`
+	IntegrationID string `json:"integration_id,omitempty"`
+	WorkflowJobID int64  `json:"workflow_job_id,omitempty"`
+	RunAttempt    int64  `json:"run_attempt,omitempty"`
 	Revision      int64  `json:"revision"`
 }
 
@@ -161,8 +168,14 @@ func retryVisibility(err error, now time.Time) (time.Duration, bool) {
 }
 
 func (c *Consumer) deliver(ctx context.Context, message request) error {
-	if message.SchemaVersion != 1 || message.TenantID == "" || message.WorkloadRunID == "" || message.Revision < 1 {
+	if message.SchemaVersion != 1 {
 		return errors.New("GitHub Check delivery envelope is incomplete or unsupported")
+	}
+	if message.TenantID == "" && message.WorkloadRunID == "" {
+		return c.deliverActionsRunner(ctx, message)
+	}
+	if message.TenantID == "" || message.WorkloadRunID == "" || message.Revision < 1 || message.IntegrationID != "" || message.WorkflowJobID != 0 || message.RunAttempt != 0 {
+		return errors.New("GitHub Check delivery envelope is incomplete or ambiguous")
 	}
 	desired, err := c.store.Load(ctx, domain.TenantID(message.TenantID), domain.WorkloadRunID(message.WorkloadRunID))
 	if err != nil {
@@ -198,6 +211,43 @@ func (c *Consumer) deliver(ctx context.Context, message request) error {
 	// after the identity-checked API response succeeds.
 	if err := c.store.SaveID(ctx, check.TenantID, check.WorkloadRunID, check.CommitSHA, result.ID, c.config.Now().UTC()); err != nil {
 		return fmt.Errorf("persist GitHub Check Run ID: %w", err)
+	}
+	return nil
+}
+
+func (c *Consumer) deliverActionsRunner(ctx context.Context, message request) error {
+	if message.SchemaVersion != 1 || message.IntegrationID == "" || len(message.IntegrationID) > 128 ||
+		message.WorkflowJobID <= 0 || message.RunAttempt <= 0 || message.Revision < 1 || message.TenantID != "" || message.WorkloadRunID != "" {
+		return errors.New("Actions Runner Check delivery envelope is incomplete or unsupported")
+	}
+	check, err := c.store.LoadActionsRunner(ctx, message.IntegrationID, message.WorkflowJobID, message.RunAttempt)
+	if err != nil {
+		return fmt.Errorf("load durable Actions Runner Check state: %w", err)
+	}
+	if check.IntegrationID != message.IntegrationID || check.WorkflowJobID != message.WorkflowJobID || check.RunAttempt != message.RunAttempt ||
+		message.Revision > check.Revision || check.TenantID == "" || check.Installation <= 0 || check.Repository <= 0 ||
+		check.WorkflowRunID <= 0 || check.CommitSHA == "" || check.Name == "" || check.ExternalID == "" || check.Revision < 1 {
+		return errors.New("durable Actions Runner Check identity does not match its workflow job")
+	}
+	token, repository, err := c.creds.ActionsRunnerChecksToken(ctx, check.IntegrationID, check.WorkflowJobID, check.RunAttempt)
+	if err != nil {
+		return fmt.Errorf("resolve job-pinned GitHub Checks credential: %w", err)
+	}
+	var completedAt *time.Time
+	if check.CompletedAt != nil {
+		completed := check.CompletedAt.UTC()
+		completedAt = &completed
+	}
+	result, err := c.api.EnsureCheckRun(ctx, token, repository, check.CheckRunID, githubapp.CheckRunRequest{
+		Name: check.Name, ExternalID: check.ExternalID, HeadSHA: check.CommitSHA, Status: githubapp.CheckRunStatus(check.Status),
+		Conclusion: githubapp.CheckRunConclusion(check.Conclusion), StartedAt: check.StartedAt.UTC(), CompletedAt: completedAt,
+		Output: githubapp.CheckOutput{Title: check.OutputTitle, Summary: check.OutputSummary},
+	})
+	if err != nil {
+		return fmt.Errorf("publish Actions Runner GitHub Check: %w", err)
+	}
+	if err := c.store.SaveActionsRunnerID(ctx, check, result.ID, c.config.Now().UTC()); err != nil {
+		return fmt.Errorf("persist Actions Runner GitHub Check ID: %w", err)
 	}
 	return nil
 }

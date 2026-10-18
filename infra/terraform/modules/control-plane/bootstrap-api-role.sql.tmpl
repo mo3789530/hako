@@ -58,6 +58,10 @@ GRANT UPDATE (status, suspended_at, updated_at) ON TABLE tenant_github_installat
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE tenant_github_repositories TO hako_webhook_processor;
 GRANT SELECT, INSERT ON TABLE workload_runs, workload_run_events TO hako_webhook_processor;
 GRANT SELECT, INSERT, UPDATE ON TABLE workload_github_checks TO hako_webhook_processor;
+-- Actions Runner admission/status events also update the exact durable Check
+-- and terminal-cleanup rows in the same transaction.
+GRANT SELECT, INSERT, UPDATE ON TABLE github_actions_runner_jobs, github_actions_runner_checks,
+    github_actions_runner_cleanup_outbox TO hako_webhook_processor;
 GRANT INSERT ON TABLE outbox_events TO hako_webhook_processor;
 
 -- The Fargate GitHub Checks consumer only reads immutable Run/desired Check
@@ -68,3 +72,19 @@ AWS IAM GRANT hako_checks_consumer TO 'REPLACE_WITH_GITHUB_CHECKS_CONSUMER_TASK_
 GRANT USAGE ON SCHEMA public TO hako_checks_consumer;
 GRANT SELECT ON TABLE workload_runs, workload_github_checks TO hako_checks_consumer;
 GRANT UPDATE (check_run_id, updated_at) ON TABLE workload_github_checks TO hako_checks_consumer;
+GRANT SELECT ON TABLE github_actions_runner_checks TO hako_checks_consumer;
+GRANT UPDATE (check_run_id, updated_at) ON TABLE github_actions_runner_checks TO hako_checks_consumer;
+
+-- The GitHub Broker reads Tenant-pinned App metadata and mutates only
+-- Actions Runner admission/claim/cleanup/Check lifecycle rows. It never reads
+-- Secret values from DSQL; the exact reader role and immutable Secret version
+-- are resolved as metadata and Secrets Manager access stays in the broker's
+-- AWS role boundary.
+CREATE ROLE hako_github_broker WITH LOGIN;
+AWS IAM GRANT hako_github_broker TO 'REPLACE_WITH_GITHUB_BROKER_ROLE_ARN';
+GRANT USAGE ON SCHEMA public TO hako_github_broker;
+GRANT SELECT ON TABLE tenant_github_integrations, tenant_github_installations, tenant_github_app_installation_bindings,
+    github_app_installation_bindings, tenant_github_repositories, github_app_registrations, github_credential_bindings TO hako_github_broker;
+GRANT SELECT, UPDATE ON TABLE github_actions_runner_jobs TO hako_github_broker;
+GRANT SELECT, INSERT, UPDATE ON TABLE github_actions_runner_checks, github_actions_runner_cleanup_outbox TO hako_github_broker;
+GRANT INSERT ON TABLE outbox_events TO hako_github_broker;

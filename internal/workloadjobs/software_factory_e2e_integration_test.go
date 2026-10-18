@@ -618,6 +618,10 @@ func (factoryCheckCredentials) ChecksRunToken(_ context.Context, run domain.Work
 	return factoryCheckToken{}, githubapp.RepositoryAccess{Owner: "factory-owner", Name: "factory-repo"}, nil
 }
 
+func (factoryCheckCredentials) ActionsRunnerChecksToken(context.Context, string, int64, int64) (githubapp.CheckToken, githubapp.RepositoryAccess, error) {
+	return nil, githubapp.RepositoryAccess{}, errors.New("unexpected Actions Runner Check credential lookup")
+}
+
 type factoryRoundTripper struct{ handler http.Handler }
 
 func (r factoryRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {

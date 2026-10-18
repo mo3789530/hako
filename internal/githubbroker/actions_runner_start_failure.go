@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	hakowebhookstore "github.com/mo3789530/hako/internal/store/githubwebhook"
 	"github.com/mo3789530/hako/internal/store/transaction"
 )
 
@@ -130,6 +131,9 @@ func NewPostgresActionsRunnerStartupFailureRecorder(pool transaction.Beginner, p
 					SELECT integration_id,workflow_job_id,run_attempt,tenant_id,installation_id,repository_id,runner_id,resource_plane_id,lambda_microvm_id,'failed','pending',$4,$4,$4
 					FROM github_actions_runner_jobs WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=$3 AND state='failed' AND resource_plane_id=$5
 					ON CONFLICT (integration_id,workflow_job_id,run_attempt) DO NOTHING`, request.IntegrationID, request.WorkflowJobID, request.RunAttempt, now, planeID)
+				if err == nil {
+					err = hakowebhookstore.FailActionsRunnerCheck(ctx, tx, request.IntegrationID, request.WorkflowJobID, request.RunAttempt, now)
+				}
 				return struct{}{}, err
 			}
 			var exists bool

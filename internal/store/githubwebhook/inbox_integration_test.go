@@ -317,6 +317,18 @@ func TestActionsRunnerAdmissionRequiresSeparateRepositoryOptInAndDeduplicatesJob
 	if jobs != 1 || tenantID != "tenant_actions_admission" || string(labels) != `["self-hosted", "hako"]` || state != "admitted" {
 		t.Fatalf("admitted Actions job count=%d tenant=%q labels=%s state=%q", jobs, tenantID, labels, state)
 	}
+	var checkStatus, checkName, checkSHA string
+	var checkRevision int64
+	var checkOutboxCount int
+	if err := pool.QueryRow(ctx, `SELECT status,check_name,commit_sha,revision FROM github_actions_runner_checks
+		WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`).Scan(&checkStatus, &checkName, &checkSHA, &checkRevision); err != nil ||
+		checkStatus != "queued" || checkName != "Hako Actions Runner" || checkSHA != strings.Repeat("a", 40) || checkRevision != 1 {
+		t.Fatalf("initial Actions Runner Check status=%q name=%q SHA=%q revision=%d error=%v", checkStatus, checkName, checkSHA, checkRevision, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox_events WHERE aggregate_type='github_actions_runner_job'
+		AND event_type='github_actions_runner_job.github_check_requested' AND aggregate_id='shared:9901:1'`).Scan(&checkOutboxCount); err != nil || checkOutboxCount != 1 {
+		t.Fatalf("initial Runner Check outbox count=%d error=%v", checkOutboxCount, err)
+	}
 	for _, rejected := range []githubwebhook.VerifiedDelivery{optedOut, preOptIn, missingAttempt} {
 		var status string
 		if err := pool.QueryRow(ctx, `SELECT processing_status FROM github_webhook_deliveries WHERE delivery_id=$1`, rejected.DeliveryID).Scan(&status); err != nil || status != "failed" {
@@ -428,6 +440,16 @@ func TestActionsRunnerAdmissionRequiresSeparateRepositoryOptInAndDeduplicatesJob
 	var completedAt *time.Time
 	if err := pool.QueryRow(ctx, `SELECT state,runner_id,conclusion,completed_at FROM github_actions_runner_jobs WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`).Scan(&runnerState, &runnerID, &conclusion, &completedAt); err != nil || runnerState != "completed" || runnerID == nil || *runnerID != 9810 || conclusion != "success" || completedAt == nil {
 		t.Fatalf("Actions completion = state=%q runner=%v conclusion=%q at=%v error=%v", runnerState, runnerID, conclusion, completedAt, err)
+	}
+	var runnerCheckConclusion string
+	if err := pool.QueryRow(ctx, `SELECT status,conclusion,revision FROM github_actions_runner_checks
+		WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`).Scan(&checkStatus, &runnerCheckConclusion, &checkRevision); err != nil ||
+		checkStatus != "completed" || runnerCheckConclusion != "success" || checkRevision != 3 {
+		t.Fatalf("terminal Actions Runner Check status=%q conclusion=%q revision=%d error=%v", checkStatus, runnerCheckConclusion, checkRevision, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox_events WHERE aggregate_type='github_actions_runner_job'
+		AND event_type='github_actions_runner_job.github_check_requested' AND aggregate_id='shared:9901:1'`).Scan(&checkOutboxCount); err != nil || checkOutboxCount != 3 {
+		t.Fatalf("terminal Runner Check outbox count=%d error=%v", checkOutboxCount, err)
 	}
 	staleBindTx, err := pool.Begin(ctx)
 	if err != nil {

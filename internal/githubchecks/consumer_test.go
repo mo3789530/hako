@@ -12,6 +12,7 @@ import (
 
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/githubapp"
+	"github.com/mo3789530/hako/internal/store/githubwebhook"
 	"github.com/mo3789530/hako/internal/store/workloads"
 )
 
@@ -44,12 +45,14 @@ func (q *fakeQueue) ChangeVisibility(_ context.Context, receipt string, delay ti
 }
 
 type fakeStore struct {
-	desired    DesiredCheck
-	saveErr    error
-	savedID    int64
-	saveCalls  int
-	loadTenant domain.TenantID
-	loadRun    domain.WorkloadRunID
+	desired       DesiredCheck
+	saveErr       error
+	savedID       int64
+	saveCalls     int
+	loadTenant    domain.TenantID
+	loadRun       domain.WorkloadRunID
+	runnerCheck   githubwebhook.ActionsRunnerCheck
+	runnerCheckID int64
 }
 
 func (s *fakeStore) Load(_ context.Context, tenant domain.TenantID, run domain.WorkloadRunID) (DesiredCheck, error) {
@@ -70,11 +73,12 @@ func (s *fakeStore) SaveID(_ context.Context, tenant domain.TenantID, run domain
 }
 
 type fakeCredentials struct {
-	token      fakeCheckToken
-	repository githubapp.RepositoryAccess
-	err        error
-	run        domain.WorkloadRun
-	calls      int
+	token       fakeCheckToken
+	repository  githubapp.RepositoryAccess
+	err         error
+	run         domain.WorkloadRun
+	calls       int
+	runnerCalls int
 }
 
 type fakeCheckToken struct {
@@ -89,6 +93,26 @@ func (p *fakeCredentials) ChecksRunToken(_ context.Context, run domain.WorkloadR
 	p.calls++
 	p.run = run
 	return p.token, p.repository, p.err
+}
+func (p *fakeCredentials) ActionsRunnerChecksToken(context.Context, string, int64, int64) (githubapp.CheckToken, githubapp.RepositoryAccess, error) {
+	p.runnerCalls++
+	return p.token, p.repository, p.err
+}
+
+func (s *fakeStore) LoadActionsRunner(_ context.Context, integrationID string, jobID, attempt int64) (githubwebhook.ActionsRunnerCheck, error) {
+	if s.runnerCheck.IntegrationID != integrationID || s.runnerCheck.WorkflowJobID != jobID || s.runnerCheck.RunAttempt != attempt {
+		return githubwebhook.ActionsRunnerCheck{}, errors.New("Actions Runner Check identity mismatch")
+	}
+	return s.runnerCheck, nil
+}
+
+func (s *fakeStore) SaveActionsRunnerID(_ context.Context, check githubwebhook.ActionsRunnerCheck, id int64, _ time.Time) error {
+	if check.IntegrationID != s.runnerCheck.IntegrationID || check.WorkflowJobID != s.runnerCheck.WorkflowJobID || check.RunAttempt != s.runnerCheck.RunAttempt {
+		return errors.New("Actions Runner Check identity mismatch")
+	}
+	s.runnerCheckID = id
+	s.runnerCheck.CheckRunID = id
+	return nil
 }
 
 type handlerTransport struct{ handler http.Handler }
@@ -106,6 +130,50 @@ func deliveryBody(t *testing.T, tenant string, run string, revision int64) []byt
 		t.Fatal(err)
 	}
 	return body
+}
+
+func actionsRunnerDeliveryBody(t *testing.T, integration string, jobID, attempt, revision int64) []byte {
+	t.Helper()
+	body, err := json.Marshal(request{SchemaVersion: 1, IntegrationID: integration, WorkflowJobID: jobID, RunAttempt: attempt, Revision: revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func TestConsumerPublishesDurableActionsRunnerTerminalCheck(t *testing.T) {
+	now := time.Now().UTC()
+	completedAt := now
+	check := githubwebhook.ActionsRunnerCheck{IntegrationID: "integration_runner", TenantID: "tenant_runner", Installation: 77, Repository: 88,
+		WorkflowJobID: 420, WorkflowRunID: 430, RunAttempt: 2, CommitSHA: strings.Repeat("a", 40), Name: "Hako Actions Runner",
+		ExternalID: "hako-actions-runner/integration_runner/420/2", Status: "completed", Conclusion: "failure", StartedAt: now.Add(-time.Minute),
+		CompletedAt: &completedAt, OutputTitle: "Hako Actions Runner", OutputSummary: "GitHub reported this workflow job completed with conclusion: failure.", Revision: 3}
+	store := &fakeStore{runnerCheck: check}
+	queue := &fakeQueue{deliveries: []Delivery{{Body: actionsRunnerDeliveryBody(t, check.IntegrationID, check.WorkflowJobID, check.RunAttempt, check.Revision), ReceiptHandle: "runner-check"}}}
+	creds := &fakeCredentials{token: fakeCheckToken{value: "synthetic-runner-check-token", expiresAt: time.Now().Add(time.Hour)}, repository: githubapp.RepositoryAccess{Owner: "acme", Name: "api"}}
+	var requests int
+	consumer, _ := newTestConsumer(t, store, queue, creds, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer synthetic-runner-check-token" || !strings.Contains(r.URL.Path, "/repos/acme/api/check-runs") {
+			t.Errorf("Runner Check used wrong token or repository: %s %s", r.Method, r.URL)
+		}
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"check_runs":[]}`))
+			return
+		}
+		var body githubapp.CheckRunRequest
+		if json.NewDecoder(r.Body).Decode(&body) != nil || body.ExternalID != check.ExternalID || body.HeadSHA != check.CommitSHA ||
+			body.Status != githubapp.CheckCompleted || body.Conclusion != "failure" || body.CompletedAt == nil {
+			t.Errorf("unexpected exact-run Check request: %+v", body)
+		}
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(githubapp.CheckRun{ID: 987, Name: body.Name, ExternalID: body.ExternalID, HeadSHA: body.HeadSHA,
+			Status: body.Status, Conclusion: body.Conclusion})
+	})
+	stats, err := consumer.RunOnce(context.Background())
+	if err != nil || stats != (Stats{Received: 1, Applied: 1}) || requests != 1 || creds.runnerCalls != 1 || store.runnerCheckID != 987 || len(queue.deleted) != 1 {
+		t.Fatalf("durable Actions Runner Check not applied: stats=%+v err=%v requests=%d credentials=%d saved=%d deleted=%v", stats, err, requests, creds.runnerCalls, store.runnerCheckID, queue.deleted)
+	}
 }
 
 func testDesiredCheck(now time.Time, id int64) DesiredCheck {
