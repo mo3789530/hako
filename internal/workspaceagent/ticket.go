@@ -42,6 +42,7 @@ type AgentTicket struct {
 	ResourcePlane domain.ResourcePlaneID      `json:"resource_plane_id"`
 	MicroVMID     string                      `json:"microvm_id"`
 	Permission    workspacesession.Permission `json:"permission"`
+	Port          uint16                      `json:"port,omitempty"`
 	IssuedAt      int64                       `json:"issued_at"`
 	ExpiresAt     int64                       `json:"expires_at"`
 }
@@ -56,7 +57,7 @@ type AgentTicketIssuer struct {
 
 func (i *AgentTicketIssuer) Issue(input AgentTicket) (string, AgentTicket, error) {
 	if i == nil || !agentIdentityPattern.MatchString(i.KeyID) || len(i.PrivateKey) != ed25519.PrivateKeySize ||
-		!validAgentTicketIdentity(input) || !validAgentPermission(input.Permission) {
+		!validAgentTicketIdentity(input) || !validAgentTarget(input) {
 		return "", AgentTicket{}, ErrAgentTicket
 	}
 	ttl := i.TTL
@@ -95,7 +96,7 @@ func (i *AgentTicketIssuer) Issue(input AgentTicket) (string, AgentTicket, error
 
 func VerifyAgentTicket(token string, keys map[string]ed25519.PublicKey, expected AgentTicket, now time.Time) (AgentTicket, error) {
 	if len(token) == 0 || len(token) > maxAgentTicketBytes || len(keys) == 0 ||
-		!validAgentTicketBinding(expected) || !validAgentPermission(expected.Permission) {
+		!validAgentTicketBinding(expected) || !validAgentTarget(expected) {
 		return AgentTicket{}, ErrAgentTicket
 	}
 	parts := strings.Split(token, ".")
@@ -122,7 +123,8 @@ func VerifyAgentTicket(token string, keys map[string]ed25519.PublicKey, expected
 		!validAgentPermission(claims.Permission) || !agentTicketIDPattern.MatchString(claims.TicketID) ||
 		claims.WorkspaceID != expected.WorkspaceID || claims.TenantID != expected.TenantID ||
 		claims.ResourcePlane != expected.ResourcePlane || claims.MicroVMID != expected.MicroVMID ||
-		(expected.UserID != "" && claims.UserID != expected.UserID) || claims.Permission != expected.Permission {
+		(expected.UserID != "" && claims.UserID != expected.UserID) || claims.Permission != expected.Permission || claims.Port != expected.Port ||
+		!validAgentTarget(claims) {
 		return AgentTicket{}, ErrAgentTicket
 	}
 	issued := time.Unix(claims.IssuedAt, 0).UTC()
@@ -153,6 +155,20 @@ func validAgentPermission(permission workspacesession.Permission) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func validAgentTarget(ticket AgentTicket) bool {
+	if !validAgentPermission(ticket.Permission) {
+		return false
+	}
+	switch ticket.Permission {
+	case workspacesession.PermissionPortForward:
+		return ticket.Port != 0
+	case workspacesession.PermissionSSHProxy:
+		return ticket.Port == 0
+	default:
+		return ticket.Port == 0
 	}
 }
 

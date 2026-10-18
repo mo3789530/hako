@@ -18,7 +18,7 @@ import (
 type WorkspaceStreamDialer interface {
 	OpenShell(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error)
 	OpenVSCode(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error)
-	OpenPort(context.Context, workspacesession.Claims, uint16) (io.ReadWriteCloser, error)
+	OpenPort(context.Context, workspacesession.Claims, workspacesession.Permission, uint16) (io.ReadWriteCloser, error)
 }
 
 // WorkspaceRouter selects a Workspace-local runtime using the verified
@@ -85,12 +85,12 @@ func (r *WorkspaceRouter) OpenVSCode(ctx context.Context, claims workspacesessio
 	return dialer.OpenVSCode(ctx, claims)
 }
 
-func (r *WorkspaceRouter) OpenPort(ctx context.Context, claims workspacesession.Claims, port uint16) (io.ReadWriteCloser, error) {
+func (r *WorkspaceRouter) OpenPort(ctx context.Context, claims workspacesession.Claims, permission workspacesession.Permission, port uint16) (io.ReadWriteCloser, error) {
 	dialer, err := r.resolve(claims.WorkspaceID)
 	if err != nil {
 		return nil, err
 	}
-	return dialer.OpenPort(ctx, claims, port)
+	return dialer.OpenPort(ctx, claims, permission, port)
 }
 
 func (r *WorkspaceRouter) resolve(workspaceID domain.WorkspaceID) (WorkspaceStreamDialer, error) {

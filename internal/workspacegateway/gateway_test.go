@@ -67,7 +67,7 @@ func (d *testDialer) OpenShell(context.Context, workspacesession.Claims) (io.Rea
 func (d *testDialer) OpenVSCode(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
 	return d.open()
 }
-func (d *testDialer) OpenPort(_ context.Context, _ workspacesession.Claims, port uint16) (io.ReadWriteCloser, error) {
+func (d *testDialer) OpenPort(_ context.Context, _ workspacesession.Claims, _ workspacesession.Permission, port uint16) (io.ReadWriteCloser, error) {
 	d.port.Store(uint32(port))
 	return d.open()
 }

@@ -28,7 +28,7 @@ func TestGatewayDialerRejectsClaimsOutsideWorkspaceBinding(t *testing.T) {
 	if _, err := dialer.OpenShell(context.Background(), claims); !errors.Is(err, ErrInteractiveChannelUnavailable) {
 		t.Fatalf("foreign shell claim error=%v", err)
 	}
-	if _, err := dialer.OpenPort(context.Background(), claims, 5432); !errors.Is(err, ErrInteractiveChannelUnavailable) {
+	if _, err := dialer.OpenPort(context.Background(), claims, workspacesession.PermissionPortForward, 5432); !errors.Is(err, ErrInteractiveChannelUnavailable) {
 		t.Fatalf("foreign port claim error=%v", err)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +37,7 @@ type WorkspaceShellAgent struct {
 	shells        *ShellManager
 	vscodeDial    func(context.Context) (net.Conn, error)
 	sshDial       func(context.Context) (net.Conn, error)
+	portDial      func(context.Context, uint16) (net.Conn, error)
 }
 
 func NewWorkspaceShellAgent(keys map[string]ed25519.PublicKey, gatewayOrigin string) (*WorkspaceShellAgent, error) {
@@ -61,6 +63,8 @@ func newWorkspaceShellAgent(keys map[string]ed25519.PublicKey, gatewayOrigin str
 			return (&net.Dialer{Timeout: workspaceAgentConnectTimeout}).DialContext(ctx, "tcp", "127.0.0.1:8081")
 		}, sshDial: func(ctx context.Context) (net.Conn, error) {
 			return (&net.Dialer{Timeout: workspaceAgentConnectTimeout}).DialContext(ctx, "tcp", "127.0.0.1:22")
+		}, portDial: func(ctx context.Context, port uint16) (net.Conn, error) {
+			return (&net.Dialer{Timeout: workspaceAgentConnectTimeout}).DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))))
 		}}, nil
 }
 
@@ -114,8 +118,62 @@ func (a *WorkspaceShellAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	case "/v1/workspaces/" + string(a.workspaceID()) + "/ssh":
 		a.serveSSH(w, r)
 	default:
+		const portSuffix = "/ports/"
+		prefix := "/v1/workspaces/" + string(a.workspaceID()) + portSuffix
+		if strings.HasPrefix(r.URL.Path, prefix) {
+			a.servePort(w, r, strings.TrimPrefix(r.URL.Path, prefix))
+			return
+		}
 		http.NotFound(w, r)
 	}
+}
+
+func (a *WorkspaceShellAgent) servePort(w http.ResponseWriter, r *http.Request, rawPort string) {
+	portValue, err := strconv.ParseUint(rawPort, 10, 16)
+	if err != nil || portValue == 0 || strconv.FormatUint(portValue, 10) != rawPort {
+		http.Error(w, "invalid Workspace route", http.StatusBadRequest)
+		return
+	}
+	a.mu.RLock()
+	identity, dial := a.identity, a.portDial
+	a.mu.RUnlock()
+	port := uint16(portValue)
+	if identity.WorkspaceID == "" || dial == nil || r.Method != http.MethodGet || r.URL.RawQuery != "" || r.URL.ForceQuery || r.ContentLength > 0 {
+		http.Error(w, "Workspace port-forward bridge is not ready", http.StatusServiceUnavailable)
+		return
+	}
+	token := bearerAgentTicket(r.Header.Get("Authorization"))
+	var verified AgentTicket
+	server := websocket.Server{
+		Config: websocket.Config{Protocol: []string{workspaceAgentWebSocketProtocol}},
+		Handshake: func(config *websocket.Config, request *http.Request) error {
+			if request.Method != http.MethodGet || request.URL.Path != r.URL.Path || request.URL.RawQuery != "" ||
+				request.Header.Get("Origin") != a.gatewayOrigin || !offeredAgentProtocol(request.Header.Get("Sec-WebSocket-Protocol")) || token == "" {
+				return ErrAgentTicket
+			}
+			expected := AgentTicket{TenantID: identity.TenantID, WorkspaceID: identity.WorkspaceID,
+				ResourcePlane: identity.ResourcePlane, MicroVMID: identity.MicroVMID,
+				Permission: workspacesession.PermissionPortForward, Port: port}
+			var verifyErr error
+			verified, verifyErr = VerifyAgentTicket(token, a.keys, expected, time.Now().UTC())
+			if verifyErr != nil || a.replay.Consume(verified, time.Now().UTC()) != nil {
+				return ErrAgentTicket
+			}
+			config.Protocol = []string{workspaceAgentWebSocketProtocol}
+			return nil
+		},
+		Handler: func(conn *websocket.Conn) {
+			conn.MaxPayloadBytes = maxTerminalFrame
+			conn.PayloadType = websocket.BinaryFrame
+			upstream, err := dial(r.Context(), verified.Port)
+			if err != nil {
+				_ = conn.Close()
+				return
+			}
+			proxyWorkspaceRawStream(r.Context(), conn, upstream)
+		},
+	}
+	server.ServeHTTP(w, r)
 }
 
 func (a *WorkspaceShellAgent) Close() error {

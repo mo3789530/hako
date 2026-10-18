@@ -165,6 +165,79 @@ func TestWorkspaceShellAgentSSHBridgeRequiresSSHProxyTicketAndRelaysRawBytes(t *
 	}
 }
 
+func TestWorkspaceShellAgentPortForwardTicketPinsLoopbackPort(t *testing.T) {
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	uid, gid := testShellIdentity(t, root)
+	agent, err := newWorkspaceShellAgent(map[string]ed25519.PublicKey{"rp-key-port": public}, "https://gateway.hako.test",
+		func(spec WorkspaceMountSpec) (*ShellManager, error) {
+			return NewShellManager(ShellConfig{WorkspaceRoot: root, RunAsUID: uid, RunAsGID: gid})
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.BindWorkspaceRuntime("microvm-1", testMountSpec()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		agent.mu.RLock()
+		manager := agent.shells
+		agent.mu.RUnlock()
+		_ = manager.Close()
+	})
+	var dialedPort atomic.Uint32
+	agent.portDial = func(_ context.Context, port uint16) (net.Conn, error) {
+		dialedPort.Store(uint32(port))
+		guest, peer := net.Pipe()
+		go func() { _, _ = io.Copy(peer, peer); _ = peer.Close() }()
+		return guest, nil
+	}
+	server := httptest.NewServer(agent)
+	defer server.Close()
+	issuer := &AgentTicketIssuer{KeyID: "rp-key-port", PrivateKey: private, TTL: time.Minute}
+	wrongTicket, _, err := issuer.Issue(AgentTicket{UserID: "user-1", TenantID: "tenant-1", WorkspaceID: "workspace-1",
+		ResourcePlane: "rp-1", MicroVMID: "microvm-1", Permission: workspacesession.PermissionPortForward, Port: 5432})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conn, err := dialWorkspaceAgentChannel(server.URL, "https://gateway.hako.test", wrongTicket, "ports/5433"); err == nil {
+		_ = conn.Close()
+		t.Fatal("port-5432 ticket was accepted on port-5433 route")
+	}
+	if got := dialedPort.Load(); got != 0 {
+		t.Fatalf("mismatched port ticket reached loopback dialer at %d", got)
+	}
+	ticket, _, err := issuer.Issue(AgentTicket{UserID: "user-1", TenantID: "tenant-1", WorkspaceID: "workspace-1",
+		ResourcePlane: "rp-1", MicroVMID: "microvm-1", Permission: workspacesession.PermissionPortForward, Port: 5432})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := dialWorkspaceAgentChannel(server.URL, "https://gateway.hako.test", ticket, "ports/5432")
+	if err != nil {
+		t.Fatalf("connect with port-bound Agent ticket: %v", err)
+	}
+	if err := websocket.Message.Send(client, []byte("postgres-protocol-bytes")); err != nil {
+		t.Fatal(err)
+	}
+	var echoed []byte
+	if err := websocket.Message.Receive(client, &echoed); err != nil || string(echoed) != "postgres-protocol-bytes" {
+		t.Fatalf("port-forward raw-byte relay=%q err=%v", echoed, err)
+	}
+	_ = client.Close()
+	if got := dialedPort.Load(); got != 5432 {
+		t.Fatalf("guest dialed port %d, want fixed loopback port 5432", got)
+	}
+	for _, path := range []string{"ports/0", "ports/05432", "ports/65536", "ports/5432/extra"} {
+		if conn, err := dialWorkspaceAgentChannel(server.URL, "https://gateway.hako.test", ticket, path); err == nil {
+			_ = conn.Close()
+			t.Errorf("accepted invalid Workspace port route %q", path)
+		}
+	}
+}
+
 func TestWorkspaceShellAgentRejectsForeignIdentityAndOrigin(t *testing.T) {
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

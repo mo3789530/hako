@@ -36,13 +36,14 @@ func (p *gatewayTokenProviderStub) Create(_ context.Context, vmID string) (strin
 type gatewayWebSocketStub struct {
 	endpoint, workspace, origin, awsToken, ticket string
 	permission                                    workspacesession.Permission
+	port                                          uint16
 	stream                                        io.ReadWriteCloser
 	err                                           error
 	calls                                         int
 }
 
-func (d *gatewayWebSocketStub) Dial(_ context.Context, endpoint, workspace, origin, token, ticket string, permission workspacesession.Permission) (io.ReadWriteCloser, error) {
-	d.endpoint, d.workspace, d.origin, d.awsToken, d.ticket, d.permission = endpoint, workspace, origin, token, ticket, permission
+func (d *gatewayWebSocketStub) Dial(_ context.Context, endpoint, workspace, origin, token, ticket string, permission workspacesession.Permission, port uint16) (io.ReadWriteCloser, error) {
+	d.endpoint, d.workspace, d.origin, d.awsToken, d.ticket, d.permission, d.port = endpoint, workspace, origin, token, ticket, permission, port
 	d.calls++
 	return d.stream, d.err
 }
@@ -75,18 +76,18 @@ func TestLambdaMicroVMGatewayDialerUsesDistinctVSCodeCapabilityAndRoute(t *testi
 		t.Fatalf("verify VS Code Agent ticket: %v", err)
 	}
 	config, err := newWorkspaceAgentWebSocketConfigForPermission(endpoint.Endpoint, string(endpoint.WorkspaceID),
-		"https://gateway.hako.test", tokens.token, websocket.ticket, workspacesession.PermissionVSCode)
+		"https://gateway.hako.test", tokens.token, websocket.ticket, workspacesession.PermissionVSCode, 0)
 	if err != nil || config.Location.Path != "/v1/workspaces/workspace-1/vscode" {
 		t.Fatalf("VS Code guest route config=%v err=%v", config, err)
 	}
 	if _, err := newWorkspaceAgentWebSocketConfigForPermission(endpoint.Endpoint, string(endpoint.WorkspaceID),
-		"https://gateway.hako.test", tokens.token, websocket.ticket, workspacesession.PermissionPortForward); err == nil {
-		t.Fatal("accepted unsupported permission as guest route")
+		"https://gateway.hako.test", tokens.token, websocket.ticket, workspacesession.PermissionPortForward, 0); err == nil {
+		t.Fatal("accepted port-forward route without a destination port")
 	}
 }
 
 func TestLambdaMicroVMGatewayDialerRoutesSSHProxyOnlyToGuestSSHBridge(t *testing.T) {
-	_, private, err := ed25519.GenerateKey(rand.Reader)
+	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,22 +104,45 @@ func TestLambdaMicroVMGatewayDialerRoutesSSHProxyOnlyToGuestSSHBridge(t *testing
 	}
 	claims := workspacesession.Claims{UserID: "user-1", TenantID: endpoint.TenantID, WorkspaceID: endpoint.WorkspaceID,
 		ResourcePlane: endpoint.ResourcePlane, Permissions: []workspacesession.Permission{workspacesession.PermissionSSHProxy}}
-	opened, err := dialer.OpenPort(context.Background(), claims, 22)
+	opened, err := dialer.OpenPort(context.Background(), claims, workspacesession.PermissionSSHProxy, 22)
 	if err != nil || opened != stream || websocket.permission != workspacesession.PermissionSSHProxy {
 		t.Fatalf("OpenPort(22) stream=%v permission=%q err=%v", opened, websocket.permission, err)
 	}
 	config, err := newWorkspaceAgentWebSocketConfigForPermission(endpoint.Endpoint, string(endpoint.WorkspaceID),
-		"https://gateway.hako.test", tokens.token, websocket.ticket, workspacesession.PermissionSSHProxy)
+		"https://gateway.hako.test", tokens.token, websocket.ticket, workspacesession.PermissionSSHProxy, 22)
 	if err != nil || config.Location.Path != "/v1/workspaces/workspace-1/ssh" || config.Protocol[2] != "lambda-microvms.port.8080" {
 		t.Fatalf("SSH bridge WebSocket config=%v err=%v", config, err)
 	}
-	if _, err := dialer.OpenPort(context.Background(), claims, 2222); !errors.Is(err, ErrInteractiveChannelUnavailable) {
+	if _, err := dialer.OpenPort(context.Background(), claims, workspacesession.PermissionSSHProxy, 2222); !errors.Is(err, ErrInteractiveChannelUnavailable) {
 		t.Fatalf("OpenPort(2222) error=%v, want fixed SSH target rejection", err)
 	}
 	portForwardClaims := claims
 	portForwardClaims.Permissions = []workspacesession.Permission{workspacesession.PermissionPortForward}
-	if _, err := dialer.OpenPort(context.Background(), portForwardClaims, 22); !errors.Is(err, ErrInteractiveChannelUnavailable) {
-		t.Fatalf("OpenPort(22) with port-forward-only ticket error=%v", err)
+	if _, err := dialer.OpenPort(context.Background(), portForwardClaims, workspacesession.PermissionPortForward, 0); !errors.Is(err, ErrInteractiveChannelUnavailable) {
+		t.Fatalf("OpenPort(0) with port-forward-only ticket error=%v", err)
+	}
+	if _, err := dialer.OpenPort(context.Background(), portForwardClaims, workspacesession.PermissionPortForward, 5432); err != nil || websocket.permission != workspacesession.PermissionPortForward || websocket.port != 5432 {
+		t.Fatalf("OpenPort(5432) with port-forward permission route=%q port=%d err=%v", websocket.permission, websocket.port, err)
+	}
+	if _, err := VerifyAgentTicket(websocket.ticket, map[string]ed25519.PublicKey{"rp-key": public}, AgentTicket{
+		UserID: claims.UserID, TenantID: claims.TenantID, WorkspaceID: claims.WorkspaceID, ResourcePlane: claims.ResourcePlane,
+		MicroVMID: endpoint.MicroVMID, Permission: workspacesession.PermissionPortForward, Port: 5432}, time.Now().UTC()); err != nil {
+		t.Fatalf("verify port-bound Agent ticket: %v", err)
+	}
+	config, err = newWorkspaceAgentWebSocketConfigForPermission(endpoint.Endpoint, string(endpoint.WorkspaceID),
+		"https://gateway.hako.test", tokens.token, websocket.ticket, workspacesession.PermissionPortForward, 5432)
+	if err != nil || config.Location.Path != "/v1/workspaces/workspace-1/ports/5432" {
+		t.Fatalf("port-forward route config=%v err=%v", config, err)
+	}
+	mixedClaims := claims
+	mixedClaims.Permissions = []workspacesession.Permission{workspacesession.PermissionSSHProxy, workspacesession.PermissionPortForward}
+	if _, err := dialer.OpenPort(context.Background(), mixedClaims, workspacesession.PermissionPortForward, 22); err != nil ||
+		websocket.permission != workspacesession.PermissionPortForward || websocket.port != 22 {
+		t.Fatalf("explicit port-forward route was confused with SSH on port 22: permission=%q port=%d err=%v", websocket.permission, websocket.port, err)
+	}
+	if _, err := dialer.OpenPort(context.Background(), mixedClaims, workspacesession.PermissionSSHProxy, 22); err != nil ||
+		websocket.permission != workspacesession.PermissionSSHProxy || websocket.port != 22 {
+		t.Fatalf("explicit SSH route was confused with port-forward on port 22: permission=%q port=%d err=%v", websocket.permission, websocket.port, err)
 	}
 }
 

@@ -31,7 +31,7 @@ func (d *routedDialer) OpenVSCode(_ context.Context, claims workspacesession.Cla
 	return nil, nil
 }
 
-func (d *routedDialer) OpenPort(_ context.Context, claims workspacesession.Claims, port uint16) (io.ReadWriteCloser, error) {
+func (d *routedDialer) OpenPort(_ context.Context, claims workspacesession.Claims, _ workspacesession.Permission, port uint16) (io.ReadWriteCloser, error) {
 	d.record(claims, port)
 	return nil, nil
 }
@@ -53,7 +53,7 @@ func TestWorkspaceRouterRoutesByVerifiedWorkspaceClaim(t *testing.T) {
 	}
 
 	claims := workspacesession.Claims{UserID: "usr_1", TenantID: "tenant_1", WorkspaceID: "ws_beta", TicketID: "ticket_1"}
-	if _, err := router.OpenPort(context.Background(), claims, 5432); err != nil {
+	if _, err := router.OpenPort(context.Background(), claims, workspacesession.PermissionPortForward, 5432); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(second.claims, claims) || second.port != 5432 || second.channels != 1 {

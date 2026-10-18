@@ -83,7 +83,7 @@ func (d shellTestDialer) OpenShell(context.Context, workspacesession.Claims) (io
 func (shellTestDialer) OpenVSCode(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
 	return nil, workspacegateway.ErrClientConfig
 }
-func (shellTestDialer) OpenPort(context.Context, workspacesession.Claims, uint16) (io.ReadWriteCloser, error) {
+func (shellTestDialer) OpenPort(context.Context, workspacesession.Claims, workspacesession.Permission, uint16) (io.ReadWriteCloser, error) {
 	return nil, workspacegateway.ErrClientConfig
 }
 
@@ -95,7 +95,7 @@ func (forwardTestDialer) OpenShell(context.Context, workspacesession.Claims) (io
 func (forwardTestDialer) OpenVSCode(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
 	return nil, workspacegateway.ErrClientConfig
 }
-func (forwardTestDialer) OpenPort(_ context.Context, _ workspacesession.Claims, port uint16) (io.ReadWriteCloser, error) {
+func (forwardTestDialer) OpenPort(_ context.Context, _ workspacesession.Claims, _ workspacesession.Permission, port uint16) (io.ReadWriteCloser, error) {
 	if port != 5432 && port != 22 {
 		return nil, workspacegateway.ErrClientConfig
 	}

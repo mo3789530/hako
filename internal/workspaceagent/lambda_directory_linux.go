@@ -42,25 +42,27 @@ type WorkspaceLambdaMicroVMStreamDirectory struct {
 }
 
 func (d *WorkspaceLambdaMicroVMStreamDirectory) OpenShell(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
-	return d.open(ctx, claims, workspacesession.PermissionShell)
+	return d.open(ctx, claims, workspacesession.PermissionShell, 0)
 }
 
 func (d *WorkspaceLambdaMicroVMStreamDirectory) OpenVSCode(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
-	return d.open(ctx, claims, workspacesession.PermissionVSCode)
+	return d.open(ctx, claims, workspacesession.PermissionVSCode, 0)
 }
 
-func (d *WorkspaceLambdaMicroVMStreamDirectory) OpenPort(ctx context.Context, claims workspacesession.Claims, port uint16) (io.ReadWriteCloser, error) {
-	if port != 22 || !hasWorkspacePermission(claims.Permissions, workspacesession.PermissionSSHProxy) {
+func (d *WorkspaceLambdaMicroVMStreamDirectory) OpenPort(ctx context.Context, claims workspacesession.Claims, permission workspacesession.Permission, port uint16) (io.ReadWriteCloser, error) {
+	if (permission == workspacesession.PermissionSSHProxy && (port != 22 || !hasWorkspacePermission(claims.Permissions, permission))) ||
+		(permission == workspacesession.PermissionPortForward && (port == 0 || !hasWorkspacePermission(claims.Permissions, permission))) ||
+		(permission != workspacesession.PermissionSSHProxy && permission != workspacesession.PermissionPortForward) {
 		return nil, ErrInteractiveChannelUnavailable
 	}
-	return d.open(ctx, claims, workspacesession.PermissionSSHProxy)
+	return d.open(ctx, claims, permission, port)
 }
 
-func (d *WorkspaceLambdaMicroVMStreamDirectory) open(ctx context.Context, claims workspacesession.Claims, permission workspacesession.Permission) (io.ReadWriteCloser, error) {
+func (d *WorkspaceLambdaMicroVMStreamDirectory) open(ctx context.Context, claims workspacesession.Claims, permission workspacesession.Permission, port uint16) (io.ReadWriteCloser, error) {
 	if d == nil || ctx == nil || claims.UserID == "" || claims.TenantID == "" || claims.WorkspaceID == "" ||
 		claims.ResourcePlane == "" || d.ResourcePlaneID == "" || claims.ResourcePlane != d.ResourcePlaneID ||
 		!hasWorkspacePermission(claims.Permissions, permission) ||
-		(permission != workspacesession.PermissionShell && permission != workspacesession.PermissionVSCode && permission != workspacesession.PermissionSSHProxy) || d.Journal == nil || d.MicroVMs == nil ||
+		(permission != workspacesession.PermissionShell && permission != workspacesession.PermissionVSCode && permission != workspacesession.PermissionSSHProxy && permission != workspacesession.PermissionPortForward) || d.Journal == nil || d.MicroVMs == nil ||
 		d.Tokens == nil || d.Tickets == nil || !validWorkspaceRegion(d.Region) || !validGatewayOrigin(d.Origin) {
 		return nil, ErrInteractiveChannelUnavailable
 	}
@@ -87,7 +89,7 @@ func (d *WorkspaceLambdaMicroVMStreamDirectory) open(ctx context.Context, claims
 	if err != nil {
 		return nil, ErrInteractiveChannelUnavailable
 	}
-	return dialer.open(lookupCtx, claims, permission)
+	return dialer.open(lookupCtx, claims, permission, port)
 }
 
 var _ WorkspaceStreamDialer = (*WorkspaceLambdaMicroVMStreamDirectory)(nil)

@@ -37,7 +37,7 @@ var (
 type StreamDialer interface {
 	OpenShell(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error)
 	OpenVSCode(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error)
-	OpenPort(context.Context, workspacesession.Claims, uint16) (io.ReadWriteCloser, error)
+	OpenPort(context.Context, workspacesession.Claims, workspacesession.Permission, uint16) (io.ReadWriteCloser, error)
 }
 
 // PortAuthorizer resolves allowed local Workspace ports from trusted state.
@@ -134,7 +134,7 @@ func (g *Gateway) serveSSH(w http.ResponseWriter, r *http.Request) {
 	g.serve(w, r, workspacesession.PermissionSSHProxy, func(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
 		// SSH remains private to the Workspace. The route fixes the destination
 		// to loopback port 22; the caller cannot supply a host or port.
-		return g.config.Dialer.OpenPort(ctx, claims, 22)
+		return g.config.Dialer.OpenPort(ctx, claims, workspacesession.PermissionSSHProxy, 22)
 	})
 }
 
@@ -158,7 +158,7 @@ func (g *Gateway) servePort(w http.ResponseWriter, r *http.Request) {
 		return nil
 	}
 	g.serveChecked(w, r, workspacesession.PermissionPortForward, check, func(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
-		return g.config.Dialer.OpenPort(ctx, claims, uint16(portValue))
+		return g.config.Dialer.OpenPort(ctx, claims, workspacesession.PermissionPortForward, uint16(portValue))
 	})
 }
 

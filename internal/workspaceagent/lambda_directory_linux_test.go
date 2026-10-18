@@ -87,7 +87,7 @@ func TestWorkspaceLambdaMicroVMDirectoryResolvesCurrentDurableBinding(t *testing
 	}
 	sshClaims := claims
 	sshClaims.Permissions = []workspacesession.Permission{workspacesession.PermissionSSHProxy}
-	sshStream, err := directory.OpenPort(context.Background(), sshClaims, 22)
+	sshStream, err := directory.OpenPort(context.Background(), sshClaims, workspacesession.PermissionSSHProxy, 22)
 	if err != nil || sshStream != stream || ws.permission != workspacesession.PermissionSSHProxy {
 		t.Fatalf("OpenPort(22) stream=%v route permission=%q err=%v", sshStream, ws.permission, err)
 	}
@@ -96,12 +96,23 @@ func TestWorkspaceLambdaMicroVMDirectoryResolvesCurrentDurableBinding(t *testing
 		MicroVMID: "microvm-1", Permission: workspacesession.PermissionSSHProxy}, time.Now().UTC()); err != nil {
 		t.Fatalf("directory-issued SSH Agent Ticket is invalid: %v", err)
 	}
-	if _, err := directory.OpenPort(context.Background(), sshClaims, 2222); err == nil {
+	forwardClaims := claims
+	forwardClaims.Permissions = []workspacesession.Permission{workspacesession.PermissionPortForward}
+	forwardStream, err := directory.OpenPort(context.Background(), forwardClaims, workspacesession.PermissionPortForward, 5432)
+	if err != nil || forwardStream != stream || ws.permission != workspacesession.PermissionPortForward || ws.port != 5432 {
+		t.Fatalf("OpenPort(5432) stream=%v permission=%q port=%d err=%v", forwardStream, ws.permission, ws.port, err)
+	}
+	if _, err := VerifyAgentTicket(ws.ticket, map[string]ed25519.PublicKey{"directory-agent-key": public}, AgentTicket{
+		UserID: claims.UserID, TenantID: claims.TenantID, WorkspaceID: claims.WorkspaceID, ResourcePlane: claims.ResourcePlane,
+		MicroVMID: "microvm-1", Permission: workspacesession.PermissionPortForward, Port: 5432}, time.Now().UTC()); err != nil {
+		t.Fatalf("directory-issued port-forward Agent Ticket is invalid: %v", err)
+	}
+	if _, err := directory.OpenPort(context.Background(), sshClaims, workspacesession.PermissionSSHProxy, 2222); err == nil {
 		t.Fatal("directory accepted arbitrary port through SSH-proxy permission")
 	}
 	foreignPlane := claims
 	foreignPlane.ResourcePlane = "rp-other"
-	if _, err := directory.OpenShell(context.Background(), foreignPlane); err == nil || store.calls != 3 {
+	if _, err := directory.OpenShell(context.Background(), foreignPlane); err == nil || store.calls != 4 {
 		t.Fatalf("directory accepted foreign Resource Plane claim or performed lookup: err=%v store calls=%d", err, store.calls)
 	}
 }

@@ -104,11 +104,15 @@ to the fixed Guest `/ssh` WebSocket route, where the unprivileged Agent dials
 only `127.0.0.1:22`; the caller cannot supply a destination. Local tests cover
 the ticket-bound raw-byte bridge and reject arbitrary ports/replay. The image
 does not yet install/configure `sshd` or SFTP, and trusted per-Workspace host
-key provisioning is still required. Production Gateway composition, AWS
-IAM/configuration, and a real MicroVM connection remain unverified. Guest
-port-forward streams remain unsupported by this adapter. Production key
-rotation/distribution is unresolved. Keep Workspace runtime exposure disabled
-until deployment gates are complete.
+key provisioning is still required. Approved port forwarding now uses the
+same fixed Guest endpoint: after the Gateway's PortAuthorizer approves the
+target, a one-use Agent Ticket binds that exact port and the Guest dials only
+`127.0.0.1:<port>`. The Guest rejects non-canonical or mismatched route/ticket
+ports before dialing; no arbitrary host is accepted. Local tests verify the
+raw-byte relay and port-confusion rejection. Production Gateway composition,
+AWS IAM/configuration, and a real MicroVM connection remain unverified.
+Production key rotation/distribution is unresolved. Keep Workspace runtime
+exposure disabled until deployment gates are complete.
 
 Build the dedicated image with
 `make build-workspace-microvm-image HAKO_EFS_UTILS_RPM_VERSION=<pinned-version> HAKO_CODE_SERVER_VERSION=4.141.0 HAKO_CODE_SERVER_SHA256=e5cc78da1d631c6cf6162f9b18eeaa8ee9d3239e1a88bb99d0602cdc5fa1852d HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE=<public-keys.json>`.

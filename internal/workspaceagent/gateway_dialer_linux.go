@@ -37,15 +37,15 @@ func (d *GatewayDialer) OpenVSCode(context.Context, workspacesession.Claims) (io
 	return nil, ErrInteractiveChannelUnavailable
 }
 
-func (d *GatewayDialer) OpenPort(ctx context.Context, claims workspacesession.Claims, port uint16) (io.ReadWriteCloser, error) {
+func (d *GatewayDialer) OpenPort(ctx context.Context, claims workspacesession.Claims, permission workspacesession.Permission, port uint16) (io.ReadWriteCloser, error) {
 	if d == nil || d.WorkspaceID == "" || claims.WorkspaceID != d.WorkspaceID || ctx == nil || port == 0 {
 		return nil, ErrInteractiveChannelUnavailable
 	}
-	if port == 22 {
-		if !hasWorkspacePermission(claims.Permissions, workspacesession.PermissionSSHProxy) {
+	if permission == workspacesession.PermissionSSHProxy {
+		if port != 22 || !hasWorkspacePermission(claims.Permissions, permission) {
 			return nil, ErrInteractiveChannelUnavailable
 		}
-	} else if !hasWorkspacePermission(claims.Permissions, workspacesession.PermissionPortForward) {
+	} else if permission != workspacesession.PermissionPortForward || !hasWorkspacePermission(claims.Permissions, permission) {
 		return nil, ErrInteractiveChannelUnavailable
 	}
 	connection, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))))
@@ -58,5 +58,5 @@ func (d *GatewayDialer) OpenPort(ctx context.Context, claims workspacesession.Cl
 var _ interface {
 	OpenShell(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error)
 	OpenVSCode(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error)
-	OpenPort(context.Context, workspacesession.Claims, uint16) (io.ReadWriteCloser, error)
+	OpenPort(context.Context, workspacesession.Claims, workspacesession.Permission, uint16) (io.ReadWriteCloser, error)
 } = (*GatewayDialer)(nil)
