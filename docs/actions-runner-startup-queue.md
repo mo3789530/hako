@@ -131,18 +131,20 @@ make test-actions-runner-lifecycle-integration
 
 The suite includes admission/claim/binding, signed guest bootstrap and a fake
 runner process, Check outbox delivery, and terminal webhook cleanup recovery.
-The cleanup integration starts with an opted-in repository and an authorized
-queued `VerifiedDelivery`, creates the admission and lease, runs the startup
-worker with fake MicroVM/token/bootstrap providers, applies GitHub runner
-assignment and completion deliveries through the inbox/status transaction, and
-then checks the durable terminal Check plus cleanup outbox. The cleanup worker
-uses the production HTTP queue client and Broker handler backed by PostgreSQL
-to terminate a stateful fake MicroVM and deregister its fake runner. Both
-external operations fail once, and recreated workers recover with durable
-backoff until both resources are absent. Duplicate completion events do not
-create another cleanup request. GitHub signature verification and outgoing
-Checks API publication are covered by separate API and consumer integrations;
-the composed lifecycle does not call real GitHub, AWS, or Claude APIs. CI runs
+The composed cleanup integration seeds an active Tenant-owned GitHub App and
+starts by proving a tampered HMAC is rejected. It then sends signed
+`workflow_job.queued`, `in_progress`, and duplicate `completed` deliveries
+through the production Tenant HTTP handler and DB-backed Installation
+authorizer. After admission and lease, it runs the startup worker with fake
+MicroVM/token/bootstrap providers. All queued/in-progress/terminal Check
+Outbox revisions pass through the production Dispatcher and Checks consumer to
+a fake GitHub Checks API; Check identity/result and durable Check Run ID are
+verified in PostgreSQL. The cleanup worker uses the production HTTP queue
+client and Broker handler backed by PostgreSQL to terminate a stateful fake
+MicroVM and deregister its fake runner. Both external operations fail once,
+and recreated workers recover with durable backoff until both resources are
+absent. Duplicate completion events do not create another cleanup request.
+The composed lifecycle does not call real GitHub, AWS, or Claude APIs. CI runs
 this target explicitly. Tests create and drop isolated schemas and leave the
 local database running.
 
