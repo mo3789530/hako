@@ -49,7 +49,7 @@ func TestActionsRunnerTerminalWebhookCleanupRecovery(t *testing.T) {
 				`INSERT INTO tenants(id,name,created_at) VALUES ('tenant_cleanup','Cleanup',now())`,
 				`INSERT INTO users(id,cognito_subject,email,created_at) VALUES ('usr_cleanup','cleanup','',now())`,
 				`INSERT INTO github_app_registrations(id,github_app_id,mode,owner_tenant_id,slug,client_id,created_at) VALUES ('registration_cleanup',9900,'tenant_owned','tenant_cleanup','cleanup','client-cleanup',now())`,
-				`INSERT INTO github_credential_bindings(id,tenant_id,github_app_id,status,private_key_secret_ref,oauth_secret_ref,webhook_secret_ref,approved_at) VALUES ('binding_cleanup','tenant_cleanup',9900,'approved','private-cleanup','oauth-cleanup','webhook-cleanup',now())`,
+				`INSERT INTO github_credential_bindings(id,tenant_id,github_app_id,status,private_key_secret_ref,oauth_secret_ref,webhook_secret_ref,approved_at,private_key_reader_role_arn,private_key_secret_version_id) VALUES ('binding_cleanup','tenant_cleanup',9900,'approved','arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:cleanup-key','oauth-cleanup','webhook-cleanup',now(),'arn:aws:iam::123456789012:role/hako/cleanup-key-reader','0123456789abcdef0123456789abcdef')`,
 				`INSERT INTO tenant_github_integrations(id,tenant_id,app_registration_id,github_app_id,credential_binding_id,status,config_revision,credential_generation,idempotency_key,request_sha256,created_by,created_at,updated_at) VALUES ('integration_cleanup','tenant_cleanup','registration_cleanup',9900,'binding_cleanup','active',1,1,'cleanup-key','` + strings.Repeat("c", 64) + `','usr_cleanup',now(),now())`,
 				`INSERT INTO tenant_github_installations(tenant_id,installation_id,github_app_id,account_login,status,requested_by,requested_at,updated_at) VALUES ('tenant_cleanup',8801,9900,'acme','active','usr_cleanup',now(),now())`,
 				`INSERT INTO github_app_installation_bindings(installation_id,tenant_id,bound_at) VALUES (8801,'tenant_cleanup',now())`,
@@ -170,7 +170,7 @@ func TestActionsRunnerTerminalWebhookCleanupRecovery(t *testing.T) {
 			var publishedStatuses []githubapp.CheckRunStatus
 			var fakeCheckID int64 = 9901
 			api, err := githubapp.NewChecksClient(&http.Client{Transport: runnerChecksHTTPTransport(func(r *http.Request) (*http.Response, error) {
-				if r.Header.Get("Authorization") != "Bearer synthetic-runner-check-token" || r.URL.Path != "/repos/acme/api/check-runs" && !strings.HasPrefix(r.URL.Path, "/repos/acme/api/check-runs/") {
+				if r.Header.Get("Authorization") != "Bearer ghs_cleanup_check_token" || r.URL.Path != "/repos/acme/api/check-runs" && !strings.HasPrefix(r.URL.Path, "/repos/acme/api/check-runs/") {
 					return nil, fmt.Errorf("unexpected GitHub Check target or credential: %s %s", r.Method, r.URL.Path)
 				}
 				recorder := httptest.NewRecorder()
@@ -201,7 +201,43 @@ func TestActionsRunnerTerminalWebhookCleanupRecovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			checkConsumer, err := githubchecks.New(checkQueue, githubchecks.DBStore{Pool: pool, Policy: transaction.DefaultPolicy()}, cleanupCheckCredentials{}, api,
+			mintCalls := 0
+			rotateDuringMint := false
+			checkService, err := githubbroker.NewActionsRunnerChecksService(githubbroker.NewPostgresActionsRunnerChecksResolver(pool, transaction.DefaultPolicy()),
+				func(_ context.Context, identity githubbroker.ActionsRunnerCheckIdentity) (githubapp.CheckToken, githubapp.RepositoryAccess, error) {
+					mintCalls++
+					if rotateDuringMint {
+						rotateDuringMint = false
+						if _, err := pool.Exec(ctx, `UPDATE tenant_github_integrations SET credential_generation=2 WHERE id='integration_cleanup'`); err != nil {
+							return nil, githubapp.RepositoryAccess{}, err
+						}
+					}
+					return cleanupCheckToken{value: "ghs_cleanup_check_token", expiresAt: time.Now().Add(time.Hour)}, identity.RepositoryURL, nil
+				})
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkCredentials := cleanupCheckCredentials{service: checkService}
+			if _, _, err := checkCredentials.ActionsRunnerChecksToken(ctx, "foreign_integration", 9901, 1); err == nil || mintCalls != 0 {
+				t.Fatalf("foreign Tenant integration reached token mint: mintCalls=%d err=%v", mintCalls, err)
+			}
+			if _, _, err := checkCredentials.ActionsRunnerChecksToken(ctx, integrationID, 9903, 1); err == nil || mintCalls != 0 {
+				t.Fatalf("wrong workflow job reached token mint: mintCalls=%d err=%v", mintCalls, err)
+			}
+			if _, err := pool.Exec(ctx, `UPDATE tenant_github_integrations SET status='disabled' WHERE id='integration_cleanup'`); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := checkCredentials.ActionsRunnerChecksToken(ctx, integrationID, 9901, 1); err == nil || mintCalls != 0 {
+				t.Fatalf("revoked Tenant App reached token mint: mintCalls=%d err=%v", mintCalls, err)
+			}
+			if _, err := pool.Exec(ctx, `UPDATE tenant_github_integrations SET status='active' WHERE id='integration_cleanup'`); err != nil {
+				t.Fatal(err)
+			}
+			rotateDuringMint = true
+			if _, _, err := checkCredentials.ActionsRunnerChecksToken(ctx, integrationID, 9901, 1); err == nil || mintCalls != 1 {
+				t.Fatalf("credential rotation during token mint was not fenced: mintCalls=%d err=%v", mintCalls, err)
+			}
+			checkConsumer, err := githubchecks.New(checkQueue, githubchecks.DBStore{Pool: pool, Policy: transaction.DefaultPolicy()}, checkCredentials, api,
 				githubchecks.Config{BatchSize: 10, WaitTime: 0})
 			if err != nil {
 				t.Fatal(err)
@@ -360,19 +396,30 @@ func (p cleanupCheckPublisher) Publish(_ context.Context, _ string, event outbox
 	return nil
 }
 
-type cleanupCheckCredentials struct{}
+type cleanupCheckCredentials struct {
+	service *githubbroker.ActionsRunnerChecksService
+}
 
 func (cleanupCheckCredentials) ChecksRunToken(context.Context, domain.WorkloadRun) (githubapp.CheckToken, githubapp.RepositoryAccess, error) {
 	return nil, githubapp.RepositoryAccess{}, errors.New("Workload Run credential path is not expected")
 }
 
-func (cleanupCheckCredentials) ActionsRunnerChecksToken(context.Context, string, int64, int64) (githubapp.CheckToken, githubapp.RepositoryAccess, error) {
-	return cleanupCheckToken{expiresAt: time.Now().Add(time.Hour)}, githubapp.RepositoryAccess{Owner: "acme", Name: "api"}, nil
+func (c cleanupCheckCredentials) ActionsRunnerChecksToken(ctx context.Context, integrationID string, workflowJobID, runAttempt int64) (githubapp.CheckToken, githubapp.RepositoryAccess, error) {
+	grant, err := c.service.Issue(ctx, "spiffe://hako/control-plane", githubbroker.ActionsRunnerChecksRequest{
+		IntegrationID: integrationID, WorkflowJobID: workflowJobID, RunAttempt: runAttempt,
+	})
+	if err != nil {
+		return nil, githubapp.RepositoryAccess{}, err
+	}
+	return cleanupCheckToken{value: grant.Token(), expiresAt: grant.ExpiresAt()}, grant.Repository(), nil
 }
 
-type cleanupCheckToken struct{ expiresAt time.Time }
+type cleanupCheckToken struct {
+	value     string
+	expiresAt time.Time
+}
 
-func (cleanupCheckToken) Value() string          { return "synthetic-runner-check-token" }
+func (t cleanupCheckToken) Value() string        { return t.value }
 func (t cleanupCheckToken) ExpiresAt() time.Time { return t.expiresAt }
 
 type runnerChecksHTTPTransport func(*http.Request) (*http.Response, error)

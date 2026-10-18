@@ -139,7 +139,12 @@ authorizer. After admission and lease, it runs the startup worker with fake
 MicroVM/token/bootstrap providers. All queued/in-progress/terminal Check
 Outbox revisions pass through the production Dispatcher and Checks consumer to
 a fake GitHub Checks API; Check identity/result and durable Check Run ID are
-verified in PostgreSQL. The cleanup worker uses the production HTTP queue
+verified in PostgreSQL. The consumer's credential path uses the production
+PostgreSQL Actions Runner Checks resolver and issuance fence with only the
+token minter faked: unknown integration, wrong job and revoked App requests
+must fail before minting, while generation rotation during mint invalidates
+the grant. The test uses only synthetic token values and performs no Secret
+Manager access. The cleanup worker uses the production HTTP queue
 client and Broker handler backed by PostgreSQL to terminate a stateful fake
 MicroVM and deregister its fake runner. Both external operations fail once,
 and recreated workers recover with durable backoff until both resources are
