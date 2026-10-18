@@ -525,10 +525,20 @@ func TestActionsRunnerAdmissionRequiresSeparateRepositoryOptInAndDeduplicatesJob
 	if err != nil {
 		t.Fatal(err)
 	}
-	recoveredCleanup, ok, err := ClaimNextActionsRunnerCleanup(ctx, cleanupRecoveryTx, "rp-tokyo-01", "cleanup-worker-recovered", now.Add(60*time.Second), 30*time.Second)
-	if err != nil || !ok || recoveredCleanup.AttemptCount != 2 || recoveredCleanup.ClaimID != "cleanup-worker-recovered" {
+	// A restarted worker may have the same name. Its new lease must still be
+	// protected from acknowledgements and retries belonging to the old attempt.
+	recoveredCleanup, ok, err := ClaimNextActionsRunnerCleanup(ctx, cleanupRecoveryTx, "rp-tokyo-01", "cleanup-worker-one", now.Add(60*time.Second), 30*time.Second)
+	if err != nil || !ok || recoveredCleanup.AttemptCount != 2 || recoveredCleanup.ClaimID != "cleanup-worker-one" {
 		_ = cleanupRecoveryTx.Rollback(ctx)
 		t.Fatalf("recover retried runner cleanup=%+v ok=%v error=%v", recoveredCleanup, ok, err)
+	}
+	if completed, err := CompleteActionsRunnerCleanup(ctx, cleanupRecoveryTx, cleanup, now.Add(61*time.Second)); err != nil || completed {
+		_ = cleanupRecoveryTx.Rollback(ctx)
+		t.Fatalf("old cleanup generation acknowledged a recovered lease: completed=%v error=%v", completed, err)
+	}
+	if released, err := RetryActionsRunnerCleanup(ctx, cleanupRecoveryTx, cleanup, now.Add(61*time.Second), now.Add(70*time.Second), "microvm_terminate_failed"); err != nil || released {
+		_ = cleanupRecoveryTx.Rollback(ctx)
+		t.Fatalf("old cleanup generation released a recovered lease: released=%v error=%v", released, err)
 	}
 	if completed, err := CompleteActionsRunnerCleanup(ctx, cleanupRecoveryTx, recoveredCleanup, now.Add(61*time.Second)); err != nil || !completed {
 		_ = cleanupRecoveryTx.Rollback(ctx)

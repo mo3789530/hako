@@ -86,8 +86,9 @@ func CompleteActionsRunnerCleanup(ctx context.Context, tx pgx.Tx, job ActionsRun
 	}
 	tag, err := tx.Exec(ctx, `UPDATE github_actions_runner_cleanup_outbox
 		SET state='completed',claim_id=NULL,lease_expires_at=NULL,last_error='',updated_at=$5
-		WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=$3 AND state='claimed' AND claim_id=$4 AND lease_expires_at>$5`,
-		job.IntegrationID, job.WorkflowJobID, job.RunAttempt, job.ClaimID, now.UTC())
+		WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=$3 AND state='claimed' AND claim_id=$4 AND lease_expires_at>$5
+		AND attempt_count=$6 AND lease_expires_at=$7`,
+		job.IntegrationID, job.WorkflowJobID, job.RunAttempt, job.ClaimID, now.UTC(), job.AttemptCount, job.LeaseExpires.UTC())
 	if err != nil {
 		return false, fmt.Errorf("complete Actions runner cleanup: %w", err)
 	}
@@ -102,8 +103,9 @@ func RetryActionsRunnerCleanup(ctx context.Context, tx pgx.Tx, job ActionsRunner
 	}
 	tag, err := tx.Exec(ctx, `UPDATE github_actions_runner_cleanup_outbox
 		SET state='pending',claim_id=NULL,lease_expires_at=NULL,available_at=$6,last_error=$7,updated_at=$5
-		WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=$3 AND state='claimed' AND claim_id=$4 AND lease_expires_at>$5`,
-		job.IntegrationID, job.WorkflowJobID, job.RunAttempt, job.ClaimID, now.UTC(), retryAt.UTC(), safeErrorCode)
+		WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=$3 AND state='claimed' AND claim_id=$4 AND lease_expires_at>$5
+		AND attempt_count=$8 AND lease_expires_at=$9`,
+		job.IntegrationID, job.WorkflowJobID, job.RunAttempt, job.ClaimID, now.UTC(), retryAt.UTC(), safeErrorCode, job.AttemptCount, job.LeaseExpires.UTC())
 	if err != nil {
 		return false, fmt.Errorf("retry Actions runner cleanup: %w", err)
 	}

@@ -1,6 +1,6 @@
 # Task 77: Claude Action local E2E, operations and security evidence
 
-Status: Todo (Task 76 now has focused durable Check delivery coverage; this task still needs the composed authorized webhook→runner→terminal Check→verified cleanup PostgreSQL E2E, negative trust/rotation/cancel/cleanup cases, CI target and operator/security runbook). Priority: P2. Parent: Task 73. Depends on: Tasks 74–76.
+Status: In Progress (focused local/CI lifecycle command, terminal webhook→PostgreSQL cleanup-worker recovery tests for success/failure/cancel/timeout, stale-lease rejection and cleanup recovery notes are added alongside Task 76 Check delivery coverage. The complete authorized webhook→runner→terminal Check→verified cleanup PostgreSQL E2E, negative trust/rotation cases, and the full Tenant setup/security runbook remain). Priority: P2. Parent: Task 73. Depends on: Tasks 74–76.
 
 ## Goal
 

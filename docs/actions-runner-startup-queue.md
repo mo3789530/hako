@@ -123,6 +123,25 @@ for production runner admission until those checks are integrated.
 
 ## Local verification
 
+Run the focused local lifecycle suite with the existing PostgreSQL instance:
+
+```sh
+make test-actions-runner-lifecycle-integration
+```
+
+The suite includes admission/claim/binding, signed guest bootstrap and a fake
+runner process, Check outbox delivery, and terminal webhook cleanup recovery.
+The cleanup integration starts with an already-running job fixture and feeds
+success, failure, cancellation, and timeout webhook conclusions through the
+real inbox/status transaction. A real PostgreSQL cleanup queue and worker then
+terminate a stateful fake MicroVM and deregister its fake runner. Both external
+operations fail once, and recreated workers recover with durable backoff until
+both resources are absent. Duplicate completion events do not create another
+cleanup request. These tests are component compositions; the complete authorized
+webhook-to-runner-to-Check-to-cleanup scenario remains Task 77 work. CI runs this
+target explicitly. Tests create and drop isolated schemas and leave the local
+database running.
+
 ```sh
 GOCACHE=/tmp/hako-go-cache go test ./internal/actionsrunner ./cmd/hako-dispatcher-lambda
 ```
@@ -131,6 +150,28 @@ Tests use fake claim sources, fake SQS, and fake runner dependencies. They do
 not call AWS, read real Secrets, or require SQS. The runner Lambda entrypoint
 and ARM64 ZIP build are documented in
 [`tasks/task-52-ephemeral-actions-runner.md`](../tasks/task-52-ephemeral-actions-runner.md).
+
+## Cleanup leases and recovery
+
+Each cleanup attempt has a fresh claim ID. Acknowledgement and retry updates
+also compare the durable attempt count and exact lease expiry, so an older
+attempt cannot change a recovered lease even if a caller reuses its worker
+name. Worker configuration must reserve at least five seconds between the
+operation timeout and lease expiry for acknowledgement. The worker rejects a
+mismatched or nearly expired lease before calling the provider and limits
+provider work to the remaining lease budget.
+
+MicroVM termination must finish before runner deregistration. Failure keeps
+the cleanup row `pending` with bounded backoff and a fixed safe error category;
+it is never acknowledged as clean. On retry, successful external operations
+are repeated idempotently. A terminal GitHub Check is evidence of job outcome,
+not evidence of physical cleanup. Operators should correlate integration/job/
+attempt and pinned Plane/MicroVM/runner IDs, inspect `state`, `attempt_count`,
+`available_at` and `last_error`, and verify provider absence before considering
+an incident resolved. Do not clear a pending row or reuse a runtime to hide a
+cleanup failure. The local PostgreSQL queue adapter is a Control Plane/library
+component; production Resource Plane cleanup still requires broker-mediated
+claim/ack/retry transport and scheduled worker deployment before activation.
 
 ## Not yet deployable
 

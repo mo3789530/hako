@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/mo3789530/hako/internal/idgen"
 	"github.com/mo3789530/hako/internal/store/githubwebhook"
 	"github.com/mo3789530/hako/internal/store/transaction"
 )
@@ -53,6 +54,7 @@ func NewCleanupWorker(config CleanupWorkerConfig, queue CleanupQueue, deregistra
 	if !validResourcePlaneID(config.ResourcePlaneID) || !validWorkerID(config.WorkerID) ||
 		config.LeaseDuration < 5*time.Second || config.LeaseDuration > 10*time.Minute ||
 		config.OperationTimeout <= 0 || config.OperationTimeout > 5*time.Minute ||
+		config.OperationTimeout+5*time.Second > config.LeaseDuration ||
 		queue == nil || deregistrator == nil || terminator == nil {
 		return nil, ErrInvalidCleanupConfig
 	}
@@ -71,11 +73,26 @@ func (w *CleanupWorker) ProcessOne(ctx context.Context) (bool, error) {
 		return false, ErrInvalidCleanupConfig
 	}
 	now := w.now().UTC()
-	job, ok, err := w.queue.Claim(ctx, w.config.ResourcePlaneID, w.config.WorkerID, now, w.config.LeaseDuration)
+	// A stable worker name is not a lease identity: the same process or a
+	// restarted worker can recover its previous claim while that call unwinds.
+	prefix := w.config.WorkerID[:min(len(w.config.WorkerID), 64)] + "_"
+	claimID, err := idgen.New(prefix)
+	if err != nil {
+		return false, fmt.Errorf("generate Actions runner cleanup claim: %w", err)
+	}
+	job, ok, err := w.queue.Claim(ctx, w.config.ResourcePlaneID, claimID, now, w.config.LeaseDuration)
 	if err != nil || !ok {
 		return ok, err
 	}
-	operationCtx, cancel := context.WithTimeout(ctx, w.config.OperationTimeout)
+	if job.ClaimID != claimID || job.AttemptCount < 1 || job.State != "claimed" || job.TenantID == "" ||
+		job.IntegrationID == "" || job.WorkflowJobID <= 0 || job.RunAttempt <= 0 || job.Installation <= 0 || job.Repository <= 0 ||
+		!job.LeaseExpires.After(now.Add(5*time.Second)) {
+		return true, ErrCleanupLeaseLost
+	}
+	// Leave time to persist the acknowledgement/retry before another worker
+	// can recover the lease, even when the queue returns a shorter lease.
+	timeout := min(w.config.OperationTimeout, job.LeaseExpires.Sub(now)-5*time.Second)
+	operationCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	errorCode := ""

@@ -103,6 +103,45 @@ func TestCleanupWorkerReportsLostLeaseAfterIdempotentSideEffects(t *testing.T) {
 	}
 }
 
+func TestCleanupWorkerUsesFreshClaimsAndBoundsOperationsWithinLease(t *testing.T) {
+	now := time.Now().UTC()
+	queue := &fakeCleanupQueue{job: cleanupJob("rp-tokyo-01", "microvm-1", 1234), claimed: true}
+	worker := cleanupWorker(t, queue, func(ctx context.Context, _, _ string) error {
+		deadline, ok := ctx.Deadline()
+		if !ok || deadline.After(time.Now().Add(31*time.Second)) {
+			t.Fatal("provider operation was not bounded within the cleanup lease")
+		}
+		return nil
+	}, func(context.Context, githubwebhook.ActionsRunnerCleanupJob) error { return nil }, func() time.Time { return now })
+	for range 2 {
+		if processed, err := worker.ProcessOne(context.Background()); err != nil || !processed {
+			t.Fatalf("process cleanup: processed=%v err=%v", processed, err)
+		}
+	}
+	if len(queue.claimIDs) != 2 || queue.claimIDs[0] == queue.claimIDs[1] || !validWorkerID(queue.claimIDs[0]) || !validWorkerID(queue.claimIDs[1]) {
+		t.Fatalf("cleanup reused or generated an invalid claim ID: %v", queue.claimIDs)
+	}
+}
+
+func TestCleanupWorkerRejectsMismatchedOrExpiringLeaseBeforeProviderCalls(t *testing.T) {
+	for name, mutate := range map[string]func(*githubwebhook.ActionsRunnerCleanupJob){
+		"wrong claim":        func(job *githubwebhook.ActionsRunnerCleanupJob) { job.ClaimID = "foreign-claim" },
+		"expiring lease":     func(job *githubwebhook.ActionsRunnerCleanupJob) { job.LeaseExpires = time.Now().Add(time.Second) },
+		"missing generation": func(job *githubwebhook.ActionsRunnerCleanupJob) { job.AttemptCount = 0 },
+		"missing tenant":     func(job *githubwebhook.ActionsRunnerCleanupJob) { job.TenantID = "" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			queue := &fakeCleanupQueue{job: cleanupJob("rp-tokyo-01", "microvm-1", 1234), claimed: true, mutateClaim: mutate}
+			called := false
+			worker := cleanupWorker(t, queue, func(context.Context, string, string) error { called = true; return nil },
+				func(context.Context, githubwebhook.ActionsRunnerCleanupJob) error { called = true; return nil }, time.Now)
+			if processed, err := worker.ProcessOne(context.Background()); !processed || !errors.Is(err, ErrCleanupLeaseLost) || called || queue.completed || queue.retryCode != "" {
+				t.Fatalf("invalid claim reached cleanup: processed=%v err=%v called=%v", processed, err, called)
+			}
+		})
+	}
+}
+
 func TestCleanupWorkerValidatesPlaneAndWorkerIdentity(t *testing.T) {
 	queue := &fakeCleanupQueue{}
 	terminator := fakeTerminator(func(context.Context, string, string) error { return nil })
@@ -110,6 +149,8 @@ func TestCleanupWorkerValidatesPlaneAndWorkerIdentity(t *testing.T) {
 	for _, config := range []CleanupWorkerConfig{
 		{ResourcePlaneID: "RP_TOKYO", WorkerID: "cleanup-worker-1", LeaseDuration: time.Minute, OperationTimeout: time.Minute},
 		{ResourcePlaneID: "rp-tokyo-01", WorkerID: "short", LeaseDuration: time.Minute, OperationTimeout: time.Minute},
+		{ResourcePlaneID: "rp-tokyo-01", WorkerID: "cleanup-worker-1", LeaseDuration: time.Minute, OperationTimeout: time.Minute},
+		{ResourcePlaneID: "rp-tokyo-01", WorkerID: "cleanup-worker-1", LeaseDuration: 5 * time.Second, OperationTimeout: time.Second},
 	} {
 		if _, err := NewCleanupWorker(config, queue, deregistrator, terminator, time.Now); !errors.Is(err, ErrInvalidCleanupConfig) {
 			t.Errorf("NewCleanupWorker(%+v) error = %v", config, err)
@@ -119,7 +160,7 @@ func TestCleanupWorkerValidatesPlaneAndWorkerIdentity(t *testing.T) {
 
 func cleanupWorker(t *testing.T, queue CleanupQueue, terminate func(context.Context, string, string) error, deregister func(context.Context, githubwebhook.ActionsRunnerCleanupJob) error, now func() time.Time) *CleanupWorker {
 	t.Helper()
-	worker, err := NewCleanupWorker(CleanupWorkerConfig{ResourcePlaneID: "rp-tokyo-01", WorkerID: "cleanup-worker-1", LeaseDuration: time.Minute, OperationTimeout: time.Minute},
+	worker, err := NewCleanupWorker(CleanupWorkerConfig{ResourcePlaneID: "rp-tokyo-01", WorkerID: "cleanup-worker-1", LeaseDuration: time.Minute, OperationTimeout: 30 * time.Second},
 		queue, fakeDeregistrator(deregister), fakeTerminator(terminate), now)
 	if err != nil {
 		t.Fatal(err)
@@ -150,10 +191,17 @@ type fakeCleanupQueue struct {
 	completeResult *bool
 	retryCode      string
 	retryAt        time.Time
+	claimIDs       []string
+	mutateClaim    func(*githubwebhook.ActionsRunnerCleanupJob)
 }
 
-func (q *fakeCleanupQueue) Claim(_ context.Context, planeID, _ string, _ time.Time, _ time.Duration) (githubwebhook.ActionsRunnerCleanupJob, bool, error) {
+func (q *fakeCleanupQueue) Claim(_ context.Context, planeID, claimID string, now time.Time, lease time.Duration) (githubwebhook.ActionsRunnerCleanupJob, bool, error) {
 	q.claimPlane = planeID
+	q.job.ClaimID, q.job.LeaseExpires = claimID, now.Add(lease)
+	q.claimIDs = append(q.claimIDs, claimID)
+	if q.mutateClaim != nil {
+		q.mutateClaim(&q.job)
+	}
 	return q.job, q.claimed, nil
 }
 

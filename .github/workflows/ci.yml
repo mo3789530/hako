@@ -46,6 +46,10 @@ jobs:
         env:
           HAKO_TEST_DATABASE_URL: postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable
         run: make test-webhook-lifecycle-integration
+      - name: Actions Runner lifecycle and cleanup recovery
+        env:
+          HAKO_TEST_DATABASE_URL: postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable
+        run: make test-actions-runner-lifecycle-integration
       - name: Install Podman and pull isolated Go test image
         run: |
           sudo apt-get update

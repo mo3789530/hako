@@ -20,3 +20,20 @@ Run one authorized Claude Code Action workflow job on one isolated Lambda MicroV
 - Wrong job or repository assignment cannot access checkout or model credentials.
 - Terminal Check conclusion matches the exact workflow job result and is idempotent under retries.
 - Tests prove no runner or credential is reused across jobs/Tenants; Lambda MicroVM remains the execution substrate and EC2 is not introduced.
+
+## Local cleanup progress (2026-10-18)
+
+- Terminal success/failure/cancel/timeout webhook events are composed with the
+  real PostgreSQL cleanup queue and worker plus stateful fake MicroVM/runner
+  providers. Termination and deregistration each fail once; recreated workers
+  recover with durable backoff and verify both resources are absent on success.
+- Every worker attempt now uses a fresh claim ID. Store updates additionally
+  fence by attempt count and exact lease expiry, rejecting stale completion and
+  retry even if the recovered worker has the same name.
+- Provider work is bounded within the lease and leaves five seconds for the
+  database acknowledgement. Invalid or nearly expired claims cause no provider
+  call. The focused local/CI command is
+  `make test-actions-runner-lifecycle-integration`.
+- The PostgreSQL queue remains a CP/library adapter. Production RP cleanup needs
+  a broker-mediated queue client and scheduled executable composition; image,
+  full authorized-flow E2E and real AWS/GitHub gates remain open.
