@@ -64,7 +64,7 @@ type deploymentConfig struct {
 
 func main() {
 	if err := run(); err != nil {
-		log.Printf("workspace gateway stopped: %v", err)
+		log.Printf("Workspace Gateway stopped (failure_class=process_exit)")
 		os.Exit(1)
 	}
 }

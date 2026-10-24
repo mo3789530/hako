@@ -23,32 +23,32 @@ func main() {
 	}
 	executionTimeout, err := parseExecutionTimeout(os.Getenv("HAKO_OPERATION_TIMEOUT"))
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("invalid operation timeout (failure_class=configuration)")
 	}
 	maxCommandAge, err := parseMaxCommandAge(os.Getenv("HAKO_COMMAND_MAX_AGE"))
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("invalid command age (failure_class=configuration)")
 	}
 	ctx := context.Background()
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
 	if err != nil {
-		log.Fatalf("load AWS SDK configuration: %v", err)
+		log.Fatal("load AWS SDK configuration failed (failure_class=aws_configuration)")
 	}
 	runtime, err := configuredRuntime(os.Getenv("HAKO_RUNTIME_IMPLEMENTATION"), awsCfg, os.Getenv)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("configure Resource Controller runtime failed (failure_class=runtime_configuration)")
 	}
 	sink, err := resourcecontroller.NewSQSResultSink(sqs.NewFromConfig(awsCfg), resultQueueURL)
 	if err != nil {
-		log.Fatalf("configure Operation result queue: %v", err)
+		log.Fatal("configure Operation result queue failed (failure_class=queue_configuration)")
 	}
 	controller, err := resourcecontroller.NewWithExecutionTimeoutAndMaxCommandAge(resourcePlaneID, runtime, sink, nil, executionTimeout, maxCommandAge)
 	if err != nil {
-		log.Fatalf("configure Resource Controller: %v", err)
+		log.Fatal("configure Resource Controller failed (failure_class=controller_configuration)")
 	}
 	handler, err := resourcecontroller.NewLambdaHandler(controller)
 	if err != nil {
-		log.Fatalf("configure SQS Lambda handler: %v", err)
+		log.Fatal("configure SQS Lambda handler failed (failure_class=handler_configuration)")
 	}
 	lambda.Start(handler.Handle)
 }

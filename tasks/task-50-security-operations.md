@@ -109,3 +109,12 @@ cleanup logs use fixed classes and trusted IDs, and storage references/provider
 errors are not written. Local process-log changes are covered by bounded-error
 handler tests; deployed log retention, alarm delivery, and escalation review
 remain.
+
+The remaining Task 50 Gateway/cleanup inventory also covered startup boundaries:
+Resource Controller Lambda initialization and Workspace Gateway process-exit
+logs now emit fixed failure classes without formatting the underlying error.
+This prevents AWS SDK endpoint/configuration details and filesystem paths from
+being copied into CloudWatch. Preview cleanup still has no physical worker, so
+there is no provider cleanup log path to claim as implemented; the runtime
+binding/deletion worker remains Task 54 work. Production retention, alert
+delivery, and escalation review remain unverified.

@@ -12,6 +12,7 @@
 | Webhook identity/retry | optional App ID照合、generation/Installation再検証。DB障害を失効として隔離せず再試行 | 前回実装・検証済み |
 | Audit改ざん | API DB roleの広いDML grantはaudit UPDATE/DELETEも許可。bootstrap templateでaudit_events/platform_audit_eventsのUPDATE/DELETEをrevoke | template修正。実環境へのgrant適用は未実施 |
 | Artifact cleanup error propagation | Cleanup Workerは構造化ログをredactしていたが、返却errorにS3/DSQL詳細やArtifact IDを含める経路があった。Workerの戻り値を固定sentinelへ変更し、失敗分類と相関IDだけをlogへ残す | list/delete/release/oversized batchのunit testを追加。Lambdaへ渡るerror文面もsanitize |
+| Runtime/Gateway startup failure logs | Resource Controller LambdaのAWS SDK、runtime、queue、handler初期化失敗とWorkspace Gatewayの終了ログが元error文字列を出す経路を除去。固定`failure_class`だけを記録 | local source review。provider詳細、endpoint、filesystem pathをログへ渡さない |
 
 ## 確認した境界
 
@@ -23,6 +24,7 @@
 - private-key/Webhook readerは承認済みexact Role/Secretと固定VersionIdを使う。private keyのAPI直接読取は未配備。Run identityとcache generationを都度再検証する。
 - checkoutは認可されたGitHub Repositoryと固定SHAを使い、tokenはaskpass FDで渡す。hook/submodule/redirect、環境継承を抑止する。
 - local Fake Jobはnetworkなし・read-only・非root・capabilities全削除のPodman内で実行し、workerのAWS/GitHub資格情報を渡さない。これは本番MicroVM隔離の実証ではない。
+- Workspace Gatewayのrequest failureは固定failure classとSessionから検証済みのTenant/Workspace/Plane/permissionだけを記録し、Ticket、provider error、storage referenceは記録しない。Artifact cleanup Workerは固定failure classと信頼済みRun/artifact/correlation identityを記録し、provider/DB errorは戻り値にも含めない。Preview cleanupは物理cleanup worker自体が未実装で、metadataの`cleaned`状態から削除完了を推論しない。
 
 ## 残るリスク・受入条件
 
