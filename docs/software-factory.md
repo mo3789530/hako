@@ -467,8 +467,21 @@ this schema.
 Declared Service Catalog sidecars are charged against the pipeline's declared
 memory and CPU budget using each fixed catalog resource request. The plan is
 rejected if sidecars exhaust either budget or use `network: none`. This is
-admission-time validation only: the current Workload Agent runtime does not
-yet enforce the pipeline process budget or provision Service containers.
+admission-time validation against the manifest's own declared budget. The
+separate Linux Job Service Engine now provisions only fixed `postgres` and
+`redis` templates with attempt-scoped internal networks, ephemeral tmpfs,
+catalog CPU/memory limits, loopback-only published ports, generated credentials,
+health checks, and bounded cleanup. It is opt-in and is not composed with the
+trusted manifest resolver yet; that resolver continues to reject `services`
+until the Lambda MicroVM image, runtime profile limits, and egress policy are
+validated. The Job command process budget is not yet enforced as an aggregate
+cgroup limit.
+
+`make test-job-services-podman` runs the production service engine against a
+local rootless Podman daemon through a test-only CLI adapter. It requires a
+locally cached PostgreSQL image (`docker.io/library/postgres:18` by default;
+override with `HAKO_JOB_SERVICES_PODMAN_IMAGE`). This checks host-side container
+flags and lifecycle, not the pinned ARM64 nerdctl runtime or a Lambda MicroVM.
 
 The validated configuration is converted to a deterministic execution plan
 inside the Workload Agent, after it verifies the installed source archive
@@ -483,10 +496,11 @@ no pipeline fails the Run instead of silently falling back.
 
 The current Agent runtime supports only `standard` with `registry-only`
 network policy. It rejects manifests declaring service containers, `network:
-none`, or another runtime class because their provisioners/network profiles
-are not connected yet. Memory and CPU values are parsed and bounded, but are
-not yet translated to MicroVM allocation controls. Tool executables must exist
-in the selected immutable MicroVM image; missing tools fail the Run.
+none`, or another runtime class because the Job Service engine and network
+profiles are not connected yet. Memory and CPU values are parsed and bounded,
+but are not yet enforced against the selected MicroVM profile. Tool
+executables must exist in the selected immutable MicroVM image; missing tools
+fail the Run.
 
 Webhook-created Runs persist the normalized trigger kind and selection branch
 alongside the immutable commit: push events store the branch after

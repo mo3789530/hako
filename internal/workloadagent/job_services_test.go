@@ -150,6 +150,37 @@ func TestCatalogJobServiceManagerFailsClosedAndRetriesCleanup(t *testing.T) {
 	})
 }
 
+func TestCatalogJobServiceManagerRecoveryClearsPriorAttemptScope(t *testing.T) {
+	id := testIdentity()
+	pipeline := factoryconfig.ExecutionPlan{Pipeline: "integration", RuntimeClass: "standard", TimeoutSecond: 60,
+		MemoryMB: 2048, CPUMillis: 1500, Network: "registry-only", Services: []string{"postgres"},
+		Commands: []factoryconfig.Command{{Step: "go-test", Executable: "/usr/local/go/bin/go", Args: []string{"test", "./..."}}}}
+	engine := &fakeJobServiceEngine{healthy: true}
+	manager, err := NewCatalogJobServiceManager(engine, bytes.NewReader(bytes.Repeat([]byte{3}, 64)), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The first session is deliberately abandoned to model an Agent crash after
+	// starting its attempt-scoped network and service container.
+	if _, err := manager.Start(context.Background(), id, pipeline); err != nil {
+		t.Fatal("initial service startup failed", err)
+	}
+	if len(engine.activeServices) != 1 || len(engine.activeNetworks) != 1 {
+		t.Fatalf("initial attempt did not leave resources for recovery: services=%v networks=%v", engine.activeServices, engine.activeNetworks)
+	}
+	recovered, err := manager.Start(context.Background(), id, pipeline)
+	if err != nil {
+		t.Fatal("recovery did not clear and recreate the deterministic attempt scope", err)
+	}
+	if len(engine.removedServices) != 1 || len(engine.removedNetworks) != 1 || len(engine.activeServices) != 1 || len(engine.activeNetworks) != 1 {
+		t.Fatalf("recovery did not replace exactly the prior scope: removed services=%v networks=%v active services=%v networks=%v",
+			engine.removedServices, engine.removedNetworks, engine.activeServices, engine.activeNetworks)
+	}
+	if err := recovered.Close(context.Background()); err != nil {
+		t.Fatal("recovered attempt cleanup failed", err)
+	}
+}
+
 type fixedJobServiceSession struct {
 	environment []string
 	secrets     []string

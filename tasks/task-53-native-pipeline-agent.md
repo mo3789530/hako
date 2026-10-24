@@ -206,6 +206,14 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   the available x86_64 PostgreSQL 18 image verified startup, `pg_isready`, and
   `127.0.0.1` port binding with the same core restrictions. This is not a
   runtime test of the pinned ARM64 images or nerdctl itself.
+- Added repeatable `make test-job-services-podman` coverage that drives the
+  production Job Service engine through an integration-test-only Podman CLI
+  adapter. It verifies PostgreSQL startup/health, generated credential
+  handoff, tmpfs data, 1 GiB/0.75 CPU limits, read-only rootfs, loopback-only
+  port publishing, credential env-file removal, and cleanup. The host port is
+  remapped to an ephemeral loopback port because `hako-dev-postgres` keeps
+  port 5432 occupied; the development database is not stopped. This exercises
+  Podman on the host, not nerdctl/cgroup enforcement in Lambda MicroVM.
 - Production composition still does not inject this provisioner, and the
   trusted manifest resolver rejects pipelines declaring Services. The Lambda
   MicroVM image does not yet contain/configure rootless containerd, the runtime
@@ -325,10 +333,13 @@ Services remain disabled.
 - [ ] Wait for catalog health checks before executing pipeline commands and
   always perform bounded teardown. A teardown failure must keep the Workload
   non-terminal/cleanup-pending until the Resource Plane confirms removal.
-- [ ] Add fake-backed lifecycle tests plus a local container integration test
+- [x] Add fake-backed lifecycle tests and a local Podman integration test
   covering startup, health failure, command failure, cancel/timeout, crash
   recovery, resource limits, port isolation, credential/log redaction, and
-  repeated cleanup. Keep Agent scheduling disabled until its separate
+  repeated cleanup. The Podman test exercises the production Job Service engine
+  through a narrow CLI compatibility adapter with the locally cached amd64
+  PostgreSQL image; it is not evidence for nerdctl, the pinned ARM64 image, or
+  the Lambda MicroVM. Keep Agent scheduling disabled until its separate
   executor, credential policy, and network/resource gates pass.
 
 ## Process identity isolation (2026-10-24)
