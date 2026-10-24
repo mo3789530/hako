@@ -1,4 +1,4 @@
-.PHONY: fmt lint test test-integration test-integration-local test-webhook-lifecycle-integration test-actions-runner-lifecycle-integration test-software-factory-e2e test-workload-runtime test-workload-runtime-integration test-artifact-retention-integration test-workspace-idle-lifecycle-integration test-preview-expiry-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-workspace-service-controller-lambda build-health-reporter-lambda build-workspace-idle-reconciler-lambda build-preview-expiry-lambda build-workload-controller-lambda build-actions-runner-lambda build-actions-runner-microvm-image build-workload-microvm-artifact build-workspace-microvm-image build-github-checks-consumer-image build-workspace-gateway-image terraform-fmt terraform-validate terraform-test
+.PHONY: fmt lint test test-integration test-integration-local test-webhook-lifecycle-integration test-actions-runner-lifecycle-integration test-software-factory-e2e test-workload-runtime test-workload-runtime-integration test-artifact-retention-integration test-workspace-idle-lifecycle-integration test-preview-expiry-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-workspace-service-controller-lambda build-health-reporter-lambda build-workspace-idle-reconciler-lambda build-preview-expiry-lambda build-workload-controller-lambda build-actions-runner-lambda build-actions-runner-microvm-image build-workload-microvm-artifact build-workload-microvm-services-image build-workspace-microvm-image build-github-checks-consumer-image build-workspace-gateway-image terraform-fmt terraform-validate terraform-test
 
 HAKO_WORKSPACE_SERVICES_ENABLED ?= false
 
@@ -133,6 +133,22 @@ build-workload-microvm-artifact:
 	cp images/workload-agent/Dockerfile build/workload-microvm/Dockerfile
 	install -m 0644 "$(HAKO_AGENT_TRUSTED_KEYS_FILE)" build/workload-microvm/trusted-keys.json
 	zip -q -j -FS build/hako-workload-microvm.zip build/workload-microvm/Dockerfile build/workload-microvm/hako-agent build/workload-microvm/trusted-keys.json
+
+# Builds an opt-in Lambda MicroVM image variant with a separately-owned
+# rootless Job containerd daemon. Services remain disabled in the image.
+build-workload-microvm-services-image: build-workload-microvm-artifact
+	@test -n "$(HAKO_NERDCTL_FULL_ARCHIVE)" || (echo "set HAKO_NERDCTL_FULL_ARCHIVE to a reviewed nerdctl-full Linux ARM64 archive" >&2; exit 1)
+	@test -n "$(HAKO_NERDCTL_FULL_VERSION)" || (echo "set HAKO_NERDCTL_FULL_VERSION to the exact nerdctl release" >&2; exit 1)
+	@test -n "$(HAKO_NERDCTL_FULL_SHA256)" || (echo "set HAKO_NERDCTL_FULL_SHA256 to the reviewed archive digest" >&2; exit 1)
+	@test -s "$(HAKO_NERDCTL_FULL_ARCHIVE)" || (echo "nerdctl-full archive is missing or empty" >&2; exit 1)
+	@set -e; archive_entries=$$(tar -tzf "$(HAKO_NERDCTL_FULL_ARCHIVE)"); \
+	for required in bin/nerdctl bin/containerd bin/containerd-rootless.sh bin/rootlesskit bin/slirp4netns; do \
+		printf '%s\n' "$$archive_entries" | grep -Fxq "$$required" || { echo "nerdctl-full archive is missing $$required" >&2; exit 1; }; \
+	done
+	cp "$(HAKO_NERDCTL_FULL_ARCHIVE)" build/workload-microvm/nerdctl-full-linux-arm64.tar.gz
+	cp images/workload-agent/Dockerfile.services build/workload-microvm/Dockerfile.services
+	podman build --arch arm64 --tag hako-workload-agent:local-base -f build/workload-microvm/Dockerfile build/workload-microvm
+	podman build --arch arm64 --build-arg HAKO_WORKLOAD_BASE_IMAGE=hako-workload-agent:local-base --build-arg NERDCTL_FULL_VERSION="$(HAKO_NERDCTL_FULL_VERSION)" --build-arg NERDCTL_FULL_SHA256="$(HAKO_NERDCTL_FULL_SHA256)" --tag hako-workload-agent:services-local -f build/workload-microvm/Dockerfile.services build/workload-microvm
 
 # Builds a distinct root-owned Workspace init image with a separate unprivileged shell Agent. EFS RPM, nerdctl-full artifact, and public verification keys are pinned inputs.
 build-workspace-microvm-image:

@@ -309,10 +309,13 @@ The Lambda MicroVM image runs the trusted `hako-agent` as root so it can own
 runtime control sockets. Repository-controlled catalog processes are started
 with an explicit empty supplementary-group list as UID/GID `65532:65532`.
 This separates job code from the Agent's root identity and prepares the
-containerd socket boundary; it does not by itself provide network isolation,
-resource limits, or permission to start containers. Service pipelines remain
-disabled until the rootless runtime is composed and those controls are tested
-inside the pinned ARM64 Lambda MicroVM image.
+containerd socket boundary. A separate opt-in image build includes a dedicated
+rootless-containerd daemon account and manager; `HAKO_JOB_SERVICES_ENABLED`
+defaults to false. The manager checks the subordinate ID range, setuid mapping
+helpers, tmpfs runtime directory, and socket ownership. It does not by itself
+provide Job egress isolation or prove resource limits. The image target and
+daemon have not been exercised in a Lambda MicroVM, so the trusted resolver
+continues to reject Service pipelines.
 
 ### Issue Agent repository write policy
 
@@ -416,6 +419,7 @@ is evidence for the composed contracts, not a production-readiness claim.
 - [Self-hosted runner autoscaling and ephemeral runners](https://docs.github.com/en/actions/reference/runners/self-hosted-runners)
 - [REST API for Checks](https://docs.github.com/en/rest/guides/using-the-rest-api-to-interact-with-checks)
 - [OIDC in cloud providers](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-cloud-providers)
+- [nerdctl rootless mode and cgroup prerequisites](https://github.com/containerd/nerdctl/blob/main/docs/rootless.md)
 
 ## Native Pipeline Manifest (version 1)
 

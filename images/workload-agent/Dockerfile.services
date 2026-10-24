@@ -1,0 +1,38 @@
+ARG HAKO_WORKLOAD_BASE_IMAGE=hako-workload-agent:local-base
+FROM ${HAKO_WORKLOAD_BASE_IMAGE}
+
+ARG NERDCTL_FULL_VERSION
+ARG NERDCTL_FULL_SHA256
+COPY nerdctl-full-linux-arm64.tar.gz /tmp/nerdctl-full-linux-arm64.tar.gz
+
+# The daemon runs under a dedicated non-login UID. The Agent remains root to
+# manage it, while repository commands run under the separate 65532 identity.
+RUN test -n "${NERDCTL_FULL_VERSION}" \
+    && case "${NERDCTL_FULL_VERSION}" in ''|*[!0-9.]* ) exit 1 ;; esac \
+    && echo "${NERDCTL_FULL_SHA256}" | grep -Eq '^[[:xdigit:]]{64}$' \
+    && echo "${NERDCTL_FULL_SHA256}  /tmp/nerdctl-full-linux-arm64.tar.gz" | sha256sum --check \
+    && tar -tzf /tmp/nerdctl-full-linux-arm64.tar.gz | grep -Fxq bin/nerdctl \
+    && tar -tzf /tmp/nerdctl-full-linux-arm64.tar.gz | grep -Fxq bin/containerd-rootless.sh \
+    && tar -tzf /tmp/nerdctl-full-linux-arm64.tar.gz | grep -Fxq bin/rootlesskit \
+    && tar -tzf /tmp/nerdctl-full-linux-arm64.tar.gz | grep -Fxq bin/slirp4netns \
+    && tar -xzf /tmp/nerdctl-full-linux-arm64.tar.gz --no-same-owner --no-same-permissions -C /usr/local \
+    && test "$(/usr/local/bin/nerdctl --version)" = "nerdctl version ${NERDCTL_FULL_VERSION}" \
+    && groupadd --gid 100000 hako-job-runtime \
+    && useradd --uid 100000 --gid 100000 --home-dir /tmp/hako-job-runtime-home-100000 --no-create-home --shell /sbin/nologin hako-job-runtime \
+    && usermod --add-subuids 20000000-20065535 --add-subgids 20000000-20065535 hako-job-runtime \
+    && test -u /usr/bin/newuidmap \
+    && test -u /usr/bin/newgidmap \
+    && test -x /usr/local/bin/containerd \
+    && test -x /usr/local/bin/containerd-shim-runc-v2 \
+    && test -x /usr/local/bin/runc \
+    && test -x /usr/local/bin/nerdctl \
+    && test -x /usr/local/bin/containerd-rootless.sh \
+    && test -x /usr/local/bin/rootlesskit \
+    && test -x /usr/local/bin/slirp4netns \
+    && mkdir -p /run/user /run/hako-job-services \
+    && chmod 0755 /run/user \
+    && chmod 0700 /run/hako-job-services \
+    && rm -f /tmp/nerdctl-full-linux-arm64.tar.gz
+
+ENV HAKO_JOB_SERVICES_ENABLED=false
+USER 0:0

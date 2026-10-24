@@ -41,6 +41,19 @@ func run() error {
 	if keyErr != nil || closeErr != nil {
 		return errors.New("load image-provisioned Hako Agent public keys")
 	}
+	jobServices, jobContainerd, err := configureJobServices()
+	if err != nil {
+		return errors.New("configure Job Service runtime")
+	}
+	if jobContainerd != nil {
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := jobContainerd.Close(ctx); err != nil {
+				log.Printf("Job rootless containerd shutdown did not finish cleanly")
+			}
+		}()
+	}
 	agent, err := workloadagent.NewFilesystemAgent(workloadagent.FilesystemAgentConfig{
 		SourceDirectory:       sourceDirectory,
 		TrustedKeys:           keys,
@@ -49,6 +62,7 @@ func run() error {
 			GoBinary:    "/usr/local/go/bin/go",
 			GoCache:     "/tmp/hako-go-cache",
 			ModuleCache: strings.TrimSpace(os.Getenv("HAKO_GO_MODULE_CACHE")),
+			JobServices: jobServices,
 			CommandUID:  65532,
 			CommandGID:  65532,
 		},
@@ -90,5 +104,48 @@ func run() error {
 			return errors.New("shut down Hako Agent HTTP listener")
 		}
 		return nil
+	}
+}
+
+func configureJobServices() (workloadagent.JobServiceProvisioner, *workloadagent.JobRootlessContainerd, error) {
+	enabled, err := parseJobServicesEnabled(os.Getenv("HAKO_JOB_SERVICES_ENABLED"))
+	if err != nil {
+		return nil, nil, err
+	}
+	if !enabled {
+		return nil, nil, nil
+	}
+	daemon, err := workloadagent.StartLinuxJobRootlessContainerd(context.Background(), workloadagent.JobRootlessContainerdConfig{})
+	if err != nil {
+		return nil, nil, errors.New("start dedicated Job rootless containerd")
+	}
+	engine, err := workloadagent.NewNerdctlJobServiceEngine(workloadagent.NerdctlJobServiceEngineConfig{
+		BinaryPath: "/usr/local/bin/nerdctl", ContainerdSocket: workloadagent.JobContainerdSocketPath,
+		RuntimeDirectory: workloadagent.JobContainerdRuntimeDir, EnvFileDirectory: workloadagent.JobContainerdEnvFileDir,
+	})
+	if err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = daemon.Close(ctx)
+		return nil, nil, errors.New("configure dedicated Job container engine")
+	}
+	manager, err := workloadagent.NewCatalogJobServiceManager(engine, nil, nil)
+	if err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = daemon.Close(ctx)
+		return nil, nil, errors.New("configure Job Service provisioner")
+	}
+	return manager, daemon, nil
+}
+
+func parseJobServicesEnabled(value string) (bool, error) {
+	switch strings.TrimSpace(value) {
+	case "", "false":
+		return false, nil
+	case "true":
+		return true, nil
+	default:
+		return false, errors.New("HAKO_JOB_SERVICES_ENABLED must be true or false")
 	}
 }

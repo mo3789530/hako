@@ -289,8 +289,11 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
 
 The current Workspace Service Engine is not a Job service runtime: it uses a
 Workspace identity, durable Service IDs/volumes, and Workspace lifecycle
-commands. The Workload Agent image does not yet include or start the rootless
-containerd toolchain. Do not enable manifest `services` by reusing that path.
+commands. The default Workload Agent image does not include or start the
+rootless containerd toolchain. An opt-in image build target and daemon
+supervisor now exist, but the target has not been built with the reviewed
+ARM64 artifact or run inside Lambda MicroVM. Do not enable manifest `services`
+by reusing the Workspace path.
 The Job runtime needs its own implementation with these acceptance conditions:
 
 - [ ] Provision only immutable Service Catalog entries (`postgres`, `redis`)
@@ -325,9 +328,22 @@ The Job runtime needs its own implementation with these acceptance conditions:
   Go-test and Native catalog child commands are launched as UID/GID
   `65532:65532` with no supplementary groups. Linux tests verify identity
   validation and, when the test process is root, the actual child UID. This
-  establishes a process-identity boundary for a future rootless containerd
-  socket. The runtime is not yet started or injected in this image, so Service
-  declarations remain rejected and Agent scheduling remains disabled.
+  establishes a process-identity boundary for the rootless containerd socket.
+  The default image does not start that runtime, so Service declarations
+  remain rejected and Agent scheduling remains disabled.
+- Added a dedicated Linux Job rootless-containerd supervisor and opt-in
+  `Dockerfile.services`/`make build-workload-microvm-services-image` path. The
+  supervisor requires the exact runtime UID/subuid layout, setuid mapping
+  helpers, tmpfs runtime path, root-owned secret-file directory, and a private
+  socket owned by UID 100000. The daemon is started only when
+  `HAKO_JOB_SERVICES_ENABLED=true`; the image default is false. The manager and
+  image target have not yet been exercised with the reviewed ARM64 nerdctl
+  archive or an actual Lambda MicroVM. Manifest Services remain rejected by
+  the trusted resolver because Job egress and resource-limit enforcement are
+  not proven. Upstream nerdctl documents memory limits as requiring systemd
+  plus cgroup v2; neither capability has been demonstrated in the target
+  Lambda MicroVM, so command construction tests are not treated as proof of
+  enforcement.
 
 ## Repository write policy groundwork (2026-10-24)
 
