@@ -214,6 +214,12 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   remapped to an ephemeral loopback port because `hako-dev-postgres` keeps
   port 5432 occupied; the development database is not stopped. This exercises
   Podman on the host, not nerdctl/cgroup enforcement in Lambda MicroVM.
+- Extended that Podman integration to build a connection from the exact
+  per-attempt `DATABASE_URL`/`PGPASSWORD` returned to the Job process, connect
+  through the ephemeral loopback port, authenticate to PostgreSQL, and execute
+  `SELECT 1`. The fixture does not print the generated credential or provider
+  error text. This verifies the local handoff and port path, not target
+  MicroVM/nerdctl enforcement.
 - Production composition still does not inject this provisioner, and the
   trusted manifest resolver rejects pipelines declaring Services. Rootless
   containerd is available only in a dedicated opt-in image target and must be

@@ -5,10 +5,12 @@ package workloadagent
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/mo3789530/hako/internal/factoryconfig"
 )
 
@@ -155,6 +158,33 @@ func TestNerdctlJobServicePodmanRuntimeContract(t *testing.T) {
 	}()
 	if len(session.SecretValues()) != 1 || !strings.Contains(strings.Join(session.Environment(), "\n"), "PGHOST=127.0.0.1") {
 		t.Fatal("Job Service session did not produce its attempt-scoped PostgreSQL environment")
+	}
+	jobEnvironment := make(map[string]string)
+	for _, entry := range session.Environment() {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			jobEnvironment[key] = value
+		}
+	}
+	databaseURL, err := url.Parse(jobEnvironment["DATABASE_URL"])
+	if err != nil || databaseURL.User == nil || databaseURL.User.Username() != "postgres" ||
+		jobEnvironment["PGPASSWORD"] == "" || jobEnvironment["PGPASSWORD"] != session.SecretValues()[0] {
+		t.Fatal("Job Service generated credential environment is incomplete")
+	}
+	databaseURL.Host = net.JoinHostPort("127.0.0.1", port)
+	db, err := sql.Open("pgx", databaseURL.String())
+	if err != nil {
+		t.Fatal("configure local Job Service connection")
+	}
+	defer db.Close()
+	probeCtx, probeCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer probeCancel()
+	if err := db.PingContext(probeCtx); err != nil {
+		t.Fatal("Job Service rejected its generated credential or loopback connection")
+	}
+	var one int
+	if err := db.QueryRowContext(probeCtx, "SELECT 1").Scan(&one); err != nil || one != 1 {
+		t.Fatal("Job Service query did not complete")
 	}
 	// Verify the production engine's inspected container is published only on
 	// host loopback; the actual host port is ephemeral for developer isolation.
