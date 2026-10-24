@@ -327,6 +327,15 @@ func (b *ProcessBackend) Close(ctx context.Context) error {
 func (b *ProcessBackend) wait(a *processAttempt, processCtx context.Context, process ManagedProcess) {
 	defer b.waitGroup.Done()
 	exitCode, waitErr := process.Wait()
+	var secrets []string
+	if provider, ok := process.(interface{ SecretValues() []string }); ok {
+		secrets = provider.SecretValues()
+	}
+	defer func() {
+		for i := range secrets {
+			secrets[i] = ""
+		}
+	}()
 	completed := b.config.Now().UTC()
 	state := workloadjournal.Succeeded
 	errorCode := ""
@@ -345,7 +354,7 @@ func (b *ProcessBackend) wait(a *processAttempt, processCtx context.Context, pro
 		// Do not retain a prefix that could end in the middle of a secret.
 		logs = []byte("[Hako Agent] output limit exceeded; logs withheld\n")
 	}
-	logs = fake.RedactJobLogs(logs, nil)
+	logs = fake.RedactJobLogs(logs, secrets)
 	if len(logs) > maxAgentLogBytes {
 		logs = []byte("[Hako Agent] redacted logs exceeded the transfer limit; logs withheld\n")
 	}
@@ -411,6 +420,7 @@ type GoTestProcessFactory struct {
 	GitBinary   string
 	GoCache     string
 	ModuleCache string
+	JobServices JobServiceProvisioner
 }
 
 func (f GoTestProcessFactory) Start(ctx context.Context, plan ExecutionPlan, output io.Writer) (ManagedProcess, error) {
@@ -487,9 +497,10 @@ func (f GoTestProcessFactory) startFactoryPipelines(ctx context.Context, plan Ex
 	previousName := ""
 	for _, pipeline := range plan.FactoryPipelines {
 		if factoryconfig.ValidateExecutionPlan(pipeline) != nil || pipeline.RuntimeClass != "standard" ||
-			pipeline.Network != "registry-only" || len(pipeline.Services) != 0 || (previousName != "" && pipeline.Pipeline <= previousName) {
-			// Service containers and alternate runtime profiles must be provisioned
-			// by their own trusted runtime adapters before this executor can accept them.
+			pipeline.Network != "registry-only" || (len(pipeline.Services) != 0 && f.JobServices == nil) ||
+			(previousName != "" && pipeline.Pipeline <= previousName) {
+			// Job Service containers require the separate Job/attempt-scoped
+			// provisioner; Workspace Service identities are never accepted here.
 			return nil, ErrExecutionPlan
 		}
 		previousName = pipeline.Pipeline
@@ -502,7 +513,28 @@ func (f GoTestProcessFactory) startFactoryPipelines(ctx context.Context, plan Ex
 			pipelineCtx, cancel := context.WithTimeout(ctx, time.Duration(pipeline.TimeoutSecond)*time.Second)
 			_, _ = fmt.Fprintf(output, "[Hako] pipeline %s\n", pipeline.Pipeline)
 			pipelineResult := workloadjobs.WorkloadPipelineResult{Name: pipeline.Pipeline, Status: "succeeded"}
+			var serviceSession JobServiceSession
+			serviceEnvironment := []string(nil)
+			if len(pipeline.Services) != 0 {
+				var err error
+				serviceSession, err = f.JobServices.Start(pipelineCtx, plan.Identity, pipeline)
+				if err != nil {
+					if errors.Is(err, ErrJobServiceCleanup) {
+						result = processExit{code: 1, err: ErrJobServiceCleanup}
+						pipelineResult = workloadjobs.WorkloadPipelineResult{Name: pipeline.Pipeline, Status: "failed", ExitCode: 1, ErrorCode: "service_cleanup_incomplete"}
+					} else {
+						result = processExit{code: 1, err: ErrJobServicesUnavailable}
+						pipelineResult = workloadjobs.WorkloadPipelineResult{Name: pipeline.Pipeline, Status: "failed", ExitCode: 1, ErrorCode: "services_unavailable"}
+					}
+				} else {
+					serviceEnvironment = serviceSession.Environment()
+					process.addSecrets(serviceSession.SecretValues())
+				}
+			}
 			for _, command := range pipeline.Commands {
+				if result.err != nil {
+					break
+				}
 				_, _ = fmt.Fprintf(output, "[Hako] step %s\n", command.Step)
 				executable := command.Executable
 				if command.Executable == "/usr/local/go/bin/go" && f.GoBinary != "" {
@@ -541,7 +573,11 @@ func (f GoTestProcessFactory) startFactoryPipelines(ctx context.Context, plan Ex
 				case "python-test":
 					env = append(env, "PYTHONNOUSERSITE=1", "PYTHONDONTWRITEBYTECODE=1")
 				}
+				env = append(env, serviceEnvironment...)
 				if result.err != nil {
+					for i := range env {
+						env[i] = ""
+					}
 					break
 				}
 				if err := runCatalogCommand(pipelineCtx, plan.RepositoryPath, executable, command.Args, env, output); err != nil {
@@ -554,10 +590,28 @@ func (f GoTestProcessFactory) startFactoryPipelines(ctx context.Context, plan Ex
 						result = processExit{code: code, err: err}
 						pipelineResult = workloadjobs.WorkloadPipelineResult{Name: pipeline.Pipeline, Status: "failed", ExitCode: code, ErrorCode: "step_failed"}
 					}
+					for i := range env {
+						env[i] = ""
+					}
 					break
 				}
+				for i := range env {
+					env[i] = ""
+				}
+			}
+			for i := range serviceEnvironment {
+				serviceEnvironment[i] = ""
 			}
 			cancel()
+			if serviceSession != nil {
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				cleanupErr := serviceSession.Close(cleanupCtx)
+				cleanupCancel()
+				if cleanupErr != nil {
+					result = processExit{code: 1, err: ErrJobServiceCleanup}
+					pipelineResult = workloadjobs.WorkloadPipelineResult{Name: pipeline.Pipeline, Status: "failed", ExitCode: 1, ErrorCode: "service_cleanup_incomplete"}
+				}
+			}
 			if result.err == nil && ctx.Err() != nil {
 				result, pipelineResult, _ = pipelineContextExit(pipeline.Pipeline, ctx.Err())
 			}
@@ -604,6 +658,7 @@ type factoryPipelineProcess struct {
 	done    chan processExit
 	mu      sync.RWMutex
 	results []workloadjobs.WorkloadPipelineResult
+	secrets []string
 }
 
 func (p *factoryPipelineProcess) setResults(results []workloadjobs.WorkloadPipelineResult) {
@@ -616,6 +671,23 @@ func (p *factoryPipelineProcess) PipelineResults() []workloadjobs.WorkloadPipeli
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return append([]workloadjobs.WorkloadPipelineResult(nil), p.results...)
+}
+
+func (p *factoryPipelineProcess) addSecrets(values []string) {
+	p.mu.Lock()
+	p.secrets = append(p.secrets, values...)
+	p.mu.Unlock()
+}
+
+func (p *factoryPipelineProcess) SecretValues() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	values := append([]string(nil), p.secrets...)
+	for i := range p.secrets {
+		p.secrets[i] = ""
+	}
+	p.secrets = nil
+	return values
 }
 
 func (p *factoryPipelineProcess) Wait() (int, error) {

@@ -183,6 +183,27 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
 
 ## Local verification refresh (2026-10-24)
 
+- Added a Job/attempt-scoped `CatalogJobServiceManager` contract and connected
+  it to the native Pipeline process lifecycle. Each Pipeline provisions only
+  the built-in `postgres`/`redis` catalog on a deterministic hashed scope,
+  waits for the catalog health check, exposes fixed loopback connection
+  variables to its commands, and removes the services/network with a separate
+  bounded cleanup context after success, failure, timeout, or cancellation.
+  Generated PostgreSQL credentials are retained only for that process attempt
+  so the final bounded log buffer can be redacted; cleanup failures fail the
+  Pipeline and remain retryable. Fake-engine tests cover ephemeral scope,
+  health failure cleanup, idempotent close/retry, command environment, cleanup
+  failure, and credential redaction.
+- This is lifecycle orchestration only. Production composition deliberately
+  does not inject a provisioner, and the trusted manifest resolver still
+  rejects pipelines declaring Services. A Linux rootless `containerd`/`nerdctl`
+  implementation with internal networking, loopback-only published ports,
+  tmpfs-only database state, exact resource controls, image-pull egress policy,
+  and runtime acceptance tests remains required before enabling the feature.
+  In particular, the host Job process currently lacks an enforced
+  registry-only egress boundary, so this change does not enable Service
+  pipelines or Agent scheduling.
+
 - Tenant model credentials now have an explicit `claude_action` or
   `native_agent` purpose in both the operator-approved binding and Tenant
   credential row. The Owner/Admin API and CLI create, list, rotate, and disable
