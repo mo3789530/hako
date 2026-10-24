@@ -215,12 +215,21 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   port 5432 occupied; the development database is not stopped. This exercises
   Podman on the host, not nerdctl/cgroup enforcement in Lambda MicroVM.
 - Production composition still does not inject this provisioner, and the
-  trusted manifest resolver rejects pipelines declaring Services. The Lambda
-  MicroVM image does not yet contain/configure rootless containerd, the runtime
-  socket must be isolated from untrusted job commands, target nerdctl label
-  inspection and pinned ARM64 image behavior need execution tests, and the host
-  Job process still lacks enforced registry-only egress. Those conditions keep
-  Service pipelines and Agent scheduling disabled.
+  trusted manifest resolver rejects pipelines declaring Services. Rootless
+  containerd is available only in a dedicated opt-in image target and must be
+  exercised in the target MicroVM. The runtime socket stays owned by UID
+  100000, distinct from the Job UID; target nerdctl label inspection, pinned
+  ARM64 image behavior, host firewall support, and container egress need
+  execution tests. Those conditions keep Service pipelines and Agent
+  scheduling disabled.
+
+- Added a Linux Job egress guard to the immutable workload image. Before the
+  Agent opens its listener, and again before each Job process starts, it
+  installs IPv4 and IPv6 OUTPUT rules that allow loopback and reject other
+  traffic from UID 65532, the containerd daemon UID, and its configured mapped
+  UID range. Startup and Job execution fail closed when either firewall family
+  cannot be configured. This is local code evidence; target Lambda MicroVM
+  netfilter support and mapped-user traffic still require runtime validation.
 
 - Tenant model credentials now have an explicit `claude_action` or
   `native_agent` purpose in both the operator-approved binding and Tenant
@@ -338,7 +347,9 @@ Services remain disabled.
   Lambda MicroVM validation.
 - [ ] Bind service ports only to the MicroVM loopback interface. Permit only
   the registry traffic needed to obtain pinned catalog images; do not provide
-  arbitrary Internet or AWS access to the Job or its service containers.
+  arbitrary Internet or AWS access to the Job or its service containers. Host
+  process loopback-only enforcement is now implemented in the workload image;
+  container egress and target MicroVM behavior remain unverified.
 - [ ] Generate PostgreSQL credentials per attempt, pass them only to the
   service and test process, and include them in the bounded log redaction set.
   Never persist them in DSQL, journal, result, artifact, or container labels.

@@ -421,11 +421,12 @@ func (w *boundedOutput) snapshot() ([]byte, bool) {
 // Lambda MicroVM is the isolation boundary; this process receives a minimal
 // environment and is killed as a process group on cancellation/deadline.
 type GoTestProcessFactory struct {
-	GoBinary    string
-	GitBinary   string
-	GoCache     string
-	ModuleCache string
-	JobServices JobServiceProvisioner
+	GoBinary     string
+	GitBinary    string
+	GoCache      string
+	ModuleCache  string
+	JobServices  JobServiceProvisioner
+	EgressPolicy JobEgressPolicy
 	// CommandUID/GID drop repository-controlled commands below the trusted
 	// Agent process. Both must be set together; zero/zero preserves the caller
 	// identity for local development and tests.
@@ -444,6 +445,11 @@ func (f GoTestProcessFactory) Start(ctx context.Context, plan ExecutionPlan, out
 	repository, err = filepath.Abs(repository)
 	if err != nil || repository == string(filepath.Separator) || strings.ContainsAny(repository, "\r\n,\\") {
 		return nil, ErrExecutionPlan
+	}
+	if f.EgressPolicy != nil {
+		if err := f.EgressPolicy.Enforce(ctx); err != nil {
+			return nil, ErrExecutionPlan
+		}
 	}
 	info, err := os.Stat(repository)
 	if err != nil || !info.IsDir() {

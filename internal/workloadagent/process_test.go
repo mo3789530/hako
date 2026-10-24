@@ -22,6 +22,10 @@ import (
 	"github.com/mo3789530/hako/internal/workloadsource"
 )
 
+type jobEgressPolicyFunc func(context.Context) error
+
+func (f jobEgressPolicyFunc) Enforce(ctx context.Context) error { return f(ctx) }
+
 type fixedExecutionResolver struct {
 	plan ExecutionPlan
 	err  error
@@ -362,13 +366,23 @@ func TestGoTestProcessFactoryVerifiesCommitAndRunsFixedCommand(t *testing.T) {
 	if err := installer.Install(context.Background(), claims, archive.SHA256(), commit, archive.Reader(), archive.Size()); err != nil {
 		t.Fatal(err)
 	}
-	factory := GoTestProcessFactory{GoBinary: goBinary, GoCache: filepath.Join(t.TempDir(), "gocache")}
+	guardCalls := 0
+	guard := jobEgressPolicyFunc(func(context.Context) error { guardCalls++; return nil })
+	factory := GoTestProcessFactory{GoBinary: goBinary, GoCache: filepath.Join(t.TempDir(), "gocache"), EgressPolicy: guard}
 	output := &boundedOutput{limit: 64 << 10}
 	ctx, cancel := context.WithDeadline(context.Background(), plan.Deadline)
 	defer cancel()
+	failingFactory := factory
+	failingFactory.EgressPolicy = jobEgressPolicyFunc(func(context.Context) error { return errJobEgressPolicy })
+	if _, err := failingFactory.Start(ctx, plan, io.Discard); !errors.Is(err, ErrExecutionPlan) {
+		t.Fatalf("process started without enforced egress policy: %v", err)
+	}
 	process, err := factory.Start(ctx, plan, output)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if guardCalls != 1 {
+		t.Fatalf("egress guard calls = %d, want 1", guardCalls)
 	}
 	code, err := process.Wait()
 	logs, _ := output.snapshot()
@@ -380,7 +394,7 @@ func TestGoTestProcessFactoryVerifiesCommitAndRunsFixedCommand(t *testing.T) {
 	nativePlan.FactoryPipelines = []factoryconfig.ExecutionPlan{{Pipeline: "verify", RuntimeClass: "standard", TimeoutSecond: 30,
 		MemoryMB: 2048, CPUMillis: 1000, Network: "registry-only",
 		Commands: []factoryconfig.Command{{Step: "go-test", Executable: "/usr/local/go/bin/go", Args: []string{"test", "./..."}}}}}
-	nativeFactory := GoTestProcessFactory{GoBinary: goBinary, GoCache: filepath.Join(t.TempDir(), "native-gocache")}
+	nativeFactory := GoTestProcessFactory{GoBinary: goBinary, GoCache: filepath.Join(t.TempDir(), "native-gocache"), EgressPolicy: guard}
 	nativeOutput := &boundedOutput{limit: 64 << 10}
 	nativeCtx, nativeCancel := context.WithTimeout(context.Background(), time.Minute)
 	nativeProcess, err := nativeFactory.Start(nativeCtx, nativePlan, nativeOutput)
@@ -393,6 +407,9 @@ func TestGoTestProcessFactoryVerifiesCommitAndRunsFixedCommand(t *testing.T) {
 	nativeLogs, _ := nativeOutput.snapshot()
 	if nativeErr != nil || nativeCode != 0 || !strings.Contains(string(nativeLogs), "pipeline verify") || !strings.Contains(string(nativeLogs), "step go-test") {
 		t.Fatalf("native manifest pipeline failed: code=%d err=%v output=%q", nativeCode, nativeErr, nativeLogs)
+	}
+	if guardCalls != 2 {
+		t.Fatalf("egress guard calls = %d after both executions, want 2", guardCalls)
 	}
 	pipelineResultProvider, ok := nativeProcess.(interface {
 		PipelineResults() []workloadjobs.WorkloadPipelineResult

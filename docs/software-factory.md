@@ -312,10 +312,13 @@ This separates job code from the Agent's root identity and prepares the
 containerd socket boundary. A separate opt-in image build includes a dedicated
 rootless-containerd daemon account and manager; `HAKO_JOB_SERVICES_ENABLED`
 defaults to false. The manager checks the subordinate ID range, setuid mapping
-helpers, tmpfs runtime directory, and socket ownership. It does not by itself
-provide Job egress isolation or prove resource limits. The image target and
-daemon have not been exercised in a Lambda MicroVM, so the trusted resolver
-continues to reject Service pipelines.
+helpers, tmpfs runtime directory, and socket ownership. The workload image now
+installs an IPv4/IPv6 loopback-only OUTPUT guard for the Job UID and rootless
+containerd UID range before opening the Agent listener, and fails closed when
+the rules cannot be installed. This is defense in depth; target MicroVM kernel
+support, container traffic, and the Resource Plane connector/firewall policy
+remain unverified. The image target and daemon have not been exercised in a
+Lambda MicroVM, so the trusted resolver continues to reject Service pipelines.
 
 ### Issue Agent repository write policy
 
@@ -462,7 +465,10 @@ Defaults are `standard`, 1800 seconds, 2048 MiB, 1000 CPU millis,
 `registry-only` networking, repository `read`, and no cloud access. Accepted
 bounds are 30–3600 seconds, 256–8192 MiB, and 250–4000 CPU millis. Network is
 either `none` or `registry-only`; public Internet access is not an option in
-this schema.
+this schema. The workload image's host firewall currently permits Job and
+rootless-containerd traffic only on loopback. Pinned image/source acquisition
+must therefore happen in the trusted Resource Plane before Job execution; a
+Job cannot fetch packages or images from a registry at runtime.
 
 Declared Service Catalog sidecars are charged against the pipeline's declared
 memory and CPU budget using each fixed catalog resource request. The plan is

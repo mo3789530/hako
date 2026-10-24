@@ -40,6 +40,13 @@ type JobServiceProvisioner interface {
 	Start(context.Context, workloadjournal.Command, factoryconfig.ExecutionPlan) (JobServiceSession, error)
 }
 
+// JobEgressPolicy installs a host-level default-deny policy before
+// repository-controlled processes run. The MicroVM connector is an outer
+// boundary and does not constrain loopback or local sidecars by itself.
+type JobEgressPolicy interface {
+	Enforce(context.Context) error
+}
+
 type JobServiceSession interface {
 	Environment() []string
 	SecretValues() []string

@@ -6,7 +6,9 @@ FROM --platform=linux/arm64 public.ecr.aws/lambda/microvms:al2023-minimal@sha256
 # toolchain and Git, but receives no AWS credential or controller signing key.
 # hako-agent remains root so it can own the isolated runtime socket. Every
 # repository-controlled command is explicitly launched as 65532:65532.
-RUN dnf install -y git ca-certificates shadow-utils tar gzip && dnf clean all
+RUN dnf install -y git ca-certificates shadow-utils tar gzip iptables-nft && dnf clean all \
+    && test -x /usr/sbin/iptables \
+    && test -x /usr/sbin/ip6tables
 COPY --from=go-toolchain /usr/local/go /usr/local/go
 COPY hako-agent /usr/local/bin/hako-agent
 COPY trusted-keys.json /etc/hako/agent-trusted-keys.json

@@ -32,6 +32,12 @@ func run() error {
 	if keyPath == "" || sourceDirectory == "" {
 		return errors.New("HAKO_AGENT_TRUSTED_KEYS_FILE and HAKO_AGENT_SOURCE_DIRECTORY are required")
 	}
+	egressCtx, egressCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	egressErr := (workloadagent.LinuxJobEgressPolicy{}).Enforce(egressCtx)
+	egressCancel()
+	if egressErr != nil {
+		return errors.New("install required Job egress policy")
+	}
 	keyFile, err := os.Open(keyPath)
 	if err != nil {
 		return errors.New("open image-provisioned Hako Agent public keys")
@@ -59,12 +65,13 @@ func run() error {
 		TrustedKeys:           keys,
 		RequireRuntimeBinding: true,
 		ProcessFactory: workloadagent.GoTestProcessFactory{
-			GoBinary:    "/usr/local/go/bin/go",
-			GoCache:     "/tmp/hako-go-cache",
-			ModuleCache: strings.TrimSpace(os.Getenv("HAKO_GO_MODULE_CACHE")),
-			JobServices: jobServices,
-			CommandUID:  65532,
-			CommandGID:  65532,
+			GoBinary:     "/usr/local/go/bin/go",
+			GoCache:      "/tmp/hako-go-cache",
+			ModuleCache:  strings.TrimSpace(os.Getenv("HAKO_GO_MODULE_CACHE")),
+			JobServices:  jobServices,
+			EgressPolicy: workloadagent.LinuxJobEgressPolicy{},
+			CommandUID:   65532,
+			CommandGID:   65532,
 		},
 	})
 	if err != nil {
