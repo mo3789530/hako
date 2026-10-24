@@ -239,6 +239,15 @@ func run() error {
 			return errors.New("configure Agent task resolver")
 		}
 		handler = githubbroker.WithAgentTask(handler, service)
+		modelSecretReader, readerErr := modelcredentialbroker.NewAWSSecretReader(awsConfig)
+		if readerErr != nil {
+			return errors.New("configure Native Agent model credential Secret reader")
+		}
+		modelCredentialService, serviceErr := githubbroker.NewPostgresAgentModelCredentialService(planeIDs, pool, policy, modelSecretReader)
+		if serviceErr != nil {
+			return errors.New("configure Native Agent model credential broker")
+		}
+		handler = githubbroker.WithAgentModelCredential(handler, modelCredentialService)
 	}
 	if len(runnerBindingIDs) > 0 {
 		cleanupQueue, err := githubbroker.NewActionsRunnerCleanupQueueService(pool, policy, runnerBindingIDs)

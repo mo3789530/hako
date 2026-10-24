@@ -99,11 +99,13 @@ management, plus a default-off per-Repository gate. Task 53 also has an
 in-process resolver that checks the exact latest Agent attempt, Tenant/Repo
 provenance, and the current gate before and after SecretReader I/O. The Actions
 Runner broker resolver remains hard-coded to `claude_action`. The Native Agent
-resolver is not connected to a Broker endpoint or guest runtime, and no Agent
-credential is delivered during execution. Runtime resource/network enforcement
-and an isolated model-backed executor are still required before scheduling can
-be enabled. The resolver integration tests use a synthetic SecretReader; they
-do not make AWS calls or retrieve a real Secret.
+resolver is exposed through a bounded, no-store Broker endpoint restricted to
+allowlisted Resource Plane mTLS callers. The Resource Plane Worker and guest
+runtime do not yet call this endpoint, and no Agent credential is delivered
+during execution. Runtime resource/network enforcement and an isolated
+model-backed executor are still required before scheduling can be enabled. The
+resolver integration tests use a synthetic SecretReader; they do not make AWS
+calls or retrieve a real Secret.
 
 The Secret read occurs outside the DB transaction. Immediately after the read,
 the resolver repeats the authorization and compares the full binding,

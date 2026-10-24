@@ -1,6 +1,6 @@
 # Task 53: Native Pipeline and Issue-to-Agent Workflow
 
-Status: In Progress (versioned manifest selection, fixed-catalog execution, durable per-pipeline results, and independent pipeline Checks through the existing Checks consumer are implemented and locally verified. Issue command authorization requires a verified GitHub identity that is a member of the resolved Tenant, an active Installation binding, exact repository identity, and a pre-existing Factory opt-in. A Tenant-App-only read scope, bounded Issue/default-branch SHA reader, Control Plane-only mTLS broker, and an atomic Issue inbox processor that creates one immutable Agent Run plus a bounded task record are locally composed and PostgreSQL-tested. The Resource Plane Worker now retrieves the bounded task over mTLS and validates current attempt and immutable Run/App/Repository/branch/commit pins. A context digest is bound from launch specification through signed Start/Source tickets and guest `/run`; guest checks it before exposing task text in memory to a process factory. Purpose-scoped `native_agent` model credential metadata/API/CLI, a per-Repository default-off gate, and a latest-attempt/provenance-fenced in-process Secret reference resolver are implemented. The resolver is not connected to a Broker endpoint or runtime delivery path. Scheduling remains disabled (dispatcher/batch are Job-only), and the default guest process factory rejects Agent Runs until an isolated model-backed executor and runtime resource/network enforcement exist. Service container orchestration and live Agent write execution remain; branch/PR policy is implemented as dormant configuration). Priority: P3.
+Status: In Progress (versioned manifest selection, fixed-catalog execution, durable per-pipeline results, and independent pipeline Checks through the existing Checks consumer are implemented and locally verified. Issue command authorization requires a verified GitHub identity that is a member of the resolved Tenant, an active Installation binding, exact repository identity, and a pre-existing Factory opt-in. A Tenant-App-only read scope, bounded Issue/default-branch SHA reader, Control Plane-only mTLS broker, and an atomic Issue inbox processor that creates one immutable Agent Run plus a bounded task record are locally composed and PostgreSQL-tested. The Resource Plane Worker now retrieves the bounded task over mTLS and validates current attempt and immutable Run/App/Repository/branch/commit pins. A context digest is bound from launch specification through signed Start/Source tickets and guest `/run`; guest checks it before exposing task text in memory to a process factory. Purpose-scoped `native_agent` model credential metadata/API/CLI, a per-Repository default-off gate, an attempt/provenance-fenced in-process resolver, and an allowlisted Resource Plane mTLS Broker endpoint/client are implemented. The Workload Worker and guest runtime do not yet call the credential endpoint. Scheduling remains disabled (dispatcher/batch are Job-only), and the default guest process factory rejects Agent Runs until an isolated model-backed executor and runtime resource/network enforcement exist. Service container orchestration and live Agent write execution remain; branch/PR policy is implemented as dormant configuration). Priority: P3.
 
 Runtime profile follow-up: profiles are now keyed by Workload kind, Runtime Class,
 and trust level. A Job profile cannot be implicitly reused by Agent or Preview;
@@ -214,8 +214,12 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   again after SecretReader I/O and the byte buffer is cleared after the trusted
   consumer returns. PostgreSQL tests use only a synthetic reader and cover
   default-off denial, wrong attempt/Plane, policy disable, and credential
-  rotation during read. This resolver is not exposed through a Broker endpoint
-  or connected to a guest process; Agent execution remains disabled.
+  rotation during read. An allowlisted Resource Plane mTLS Broker endpoint and
+  bounded no-store HTTP client expose this credential only to the trusted
+  Worker process; endpoint tests cover mTLS identity, strict request decoding,
+  response bounds, and cache policy. The Worker and guest process are not yet
+  composed with this client; Agent execution remains disabled, and these tests
+  did not call AWS or retrieve a real Secret.
 
 - Added a shared `internal/agenttask` canonical digest implementation used by
   Control Plane persistence, Broker validation, Resource Plane Worker, and

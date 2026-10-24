@@ -63,11 +63,11 @@ type SecretAccess struct {
 // AgentRunIdentity is the exact Workload attempt identity presented by a
 // trusted Resource Plane worker. It is not accepted from a guest or public API.
 type AgentRunIdentity struct {
-	TenantID        domain.TenantID
-	WorkloadRunID   domain.WorkloadRunID
-	AttemptID       string
-	Generation      int64
-	ResourcePlaneID domain.ResourcePlaneID
+	TenantID        domain.TenantID        `json:"tenant_id"`
+	WorkloadRunID   domain.WorkloadRunID   `json:"workload_run_id"`
+	AttemptID       string                 `json:"attempt_id"`
+	Generation      int64                  `json:"generation"`
+	ResourcePlaneID domain.ResourcePlaneID `json:"resource_plane_id"`
 }
 
 func (SecretAccess) String() string { return "Tenant model credential access [REDACTED]" }
