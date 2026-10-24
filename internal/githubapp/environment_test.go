@@ -108,7 +108,7 @@ func TestVerifyEnvironmentApprovalForRunRequiresLivePinnedRunAndApprovalRecord(t
 				case "/repos/acme/payments/environments/production":
 					_, _ = io.WriteString(w, `{"name":"production","protection_rules":[{"type":"required_reviewers","prevent_self_review":true,"reviewers":[{"type":"User","reviewer":{"id":12,"login":"release-manager"}}]}]}`)
 				case "/repos/acme/payments/actions/runs/12/attempts/1":
-					_, _ = fmt.Fprintf(w, `{"id":12,"run_attempt":1,"status":%q,"event":"workflow_dispatch","head_branch":"main","head_sha":%q,"path":"acme/payments/.github/workflows/deploy.yml@main","repository":{"id":81,"owner":{"id":82}}}`, tt.runStatus, tt.runSHA)
+					_, _ = fmt.Fprintf(w, `{"id":12,"run_attempt":1,"status":%q,"event":"workflow_dispatch","head_branch":"main","head_sha":%q,"path":".github/workflows/deploy.yml@main","repository":{"id":81,"owner":{"id":82}}}`, tt.runStatus, tt.runSHA)
 				case "/repos/acme/payments/actions/runs/12/pending_deployments":
 					_, _ = io.WriteString(w, tt.pending)
 				case "/repos/acme/payments/actions/runs/12/approvals":
@@ -131,5 +131,18 @@ func TestVerifyEnvironmentApprovalForRunRequiresLivePinnedRunAndApprovalRecord(t
 				t.Fatalf("VerifyEnvironmentApprovalForRun() error = %v, want %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestWorkflowFilePathSupportsGitHubRunAndOIDCClaimFormats(t *testing.T) {
+	for input, want := range map[string]string{
+		".github/workflows/deploy.yml@main":                          ".github/workflows/deploy.yml",
+		"acme/payments/.github/workflows/deploy.yml@refs/heads/main": ".github/workflows/deploy.yml",
+		"acme/payments/.github/workflows/deploy.yml":                 ".github/workflows/deploy.yml",
+		"deploy.yml@main": "",
+	} {
+		if got := workflowFilePath(input); got != want {
+			t.Errorf("workflowFilePath(%q) = %q, want %q", input, got, want)
+		}
 	}
 }

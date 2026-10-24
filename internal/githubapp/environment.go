@@ -208,16 +208,16 @@ func refName(ref string) string {
 }
 
 func workflowFilePath(value string) string {
-	if !strings.Contains(value, "/.github/workflows/") {
-		return ""
-	}
 	if at := strings.IndexByte(value, '@'); at >= 0 {
 		value = value[:at]
+	}
+	if strings.HasPrefix(value, ".github/workflows/") {
+		return value
 	}
 	if slash := strings.Index(value, "/.github/workflows/"); slash >= 0 {
 		return value[slash+1:]
 	}
-	return value
+	return ""
 }
 
 func validEnvironmentName(value string) bool {
