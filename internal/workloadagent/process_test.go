@@ -519,6 +519,20 @@ func TestGoTestProcessFactoryVerifiesCommitAndRunsFixedCommand(t *testing.T) {
 	}
 }
 
+func TestNativePipelineRejectsWorkspaceServiceRuntime(t *testing.T) {
+	plan := ExecutionPlan{FactoryPipelines: []factoryconfig.ExecutionPlan{{
+		Pipeline: "integration", RuntimeClass: "standard", TimeoutSecond: 60,
+		MemoryMB: 2048, CPUMillis: 1000, Network: "registry-only", Services: []string{"postgres"},
+		Commands: []factoryconfig.Command{{Step: "go-test", Executable: "/usr/local/go/bin/go", Args: []string{"test", "./..."}}},
+	}}}
+	if err := factoryconfig.ValidateExecutionPlan(plan.FactoryPipelines[0]); err != nil {
+		t.Fatalf("fixture must pass manifest admission before runtime selection: %v", err)
+	}
+	if _, err := (GoTestProcessFactory{}).startFactoryPipelines(context.Background(), plan, io.Discard); !errors.Is(err, ErrExecutionPlan) {
+		t.Fatalf("pipeline borrowed Workspace Service runtime without a Job-scoped executor: %v", err)
+	}
+}
+
 func TestPipelineContextExitKeepsTimeoutAndCancellationDistinct(t *testing.T) {
 	tests := []struct {
 		name       string

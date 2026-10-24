@@ -207,6 +207,11 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   exhaust either budget or use `network: none`. This is admission planning
   only; the Workload Agent still has no Job-scoped Service provisioner or
   runtime enforcement for the pipeline process budget.
+- Added a regression test that first proves a valid `postgres` sidecar plan
+  passes manifest admission, then verifies the Workload Agent refuses to run it
+  until a Job/attempt-scoped executor is composed. This protects the boundary
+  against accidental reuse of Workspace-owned Service IDs or volumes; it does
+  not complete service orchestration.
 
 ## Remaining runtime implementation gates
 
