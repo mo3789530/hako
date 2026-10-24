@@ -63,3 +63,19 @@ digests resolved from the official Docker Hub and ECR Public versioned tags.
 This makes Dockerfile base inputs immutable, but does not satisfy the
 image/container/network PoC; the local x86_64 host still cannot execute ARM64
 build steps. No AWS resources were created or changed.
+
+## ARM64 user-mode smoke refresh (2026-10-25)
+
+Pulled the public `tonistiigi/binfmt` image with Podman. Its ARM64 emulator
+installed successfully inside its privileged container, but this rootless
+Podman host does not expose that binfmt registration to host processes; a
+normal `podman run --platform linux/arm64` still fails with `Exec format
+error`. Extracted the static `qemu-aarch64` emulator to `/tmp` and used it to
+execute the ARM64 `coreutils` binary from an exported copy of the official
+Lambda `provided:al2023` ARM64 base image; `uname -m` returned `aarch64`. The
+existing statically linked ARM64 Hako Agent binary also starts under QEMU and
+fails closed on the expected missing runtime configuration. This confirms
+individual ARM64 ELF execution, but not Podman/Dockerfile `RUN` emulation,
+Lambda image-builder behavior, nested containers, or a real MicroVM. Temporary
+emulator/rootfs files are outside the repository. No AWS resource/API was
+used or changed.
