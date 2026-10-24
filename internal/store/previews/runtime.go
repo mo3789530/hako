@@ -315,8 +315,9 @@ func runtimeWorkspaceID(identity CleanupIdentity, generation int64) domain.Works
 }
 
 // RuntimeWorkspaceID returns the stable, private runtime identity for one PR
-// head generation. Resource Plane recovery uses it to rediscover resources by
-// Hako tags when a worker stopped before provider IDs were bound in the CP.
+// head generation. Resource Plane recovery uses it to read the exact durable
+// journal entry when a worker stopped before provider IDs were bound in the CP.
+// The identity does not authorize discovery or adoption of an unjournaled VM.
 func RuntimeWorkspaceID(identity CleanupIdentity, generation int64) (domain.WorkspaceID, error) {
 	if !validCleanupIdentity(identity) || generation < 1 {
 		return "", ErrInvalidRuntimeAllocation

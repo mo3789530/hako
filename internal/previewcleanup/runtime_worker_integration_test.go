@@ -167,7 +167,7 @@ func TestRuntimeWorkerCleansRetiredGenerationsAndReleasesPreviewQuota(t *testing
 	clock = orphanAt
 	orphan, err := worker.RunOnce(ctx)
 	if err != nil || orphan.Claimed != 1 || orphan.Confirmed != 1 || len(executor.jobs) != 4 {
-		t.Fatalf("tag-based orphan cleanup: stats=%+v jobs=%+v err=%v", orphan, executor.jobs, err)
+		t.Fatalf("journal-recovery cleanup: stats=%+v jobs=%+v err=%v", orphan, executor.jobs, err)
 	}
 	wantRuntimeID, err := previews.RuntimeWorkspaceID(previews.CleanupIdentity{TenantID: "tenant_preview_runtime_cleanup", InstallationID: 9821,
 		RepositoryID: 9822, PullRequestNumber: 42}, 1)

@@ -82,9 +82,10 @@ func ClaimRuntimeCleanupAndEnqueue(ctx context.Context, tx pgx.Tx, claimID strin
 }
 
 // ClaimRuntimeCleanupDue leases retired generations with either a durable
-// provider binding or an incomplete provision attempt that requires tag-based
-// provider recovery. A live provision lease is allowed to finish or compensate
-// before cleanup starts; an expired lease can be recovered after a crash.
+// provider binding or an incomplete provision attempt that may require
+// Resource Plane journal recovery. A live provision lease is allowed to finish
+// or compensate before cleanup starts; an expired lease can be recovered after
+// a crash.
 func ClaimRuntimeCleanupDue(ctx context.Context, tx pgx.Tx, claimID string, now time.Time, lease time.Duration, limit int) ([]RuntimeCleanupJob, error) {
 	if ctx == nil || tx == nil || !validCleanupClaimID(claimID) || now.IsZero() || lease < 5*time.Second || lease > 10*time.Minute || limit < 1 || limit > 100 {
 		return nil, ErrInvalidRuntimeAllocation

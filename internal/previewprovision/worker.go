@@ -31,10 +31,11 @@ var resourcePlaneIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,2
 
 // Provisioner routes all mutations through the authorized Resource Plane. It
 // must be idempotent for a Preview generation. Compensate runs after every
-// failed Provision, including when no provider IDs were returned; it must
-// rediscover unbound resources using the immutable RuntimeWorkspaceID and Hako
-// tags. It must accept partial bindings and be safe if resources are already
-// gone.
+// failed Provision, including when no provider IDs were returned; it may
+// recover an unbound MicroVM only from the Resource Plane journal using the
+// immutable RuntimeWorkspaceID and pinned Plane. It must never scan for or
+// adopt an unjournaled MicroVM. It must accept partial bindings and be safe if
+// resources are already gone.
 type Provisioner interface {
 	Provision(context.Context, previews.ProvisionJob) (previews.RuntimeBinding, error)
 	Compensate(context.Context, previews.ProvisionJob, previews.RuntimeBinding) error

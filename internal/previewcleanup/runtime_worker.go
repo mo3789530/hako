@@ -19,9 +19,11 @@ var (
 
 type RuntimeExecutor interface {
 	// CleanupGeneration removes exactly the bound MicroVM and Gateway route. If
-	// the Control Plane has no binding but a provision attempt exists, it must
-	// rediscover resources by the immutable runtime Workspace identity and Hako
-	// tags. It must be idempotent and never treat caller names as provider IDs.
+	// the Control Plane has no binding but a provision attempt exists, it may
+	// recover the MicroVM only from the Resource Plane journal using the
+	// immutable runtime Workspace identity and pinned Plane. It must never scan
+	// for or adopt an unjournaled MicroVM, and must never treat caller names as
+	// provider IDs.
 	CleanupGeneration(context.Context, previews.RuntimeCleanupJob) error
 }
 

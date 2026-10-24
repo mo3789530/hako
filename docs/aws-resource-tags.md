@@ -13,9 +13,10 @@ when the service supports them:
 
 `resourcecontroller.WorkspaceResourceTags` builds this exact map from a
 validated command. `HasWorkspaceResourceTags` performs exact-scope checks for
-tag-based discovery. These helpers are unit tested, but the production AWS
-Runtime does not yet exist and therefore no real Workspace resource is tagged
-or rediscovered today.
+tag-based discovery. These helpers are unit tested. The Workspace Lambda
+MicroVM adapter and EFS resource managers are implemented locally, but no live
+AWS Workspace resource has been created or rediscovered by this repository's
+runtime.
 
 Do not assume every AWS resource can be tagged. The documented Lambda MicroVMs
 `TagResource`/`ListTags` ARN pattern does not include MicroVM allocations, and
@@ -40,6 +41,6 @@ for environment and E2E run identity while reserving Hako ownership keys.
 See [Terraform module documentation](terraform-modules.md).
 
 The Resource Plane AWS queues currently use server-side SQS encryption and
-CloudWatch log retention. Applying the Workspace tag set, recovering from
-partial create, cleanup, and periodic orphan detection await the AWS Runtime
-implementation and an account-scoped cleanup workflow.
+CloudWatch log retention. Applying tags to supported Workspace resources,
+recovering from partial create, cleanup, and periodic orphan detection remain
+unverified in a real account and require an account-scoped cleanup workflow.

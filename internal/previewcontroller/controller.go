@@ -28,9 +28,11 @@ var resultPlaneIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 type Binding = previewprotocol.RuntimeBinding
 
 // Runtime operations must be idempotent for (runtime_workspace_id, generation).
-// Cleanup must rediscover resources by Hako ownership tags when IDs were never
-// reported, and may return nil only after the MicroVM and Gateway route are
-// absent. Provision may return a partial Binding together with an error.
+// Cleanup may recover an unbound MicroVM only from the Resource Plane's durable
+// journal and exact frozen launch request. It must never adopt or delete a
+// MicroVM found by scanning. Return nil only after the MicroVM and Gateway
+// route are absent. Provision may return a partial Binding together with an
+// error.
 type Runtime interface {
 	Ensure(context.Context, previewprotocol.Command) (Binding, error)
 	Cleanup(context.Context, previewprotocol.Command) error
