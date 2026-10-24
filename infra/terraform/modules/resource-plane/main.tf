@@ -1584,6 +1584,12 @@ resource "aws_s3_bucket_policy" "workload_artifacts" {
 # Workload command queue. The same binary accepts the bounded recovery
 # schedule envelope; no Workspace command queue or Control Plane DB access is
 # added to this role.
+data "aws_route_table" "workload_controller_private_subnet" {
+  for_each = var.workload_controller_deployment == null ? toset([]) : toset(var.workload_controller_vpc_config.subnet_ids)
+
+  subnet_id = each.value
+}
+
 resource "aws_lambda_function" "workload_controller" {
   count = var.workload_controller_deployment == null ? 0 : 1
 
@@ -1634,6 +1640,17 @@ resource "aws_lambda_function" "workload_controller" {
     content {
       subnet_ids         = vpc_config.value.subnet_ids
       security_group_ids = vpc_config.value.security_group_ids
+    }
+  }
+
+  lifecycle {
+    precondition {
+      condition = alltrue([for route_table in values(data.aws_route_table.workload_controller_private_subnet) :
+        anytrue([for route in route_table.routes :
+          try(route.cidr_block == "0.0.0.0/0" && route.nat_gateway_id != "", false)
+        ])
+      ])
+      error_message = "Every Workload Controller subnet must have a 0.0.0.0/0 route targeting a NAT Gateway. Hako does not create or modify NAT, routes, VPC endpoints, or security groups."
     }
   }
 

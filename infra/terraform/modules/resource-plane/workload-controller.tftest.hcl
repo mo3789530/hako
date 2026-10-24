@@ -26,6 +26,29 @@ mock_provider "aws" {
     }
   }
 
+  mock_data "aws_route_table" {
+    defaults = {
+      id     = "rtb-hako-workload-mock"
+      vpc_id = "vpc-hako-workload-mock"
+      routes = [{
+        carrier_gateway_id         = null
+        cidr_block                 = "0.0.0.0/0"
+        core_network_arn           = null
+        destination_prefix_list_id = null
+        egress_only_gateway_id     = null
+        gateway_id                 = null
+        instance_id                = null
+        ipv6_cidr_block            = null
+        local_gateway_id           = null
+        nat_gateway_id             = "nat-hako-workload-mock"
+        network_interface_id       = null
+        transit_gateway_id         = null
+        vpc_endpoint_id            = null
+        vpc_peering_connection_id  = null
+      }]
+    }
+  }
+
   mock_resource "aws_iam_role" {
     defaults = {
       arn = "arn:aws:iam::123456789012:role/rp-test-mock"
@@ -459,6 +482,15 @@ run "workload_controller_wires_only_dedicated_queue_and_recovery" {
   assert {
     condition     = toset(aws_lambda_function.workload_controller[0].vpc_config[0].subnet_ids) == toset(["subnet-11111111", "subnet-22222222"]) && toset(aws_lambda_function.workload_controller[0].vpc_config[0].security_group_ids) == toset(["sg-11111111"])
     error_message = "Worker Lambda must attach to the explicitly supplied private subnets and security group."
+  }
+
+  assert {
+    condition = alltrue([for route_table in values(data.aws_route_table.workload_controller_private_subnet) :
+      anytrue([for route in route_table.routes :
+        try(route.cidr_block == "0.0.0.0/0" && route.nat_gateway_id != "", false)
+      ])
+    ])
+    error_message = "Worker deployment must plan against subnet route tables with a default NAT Gateway route."
   }
 
   assert {

@@ -32,6 +32,13 @@ policies, image/git wiring, and live MicroVM isolation still need separate
 review and validation. Alarm notification actions are optional SNS topic
 ARNs; Gateway deployment is not included.
 
+When enabled, Terraform resolves the route table associated with each supplied
+Worker subnet and fails planning unless each has `0.0.0.0/0` targeting a NAT
+Gateway. The module does not create or change routes or NAT. This checks only
+the configured route target; NAT health, DNS, security-group egress, endpoint
+policies, and Control Plane/broker reachability still require environment-level
+verification.
+
 See [`docs/resource-plane-queues-and-dlq.md`](../../../../docs/resource-plane-queues-and-dlq.md)
 for queue semantics, IAM boundaries, operational limitations, and validation.
 
