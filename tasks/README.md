@@ -34,7 +34,8 @@ Preview generation snapshots the eligible Tenant-owned GitHub App identity
 (integration, config revision, and credential generation) when its runtime
 allocation row is first created. A separate mTLS broker endpoint issues a
 Contents-read token only for the exact current generation and active
-Resource Plane claim. Unit and PostgreSQL tests cover claim fencing and
+Resource Plane claim and returns verified Repository metadata through a
+bounded HTTPS client. Unit and PostgreSQL tests cover claim fencing and
 rotation. Git checkout, source archive staging, Guest delivery, and app startup
 remain open; see Task 54 and the Preview lifecycle document.
 

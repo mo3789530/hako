@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mo3789530/hako/internal/githubapp"
 	"github.com/mo3789530/hako/internal/store/dsql"
 	"github.com/mo3789530/hako/internal/store/transaction"
 	"github.com/mo3789530/hako/internal/testutil"
@@ -56,7 +57,8 @@ func TestPostgresPreviewCheckoutResolverRequiresCurrentClaimAndPinnedTenantApp(t
 		PullRequest: 21, Generation: 3, ClaimID: "claim_preview_123", ClaimAttempt: 2, ResourcePlaneID: "rp-test", HeadSHA: head}
 	resolve := NewPostgresPreviewCheckoutResolver(pool, transaction.DefaultPolicy(), func() time.Time { return now })
 	resolved, err := resolve(ctx, "spiffe://hako/resource-plane/rp-test", identity)
-	if err != nil || resolved.Identity != identity || resolved.Access.IntegrationID != "preview_broker_integration" ||
+	if err != nil || resolved.Identity != identity || resolved.Repository != (githubapp.RepositoryAccess{Owner: "preview-owner", Name: "preview-repo"}) ||
+		resolved.Access.IntegrationID != "preview_broker_integration" ||
 		resolved.Access.ConfigRevision != 4 || resolved.Access.CredentialGeneration != 6 || resolved.Access.SecretVersionID != "0123456789abcdef0123456789abcdef" {
 		t.Fatalf("resolve pinned Preview App for current claim = %+v err=%v", resolved, err)
 	}

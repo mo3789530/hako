@@ -36,8 +36,9 @@ type PreviewCheckoutIdentity struct {
 }
 
 type PreviewCheckoutResolution struct {
-	Identity PreviewCheckoutIdentity
-	Access   githubapp.TenantPrivateKeyAccess
+	Identity   PreviewCheckoutIdentity
+	Access     githubapp.TenantPrivateKeyAccess
+	Repository githubapp.RepositoryAccess
 }
 
 type PreviewCheckoutResolver func(context.Context, string, PreviewCheckoutIdentity) (PreviewCheckoutResolution, error)
@@ -49,6 +50,21 @@ type PreviewCheckoutService struct {
 	allowed map[string]struct{}
 	now     func() time.Time
 }
+
+type PreviewCheckoutGrant struct {
+	token      string
+	expiresAt  time.Time
+	repository githubapp.RepositoryAccess
+}
+
+func (PreviewCheckoutGrant) String() string     { return "Preview GitHub checkout grant [REDACTED]" }
+func (g PreviewCheckoutGrant) GoString() string { return g.String() }
+func (PreviewCheckoutGrant) MarshalJSON() ([]byte, error) {
+	return []byte(`"[REDACTED Preview GitHub checkout grant]"`), nil
+}
+func (g PreviewCheckoutGrant) Token() string                          { return g.token }
+func (g PreviewCheckoutGrant) ExpiresAt() time.Time                   { return g.expiresAt }
+func (g PreviewCheckoutGrant) Repository() githubapp.RepositoryAccess { return g.repository }
 
 func NewPreviewCheckoutService(resourcePlaneIDs []string, resolve PreviewCheckoutResolver, mint PreviewCheckoutTokenMinter) (*PreviewCheckoutService, error) {
 	if len(resourcePlaneIDs) == 0 || resolve == nil || mint == nil {
@@ -84,7 +100,7 @@ func NewPostgresPreviewCheckoutResolver(pool transaction.Beginner, policy transa
 			var resolved PreviewCheckoutResolution
 			err := tx.QueryRow(ctx, `SELECT a.tenant_id,a.installation_id,a.github_repository_id,a.pull_request_number,
 				a.generation,a.provision_claim_id,a.provision_attempts,a.target_resource_plane_id,a.head_sha,
-				a.github_integration_id,a.github_config_revision,a.github_credential_generation
+				a.github_integration_id,a.github_config_revision,a.github_credential_generation,repository.owner_login,repository.repository_name
 				FROM repository_preview_runtime_allocations a
 				JOIN repository_previews p ON p.tenant_id=a.tenant_id AND p.installation_id=a.installation_id
 				  AND p.github_repository_id=a.github_repository_id AND p.pull_request_number=a.pull_request_number
@@ -113,7 +129,8 @@ func NewPostgresPreviewCheckoutResolver(pool transaction.Beginner, policy transa
 				Scan(&resolved.Identity.TenantID, &resolved.Identity.InstallationID, &resolved.Identity.RepositoryID,
 					&resolved.Identity.PullRequest, &resolved.Identity.Generation, &resolved.Identity.ClaimID,
 					&resolved.Identity.ClaimAttempt, &resolved.Identity.ResourcePlaneID, &resolved.Identity.HeadSHA,
-					&resolved.Access.IntegrationID, &resolved.Access.ConfigRevision, &resolved.Access.CredentialGeneration)
+					&resolved.Access.IntegrationID, &resolved.Access.ConfigRevision, &resolved.Access.CredentialGeneration,
+					&resolved.Repository.Owner, &resolved.Repository.Name)
 			if err != nil {
 				return PreviewCheckoutResolution{}, ErrCheckoutDenied
 			}
@@ -154,30 +171,31 @@ func NewAWSPreviewCheckoutTokenMinter(config aws.Config, pool transaction.Beginn
 	}, nil
 }
 
-func (s *PreviewCheckoutService) Issue(ctx context.Context, caller string, identity PreviewCheckoutIdentity) (CheckoutGrant, error) {
+func (s *PreviewCheckoutService) Issue(ctx context.Context, caller string, identity PreviewCheckoutIdentity) (PreviewCheckoutGrant, error) {
 	if s == nil || ctx == nil || !validPreviewCheckoutIdentity(identity) {
-		return CheckoutGrant{}, ErrCheckoutDenied
+		return PreviewCheckoutGrant{}, ErrCheckoutDenied
 	}
 	callerPlane, validCaller := previewCheckoutCallerPlane(caller)
 	if !validCaller || callerPlane != identity.ResourcePlaneID {
-		return CheckoutGrant{}, ErrCheckoutDenied
+		return PreviewCheckoutGrant{}, ErrCheckoutDenied
 	}
 	if _, ok := s.allowed[caller]; !ok {
-		return CheckoutGrant{}, ErrCheckoutDenied
+		return PreviewCheckoutGrant{}, ErrCheckoutDenied
 	}
 	first, err := s.resolve(ctx, caller, identity)
-	if err != nil || !samePreviewCheckoutIdentity(first.Identity, identity) || !accessMatchesPreviewIdentity(first.Access, first.Identity) {
-		return CheckoutGrant{}, ErrCheckoutDenied
+	if err != nil || !samePreviewCheckoutIdentity(first.Identity, identity) || !accessMatchesPreviewIdentity(first.Access, first.Identity) ||
+		!validBrokerLogin(first.Repository.Owner) || !validCredentialRepository(first.Repository.Name) {
+		return PreviewCheckoutGrant{}, ErrCheckoutDenied
 	}
 	token, expiresAt, err := s.mint(ctx, first.Identity, first.Access)
 	if err != nil || !validBrokerToken(token, expiresAt, s.now()) {
-		return CheckoutGrant{}, ErrCheckoutDenied
+		return PreviewCheckoutGrant{}, ErrCheckoutDenied
 	}
 	current, err := s.resolve(ctx, caller, identity)
-	if err != nil || !samePreviewCheckoutIdentity(first.Identity, current.Identity) || first.Access != current.Access {
-		return CheckoutGrant{}, ErrCheckoutDenied
+	if err != nil || !samePreviewCheckoutIdentity(first.Identity, current.Identity) || first.Access != current.Access || first.Repository != current.Repository {
+		return PreviewCheckoutGrant{}, ErrCheckoutDenied
 	}
-	return CheckoutGrant{token: token, expiresAt: expiresAt}, nil
+	return PreviewCheckoutGrant{token: token, expiresAt: expiresAt, repository: first.Repository}, nil
 }
 
 type previewCheckoutRequest struct {
@@ -234,7 +252,8 @@ func WithPreviewCheckout(next http.Handler, service *PreviewCheckoutService) htt
 			return
 		}
 		w.Header().Set("Cache-Control", "no-store")
-		writeResponse(w, response{Token: grant.Token(), ExpiresAt: grant.ExpiresAt()})
+		repository := grant.Repository()
+		writeResponse(w, response{Token: grant.Token(), ExpiresAt: grant.ExpiresAt(), Repository: &repositoryResponse{Owner: repository.Owner, Name: repository.Name}})
 	})
 }
 
@@ -293,4 +312,64 @@ func previewCheckoutCallerPlane(caller string) (domain.ResourcePlaneID, bool) {
 		return "", false
 	}
 	return domain.ResourcePlaneID(id), true
+}
+
+// HTTPPreviewCheckoutProvider is the Resource Plane's mTLS client for
+// generation- and claim-bound Preview source checkout credentials.
+type HTTPPreviewCheckoutProvider struct {
+	base   string
+	client *http.Client
+}
+
+func NewHTTPPreviewCheckoutProvider(baseURL string, client *http.Client) (*HTTPPreviewCheckoutProvider, error) {
+	validated, err := NewHTTPResolver(baseURL, client)
+	if err != nil {
+		return nil, err
+	}
+	bounded := *client
+	bounded.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	if bounded.Timeout <= 0 || bounded.Timeout > 50*time.Second {
+		bounded.Timeout = 50 * time.Second
+	}
+	return &HTTPPreviewCheckoutProvider{base: validated.BaseURL, client: &bounded}, nil
+}
+
+func (c *HTTPPreviewCheckoutProvider) CheckoutPreviewToken(ctx context.Context, identity PreviewCheckoutIdentity) (PreviewCheckoutGrant, error) {
+	if c == nil || c.client == nil || ctx == nil || !validPreviewCheckoutIdentity(identity) ||
+		!resourcePlaneIDPattern.MatchString(string(identity.ResourcePlaneID)) {
+		return PreviewCheckoutGrant{}, ErrUnavailable
+	}
+	body, err := json.Marshal(previewCheckoutRequest{TenantID: identity.TenantID, InstallationID: identity.InstallationID,
+		RepositoryID: identity.RepositoryID, PullRequest: identity.PullRequest, Generation: identity.Generation,
+		ClaimID: identity.ClaimID, ClaimAttempt: identity.ClaimAttempt, HeadSHA: identity.HeadSHA})
+	if err != nil || len(body) > 2048 {
+		return PreviewCheckoutGrant{}, ErrUnavailable
+	}
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+previewCheckoutRoute, bytes.NewReader(body))
+	if err != nil {
+		return PreviewCheckoutGrant{}, ErrUnavailable
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := c.client.Do(req)
+	if err != nil {
+		return PreviewCheckoutGrant{}, ErrUnavailable
+	}
+	defer res.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(res.Body, brokerMaxBody+1))
+	if err != nil || len(data) > brokerMaxBody || res.StatusCode < 200 || res.StatusCode >= 300 || res.Header.Get("Cache-Control") != "no-store" {
+		return PreviewCheckoutGrant{}, ErrUnavailable
+	}
+	defer clear(data)
+	var out response
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&out) != nil || decoder.Decode(new(any)) != io.EOF || out.Repository == nil ||
+		!validBrokerToken(out.Token, out.ExpiresAt, time.Now()) || out.ExpiresAt.After(time.Now().Add(65*time.Minute)) ||
+		!validBrokerLogin(out.Repository.Owner) || !validCredentialRepository(out.Repository.Name) {
+		return PreviewCheckoutGrant{}, ErrUnavailable
+	}
+	return PreviewCheckoutGrant{token: out.Token, expiresAt: out.ExpiresAt,
+		repository: githubapp.RepositoryAccess{Owner: out.Repository.Owner, Name: out.Repository.Name}}, nil
 }

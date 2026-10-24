@@ -398,5 +398,7 @@ Add optional repository-level preview environments and service metadata/deploy p
   pin both before and after minting a Contents-read token. Unit and PostgreSQL
   tests cover stale/cross-Plane claims and rotation during exchange. The
   endpoint is composed only when Resource Plane checkout callers are
-  configured. Git checkout, source archive staging, Guest delivery, and app
+  configured and returns the verified Repository owner/name. A bounded
+  Resource Plane HTTPS client validates the no-store response before exposing
+  the grant. Git checkout, source archive staging, Guest delivery, and app
   startup remain unimplemented.
