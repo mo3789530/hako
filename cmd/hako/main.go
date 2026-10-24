@@ -126,10 +126,15 @@ func main() {
 			fmt.Fprintf(os.Stderr, "hako shell: %v\n", err)
 			os.Exit(1)
 		}
-	case len(os.Args) >= 6 && os.Args[1] == "exec" && os.Args[4] == "--":
+	case len(os.Args) >= 6 && os.Args[1] == "exec":
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
-		if err := workspaceExec(ctx, os.Args[2], os.Args[3], os.Args[5:], os.Stdout, os.Stderr); err != nil {
+		tenantID, workspaceID, timeoutMillis, argv, err := parseWorkspaceExecArgs(os.Args[2:])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "usage: hako exec <tenant-id> <workspace-id> [--timeout <duration>] -- <command> [args...]")
+			os.Exit(2)
+		}
+		if err := workspaceExecWithTimeout(ctx, tenantID, workspaceID, argv, timeoutMillis, os.Stdout, os.Stderr, nil, nil); err != nil {
 			var exitErr workspaceExecExitError
 			if errors.As(err, &exitErr) {
 				os.Exit(exitErr.code)

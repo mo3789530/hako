@@ -16,6 +16,7 @@ export HAKO_GATEWAY_URL=https://gateway.example.test
 hako wait <tenant-id> <workspace-id> --state running
 hako shell <tenant-id> <workspace-id>
 hako exec <tenant-id> <workspace-id> -- go test ./...
+hako exec <tenant-id> <workspace-id> --timeout 90s -- go test ./...
 hako open <tenant-id> <workspace-id> [local-port]
 hako ssh-proxy <tenant-id> <workspace-id>
 hako cp <tenant-id> <workspace-id> <local-path> <workspace-path>
@@ -40,7 +41,10 @@ request. `Ctrl-C` disconnects; terminal EOF (`Ctrl-D`) sends EOT to the remote
 shell. A new invocation obtains a new PTY session.
 
 `hako exec` accepts a bounded argv after `--`; it does not parse or invoke a
-shell command string. The Control Plane issues a distinct short-lived `exec`
+shell command string. The optional `--timeout` accepts a whole-millisecond
+duration from `100ms` to `5m`; without it the Guest uses its 60-second default.
+The timeout travels in the authenticated, bounded exec request and does not
+change the Workspace-wide runtime limit. The Control Plane issues a distinct short-lived `exec`
 Session permission, and the Gateway forwards the WSS stream directly to the
 bound Workspace MicroVM Agent. The Guest Agent runs as the non-root Workspace
 identity, fixes cwd to `/workspace`, uses a minimal environment, limits runtime

@@ -32,9 +32,59 @@ func workspaceExec(ctx context.Context, tenantID, workspaceID string, argv []str
 	return workspaceExecWith(ctx, tenantID, workspaceID, argv, stdout, stderr, nil, nil)
 }
 
+func parseWorkspaceExecArgs(args []string) (tenantID, workspaceID string, timeoutMillis int, argv []string, err error) {
+	if len(args) < 4 {
+		return "", "", 0, nil, workspaceprotocol.ErrInvalidExec
+	}
+	tenantID, workspaceID = args[0], args[1]
+	separator := -1
+	for i := 2; i < len(args); i++ {
+		if args[i] == "--" {
+			separator = i
+			break
+		}
+	}
+	if separator < 0 || separator == len(args)-1 {
+		return "", "", 0, nil, workspaceprotocol.ErrInvalidExec
+	}
+	for i := 2; i < separator; i++ {
+		value := ""
+		switch {
+		case args[i] == "--timeout":
+			i++
+			if i >= separator {
+				return "", "", 0, nil, workspaceprotocol.ErrInvalidExec
+			}
+			value = args[i]
+		case strings.HasPrefix(args[i], "--timeout="):
+			value = strings.TrimPrefix(args[i], "--timeout=")
+		default:
+			return "", "", 0, nil, workspaceprotocol.ErrInvalidExec
+		}
+		if timeoutMillis != 0 || value == "" {
+			return "", "", 0, nil, workspaceprotocol.ErrInvalidExec
+		}
+		duration, parseErr := time.ParseDuration(value)
+		if parseErr != nil || duration < 100*time.Millisecond || duration > time.Duration(workspaceprotocol.MaxExecMillis)*time.Millisecond || duration%time.Millisecond != 0 {
+			return "", "", 0, nil, workspaceprotocol.ErrInvalidExec
+		}
+		timeoutMillis = int(duration / time.Millisecond)
+	}
+	argv = append([]string(nil), args[separator+1:]...)
+	if !validCopyID(tenantID) || !validCopyID(workspaceID) || workspaceprotocol.ValidateExecRequest(workspaceprotocol.ExecRequest{Argv: argv, TimeoutMillis: timeoutMillis}) != nil {
+		return "", "", 0, nil, workspaceprotocol.ErrInvalidExec
+	}
+	return tenantID, workspaceID, timeoutMillis, argv, nil
+}
+
 func workspaceExecWith(ctx context.Context, tenantID, workspaceID string, argv []string, stdout, stderr io.Writer,
 	apiHTTPClient *http.Client, gatewayTLSConfig *tls.Config) (returnErr error) {
-	request := workspaceprotocol.ExecRequest{Argv: append([]string(nil), argv...)}
+	return workspaceExecWithTimeout(ctx, tenantID, workspaceID, argv, 0, stdout, stderr, apiHTTPClient, gatewayTLSConfig)
+}
+
+func workspaceExecWithTimeout(ctx context.Context, tenantID, workspaceID string, argv []string, timeoutMillis int,
+	stdout, stderr io.Writer, apiHTTPClient *http.Client, gatewayTLSConfig *tls.Config) (returnErr error) {
+	request := workspaceprotocol.ExecRequest{Argv: append([]string(nil), argv...), TimeoutMillis: timeoutMillis}
 	if ctx == nil || stdout == nil || stderr == nil || workspaceprotocol.ValidateExecRequest(request) != nil ||
 		!validCopyID(tenantID) || !validCopyID(workspaceID) {
 		return workspaceprotocol.ErrInvalidExec

@@ -387,7 +387,10 @@ func TestWorkspaceShellCLIRequestsTicketStreamsAndRevokes(t *testing.T) {
 	}
 }
 
-type execCLITestDialer struct{ opened chan workspacesession.Claims }
+type execCLITestDialer struct {
+	opened        chan workspacesession.Claims
+	timeoutMillis int
+}
 
 func (d execCLITestDialer) OpenShell(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
 	return nil, workspacegateway.ErrClientConfig
@@ -400,7 +403,7 @@ func (d execCLITestDialer) OpenExec(_ context.Context, claims workspacesession.C
 	go func() {
 		defer runtime.Close()
 		var request workspaceprotocol.ExecRequest
-		if err := json.NewDecoder(runtime).Decode(&request); err != nil || len(request.Argv) != 2 || request.Argv[0] != "printf" || request.Argv[1] != "cli-exec-ok" {
+		if err := json.NewDecoder(runtime).Decode(&request); err != nil || len(request.Argv) != 2 || request.Argv[0] != "printf" || request.Argv[1] != "cli-exec-ok" || request.TimeoutMillis != d.timeoutMillis {
 			return
 		}
 		result, _ := json.Marshal(workspaceprotocol.ExecResult{Stdout: []byte("cli-exec-ok")})
@@ -462,7 +465,7 @@ func TestWorkspaceExecCLIUsesDedicatedSessionGatewayAndRevokes(t *testing.T) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}))
 	defer apiServer.Close()
-	dialer := execCLITestDialer{opened: make(chan workspacesession.Claims, 1)}
+	dialer := execCLITestDialer{opened: make(chan workspacesession.Claims, 1), timeoutMillis: 1500}
 	gateway, err := workspacegateway.New(workspacegateway.Config{ResourcePlaneID: "rp_cli",
 		Verifier: &workspacesession.Verifier{Keys: map[string]ed25519.PublicKey{"exec-cli-test": publicKey}, Audience: workspacesession.AudienceGateway, Lookup: activeWorkspaceSession{}},
 		Dialer:   dialer, MaxConnections: 1, MaxConnectionsPerWorkspace: 1})
@@ -475,7 +478,7 @@ func TestWorkspaceExecCLIUsesDedicatedSessionGatewayAndRevokes(t *testing.T) {
 	t.Setenv("HAKO_API_URL", apiServer.URL)
 	t.Setenv("HAKO_GATEWAY_URL", gatewayServer.URL)
 	var stdout, stderr strings.Builder
-	if err := workspaceExecWith(context.Background(), "tenant_cli", "ws_cli", []string{"printf", "cli-exec-ok"}, &stdout, &stderr,
+	if err := workspaceExecWithTimeout(context.Background(), "tenant_cli", "ws_cli", []string{"printf", "cli-exec-ok"}, 1500, &stdout, &stderr,
 		apiServer.Client(), &tls.Config{RootCAs: gatewayTLS.RootCAs}); err != nil {
 		t.Fatalf("workspaceExecWith: %v", err)
 	}
