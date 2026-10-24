@@ -256,5 +256,30 @@ route has been deployed or verified against live AWS/GitHub resources.
   the Lambda timeout exceeds the runner startup operation timeout.
 - Add durable multi-Plane placement and queue selection; do not route by
   untrusted workflow labels.
-- Build and verify the runner MicroVM image/listener, restricted egress, and
-  cleanup under approved AWS/GitHub test credentials before enabling admission.
+- Execute the built ARM64 runner image inside Lambda MicroVMs and verify
+  restricted egress, cancellation, and cleanup under approved AWS/GitHub test
+  credentials before enabling admission.
+
+## Pinned runner MicroVM image
+
+`images/actions-runner/Dockerfile` extends the official GitHub Actions Runner
+2.338.1 ARM64 image pinned by platform manifest digest
+`sha256:ee680dc9fe83da474e3c51d642f8bfac0d920da26735e3d5e4171ab8f2f45a87`.
+The upstream version and package are documented at the [official Runner
+package](https://github.com/actions/runner/pkgs/container/actions-runner).
+The Hako layer adds only the statically linked ARM64 guest executable and the
+public bootstrap verification key, sets `/home/runner` as the Runner root,
+and retains the upstream non-root `runner` user. The image build does not
+download or execute an unpinned Runner archive.
+
+Build locally with a public key file:
+
+```bash
+make build-actions-runner-microvm-image \
+  HAKO_ACTIONS_RUNNER_BOOTSTRAP_PUBLIC_KEY_FILE=/path/to/bootstrap-public.pem
+```
+
+The build uses Podman and does not publish an image or change AWS. On an
+x86_64 host without ARM emulation, the OCI image can be assembled and inspected
+but its ARM64 processes cannot be executed locally. A built image is not proof
+of Lambda MicroVM runtime, network isolation, or live GitHub registration.

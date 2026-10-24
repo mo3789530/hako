@@ -25,9 +25,10 @@ does not bundle an Action version, move tags, or claim compatibility with an
 unverified release. The repository owner is responsible for reviewing and
 pinning the Action revision and its inputs. Local lifecycle, provenance, and
 credential-isolation behavior is tested with fake GitHub/AWS/model providers;
-this is not production certification. A pinned runner image, deployed
-broker/worker/IAM/certificates, restricted network, and live cleanup verification
-remain deployment gates. See
+this is not production certification. The pinned ARM64 runner image now builds
+locally, but has not been executed inside Lambda MicroVMs. Deployed
+broker/worker/IAM/certificates, restricted network, and live cleanup
+verification remain deployment gates. See
 [`claude-model-credentials.md`](claude-model-credentials.md) for the
 Tenant-owned provider credential model.
 
@@ -72,9 +73,11 @@ to fake GitHub Checks, and Broker-mediated MicroVM/runner cleanup with injected
 provider failures and retries. The same test exercises fork, wrong-SHA and
 cross-Tenant model credential denial using the provenance verifier and
 PostgreSQL resolver with a synthetic Secret reader. It does not call the live
-GitHub Actions API, build/run the published Lambda MicroVM image, or verify
-production IAM/network policy. A pinned ARM64 image recipe is provided, but no
-runner archive/image has been built or published. AWS documents the `/run` hook body
+GitHub Actions API, run the ARM64 image on this x86_64 host, or verify
+production IAM/network policy. The image is built from the official GitHub
+Runner 2.338.1 ARM64 manifest pinned by digest; see
+[`actions-runner-startup-queue.md`](actions-runner-startup-queue.md) for the
+digest and build command. AWS documents the `/run` hook body
 and per-MicroVM payload in [Running and using MicroVMs](https://docs.aws.amazon.com/lambda/latest/dg/microvms-launching.html).
 
 ## Tenant setup and operating procedure
@@ -131,8 +134,8 @@ cleanup worker rather than manually declaring the resource absent.
 ### Production rollout gates
 
 Local tests and mock Terraform plans do not enable production admission. Before
-deployment, review and separately approve the exact ARM64 runner archive/hash
-and image digest, Lambda MicroVM `/run` contract, VPC connector and egress
+deployment, review and separately approve the exact ARM64 runner base/image
+digest, Lambda MicroVM `/run` contract, VPC connector and egress
 policy, queue/DLQ and visibility/timeout settings, least-privilege IAM and
 purpose-specific Secret reader Roles, mTLS certificate issue/rotation, broker
 and worker deployment, Check delivery, alarms, and cleanup/recovery drills.

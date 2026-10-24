@@ -1,6 +1,6 @@
 # Task 75: Claude Tenant credential and trust policy
 
-Status: In Progress (Tenant API/CLI, exact-version reader and fenced resolver are implemented. A dedicated Resource Plane mTLS endpoint, Lambda Worker client, signed MicroVM-bound bootstrap handoff, guest `/run` identity binding, single-use receiver, and official-runner process environment handoff are locally tested. Runner image build/E2E and deployment IAM/certificate wiring remain). Priority: P2. Parent: Task 73. Depends on: Tasks 50, 56–60, 74.
+Status: Local acceptance complete; production IAM/certificate deployment remains. Tenant API/CLI, exact-version reader and fenced resolver are implemented. A dedicated Resource Plane mTLS endpoint, Lambda Worker client, signed MicroVM-bound bootstrap handoff, guest `/run` identity binding, single-use receiver, and official-runner process environment handoff are locally tested. The ARM64 guest image builds on the official digest-pinned Runner base; the composed PostgreSQL E2E proves the synthetic key reaches only the Runner process and is removed with guest work state. The image was not executed because this x86_64 host has no ARM64 emulator. Priority: P2. Parent: Task 73. Depends on: Tasks 50, 56–60, 74.
 
 ## Goal
 
@@ -15,7 +15,7 @@ Make model credentials Tenant-owned, purpose-specific and available only to expl
 - [x] Add a Plane-allowlisted broker endpoint/client and signed, short-lived, exact-MicroVM bootstrap handoff; keep the value out of SQS, GitHub runner registration token, command arguments, logs, artifacts, and public Tenant API responses.
 - [x] Implement a bounded, signature/VM/expiry-verifying, single-use guest receiver that wipes the model-key byte buffer after synchronous consumption.
 - [x] Add a guest executable/process consumer that configures an ephemeral official runner without the model key, supplies the key only to the runner process environment, and removes guest-local credential/work state after exit.
-- [ ] Build the pinned runner image and add an end-to-end broker→Worker→guest verification proving the process can use the key and cleanup erases it.
+- [x] Build the pinned ARM64 runner image and verify the broker→Worker→guest process path with a synthetic key; assert the key reaches only the runner environment and guest credential/work state is removed. The image artifact was inspected, not executed on this x86_64 host.
 - Keep GitHub checkout/write permissions separate from model API credentials; default Claude job repository access is read-only unless a separately approved write capability is requested.
 - [x] Specify redaction, timeout, rotation, revocation, operator provisioning, and incident response boundaries in `docs/claude-model-credentials.md`.
 - [ ] Add production broker IAM allowlist, certificate provisioning, and deployment configuration after reviewing the final runtime delivery protocol.

@@ -122,19 +122,23 @@ minimal environment with no inherited AWS credentials, then clears the guest
 buffer after process start and removes runner credentials, diagnostics, temp,
 and checkout work state after the job exits. Unit tests use fake runner scripts.
 
-The guest executable and ARM64 Dockerfile recipe exist, but the image has not
-been built or published. Task 76's PostgreSQL E2E now composes the production
+The ARM64 guest image now builds locally from the official GitHub Actions
+Runner 2.338.1 image pinned to its ARM64 manifest digest; the Hako layer adds
+the guest executable and a public bootstrap key. The x86_64 build host has no
+ARM64 emulator, so the image was assembled and inspected but not run. Task 76's
+PostgreSQL E2E now composes the production
 model credential HTTP client and Broker route with the production resolver, a
 synthetic Secret reader, Tenant A/B credential rows, provenance-denial cases,
 signed guest bootstrap, and the runner process consumer. It covers success,
 failure, cancellation, and timeout and proves that a foreign identity cannot
 reach the reader. The Broker test transport supplies a synthetic verified
 SPIFFE certificate, so this is not evidence of a real TLS handshake, built
-image, or Lambda MicroVM execution. Lambda MicroVM launch, runner-token
+image execution, or Lambda MicroVM execution. Lambda MicroVM launch, runner-token
 issuance, and GitHub APIs remain faked. Broker/Resource Plane IAM, certificate
 provisioning, image verification, restricted egress, and live deployment
-review remain gated follow-up work (Tasks 40, 52, 75–77). The image build
-requires an explicitly reviewed runner archive/version/hash and a public
-verification key. No real Secret was read or provisioned for local tests.
+review remain gated follow-up work (Tasks 40, 52, 75–77). The image pins the
+official ARM64 manifest digest in the Dockerfile and requires only a public
+verification key as build input. No real Secret was read or provisioned for
+local tests.
 Credentials are read-only by default; repository write access requires a
 separate explicit capability and is not implied by the model API key.
