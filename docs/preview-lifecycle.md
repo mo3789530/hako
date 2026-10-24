@@ -123,10 +123,14 @@ classes and bounded exponential retry. `internal/previewprovision.Worker` now
 executes that claim/provision/bind/retry state machine through an injected
 Resource Plane provisioner. After every failed attempt, the worker invokes
 compensation with the partial binding, if any, and the immutable generation
-identity so the Resource Plane can discover unbound resources by Hako tags
-before retry. A compensation failure leaves the claim for lease-based recovery
-instead of pretending cleanup succeeded. If a successful result loses its
-generation fence, it also invokes idempotent compensation. PostgreSQL lifecycle
+identity so the Resource Plane can recover an ambiguous launch through its
+durable runtime journal and the same Lambda MicroVM idempotency request. Lambda
+MicroVM has no verified per-VM tag or tag-list resource, so Hako must not adopt
+or delete an unjournaled VM by scanning. If neither a persisted provider ID nor
+the exact journaled launch request can prove ownership, cleanup stays pending
+for operator reconciliation. A compensation failure leaves the claim for
+lease-based recovery instead of pretending cleanup succeeded. If a successful
+result loses its generation fence, it also invokes idempotent compensation. PostgreSQL lifecycle
 integration drives a fake provisioner through partial MicroVM creation followed
 by route-publish failure and cleanup, retry/backoff, successful binding, and a
 PR-head change during provisioning that rejects and compensates the stale
@@ -157,8 +161,8 @@ Plane still depends on the existing Dispatcher schedule and a configured
 Preview queue URL. PostgreSQL integration covers Tenant region/Plane filters,
 full-capacity exclusion, pinned placement, and capacity release after cleanup.
 Resource Plane queue infrastructure, Lambda MicroVM API calls, Gateway route
-publication, and tag-based provider executor are still missing, so no Preview
-runtime is allocated for user traffic.
+publication, and journal-backed provider executor are still missing, so no
+Preview runtime is allocated for user traffic.
 
 The accepted Preview Outbox envelope and current routing-only status are
 documented in [Preview Runtime command routing contract](preview-runtime-command-contract.md).
@@ -202,10 +206,10 @@ does not claim Previews that have generation rows, preventing it from
 acknowledging those rows without per-generation confirmation. The quota remains
 reserved until every generation is cleaned. PostgreSQL integration verifies
 lease recovery, active-claim exclusion, retry/backoff, stale-claim rejection,
-provider-bound cleanup, interrupted unbound-attempt tag-recovery identity, and
-final quota release. A concrete Resource Plane cleanup command/executor that
-implements tag discovery, and scheduled worker deployment are still required
-before Preview can be enabled for user traffic.
+provider-bound cleanup, interrupted unbound-attempt journal-recovery identity,
+and final quota release. A concrete Resource Plane cleanup command/executor
+that resolves the exact durable journal, and scheduled worker deployment are
+still required before Preview can be enabled for user traffic.
 
 Webhook admission reserves the Tenant Preview concurrency slot in the same
 transaction as the PR lifecycle update, using the shared Tenant quota OCC row.

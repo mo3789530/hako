@@ -142,8 +142,10 @@ Add optional repository-level preview environments and service metadata/deploy p
   interrupted unbound attempt, and quota release. A generation with no provision
   attempt is safely retired without provider I/O; an unbound attempted
   generation is now delivered to the executor with its deterministic runtime
-  Workspace ID and pinned Resource Plane ID so it can recover resources by Hako
-  tags. Migrations 000165–000168 add, index, and constrain the Resource Plane pin.
+  Workspace ID and pinned Resource Plane ID so it can recover the durable
+  Resource Plane journal. Lambda MicroVM does not provide verified per-VM tags
+  or tag-based discovery; an unjournaled VM must never be adopted or deleted by
+  scanning. Migrations 000165–000168 add, index, and constrain the Resource Plane pin.
   The first provision claim persists its Plane and retries cannot move the
   generation. Dynamic placement now applies Tenant policy, active/healthy Plane
   eligibility, the `microvm` capability, and configured Workspace/CPU/RAM
@@ -163,8 +165,8 @@ Add optional repository-level preview environments and service metadata/deploy p
   attributes is returned in `BatchItemFailures`. The
   Resource Plane has a strict SQS Lambda handler core, bounded execution
   deadline, fixed failure classes, partial-success compensation, and SQS result
-  sink. Lambda MicroVM/Gateway provider operations, durable provider fencing,
-  tag discovery/deletion, queue infrastructure, worker deployment, and
+  sink. Lambda MicroVM/Gateway provider operations, durable journal-backed
+  provider fencing/recovery, queue infrastructure, worker deployment, and
   scheduled composition remain unwired.
 - Migrations 000163–000164 add a separate Preview Gateway session registry
   because deterministic Preview runtime Workspace IDs are intentionally absent
