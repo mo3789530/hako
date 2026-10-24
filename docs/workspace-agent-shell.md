@@ -176,8 +176,9 @@ Origin. The root init does not start when this setting or the image-owned key
 file path is missing. Do not place the Agent signing private key in this image.
 The `nerdctl-full` archive is supplied by the caller and checked against its
 required SHA-256 and embedded version before its binaries are copied into the
-image; Makefile preflights `nerdctl`, `containerd`, `containerd-rootless.sh`,
-`rootlesskit`, and `slirp4netns`, and the build does not fetch a moving release.
+image. `slirp4netns` is a separate static ARM64 release binary because
+`nerdctl-full` does not bundle it; the build requires its version and
+SHA-256-pinned input independently. The build does not fetch a moving release.
 The image packages setuid `newuidmap`/`newgidmap` helpers. Service execution is
 opt-in with `HAKO_WORKSPACE_SERVICES_ENABLED=true` at image build time; the
 default is `false`. When enabled, root init prepares a per-MicroVM account and

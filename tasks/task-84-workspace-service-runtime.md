@@ -82,15 +82,20 @@ fixed containerd socket path. The supervisor rejects any non-fixed daemon
 socket and stops a daemon returned with an invalid socket, avoiding a leaked
 process or arbitrary socket handoff. Workspace Agent race tests, the full Go
 suite, PostgreSQL integration suite, and ARM64 init/agent cross-build pass;
-they do not replace a real Lambda MicroVM runtime PoC. `nerdctl-full` now requires `slirp4netns`; its
-runtime setup uses ephemeral `/tmp` state rather than EFS. The Lambda executable and Terraform SQS
+they do not replace a real Lambda MicroVM runtime PoC. Verified upstream
+`nerdctl-full` ARM64 archives do not bundle `slirp4netns`; the image build now
+accepts a separate static ARM64 binary pinned by version and SHA-256, rather
+than rejecting the official archive or assuming the distro package exists.
+The same correction is applied to the Job image target. Runtime setup uses
+ephemeral `/tmp` state rather than EFS. The Lambda executable and Terraform SQS
 event-source/IAM wiring exist, but deployment remains default-off and unapplied. An optional
 rootless `nerdctl` adapter now runs only exact built-in templates, applies
 memory/CPU limits, maps service ports to guest loopback, uses a Workspace
 private network and Workspace-scoped volume paths, and strips ambient process
 environment; it is fake-runner tested. The image build accepts only a
-caller-pinned, SHA-256- and version-checked `nerdctl-full` ARM64 bundle plus
-rootless UID map helpers. With the default-off
+caller-pinned, SHA-256- and version-checked `nerdctl-full` ARM64 bundle and a
+separately SHA-256-pinned static ARM64 `slirp4netns` binary, plus rootless UID
+map helpers. With the default-off
 `HAKO_WORKSPACE_SERVICES_ENABLED=true` build setting, root init configures the
 per-MicroVM account/subuid mapping, supervises rootless containerd under the
 Workspace UID, and passes the Agent child only its fixed socket path. This

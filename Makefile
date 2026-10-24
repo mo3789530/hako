@@ -141,14 +141,19 @@ build-workload-microvm-services-image: build-workload-microvm-artifact
 	@test -n "$(HAKO_NERDCTL_FULL_VERSION)" || (echo "set HAKO_NERDCTL_FULL_VERSION to the exact nerdctl release" >&2; exit 1)
 	@test -n "$(HAKO_NERDCTL_FULL_SHA256)" || (echo "set HAKO_NERDCTL_FULL_SHA256 to the reviewed archive digest" >&2; exit 1)
 	@test -s "$(HAKO_NERDCTL_FULL_ARCHIVE)" || (echo "nerdctl-full archive is missing or empty" >&2; exit 1)
+	@test -n "$(HAKO_SLIRP4NETNS_BINARY)" || (echo "set HAKO_SLIRP4NETNS_BINARY to a reviewed Linux ARM64 slirp4netns binary" >&2; exit 1)
+	@test -n "$(HAKO_SLIRP4NETNS_VERSION)" || (echo "set HAKO_SLIRP4NETNS_VERSION to the exact slirp4netns release" >&2; exit 1)
+	@test -n "$(HAKO_SLIRP4NETNS_SHA256)" || (echo "set HAKO_SLIRP4NETNS_SHA256 to the reviewed binary digest" >&2; exit 1)
+	@test -s "$(HAKO_SLIRP4NETNS_BINARY)" || (echo "slirp4netns binary is missing or empty" >&2; exit 1)
 	@set -e; archive_entries=$$(tar -tzf "$(HAKO_NERDCTL_FULL_ARCHIVE)"); \
-	for required in bin/nerdctl bin/containerd bin/containerd-rootless.sh bin/rootlesskit bin/slirp4netns; do \
+	for required in bin/nerdctl bin/containerd bin/containerd-rootless.sh bin/rootlesskit; do \
 		printf '%s\n' "$$archive_entries" | grep -Fxq "$$required" || { echo "nerdctl-full archive is missing $$required" >&2; exit 1; }; \
 	done
 	cp "$(HAKO_NERDCTL_FULL_ARCHIVE)" build/workload-microvm/nerdctl-full-linux-arm64.tar.gz
+	cp "$(HAKO_SLIRP4NETNS_BINARY)" build/workload-microvm/slirp4netns-aarch64
 	cp images/workload-agent/Dockerfile.services build/workload-microvm/Dockerfile.services
 	podman build --arch arm64 --tag hako-workload-agent:local-base -f build/workload-microvm/Dockerfile build/workload-microvm
-	podman build --arch arm64 --build-arg HAKO_WORKLOAD_BASE_IMAGE=hako-workload-agent:local-base --build-arg NERDCTL_FULL_VERSION="$(HAKO_NERDCTL_FULL_VERSION)" --build-arg NERDCTL_FULL_SHA256="$(HAKO_NERDCTL_FULL_SHA256)" --tag hako-workload-agent:services-local -f build/workload-microvm/Dockerfile.services build/workload-microvm
+	podman build --arch arm64 --build-arg HAKO_WORKLOAD_BASE_IMAGE=hako-workload-agent:local-base --build-arg NERDCTL_FULL_VERSION="$(HAKO_NERDCTL_FULL_VERSION)" --build-arg NERDCTL_FULL_SHA256="$(HAKO_NERDCTL_FULL_SHA256)" --build-arg SLIRP4NETNS_VERSION="$(HAKO_SLIRP4NETNS_VERSION)" --build-arg SLIRP4NETNS_SHA256="$(HAKO_SLIRP4NETNS_SHA256)" --tag hako-workload-agent:services-local -f build/workload-microvm/Dockerfile.services build/workload-microvm
 
 # Builds a distinct root-owned Workspace init image with a separate unprivileged shell Agent. EFS RPM, nerdctl-full artifact, and public verification keys are pinned inputs.
 build-workspace-microvm-image:
@@ -157,13 +162,17 @@ build-workspace-microvm-image:
 	@test -n "$(HAKO_NERDCTL_FULL_ARCHIVE)" || (echo "set HAKO_NERDCTL_FULL_ARCHIVE to a reviewed nerdctl-full Linux ARM64 archive" >&2; exit 1)
 	@test -n "$(HAKO_NERDCTL_FULL_VERSION)" || (echo "set HAKO_NERDCTL_FULL_VERSION to the exact nerdctl release" >&2; exit 1)
 	@test -n "$(HAKO_NERDCTL_FULL_SHA256)" || (echo "set HAKO_NERDCTL_FULL_SHA256 to the reviewed archive digest" >&2; exit 1)
+	@test -n "$(HAKO_SLIRP4NETNS_BINARY)" || (echo "set HAKO_SLIRP4NETNS_BINARY to a reviewed Linux ARM64 slirp4netns binary" >&2; exit 1)
+	@test -n "$(HAKO_SLIRP4NETNS_VERSION)" || (echo "set HAKO_SLIRP4NETNS_VERSION to the exact slirp4netns release" >&2; exit 1)
+	@test -n "$(HAKO_SLIRP4NETNS_SHA256)" || (echo "set HAKO_SLIRP4NETNS_SHA256 to the reviewed binary digest" >&2; exit 1)
+	@test -s "$(HAKO_SLIRP4NETNS_BINARY)" || (echo "slirp4netns binary is missing or empty" >&2; exit 1)
 	@test -n "$(HAKO_CODE_SERVER_VERSION)" || (echo "set HAKO_CODE_SERVER_VERSION to the pinned code-server version" >&2; exit 1)
 	@test -n "$(HAKO_CODE_SERVER_SHA256)" || (echo "set HAKO_CODE_SERVER_SHA256 to the pinned ARM64 archive SHA-256" >&2; exit 1)
 	@test -n "$(HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE)" || (echo "set HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE to a public-key JSON file" >&2; exit 1)
 	@test -s "$(HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE)" || (echo "Workspace Agent public-key JSON file is missing or empty" >&2; exit 1)
 	@test -s "$(HAKO_NERDCTL_FULL_ARCHIVE)" || (echo "nerdctl-full archive is missing or empty" >&2; exit 1)
 	@set -e; archive_entries=$$(tar -tzf "$(HAKO_NERDCTL_FULL_ARCHIVE)"); \
-	for required in bin/nerdctl bin/containerd bin/containerd-rootless.sh bin/rootlesskit bin/slirp4netns; do \
+	for required in bin/nerdctl bin/containerd bin/containerd-rootless.sh bin/rootlesskit; do \
 		printf '%s\n' "$$archive_entries" | grep -Fxq "$$required" || { echo "nerdctl-full archive is missing $$required" >&2; exit 1; }; \
 	done
 	mkdir -p build/workspace-init
@@ -171,8 +180,9 @@ build-workspace-microvm-image:
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o build/workspace-init/hako-workspace-agent ./cmd/hako-workspace-agent
 	install -m 0644 "$(HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE)" build/workspace-init/trusted-keys.json
 	install -m 0644 "$(HAKO_NERDCTL_FULL_ARCHIVE)" build/workspace-init/nerdctl-full-linux-arm64.tar.gz
+	install -m 0644 "$(HAKO_SLIRP4NETNS_BINARY)" build/workspace-init/slirp4netns-aarch64
 	install -m 0644 images/workspace-init/Dockerfile build/workspace-init/Dockerfile
-	podman build --arch arm64 --build-arg EFS_UTILS_RPM_VERSION="$(HAKO_EFS_UTILS_RPM_VERSION)" --build-arg NERDCTL_FULL_VERSION="$(HAKO_NERDCTL_FULL_VERSION)" --build-arg NERDCTL_FULL_SHA256="$(HAKO_NERDCTL_FULL_SHA256)" --build-arg CODE_SERVER_VERSION="$(HAKO_CODE_SERVER_VERSION)" --build-arg CODE_SERVER_SHA256="$(HAKO_CODE_SERVER_SHA256)" --build-arg HAKO_WORKSPACE_SERVICES_ENABLED="$(HAKO_WORKSPACE_SERVICES_ENABLED)" --tag hako-workspace-init:local -f build/workspace-init/Dockerfile build/workspace-init
+	podman build --arch arm64 --build-arg EFS_UTILS_RPM_VERSION="$(HAKO_EFS_UTILS_RPM_VERSION)" --build-arg NERDCTL_FULL_VERSION="$(HAKO_NERDCTL_FULL_VERSION)" --build-arg NERDCTL_FULL_SHA256="$(HAKO_NERDCTL_FULL_SHA256)" --build-arg SLIRP4NETNS_VERSION="$(HAKO_SLIRP4NETNS_VERSION)" --build-arg SLIRP4NETNS_SHA256="$(HAKO_SLIRP4NETNS_SHA256)" --build-arg CODE_SERVER_VERSION="$(HAKO_CODE_SERVER_VERSION)" --build-arg CODE_SERVER_SHA256="$(HAKO_CODE_SERVER_SHA256)" --build-arg HAKO_WORKSPACE_SERVICES_ENABLED="$(HAKO_WORKSPACE_SERVICES_ENABLED)" --tag hako-workspace-init:local -f build/workspace-init/Dockerfile build/workspace-init
 
 # Builds an ARM64 ECS/Fargate image locally; publishing to ECR is a separate authorized step.
 build-github-checks-consumer-image:

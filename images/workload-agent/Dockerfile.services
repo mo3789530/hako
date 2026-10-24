@@ -3,7 +3,10 @@ FROM ${HAKO_WORKLOAD_BASE_IMAGE}
 
 ARG NERDCTL_FULL_VERSION
 ARG NERDCTL_FULL_SHA256
+ARG SLIRP4NETNS_VERSION
+ARG SLIRP4NETNS_SHA256
 COPY nerdctl-full-linux-arm64.tar.gz /tmp/nerdctl-full-linux-arm64.tar.gz
+COPY slirp4netns-aarch64 /tmp/slirp4netns-aarch64
 
 # The daemon runs under a dedicated non-login UID. The Agent remains root to
 # manage it, while repository commands run under the separate 65532 identity.
@@ -11,15 +14,18 @@ RUN test -n "${NERDCTL_FULL_VERSION}" \
     && case "${NERDCTL_FULL_VERSION}" in ''|*[!0-9.]* ) exit 1 ;; esac \
     && echo "${NERDCTL_FULL_SHA256}" | grep -Eq '^[[:xdigit:]]{64}$' \
     && echo "${NERDCTL_FULL_SHA256}  /tmp/nerdctl-full-linux-arm64.tar.gz" | sha256sum --check \
+    && case "${SLIRP4NETNS_VERSION}" in ''|*[!0-9.]* ) exit 1 ;; esac \
+    && echo "${SLIRP4NETNS_SHA256}" | grep -Eq '^[[:xdigit:]]{64}$' \
+    && echo "${SLIRP4NETNS_SHA256}  /tmp/slirp4netns-aarch64" | sha256sum --check \
     && tar -tzf /tmp/nerdctl-full-linux-arm64.tar.gz | grep -Fxq bin/nerdctl \
     && tar -tzf /tmp/nerdctl-full-linux-arm64.tar.gz | grep -Fxq bin/containerd-rootless.sh \
     && tar -tzf /tmp/nerdctl-full-linux-arm64.tar.gz | grep -Fxq bin/rootlesskit \
-    && tar -tzf /tmp/nerdctl-full-linux-arm64.tar.gz | grep -Fxq bin/slirp4netns \
     && tar -xzf /tmp/nerdctl-full-linux-arm64.tar.gz --no-same-owner --no-same-permissions -C /usr/local \
     && test "$(/usr/local/bin/nerdctl --version)" = "nerdctl version ${NERDCTL_FULL_VERSION}" \
     && groupadd --gid 100000 hako-job-runtime \
-    && useradd --uid 100000 --gid 100000 --home-dir /tmp/hako-job-runtime-home-100000 --no-create-home --shell /sbin/nologin hako-job-runtime \
+    && useradd --system --uid 100000 --gid 100000 --home-dir /tmp/hako-job-runtime-home-100000 --no-create-home --shell /sbin/nologin hako-job-runtime \
     && usermod --add-subuids 20000000-20065535 --add-subgids 20000000-20065535 hako-job-runtime \
+    && install -m 0755 /tmp/slirp4netns-aarch64 /usr/local/bin/slirp4netns \
     && test -u /usr/bin/newuidmap \
     && test -u /usr/bin/newgidmap \
     && test -x /usr/local/bin/containerd \
@@ -32,7 +38,8 @@ RUN test -n "${NERDCTL_FULL_VERSION}" \
     && mkdir -p /run/user /run/hako-job-services \
     && chmod 0755 /run/user \
     && chmod 0700 /run/hako-job-services \
-    && rm -f /tmp/nerdctl-full-linux-arm64.tar.gz
+    && rm -f /tmp/nerdctl-full-linux-arm64.tar.gz /tmp/slirp4netns-aarch64
 
 ENV HAKO_JOB_SERVICES_ENABLED=false
+ENV HAKO_SLIRP4NETNS_VERSION=${SLIRP4NETNS_VERSION}
 USER 0:0

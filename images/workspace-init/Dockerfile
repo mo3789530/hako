@@ -19,6 +19,7 @@ RUN test -n "${CODE_SERVER_VERSION}" \
 FROM --platform=linux/arm64 public.ecr.aws/lambda/microvms:al2023-minimal@sha256:b6a34591182b4a1969f57eb24c812582d0c52dc2e40b75b73c0df371bb7aef82 AS nerdctl
 ARG NERDCTL_FULL_VERSION
 ARG NERDCTL_FULL_SHA256
+RUN dnf install -y tar gzip && dnf clean all
 COPY nerdctl-full-linux-arm64.tar.gz /tmp/nerdctl-full-linux-arm64.tar.gz
 RUN case "${NERDCTL_FULL_VERSION}" in ''|*[!0-9.]* ) exit 1 ;; esac \
     && echo "${NERDCTL_FULL_SHA256}" | grep -Eq '^[[:xdigit:]]{64}$' \
@@ -29,19 +30,25 @@ RUN case "${NERDCTL_FULL_VERSION}" in ''|*[!0-9.]* ) exit 1 ;; esac \
     && test -x /opt/hako-nerdctl/bin/containerd \
     && test -x /opt/hako-nerdctl/bin/containerd-rootless.sh \
     && test -x /opt/hako-nerdctl/bin/rootlesskit \
-    && test -x /opt/hako-nerdctl/bin/slirp4netns \
     && /opt/hako-nerdctl/bin/nerdctl --version | grep -Fx "nerdctl version ${NERDCTL_FULL_VERSION}" \
     && rm -f /tmp/nerdctl-full-linux-arm64.tar.gz
 
 FROM --platform=linux/arm64 public.ecr.aws/lambda/microvms:al2023-minimal@sha256:b6a34591182b4a1969f57eb24c812582d0c52dc2e40b75b73c0df371bb7aef82
 ARG HAKO_WORKSPACE_SERVICES_ENABLED=false
+ARG SLIRP4NETNS_VERSION
+ARG SLIRP4NETNS_SHA256
+COPY slirp4netns-aarch64 /tmp/slirp4netns-aarch64
 
 # Pin the helper RPM version at image build time. The build fails closed if a
 # version is omitted, so the produced image can be reproduced and audited.
 ARG EFS_UTILS_RPM_VERSION
 RUN test -n "${EFS_UTILS_RPM_VERSION}" \
     && case "${HAKO_WORKSPACE_SERVICES_ENABLED}" in true|false) ;; *) exit 1 ;; esac \
+    && case "${SLIRP4NETNS_VERSION}" in ''|*[!0-9.]* ) exit 1 ;; esac \
+    && echo "${SLIRP4NETNS_SHA256}" | grep -Eq '^[[:xdigit:]]{64}$' \
+    && echo "${SLIRP4NETNS_SHA256}  /tmp/slirp4netns-aarch64" | sha256sum --check \
     && dnf install -y --setopt=install_weak_deps=False "amazon-efs-utils-${EFS_UTILS_RPM_VERSION}" shadow-utils \
+    && install -m 0755 /tmp/slirp4netns-aarch64 /usr/local/bin/slirp4netns \
     && dnf clean all \
     && test -x /sbin/mount.efs \
     && mkdir -p /run/hako /workspace \
@@ -63,10 +70,13 @@ RUN ln -s /opt/hako-code-server/bin/code-server /usr/local/bin/code-server \
     && test -x /usr/bin/newuidmap \
     && test -x /usr/bin/newgidmap \
     && test -u /usr/bin/newuidmap \
-    && test -u /usr/bin/newgidmap
+    && test -u /usr/bin/newgidmap \
+    && test -x /usr/local/bin/slirp4netns \
+    && rm -f /tmp/slirp4netns-aarch64
 
 EXPOSE 8080
 ENV HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE=/etc/hako/workspace-agent-public-keys.json
 ENV HAKO_WORKSPACE_SERVICES_ENABLED=${HAKO_WORKSPACE_SERVICES_ENABLED}
+ENV HAKO_SLIRP4NETNS_VERSION=${SLIRP4NETNS_VERSION}
 USER 0:0
 ENTRYPOINT ["/usr/local/bin/hako-workspace-init"]
