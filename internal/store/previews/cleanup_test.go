@@ -40,7 +40,7 @@ func TestCleanupErrorCodeRejectsUnboundedProviderError(t *testing.T) {
 
 func TestCleanupInputValidation(t *testing.T) {
 	valid := CleanupJob{CleanupIdentity: CleanupIdentity{TenantID: "tenant_a", InstallationID: 1, RepositoryID: 2, PullRequestNumber: 3},
-		ClaimID: "claim_12345678", LeaseExpiresAt: time.Now().Add(time.Minute), Attempt: 1}
+		Generation: 1, ClaimID: "claim_12345678", LeaseExpiresAt: time.Now().Add(time.Minute), Attempt: 1}
 	if _, _, err := RecordCleanupFailure(context.Background(), nil, valid, time.Now(), "provider_unavailable"); err == nil {
 		t.Fatal("RecordCleanupFailure accepted a nil transaction")
 	}
@@ -71,7 +71,7 @@ func TestCleanupIdentityValidationRejectsUntrustedOrIncompleteValues(t *testing.
 
 func TestCleanupJobValidationFencesClaimIdentity(t *testing.T) {
 	valid := CleanupJob{CleanupIdentity: CleanupIdentity{TenantID: "tenant_a", InstallationID: 1, RepositoryID: 2, PullRequestNumber: 3},
-		ClaimID: "claim_12345678", LeaseExpiresAt: time.Now().Add(time.Minute), Attempt: 1}
+		Generation: 1, ClaimID: "claim_12345678", LeaseExpiresAt: time.Now().Add(time.Minute), Attempt: 1}
 	if !validCleanupJob(valid) {
 		t.Fatal("valid claimed cleanup job was rejected")
 	}
@@ -80,6 +80,7 @@ func TestCleanupJobValidationFencesClaimIdentity(t *testing.T) {
 		func(job *CleanupJob) { job.ClaimID = "claim/with/slash" },
 		func(job *CleanupJob) { job.LeaseExpiresAt = time.Time{} },
 		func(job *CleanupJob) { job.Attempt = 0 },
+		func(job *CleanupJob) { job.Generation = 0 },
 		func(job *CleanupJob) { job.CleanupIdentity.TenantID = "" },
 	} {
 		invalid := valid

@@ -21,11 +21,12 @@ hako github repository previews list --tenant <tenant> \
 
 The matching read-only endpoint is
 `GET /v1/tenants/{tenant_id}/github/installations/{installation_id}/repositories/{repository_id}/previews?limit=50`.
-It returns PR number, pinned head SHA/ref, desired/observed lifecycle state,
-expiry, cleanup retry metadata, and update time. The limit defaults to 50 and
-is capped at 100. Tenant membership is required; an Installation or Repository
-outside that Tenant is not disclosed. `runtime_enabled` remains false because
-this listing reports lifecycle metadata only.
+It returns PR number, pinned head SHA/ref, a monotonic lifecycle `generation`,
+desired/observed lifecycle state, expiry, cleanup retry metadata, and update
+time. The limit defaults to 50 and is capped at 100. Tenant membership is
+required; an Installation or Repository outside that Tenant is not disclosed.
+`runtime_enabled` remains false because this listing reports lifecycle
+metadata only.
 
 The endpoint writes an audit event. The webhook processor ignores deliveries
 received before `preview_enabled_at`, so enabling Preview does not backfill old
@@ -41,6 +42,14 @@ Opened/reopened/synchronize events set desired state to `present` and state to
 deliveries; the webhook receipt timestamp is used only when that field is
 missing. Equal timestamps use Delivery ID as a deterministic tie-breaker.
 Duplicate deliveries are suppressed by the durable webhook inbox.
+
+Each Preview starts at generation 1. A newer accepted PR event increments the
+generation once when it changes the effective head SHA or desired state; an
+older event and a same-head synchronize do not. Closing, reopening, and expiry
+therefore advance the lifecycle generation. Cleanup claims carry the generation
+they observed, and retry/completion writes require that exact generation in
+addition to the claim ID, attempt, and lease. This fences a delayed cleanup
+worker if the Preview lifecycle has moved on since its claim.
 
 Each present Preview records a fixed `expires_at` using the Tenant's configured
 Preview lifetime (24 hours when no quota row exists). `synchronize` deliveries
@@ -65,11 +74,14 @@ exponential retries (5 seconds to 1 hour). `cleaned` is written only after the
 runtime executor confirms MicroVM and Gateway route deletion, and duplicate
 confirmation is idempotent. Migrations 000145–000146 add expiring, attempt-fenced
 cleanup claims so crashed workers can be recovered and stale workers cannot
-acknowledge a newer claim. The worker that resolves Preview-to-runtime binding
-and performs physical deletion, route authorization, and Preview quota
-reservation is still required before Preview can be enabled for user traffic.
-`make test-preview-expiry-integration` exercises the store's claim, active-lease
-exclusion, fixed retry backoff, crash recovery, stale-claim rejection, confirmed
+acknowledge a newer claim. Migration 000147 adds lifecycle generations, which
+also fence cleanup metadata against later PR head/state changes. The worker
+that resolves Preview-to-runtime binding and performs physical deletion, route
+authorization, and Preview quota reservation is still required before Preview
+can be enabled for user traffic.
+`make test-preview-expiry-integration` exercises the list API's generation
+field and Tenant scope, plus the store's claim, active-lease exclusion, fixed
+retry backoff, crash recovery, stale-claim/generation rejection, confirmed
 completion, and duplicate acknowledgement against an isolated local PostgreSQL
 schema. This verifies the metadata fence only; it does not simulate provider
 deletion or prove runtime cleanup.

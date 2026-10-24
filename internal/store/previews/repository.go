@@ -18,6 +18,7 @@ type RepositoryPreview struct {
 	PullRequestNumber int64           `json:"pull_request_number"`
 	HeadSHA           string          `json:"head_sha"`
 	HeadRef           string          `json:"head_ref"`
+	Generation        int64           `json:"generation"`
 	DesiredState      string          `json:"desired_state"`
 	State             string          `json:"state"`
 	ExpiresAt         *time.Time      `json:"expires_at,omitempty"`
@@ -33,7 +34,7 @@ func ListForRepository(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID,
 		return nil, errors.New("valid Tenant, repository, transaction, and bounded limit are required")
 	}
 	rows, err := tx.Query(ctx, `SELECT tenant_id,installation_id,github_repository_id,pull_request_number,head_sha,head_ref,
-		desired_state,state,expires_at,cleanup_attempts,cleanup_next_attempt_at,updated_at
+		generation,desired_state,state,expires_at,cleanup_attempts,cleanup_next_attempt_at,updated_at
 		FROM repository_previews WHERE tenant_id=$1 AND installation_id=$2 AND github_repository_id=$3
 		ORDER BY updated_at DESC,pull_request_number DESC LIMIT $4`, tenantID, installationID, repositoryID, limit)
 	if err != nil {
@@ -44,7 +45,7 @@ func ListForRepository(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID,
 	for rows.Next() {
 		var item RepositoryPreview
 		if err := rows.Scan(&item.TenantID, &item.InstallationID, &item.RepositoryID, &item.PullRequestNumber,
-			&item.HeadSHA, &item.HeadRef, &item.DesiredState, &item.State, &item.ExpiresAt,
+			&item.HeadSHA, &item.HeadRef, &item.Generation, &item.DesiredState, &item.State, &item.ExpiresAt,
 			&item.CleanupAttempts, &item.CleanupNextAt, &item.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan Repository Preview: %w", err)
 		}
@@ -94,9 +95,14 @@ func ApplyPullRequestDelivery(ctx context.Context, tx pgx.Tx, tenantID domain.Te
 		(tenant_id,installation_id,github_repository_id,pull_request_number,head_sha,head_ref,desired_state,state,last_delivery_id,last_event_at,expires_at,created_at,updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)
 		ON CONFLICT (tenant_id,installation_id,github_repository_id,pull_request_number) DO UPDATE SET
-			head_sha=EXCLUDED.head_sha, head_ref=EXCLUDED.head_ref,
+			head_sha=CASE WHEN EXCLUDED.desired_state='present' AND repository_previews.desired_state='absent' AND $13<>'reopened' THEN repository_previews.head_sha ELSE EXCLUDED.head_sha END,
+			head_ref=CASE WHEN EXCLUDED.desired_state='present' AND repository_previews.desired_state='absent' AND $13<>'reopened' THEN repository_previews.head_ref ELSE EXCLUDED.head_ref END,
 			desired_state=CASE WHEN EXCLUDED.desired_state='present' AND repository_previews.desired_state='absent' AND $13<>'reopened' THEN repository_previews.desired_state ELSE EXCLUDED.desired_state END,
 			state=CASE WHEN EXCLUDED.desired_state='present' AND repository_previews.desired_state='absent' AND $13<>'reopened' THEN repository_previews.state ELSE EXCLUDED.state END,
+			generation=repository_previews.generation + CASE WHEN
+				(repository_previews.desired_state IS DISTINCT FROM CASE WHEN EXCLUDED.desired_state='present' AND repository_previews.desired_state='absent' AND $13<>'reopened' THEN repository_previews.desired_state ELSE EXCLUDED.desired_state END)
+				OR (repository_previews.head_sha IS DISTINCT FROM CASE WHEN EXCLUDED.desired_state='present' AND repository_previews.desired_state='absent' AND $13<>'reopened' THEN repository_previews.head_sha ELSE EXCLUDED.head_sha END)
+				THEN 1 ELSE 0 END,
 			last_delivery_id=EXCLUDED.last_delivery_id, last_event_at=EXCLUDED.last_event_at,
 			expires_at=CASE WHEN EXCLUDED.desired_state='present' AND repository_previews.desired_state='absent' AND $13='reopened' THEN EXCLUDED.expires_at ELSE repository_previews.expires_at END,
 			cleanup_attempts=CASE WHEN EXCLUDED.desired_state='present' AND (repository_previews.desired_state='present' OR $13='reopened') THEN 0 ELSE repository_previews.cleanup_attempts END,
@@ -130,7 +136,7 @@ func ExpireDue(ctx context.Context, tx pgx.Tx, now time.Time, limit int) (int64,
 		LIMIT $2
 	)
 	UPDATE repository_previews p
-	SET desired_state='absent',state='cleanup_pending',cleanup_next_attempt_at=NULL,cleanup_claim_id=NULL,cleanup_lease_expires_at=NULL,updated_at=$1
+	SET desired_state='absent',state='cleanup_pending',generation=p.generation+1,cleanup_next_attempt_at=NULL,cleanup_claim_id=NULL,cleanup_lease_expires_at=NULL,updated_at=$1
 	FROM due
 	WHERE p.tenant_id=due.tenant_id AND p.installation_id=due.installation_id
 	  AND p.github_repository_id=due.github_repository_id AND p.pull_request_number=due.pull_request_number

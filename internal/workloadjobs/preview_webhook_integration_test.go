@@ -50,7 +50,8 @@ func TestRepositoryPreviewWebhookLifecycleFencesStalePRUpdates(t *testing.T) {
 		{"10000000-0000-4000-8000-000000000005", "reopened", "open", newSHA, now.Add(4 * time.Second), now.Add(3 * time.Second)},
 	}
 	var initialExpiry time.Time
-	for _, item := range deliveries {
+	wantGenerations := []int64{1, 1, 1, 2, 3}
+	for index, item := range deliveries {
 		delivery := githubwebhook.VerifiedDelivery{IntegrationID: "shared", DeliveryID: item.id, Event: "pull_request", Action: item.action,
 			Payload: []byte(fmt.Sprintf(`{"action":%q,"installation":{"id":9801},"repository":{"id":9802,"name":"preview-app","default_branch":"main","owner":{"login":"acme"}},"pull_request":{"number":73,"state":%q,"updated_at":%q,"head":{"ref":"feature/preview","sha":%q},"base":{"ref":"main"}}}`,
 				item.action, item.state, item.updated.Format(time.RFC3339), item.sha))}
@@ -75,17 +76,25 @@ func TestRepositoryPreviewWebhookLifecycleFencesStalePRUpdates(t *testing.T) {
 				t.Fatalf("synchronize delivery extended fixed Preview expiry: initial=%s current=%s", initialExpiry, currentExpiry)
 			}
 		}
+		var generation int64
+		if err := pool.QueryRow(ctx, `SELECT generation FROM repository_previews WHERE tenant_id='tenant_preview_hook' AND installation_id=9801 AND github_repository_id=9802 AND pull_request_number=73`).Scan(&generation); err != nil {
+			t.Fatal(err)
+		}
+		if generation != wantGenerations[index] {
+			t.Fatalf("Preview generation after %s = %d, want %d", item.action, generation, wantGenerations[index])
+		}
 	}
 	var tenant, sha, desired, state, lastDelivery string
 	var attempts int
 	var expiresAt time.Time
-	if err := pool.QueryRow(ctx, `SELECT tenant_id,head_sha,desired_state,state,last_delivery_id,cleanup_attempts,expires_at FROM repository_previews WHERE tenant_id='tenant_preview_hook' AND installation_id=9801 AND github_repository_id=9802 AND pull_request_number=73`).
-		Scan(&tenant, &sha, &desired, &state, &lastDelivery, &attempts, &expiresAt); err != nil {
+	var lifecycleGeneration int64
+	if err := pool.QueryRow(ctx, `SELECT tenant_id,head_sha,desired_state,state,last_delivery_id,cleanup_attempts,expires_at,generation FROM repository_previews WHERE tenant_id='tenant_preview_hook' AND installation_id=9801 AND github_repository_id=9802 AND pull_request_number=73`).
+		Scan(&tenant, &sha, &desired, &state, &lastDelivery, &attempts, &expiresAt, &lifecycleGeneration); err != nil {
 		t.Fatal(err)
 	}
 	if tenant != "tenant_preview_hook" || sha != newSHA || desired != "present" || state != "awaiting_runtime" ||
-		lastDelivery != deliveries[4].id || attempts != 0 || !expiresAt.Equal(now.Add(5*time.Second+time.Hour)) {
-		t.Fatalf("reopened Preview desired state = tenant:%s sha:%s desired:%s state:%s delivery:%s attempts:%d expires:%s", tenant, sha, desired, state, lastDelivery, attempts, expiresAt)
+		lastDelivery != deliveries[4].id || attempts != 0 || lifecycleGeneration != 3 || !expiresAt.Equal(now.Add(5*time.Second+time.Hour)) {
+		t.Fatalf("reopened Preview desired state = tenant:%s sha:%s desired:%s state:%s delivery:%s attempts:%d generation:%d expires:%s", tenant, sha, desired, state, lastDelivery, attempts, lifecycleGeneration, expiresAt)
 	}
 	for i := 0; i < 2; i++ {
 		tx, err := pool.Begin(ctx)
@@ -119,6 +128,9 @@ func TestRepositoryPreviewWebhookLifecycleFencesStalePRUpdates(t *testing.T) {
 	if desired != "absent" || state != "cleanup_pending" {
 		t.Fatalf("expired Preview state = desired:%s state:%s, physical cleanup must remain pending", desired, state)
 	}
+	if err := pool.QueryRow(ctx, `SELECT generation,head_sha FROM repository_previews WHERE tenant_id='tenant_preview_hook' AND installation_id=9801 AND github_repository_id=9802 AND pull_request_number=73`).Scan(&lifecycleGeneration, &sha); err != nil || lifecycleGeneration != 4 || sha != newSHA {
+		t.Fatalf("expiry generation/head = generation:%d sha:%s err=%v, want 4 and latest SHA", lifecycleGeneration, sha, err)
+	}
 	claimCleanup := func(at time.Time, claimID string) (previewstore.CleanupJob, bool, error) {
 		tx, err := pool.Begin(ctx)
 		if err != nil {
@@ -142,10 +154,23 @@ func TestRepositoryPreviewWebhookLifecycleFencesStalePRUpdates(t *testing.T) {
 	}
 	cleanupNow := now.Add(3 * time.Hour)
 	firstJob, claimed, err := claimCleanup(cleanupNow, "preview-cleaner-a1")
-	if err != nil || !claimed || firstJob.Attempt != 1 || firstJob.LeaseExpiresAt != cleanupNow.Add(30*time.Second) {
+	if err != nil || !claimed || firstJob.Attempt != 1 || firstJob.Generation != 4 || firstJob.LeaseExpiresAt != cleanupNow.Add(30*time.Second) {
 		t.Fatalf("first Preview cleanup claim = %+v claimed=%v error=%v", firstJob, claimed, err)
 	}
+	staleGenerationJob := firstJob
+	staleGenerationJob.Generation--
 	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, updated, err := previewstore.RecordCleanupFailure(ctx, tx, staleGenerationJob, cleanupNow.Add(time.Second), "provider_unavailable"); err != nil || updated {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("stale Preview generation recorded cleanup failure: updated=%v error=%v", updated, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tx, err = pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,6 +213,12 @@ func TestRepositoryPreviewWebhookLifecycleFencesStalePRUpdates(t *testing.T) {
 	tx, err = pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
+	}
+	staleGenerationCompletion := thirdJob
+	staleGenerationCompletion.Generation--
+	if stale, err := previewstore.MarkCleaned(ctx, tx, staleGenerationCompletion, cleanupNow.Add(18*time.Second)); err != nil || stale {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("stale Preview generation completed cleanup: cleaned=%v error=%v", stale, err)
 	}
 	cleaned, err := previewstore.MarkCleaned(ctx, tx, thirdJob, cleanupNow.Add(18*time.Second))
 	if err != nil || !cleaned {

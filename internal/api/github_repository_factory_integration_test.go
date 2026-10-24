@@ -244,7 +244,7 @@ func TestRepositoryFactorySettingRequiresTenantOwnerAndActiveRegisteredRepositor
 			t.Fatalf("Preview listing for %s/%s returned HTTP %d, want %d: %s", test.subject, test.tenant, response.Code, test.want, response.Body.String())
 		}
 		if response.Code == http.StatusOK && (!strings.Contains(response.Body.String(), `"pull_request_number":19`) ||
-			!strings.Contains(response.Body.String(), `"runtime_enabled":false`) || !strings.Contains(response.Body.String(), previewSHA)) {
+			!strings.Contains(response.Body.String(), `"generation":1`) || !strings.Contains(response.Body.String(), `"runtime_enabled":false`) || !strings.Contains(response.Body.String(), previewSHA)) {
 			t.Fatalf("Preview listing omitted scoped metadata or claimed runtime readiness: %s", response.Body.String())
 		}
 	}

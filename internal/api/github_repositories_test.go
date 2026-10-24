@@ -63,7 +63,7 @@ func TestListGitHubRepositoryPreviewsUsesBoundedTenantScopedEndpoint(t *testing.
 			t.Fatalf("request = %s %s?%s, authorization present=%t", r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization") != "")
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"runtime_enabled":false,"previews":[{"tenant_id":"tenant_preview_api","installation_id":7001,"repository_id":7002,"pull_request_number":17,"head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","head_ref":"feature/api","desired_state":"present","state":"awaiting_runtime","updated_at":"2026-10-24T00:00:00Z"}]}`))
+		_, _ = w.Write([]byte(`{"runtime_enabled":false,"previews":[{"tenant_id":"tenant_preview_api","installation_id":7001,"repository_id":7002,"pull_request_number":17,"head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","head_ref":"feature/api","generation":1,"desired_state":"present","state":"awaiting_runtime","updated_at":"2026-10-24T00:00:00Z"}]}`))
 	}))
 	defer server.Close()
 	result, err := ListGitHubRepositoryPreviews(context.Background(), server.URL, "test-token", "tenant_preview_api", 7001, 7002, 25, server.Client())
@@ -94,6 +94,13 @@ func TestListGitHubRepositoryPreviewsRejectsInvalidInputsAndRuntimeClaim(t *test
 	defer server.Close()
 	if _, err := ListGitHubRepositoryPreviews(context.Background(), server.URL, "token", "tenant_preview_api", 7001, 7002, 10, server.Client()); err == nil {
 		t.Fatal("accepted response claiming Preview runtime is enabled")
+	}
+	invalidGenerationServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"runtime_enabled":false,"previews":[{"tenant_id":"tenant_preview_api","installation_id":7001,"repository_id":7002,"pull_request_number":17,"head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","head_ref":"feature/api","generation":0,"desired_state":"present","state":"awaiting_runtime","updated_at":"2026-10-24T00:00:00Z"}]}`))
+	}))
+	defer invalidGenerationServer.Close()
+	if _, err := ListGitHubRepositoryPreviews(context.Background(), invalidGenerationServer.URL, "token", "tenant_preview_api", 7001, 7002, 10, invalidGenerationServer.Client()); err == nil {
+		t.Fatal("accepted Preview response with a non-positive lifecycle generation")
 	}
 }
 

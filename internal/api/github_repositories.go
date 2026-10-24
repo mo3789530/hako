@@ -194,7 +194,7 @@ func ListGitHubRepositoryPreviews(ctx context.Context, baseURL, accessToken, ten
 	}
 	for _, item := range result.Previews {
 		if string(item.TenantID) != tenantID || item.InstallationID != installationID || item.RepositoryID != repositoryID ||
-			item.PullRequestNumber <= 0 || len(item.HeadSHA) != 40 || (item.DesiredState != "present" && item.DesiredState != "absent") ||
+			item.PullRequestNumber <= 0 || len(item.HeadSHA) != 40 || item.Generation <= 0 || (item.DesiredState != "present" && item.DesiredState != "absent") ||
 			(item.State != "awaiting_runtime" && item.State != "cleanup_pending" && item.State != "cleaned") || item.UpdatedAt.IsZero() {
 			return GitHubRepositoryPreviewsResult{}, errors.New("invalid GitHub Repository Preview entry")
 		}

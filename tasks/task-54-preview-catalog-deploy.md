@@ -122,6 +122,11 @@ Add optional repository-level preview environments and service metadata/deploy p
   retry, while expired leases can be reclaimed after worker restart. Unit and
   PostgreSQL lifecycle tests cover backoff, premature retry rejection, stale
   claim rejection, lease recovery, repeated failure, and duplicate completion.
+- Migration 000147 adds a monotonic Preview lifecycle generation. Accepted PR
+  head/desired-state changes and expiry advance it; cleanup retry and completion
+  require the generation captured by the claim. The bounded list API exposes
+  the generation, and PostgreSQL integration coverage checks stale generation
+  fencing across PR update, close/reopen, expiry, retry, and cleanup.
 - The physical cleanup worker, Preview-to-runtime binding,
   and provider/Gateway deletion remain unimplemented. No delete is inferred
   from the metadata transition.

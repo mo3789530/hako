@@ -28,6 +28,7 @@ type CleanupJob struct {
 	CleanupIdentity
 	HeadSHA        string
 	HeadRef        string
+	Generation     int64
 	ClaimID        string
 	LeaseExpiresAt time.Time
 	Attempt        int
@@ -57,7 +58,7 @@ func ClaimDue(ctx context.Context, tx pgx.Tx, claimID string, now time.Time, lea
 	  AND p.desired_state='absent' AND p.state='cleanup_pending'
 	  AND ((p.cleanup_claim_id IS NULL AND (p.cleanup_next_attempt_at IS NULL OR p.cleanup_next_attempt_at <= $1))
 	       OR (p.cleanup_claim_id IS NOT NULL AND p.cleanup_lease_expires_at <= $1))
-		RETURNING p.tenant_id,p.installation_id,p.github_repository_id,p.pull_request_number,p.head_sha,p.head_ref,
+		RETURNING p.tenant_id,p.installation_id,p.github_repository_id,p.pull_request_number,p.head_sha,p.head_ref,p.generation,
 		          p.cleanup_claim_id,p.cleanup_lease_expires_at,p.cleanup_attempts`,
 		now.UTC(), limit, claimID, now.UTC().Add(lease))
 	if err != nil {
@@ -68,7 +69,7 @@ func ClaimDue(ctx context.Context, tx pgx.Tx, claimID string, now time.Time, lea
 	for rows.Next() {
 		var job CleanupJob
 		if err := rows.Scan(&job.TenantID, &job.InstallationID, &job.RepositoryID, &job.PullRequestNumber,
-			&job.HeadSHA, &job.HeadRef, &job.ClaimID, &job.LeaseExpiresAt, &job.Attempt); err != nil {
+			&job.HeadSHA, &job.HeadRef, &job.Generation, &job.ClaimID, &job.LeaseExpiresAt, &job.Attempt); err != nil {
 			return nil, fmt.Errorf("scan claimed Preview cleanup: %w", err)
 		}
 		job.LeaseExpiresAt = job.LeaseExpiresAt.UTC()
@@ -89,12 +90,12 @@ func RecordCleanupFailure(ctx context.Context, tx pgx.Tx, job CleanupJob, now ti
 	}
 	retryAt := now.UTC().Add(cleanupRetryDelay(job.Attempt))
 	tag, err := tx.Exec(ctx, `UPDATE repository_previews
-		SET cleanup_claim_id=NULL,cleanup_lease_expires_at=NULL,cleanup_next_attempt_at=$8,cleanup_last_error=$9,updated_at=$7
+		SET cleanup_claim_id=NULL,cleanup_lease_expires_at=NULL,cleanup_next_attempt_at=$9,cleanup_last_error=$10,updated_at=$8
 		WHERE tenant_id=$1 AND installation_id=$2 AND github_repository_id=$3 AND pull_request_number=$4
 		  AND desired_state='absent' AND state='cleanup_pending' AND cleanup_claim_id=$5
-		  AND cleanup_attempts=$6 AND cleanup_lease_expires_at=$10 AND cleanup_lease_expires_at>$7`,
+		  AND cleanup_attempts=$6 AND generation=$7 AND cleanup_lease_expires_at=$11 AND cleanup_lease_expires_at>$8`,
 		job.TenantID, job.InstallationID, job.RepositoryID, job.PullRequestNumber, job.ClaimID,
-		job.Attempt, now.UTC(), retryAt, errorCode, job.LeaseExpiresAt.UTC())
+		job.Attempt, job.Generation, now.UTC(), retryAt, errorCode, job.LeaseExpiresAt.UTC())
 	if err != nil {
 		return time.Time{}, false, fmt.Errorf("record Preview cleanup failure: %w", err)
 	}
@@ -108,12 +109,12 @@ func MarkCleaned(ctx context.Context, tx pgx.Tx, job CleanupJob, now time.Time) 
 		return false, errors.New("valid claimed Preview and transaction time are required")
 	}
 	tag, err := tx.Exec(ctx, `UPDATE repository_previews
-		SET state='cleaned',cleanup_claim_id=NULL,cleanup_lease_expires_at=NULL,cleanup_next_attempt_at=NULL,cleanup_last_error='',updated_at=$7
+		SET state='cleaned',cleanup_claim_id=NULL,cleanup_lease_expires_at=NULL,cleanup_next_attempt_at=NULL,cleanup_last_error='',updated_at=$8
 		WHERE tenant_id=$1 AND installation_id=$2 AND github_repository_id=$3 AND pull_request_number=$4
 		  AND desired_state='absent' AND state='cleanup_pending' AND cleanup_claim_id=$5
-		  AND cleanup_attempts=$6 AND cleanup_lease_expires_at=$8 AND cleanup_lease_expires_at>$7`,
+		  AND cleanup_attempts=$6 AND generation=$7 AND cleanup_lease_expires_at=$9 AND cleanup_lease_expires_at>$8`,
 		job.TenantID, job.InstallationID, job.RepositoryID, job.PullRequestNumber, job.ClaimID,
-		job.Attempt, now.UTC(), job.LeaseExpiresAt.UTC())
+		job.Attempt, job.Generation, now.UTC(), job.LeaseExpiresAt.UTC())
 	if err != nil {
 		return false, fmt.Errorf("mark Preview cleanup complete: %w", err)
 	}
@@ -146,7 +147,7 @@ func validCleanupIdentity(identity CleanupIdentity) bool {
 }
 
 func validCleanupJob(job CleanupJob) bool {
-	return validCleanupIdentity(job.CleanupIdentity) && validCleanupClaimID(job.ClaimID) && !job.LeaseExpiresAt.IsZero() && job.Attempt > 0
+	return validCleanupIdentity(job.CleanupIdentity) && validCleanupClaimID(job.ClaimID) && !job.LeaseExpiresAt.IsZero() && job.Attempt > 0 && job.Generation > 0
 }
 
 func validCleanupClaimID(id string) bool {
