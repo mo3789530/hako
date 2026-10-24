@@ -79,3 +79,12 @@ individual ARM64 ELF execution, but not Podman/Dockerfile `RUN` emulation,
 Lambda image-builder behavior, nested containers, or a real MicroVM. Temporary
 emulator/rootfs files are outside the repository. No AWS resource/API was
 used or changed.
+
+## Podman Runtime Contract (2026-10-25)
+
+`make test-job-services-podman` passes against the local Podman engine and the
+production Job Service adapter. This verifies the host-side rootless Job
+container contract; it does not run inside a Lambda MicroVM and therefore does
+not prove nested containerd/Podman availability, MicroVM namespaces/cgroups,
+Tenant isolation, or Lambda network behavior. The Lambda image and real
+MicroVM PoC remain open.
