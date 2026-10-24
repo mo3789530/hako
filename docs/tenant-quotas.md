@@ -63,6 +63,10 @@ admission and webhook lifecycle state update share the Tenant OCC transaction.
 When PR capacity is full, the event is retained as `quota_exceeded` without
 runtime allocation; its slot remains reserved through `cleanup_pending` until
 physical cleanup is confirmed. Usage reports include those PR reservations.
+Quota reconfiguration is also rejected if a lower Preview count would fall
+below active PR reservations or if a shorter lifetime would invalidate an
+active PR Preview's recorded expiry. A rejected update leaves the previous
+limits intact.
 Direct Workload Preview creation exceeding the Tenant count or lifetime limit
 returns HTTP 409 `preview_quota_exceeded`. The store provides a bounded
 expired-metadata listing and an

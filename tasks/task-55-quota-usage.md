@@ -48,7 +48,9 @@ admission, API/CLI configuration, and usage reporting are implemented.
 The Preview concurrency budget is shared by PR Preview webhook admission and
 Workload Preview Runs. Cleanup-pending PRs retain their slot until cleanup is
 confirmed, quota-rejected PRs reserve no capacity, and `hako usage` reports
-the combined count.
+the combined count. PostgreSQL integration also verifies that lowering the
+Preview count below active PR reservations or lowering lifetime below a
+recorded active PR expiry is rejected without changing the configured limits.
 PostgreSQL lifecycle coverage exercises
 cancel-before-start, failed provisioning, timeout expiry, duplicate terminal
 transitions, release of both Workload and Artifact reservations, and recovery

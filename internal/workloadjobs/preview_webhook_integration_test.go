@@ -17,6 +17,7 @@ import (
 	"github.com/mo3789530/hako/internal/store/dsql"
 	webhookstore "github.com/mo3789530/hako/internal/store/githubwebhook"
 	previewstore "github.com/mo3789530/hako/internal/store/previews"
+	"github.com/mo3789530/hako/internal/store/quotas"
 	"github.com/mo3789530/hako/internal/store/transaction"
 	"github.com/mo3789530/hako/internal/store/workloads"
 	"github.com/mo3789530/hako/internal/store/workspaces"
@@ -396,5 +397,66 @@ func TestRepositoryPreviewConcurrentAdmissionRespectsTenantQuota(t *testing.T) {
 		COUNT(*) FILTER (WHERE desired_state='absent' AND state='quota_exceeded')
 		FROM repository_previews WHERE tenant_id='tenant_preview_race'`).Scan(&admitted, &rejected); err != nil || admitted != 1 || rejected != 1 {
 		t.Fatalf("concurrent Preview quota outcomes admitted=%d rejected=%d err=%v", admitted, rejected, err)
+	}
+}
+
+func TestRepositoryPreviewQuotaConfigurationIncludesPRReservations(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, query := range []string{
+		`INSERT INTO tenants(id,name,created_at) VALUES ('tenant_preview_config','Preview config',$1)`,
+		`INSERT INTO users(id,cognito_subject,email,created_at) VALUES ('usr_preview_config','preview-config','',$1)`,
+		`INSERT INTO tenant_github_installations(tenant_id,installation_id,account_login,status,requested_by,requested_at,updated_at) VALUES ('tenant_preview_config',9805,'acme','active','usr_preview_config',$1,$1)`,
+		`INSERT INTO github_app_installation_bindings(installation_id,tenant_id,bound_at) VALUES (9805,'tenant_preview_config',$1)`,
+		`INSERT INTO tenant_github_repositories(tenant_id,installation_id,github_repository_id,owner_login,repository_name,default_branch,synchronized_at,preview_enabled,preview_enabled_at) VALUES ('tenant_preview_config',9805,9806,'acme','preview-config','main',$1,true,$1)`,
+	} {
+		if _, err := pool.Exec(ctx, query, now); err != nil {
+			t.Fatalf("seed Preview quota configuration case: %v", err)
+		}
+	}
+	setLimits := func(previewRuns int16, lifetimeSeconds int64, at time.Time) error {
+		_, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (quotas.Limits, error) {
+			return quotas.SetWithPreview(ctx, tx, "tenant_preview_config", "usr_preview_config", quotas.DefaultWorkspaces,
+				quotas.DefaultConcurrentWorkloadRuns, previewRuns, lifetimeSeconds, quotas.DefaultArtifactBytes,
+				quotas.DefaultWorkspaceServiceMemoryBytes, quotas.DefaultWorkspaceServiceMilliCPU, at)
+		})
+		return err
+	}
+	if err := setLimits(2, 3600, now); err != nil {
+		t.Fatalf("configure initial Preview quota: %v", err)
+	}
+	for index, number := range []int64{91, 92} {
+		deliveryID := fmt.Sprintf("60000000-0000-4000-8000-%012d", index+1)
+		if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (bool, error) {
+			return previewstore.ApplyPullRequestDelivery(ctx, tx, "tenant_preview_config", deliveryID,
+				githubwebhook.RepositoryEvent{GitHubEvent: "pull_request", Action: "opened", InstallationID: 9805,
+					Repository:  &githubwebhook.RepositoryRef{GitHubID: 9806},
+					PullRequest: &githubwebhook.PullRequestRef{Number: number, State: "open", HeadRef: "feature/config", HeadSHA: strings.Repeat("f", 40), UpdatedAt: now}}, now, now)
+		}); err != nil {
+			t.Fatalf("create active PR Preview %d: %v", number, err)
+		}
+	}
+	usage, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (workspaces.QuotaUsage, error) {
+		return workspaces.ReadQuotaUsage(ctx, tx, "tenant_preview_config")
+	})
+	if err != nil || usage.PreviewRunsUsed != 2 || usage.PreviewRunsLimit != 2 {
+		t.Fatalf("active PR Preview usage = %+v, error=%v; want two reservations", usage, err)
+	}
+	if err := setLimits(1, 3600, now.Add(time.Second)); !errors.Is(err, quotas.ErrBelowCurrentUsage) {
+		t.Fatalf("lowering Preview run limit below active PR reservations = %v, want ErrBelowCurrentUsage", err)
+	}
+	if err := setLimits(2, 1800, now.Add(2*time.Second)); !errors.Is(err, quotas.ErrBelowCurrentUsage) {
+		t.Fatalf("lowering Preview lifetime below active PR expiries = %v, want ErrBelowCurrentUsage", err)
+	}
+	stored, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (quotas.Limits, error) {
+		return quotas.Read(ctx, tx, "tenant_preview_config")
+	})
+	if err != nil || stored.PreviewRuns != 2 || stored.PreviewLifetimeSeconds != 3600 {
+		t.Fatalf("rejected quota update changed configured limits: %+v, error=%v", stored, err)
 	}
 }
