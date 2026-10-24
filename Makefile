@@ -209,3 +209,5 @@ terraform-test:
 	terraform -chdir=infra/terraform/modules/workspace-storage test
 	terraform -chdir=infra/terraform/modules/github-broker-tenant-iam init -backend=false -input=false
 	terraform -chdir=infra/terraform/modules/github-broker-tenant-iam test
+	terraform -chdir=infra/terraform/modules/tenant-model-credential-reader-role init -backend=false -input=false
+	terraform -chdir=infra/terraform/modules/tenant-model-credential-reader-role test

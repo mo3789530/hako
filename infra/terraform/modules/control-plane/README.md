@@ -41,5 +41,10 @@ private-key, and Webhook purposes. The model credential provider further
 scopes the assumed session to the pinned Secret ARN/version. Target-role trust
 and identity policies, Secrets, KMS grants, and Broker certificates remain
 operator-managed; no Secret is read or provisioned by Terraform.
+The separate [`tenant-model-credential-reader-role` module](../tenant-model-credential-reader-role/README.md)
+can create a target-account reader Role with exact Broker trust and Secret/KMS
+scope. Review and apply that module in the account owning each Secret, then add
+its `role_arn` output to the Control Plane allowlist. Secret creation and
+cross-account Secret resource policies remain a separate operator step.
 
 See [`docs/terraform-modules.md`](../../../../docs/terraform-modules.md) for the complete input/output inventory, resource tags, IAM boundaries, and dev environment differences.
