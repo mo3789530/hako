@@ -1,4 +1,4 @@
-.PHONY: fmt lint test test-integration test-integration-local test-webhook-lifecycle-integration test-actions-runner-lifecycle-integration test-software-factory-e2e test-workload-runtime test-workload-runtime-integration test-job-services-podman test-artifact-retention-integration test-workspace-idle-lifecycle-integration test-preview-expiry-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-workspace-service-controller-lambda build-health-reporter-lambda build-workspace-idle-reconciler-lambda build-preview-expiry-lambda build-preview-runtime-dispatch-lambda build-workload-controller-lambda build-actions-runner-lambda build-actions-runner-microvm-image build-workload-microvm-artifact build-workload-microvm-services-image build-workspace-microvm-image build-github-checks-consumer-image build-workspace-gateway-image terraform-fmt terraform-validate terraform-test
+.PHONY: fmt lint test test-integration test-integration-local test-webhook-lifecycle-integration test-actions-runner-lifecycle-integration test-software-factory-e2e test-workload-runtime test-workload-runtime-integration test-job-services-podman test-artifact-retention-integration test-workspace-idle-lifecycle-integration test-preview-expiry-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-workspace-service-controller-lambda build-health-reporter-lambda build-workspace-idle-reconciler-lambda build-preview-expiry-lambda build-preview-runtime-dispatch-lambda build-preview-result-consumer-lambda build-workload-controller-lambda build-actions-runner-lambda build-actions-runner-microvm-image build-workload-microvm-artifact build-workload-microvm-services-image build-workspace-microvm-image build-github-checks-consumer-image build-workspace-gateway-image terraform-fmt terraform-validate terraform-test
 
 HAKO_WORKSPACE_SERVICES_ENABLED ?= false
 
@@ -112,6 +112,11 @@ build-preview-runtime-dispatch-lambda:
 	mkdir -p build/preview-runtime-dispatch
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o build/preview-runtime-dispatch/bootstrap ./cmd/hako-preview-runtime-dispatch-lambda
 	cd build/preview-runtime-dispatch && zip -q ../hako-preview-runtime-dispatch.zip bootstrap
+
+build-preview-result-consumer-lambda:
+	mkdir -p build/preview-result-consumer
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o build/preview-result-consumer/bootstrap ./cmd/hako-preview-result-consumer-lambda
+	cd build/preview-result-consumer && zip -q ../hako-preview-result-consumer.zip bootstrap
 
 build-workload-controller-lambda:
 	mkdir -p build/workload-controller-lambda

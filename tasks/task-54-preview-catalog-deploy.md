@@ -191,6 +191,19 @@ Add optional repository-level preview environments and service metadata/deploy p
   provider-backed runtime. See
   [`Preview lifecycle`](../docs/preview-lifecycle.md).
 
+## Preview result Lambda composition (2026-10-25)
+
+- Added the Control Plane `hako-preview-result-consumer-lambda` entry point.
+  It opens local PostgreSQL or IAM-authenticated Aurora DSQL, passes SQS batches
+  to the generation-fenced result handler, and preserves per-message partial
+  failures for retry. The ARM64 ZIP target is
+  `make build-preview-result-consumer-lambda`.
+- Unit tests cover partial-batch response forwarding, handler errors, missing
+  dependencies, and canceled invocation. The PostgreSQL end-to-end test drives
+  provisioning and cleanup acknowledgements through the same result Lambda
+  handler. No queue mapping, DSQL grant, or AWS resource was applied; those
+  deployment pieces remain open.
+
 ## Preview lifecycle read API/CLI (2026-10-24)
 
 - Added a bounded Tenant-member read endpoint and `hako github repository

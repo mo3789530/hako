@@ -4,8 +4,9 @@ This document defines the Control Plane Outbox event envelope accepted by the
 Resource Plane queue router. A local database-only producer now commits Preview
 claims and provision/cleanup events atomically. PostgreSQL integration follows
 the committed commands through the Dispatcher, fake Resource Plane controller,
-and generation-fenced result projection. Provider adapters and AWS queue/Lambda
-deployment are not wired.
+and generation-fenced result projection. The Control Plane result-consumer
+Lambda entry point builds locally, but its SQS event-source mapping,
+least-privilege database role, and AWS deployment remain unwired.
 
 ## Producer transaction
 
@@ -45,9 +46,12 @@ for `(action, workspace, generation, claim, attempt)`. The Control Plane
 generation, claim, attempt, lease, derived runtime Workspace ID, and pinned
 Plane before applying it. Stale or duplicate claims are ackable no-ops;
 malformed or mismatched results remain retryable. PostgreSQL integration
-composes producer, Dispatcher, fake Resource Plane controller, and result
-projection. The Lambda MicroVM/Gateway provider and result queue deployment are
-not wired.
+composes producer, Dispatcher, fake Resource Plane controller, and the result
+Lambda handler, including a mixed-batch partial failure. The ARM64 Lambda
+entry point is `cmd/hako-preview-result-consumer-lambda` and builds with
+`make build-preview-result-consumer-lambda`. Its queue event-source mapping and
+database IAM grants are not deployed. The Lambda MicroVM/Gateway provider is
+also not wired.
 
 ## Outbox event
 
