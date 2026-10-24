@@ -3,8 +3,10 @@
 package workspaceagent
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -23,6 +25,7 @@ import (
 const workspaceAgentWebSocketProtocol = "hako.workspace.agent.v1"
 
 type workspaceShellFactory func(WorkspaceMountSpec) (*ShellManager, error)
+type workspaceExecFactory func(WorkspaceMountSpec) (*ExecManager, error)
 
 // WorkspaceShellAgent is the guest-side, one-Workspace endpoint. It accepts
 // only short-lived Gateway-signed Agent tickets and starts fixed PTY shells;
@@ -32,12 +35,16 @@ type WorkspaceShellAgent struct {
 	keys          map[string]ed25519.PublicKey
 	gatewayOrigin string
 	factory       workspaceShellFactory
+	execFactory   workspaceExecFactory
 	replay        AgentTicketReplayGuard
 	identity      AgentTicket
 	shells        *ShellManager
+	files         *WorkspaceFiles
 	vscodeDial    func(context.Context) (net.Conn, error)
 	sshDial       func(context.Context) (net.Conn, error)
 	portDial      func(context.Context, uint16) (net.Conn, error)
+	service       http.Handler
+	execs         *ExecManager
 }
 
 func NewWorkspaceShellAgent(keys map[string]ed25519.PublicKey, gatewayOrigin string) (*WorkspaceShellAgent, error) {
@@ -59,6 +66,7 @@ func newWorkspaceShellAgent(keys map[string]ed25519.PublicKey, gatewayOrigin str
 		keyCopy[id] = append(ed25519.PublicKey(nil), key...)
 	}
 	return &WorkspaceShellAgent{keys: keyCopy, gatewayOrigin: origin, factory: factory,
+		execFactory: func(spec WorkspaceMountSpec) (*ExecManager, error) { return NewExecManager(spec.MountPath) },
 		vscodeDial: func(ctx context.Context) (net.Conn, error) {
 			return (&net.Dialer{Timeout: workspaceAgentConnectTimeout}).DialContext(ctx, "tcp", "127.0.0.1:8081")
 		}, sshDial: func(ctx context.Context) (net.Conn, error) {
@@ -78,6 +86,11 @@ func (a *WorkspaceShellAgent) BindWorkspaceRuntime(microVMID string, spec Worksp
 	if err != nil || shells == nil {
 		return errors.New("configure Workspace PTY runtime")
 	}
+	execs, err := a.execFactory(spec)
+	if err != nil {
+		_ = shells.Close()
+		return errors.New("configure Workspace exec runtime")
+	}
 	binding := AgentTicket{TenantID: domain.TenantID(spec.TenantID), WorkspaceID: domain.WorkspaceID(spec.WorkspaceID),
 		ResourcePlane: domain.ResourcePlaneID(spec.ResourcePlaneID), MicroVMID: microVMID}
 	a.mu.Lock()
@@ -90,11 +103,68 @@ func (a *WorkspaceShellAgent) BindWorkspaceRuntime(microVMID string, spec Worksp
 		}
 		return nil
 	}
-	a.identity, a.shells = binding, shells
+	a.identity, a.shells, a.execs = binding, shells, execs
+	return nil
+}
+
+// BindWorkspaceServiceRuntime enables the private, signed command endpoint
+// after the MicroVM identity has been pinned by the Lambda /run hook.
+func (a *WorkspaceShellAgent) BindWorkspaceServiceRuntime(engine ServiceEngine) error {
+	if a == nil || engine == nil {
+		return errors.New("Workspace Service engine is required")
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.identity.WorkspaceID == "" || !validWorkspaceHookVMID(a.identity.MicroVMID) {
+		return errors.New("Workspace Agent runtime must be bound before Service runtime")
+	}
+	if a.service != nil {
+		return errors.New("Workspace Service runtime is already bound")
+	}
+	keys := make(map[string][]byte, len(a.keys))
+	for keyID, key := range a.keys {
+		keys[keyID] = append([]byte(nil), key...)
+	}
+	handler, err := NewWorkspaceServiceHandler(WorkspaceServiceIdentity{TenantID: a.identity.TenantID,
+		WorkspaceID: a.identity.WorkspaceID, ResourcePlaneID: a.identity.ResourcePlane, MicroVMID: a.identity.MicroVMID}, keys, engine, nil)
+	if err != nil {
+		return err
+	}
+	a.service = handler
+	return nil
+}
+
+func (a *WorkspaceShellAgent) BindWorkspaceFileRuntime(files *WorkspaceFiles) error {
+	if a == nil || files == nil {
+		return errors.New("Workspace file runtime is required")
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.identity.WorkspaceID == "" || !validWorkspaceHookVMID(a.identity.MicroVMID) || a.files != nil {
+		return errors.New("Workspace Agent must be bound before file runtime")
+	}
+	a.files = files
 	return nil
 }
 
 func (a *WorkspaceShellAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/internal/heartbeat" {
+		if r.Method != http.MethodGet || r.URL.RawQuery != "" || r.URL.ForceQuery || r.ContentLength > 0 {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		a.mu.RLock()
+		identity, ready := a.identity, a.shells != nil && a.identity.WorkspaceID != ""
+		a.mu.RUnlock()
+		if !ready {
+			http.Error(w, "Workspace Agent is not ready", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(workspaceAgentHeartbeat{ProtocolVersion: workspaceAgentProtocolVersion,
+			TenantID: identity.TenantID, WorkspaceID: identity.WorkspaceID, ResourcePlaneID: identity.ResourcePlane, MicroVMID: identity.MicroVMID})
+		return
+	}
 	if r.URL.Path == "/internal/ready" {
 		if r.Method != http.MethodGet || r.URL.RawQuery != "" || r.ContentLength > 0 {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -113,10 +183,23 @@ func (a *WorkspaceShellAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	switch r.URL.Path {
 	case "/v1/workspaces/" + string(a.workspaceID()) + "/shell":
 		a.serveShell(w, r)
+	case "/v1/workspaces/" + string(a.workspaceID()) + "/exec":
+		a.serveExec(w, r)
+	case "/v1/workspaces/" + string(a.workspaceID()) + "/services/reconcile":
+		a.mu.RLock()
+		service := a.service
+		a.mu.RUnlock()
+		if service == nil {
+			http.Error(w, "Workspace Service runtime is unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		service.ServeHTTP(w, r)
 	case "/v1/workspaces/" + string(a.workspaceID()) + "/vscode":
 		a.serveVSCode(w, r)
 	case "/v1/workspaces/" + string(a.workspaceID()) + "/ssh":
 		a.serveSSH(w, r)
+	case "/v1/workspaces/" + string(a.workspaceID()) + "/files":
+		a.serveFiles(w, r)
 	default:
 		const portSuffix = "/ports/"
 		prefix := "/v1/workspaces/" + string(a.workspaceID()) + portSuffix
@@ -126,6 +209,119 @@ func (a *WorkspaceShellAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		}
 		http.NotFound(w, r)
 	}
+}
+
+func (a *WorkspaceShellAgent) serveExec(w http.ResponseWriter, r *http.Request) {
+	a.mu.RLock()
+	identity, execs := a.identity, a.execs
+	a.mu.RUnlock()
+	if execs == nil || identity.WorkspaceID == "" || r.Method != http.MethodGet || r.URL.RawQuery != "" || r.URL.ForceQuery || r.ContentLength > 0 {
+		http.Error(w, "Workspace exec runtime is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	token := bearerAgentTicket(r.Header.Get("Authorization"))
+	server := websocket.Server{
+		Config: websocket.Config{Protocol: []string{workspaceAgentWebSocketProtocol}},
+		Handshake: func(config *websocket.Config, request *http.Request) error {
+			if request.Method != http.MethodGet || request.URL.Path != r.URL.Path || request.URL.RawQuery != "" ||
+				request.Header.Get("Origin") != a.gatewayOrigin || !offeredAgentProtocol(request.Header.Get("Sec-WebSocket-Protocol")) || token == "" {
+				return ErrAgentTicket
+			}
+			expected := AgentTicket{TenantID: identity.TenantID, WorkspaceID: identity.WorkspaceID,
+				ResourcePlane: identity.ResourcePlane, MicroVMID: identity.MicroVMID, Permission: workspacesession.PermissionExec}
+			verified, err := VerifyAgentTicket(token, a.keys, expected, time.Now().UTC())
+			if err != nil || a.replay.Consume(verified, time.Now().UTC()) != nil {
+				return ErrAgentTicket
+			}
+			config.Protocol = []string{workspaceAgentWebSocketProtocol}
+			return nil
+		},
+		Handler: func(conn *websocket.Conn) {
+			conn.MaxPayloadBytes = workspaceprotocol.MaxExecRequest + 1024
+			conn.PayloadType = websocket.BinaryFrame
+			var payload []byte
+			if err := websocket.Message.Receive(conn, &payload); err != nil || len(payload) == 0 || len(payload) > workspaceprotocol.MaxExecRequest {
+				_ = conn.Close()
+				return
+			}
+			var request workspaceprotocol.ExecRequest
+			decoder := json.NewDecoder(bytes.NewReader(payload))
+			decoder.DisallowUnknownFields()
+			if decoder.Decode(&request) != nil || decoder.Decode(new(any)) != io.EOF || workspaceprotocol.ValidateExecRequest(request) != nil {
+				_ = conn.Close()
+				return
+			}
+			result, err := execs.Run(r.Context(), request)
+			if err != nil {
+				result = workspaceprotocol.ExecResult{ExitCode: -1, Code: "exec_failed"}
+			}
+			response, marshalErr := json.Marshal(result)
+			if marshalErr != nil || workspaceprotocol.ValidateExecResult(result) != nil || websocket.Message.Send(conn, response) != nil {
+				_ = conn.Close()
+			}
+		},
+	}
+	server.ServeHTTP(w, r)
+}
+
+func (a *WorkspaceShellAgent) serveFiles(w http.ResponseWriter, r *http.Request) {
+	a.mu.RLock()
+	identity, files := a.identity, a.files
+	a.mu.RUnlock()
+	if files == nil || r.Method != http.MethodGet || r.URL.RawQuery != "" || r.URL.ForceQuery || r.ContentLength > 0 {
+		http.Error(w, "Workspace file transfer is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	token := bearerAgentTicket(r.Header.Get("Authorization"))
+	server := websocket.Server{
+		Config: websocket.Config{Protocol: []string{workspaceAgentWebSocketProtocol}},
+		Handshake: func(config *websocket.Config, request *http.Request) error {
+			if request.Method != http.MethodGet || request.URL.Path != r.URL.Path || request.URL.RawQuery != "" ||
+				request.Header.Get("Origin") != a.gatewayOrigin || !offeredAgentProtocol(request.Header.Get("Sec-WebSocket-Protocol")) || token == "" {
+				return ErrAgentTicket
+			}
+			expected := AgentTicket{TenantID: identity.TenantID, WorkspaceID: identity.WorkspaceID,
+				ResourcePlane: identity.ResourcePlane, MicroVMID: identity.MicroVMID, Permission: workspacesession.PermissionFileTransfer}
+			verified, err := VerifyAgentTicket(token, a.keys, expected, time.Now().UTC())
+			if err != nil || a.replay.Consume(verified, time.Now().UTC()) != nil {
+				return ErrAgentTicket
+			}
+			config.Protocol = []string{workspaceAgentWebSocketProtocol}
+			return nil
+		},
+		Handler: func(conn *websocket.Conn) {
+			conn.MaxPayloadBytes = maxTerminalFrame
+			conn.PayloadType = websocket.BinaryFrame
+			request, err := workspaceprotocol.ReadFileRequest(conn)
+			if err != nil {
+				_ = conn.Close()
+				return
+			}
+			switch request.Operation {
+			case "upload":
+				err := files.Write(r.Context(), request.Path, request.Size, conn)
+				response := workspaceprotocol.FileResponse{OK: err == nil, Size: request.Size}
+				if err != nil {
+					response = workspaceprotocol.FileResponse{Code: "transfer_failed"}
+				}
+				_ = workspaceprotocol.WriteFileResponse(conn, response)
+			case "download":
+				size, err := files.Size(request.Path)
+				if err != nil {
+					_ = workspaceprotocol.WriteFileResponse(conn, workspaceprotocol.FileResponse{Code: "not_found"})
+					return
+				}
+				if err := workspaceprotocol.WriteFileResponse(conn, workspaceprotocol.FileResponse{OK: true, Size: size}); err != nil {
+					_ = conn.Close()
+					return
+				}
+				if _, err := files.Read(r.Context(), request.Path, conn); err != nil {
+					_ = conn.Close()
+				}
+			}
+		},
+	}
+	server.ServeHTTP(w, r)
 }
 
 func (a *WorkspaceShellAgent) servePort(w http.ResponseWriter, r *http.Request, rawPort string) {
@@ -182,12 +378,21 @@ func (a *WorkspaceShellAgent) Close() error {
 	}
 	a.mu.Lock()
 	shells := a.shells
+	files := a.files
 	a.shells = nil
+	a.files = nil
+	a.execs = nil
 	a.mu.Unlock()
-	if shells == nil {
-		return nil
+	var err error
+	if shells != nil {
+		err = shells.Close()
 	}
-	return shells.Close()
+	if files != nil {
+		if fileErr := files.Close(); err == nil {
+			err = fileErr
+		}
+	}
+	return err
 }
 
 func (a *WorkspaceShellAgent) workspaceID() string {
@@ -205,6 +410,7 @@ func (a *WorkspaceShellAgent) serveShell(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	token := bearerAgentTicket(r.Header.Get("Authorization"))
+	var ticketUser string
 	server := websocket.Server{
 		Config: websocket.Config{Protocol: []string{workspaceAgentWebSocketProtocol}},
 		Handshake: func(config *websocket.Config, request *http.Request) error {
@@ -218,19 +424,40 @@ func (a *WorkspaceShellAgent) serveShell(w http.ResponseWriter, r *http.Request)
 			if err != nil || a.replay.Consume(verified, time.Now().UTC()) != nil {
 				return ErrAgentTicket
 			}
+			ticketUser = string(verified.UserID)
 			config.Protocol = []string{workspaceAgentWebSocketProtocol}
 			return nil
 		},
 		Handler: func(conn *websocket.Conn) {
 			conn.MaxPayloadBytes = maxTerminalFrame
 			conn.PayloadType = websocket.BinaryFrame
-			session, err := shells.Open(r.Context(), TerminalSize{Columns: 120, Rows: 40})
+			var first []byte
+			if err := websocket.Message.Receive(conn, &first); err != nil {
+				_ = conn.Close()
+				return
+			}
+			frames, err := new(workspaceprotocol.Decoder).Feed(first)
+			if err != nil || len(frames) != 1 || !frames[0].Attach {
+				_ = conn.Close()
+				return
+			}
+			var session *ShellSession
+			if frames[0].Session == "" {
+				session, err = shells.OpenOwned(context.Background(), TerminalSize{Columns: 120, Rows: 40}, ticketUser)
+			} else {
+				session, err = shells.AttachOwned(frames[0].Session, ticketUser)
+			}
 			if err != nil {
 				_ = conn.Close()
 				return
 			}
-			proxyWorkspaceShell(r.Context(), conn, session)
-			_ = session.Close()
+			ack, err := workspaceprotocol.EncodeSession(session.ID())
+			if err != nil || websocket.Message.Send(conn, ack) != nil {
+				session.Detach()
+				_ = conn.Close()
+				return
+			}
+			proxyWorkspaceShell(r.Context(), conn, session.Attachment())
 		},
 	}
 	server.ServeHTTP(w, r)
@@ -438,6 +665,9 @@ func copyAgentFramesToShell(ctx context.Context, conn *websocket.Conn, shell int
 			return err
 		}
 		for _, decoded := range decodedFrames {
+			if decoded.Attach || decoded.Session != "" || decoded.End {
+				return workspaceprotocol.ErrInvalidFrame
+			}
 			if decoded.Resize {
 				if err := shell.Resize(TerminalSize{Columns: decoded.Columns, Rows: decoded.Rows}); err != nil {
 					return err
@@ -475,6 +705,9 @@ func copyShellToAgentFrames(ctx context.Context, shell io.Reader, conn *websocke
 			}
 		}
 		if err != nil {
+			if errors.Is(err, io.EOF) && ctx.Err() == nil {
+				_ = websocket.Message.Send(conn, workspaceprotocol.EncodeEnd())
+			}
 			return err
 		}
 		if n == 0 {

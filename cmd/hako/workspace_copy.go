@@ -2,144 +2,174 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/mo3789530/hako/internal/api"
 	"github.com/mo3789530/hako/internal/auth"
+	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/workspacegateway"
+	"github.com/mo3789530/hako/internal/workspaceprotocol"
+	"github.com/mo3789530/hako/internal/workspacesession"
 )
 
-type workspaceCopyRunner func(context.Context, []string) error
+var copyIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
-var runWorkspaceSCP workspaceCopyRunner = func(ctx context.Context, args []string) error {
-	command := exec.CommandContext(ctx, "scp", args...)
-	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
-	return command.Run()
+func copyWorkspacePath(ctx context.Context, tenantID, workspaceID, source, destination string, download bool) (returnErr error) {
+	return copyWorkspacePathWith(ctx, tenantID, workspaceID, source, destination, download, nil, nil)
 }
 
-var checkSFTPOpenSSH = requireSFTPOpenSSH
-
-var openSSHVersionPattern = regexp.MustCompile(`OpenSSH_([0-9]+)\.([0-9]+)`)
-
-// copyWorkspacePath transfers one local path to or from the Workspace through
-// OpenSSH scp and the authenticated Hako ProxyCommand. It never disables SSH
-// host-key verification and never accepts a caller-selected remote host.
-func copyWorkspacePath(ctx context.Context, tenantID, workspaceID, source, destination string, download bool) error {
-	if ctx == nil {
-		return errors.New("copy context is required")
+func copyWorkspacePathWith(ctx context.Context, tenantID, workspaceID, source, destination string, download bool, apiHTTPClient *http.Client, gatewayTLSConfig *tls.Config) (returnErr error) {
+	if ctx == nil || !validCopyID(tenantID) || !validCopyID(workspaceID) {
+		return errors.New("valid Tenant and Workspace IDs and copy context are required")
 	}
-	if _, err := auth.LoadAccessToken(cliCredentialGetter, time.Now()); err != nil {
-		return err
-	}
-	if os.Getenv("HAKO_API_URL") == "" {
-		return errors.New("HAKO_API_URL is required")
-	}
-	if os.Getenv("HAKO_GATEWAY_URL") == "" {
-		return errors.New("HAKO_GATEWAY_URL is required")
-	}
-	if checkSFTPOpenSSH == nil {
-		return errors.New("OpenSSH version checker is unavailable")
-	}
-	if err := checkSFTPOpenSSH(ctx); err != nil {
-		return err
-	}
-	executable, err := os.Executable()
-	if err != nil {
-		return errors.New("cannot resolve the Hako executable for SSH ProxyCommand")
-	}
-	args, err := workspaceSCPArgs(executable, tenantID, workspaceID, source, destination, download)
+	accessToken, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
 	if err != nil {
 		return err
 	}
-	if runWorkspaceSCP == nil {
-		return errors.New("SCP runner is unavailable")
-	}
-	if err := runWorkspaceSCP(ctx, args); err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return fmt.Errorf("SCP transfer failed: %w", err)
-	}
-	return nil
-}
-
-func requireSFTPOpenSSH(ctx context.Context) error {
-	if ctx == nil {
-		return errors.New("copy context is required")
-	}
-	output, err := exec.CommandContext(ctx, "ssh", "-V").CombinedOutput()
-	if err != nil {
-		return errors.New("hako cp requires OpenSSH 9.0 or newer with SFTP-based scp")
-	}
-	if !supportsSFTPOpenSSH(output) {
-		return errors.New("cannot verify OpenSSH version; hako cp requires OpenSSH 9.0 or newer")
-	}
-	return nil
-}
-
-func supportsSFTPOpenSSH(output []byte) bool {
-	version := openSSHVersionPattern.FindSubmatch(output)
-	if len(version) != 3 {
-		return false
-	}
-	major := 0
-	for _, digit := range version[1] {
-		major = major*10 + int(digit-'0')
-	}
-	return major >= 9
-}
-
-func workspaceSCPArgs(executable, tenantID, workspaceID, source, destination string, download bool) ([]string, error) {
-	if !validCopyID(tenantID) || !validCopyID(workspaceID) || strings.TrimSpace(executable) == "" {
-		return nil, errors.New("valid Tenant and Workspace IDs are required")
+	apiURL, gatewayURL := strings.TrimSpace(os.Getenv("HAKO_API_URL")), strings.TrimSpace(os.Getenv("HAKO_GATEWAY_URL"))
+	if apiURL == "" || gatewayURL == "" {
+		return errors.New("HAKO_API_URL and HAKO_GATEWAY_URL are required")
 	}
 	remotePath, localPath := destination, source
 	if download {
 		remotePath, localPath = source, destination
 	}
-	if !validWorkspacePath(remotePath) || strings.TrimSpace(localPath) == "" || strings.ContainsRune(localPath, '\x00') {
-		return nil, errors.New("Workspace path must be an absolute path inside /workspace and local path must be non-empty")
+	if !validWorkspaceFileCLIPath(remotePath) || strings.TrimSpace(localPath) == "" || strings.ContainsRune(localPath, '\x00') {
+		return errors.New("Workspace path must name a file inside /workspace and local path must be non-empty")
 	}
-	localPath, err := filepath.Abs(localPath)
+	localPath, err = filepath.Abs(localPath)
 	if err != nil {
-		return nil, errors.New("local path is invalid")
+		return errors.New("local path is invalid")
 	}
-	remote := "hako@hako-workspace:" + remotePath
-	proxyCommand := "ProxyCommand=" + shellQuote(executable) + " ssh-proxy " + tenantID + " " + workspaceID
-	hostKeyAlias := "hako-" + tenantID + "-" + workspaceID
-	args := []string{"-o", proxyCommand, "-o", "HostKeyAlias=" + hostKeyAlias}
-	if download {
-		return append(args, remote, localPath), nil
-	}
-	return append(args, localPath, remote), nil
-}
-
-func validWorkspacePath(value string) bool {
-	if value == "" || !path.IsAbs(value) || path.Clean(value) != value || strings.ContainsAny(value, "\x00\r\n") {
-		return false
-	}
-	return value == "/workspace" || strings.HasPrefix(value, "/workspace/")
-}
-
-func validCopyID(value string) bool {
-	if value == "" || len(value) > 128 {
-		return false
-	}
-	for _, r := range value {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
-			continue
+	var upload *os.File
+	var uploadSize int64
+	if !download {
+		info, err := os.Lstat(localPath)
+		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() < 0 || info.Size() > workspaceprotocol.FileMaxBytes {
+			return errors.New("local upload source must be a regular file no larger than 1 GiB")
 		}
-		return false
+		upload, err = os.Open(localPath)
+		if err != nil {
+			return errors.New("open local upload source")
+		}
+		defer upload.Close()
+		openedInfo, err := upload.Stat()
+		if err != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) || openedInfo.Size() < 0 || openedInfo.Size() > workspaceprotocol.FileMaxBytes {
+			return errors.New("local upload source changed while opening")
+		}
+		uploadSize = openedInfo.Size()
 	}
-	return true
+	downloadTemp, downloadFile, err := prepareWorkspaceDownload(localPath, download)
+	if err != nil {
+		return err
+	}
+	if downloadFile != nil {
+		defer func() {
+			_ = downloadFile.Close()
+			if returnErr != nil {
+				_ = os.Remove(downloadTemp)
+			}
+		}()
+	}
+	session, err := api.CreateWorkspaceSession(ctx, apiURL, accessToken, tenantID, workspaceID,
+		[]workspacesession.Permission{workspacesession.PermissionFileTransfer}, apiHTTPClient)
+	if err != nil {
+		return fmt.Errorf("request Workspace file-transfer session: %w", err)
+	}
+	defer func() {
+		revokeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := api.RevokeWorkspaceSession(revokeCtx, apiURL, accessToken, tenantID, workspaceID, string(session.SessionID), apiHTTPClient); err != nil && returnErr == nil {
+			returnErr = fmt.Errorf("revoke Workspace file-transfer session: %w", err)
+		}
+	}()
+	connection, err := workspacegateway.Dial(ctx, gatewayURL, domain.WorkspaceID(workspaceID), workspacesession.PermissionFileTransfer, 0,
+		session.Ticket, gatewayTLSConfig)
+	if err != nil {
+		return err
+	}
+	defer connection.Close()
+	stopClose := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	defer stopClose()
+	if download {
+		if err := workspaceprotocol.WriteFileRequest(connection, workspaceprotocol.FileRequest{Operation: "download", Path: remotePath}); err != nil {
+			return err
+		}
+		response, err := workspaceprotocol.ReadFileResponse(connection)
+		if err != nil {
+			return err
+		}
+		if !response.OK {
+			return errors.New("Workspace file could not be downloaded")
+		}
+		if _, err := io.CopyN(downloadFile, connection, response.Size); err != nil {
+			return errors.New("Workspace file download was incomplete")
+		}
+		if err := downloadFile.Sync(); err != nil {
+			return errors.New("persist local Workspace download")
+		}
+		if err := downloadFile.Close(); err != nil {
+			return errors.New("close local Workspace download")
+		}
+		if err := os.Rename(downloadTemp, localPath); err != nil {
+			return errors.New("commit local Workspace download")
+		}
+		return nil
+	}
+	if err := workspaceprotocol.WriteFileRequest(connection, workspaceprotocol.FileRequest{Operation: "upload", Path: remotePath, Size: uploadSize}); err != nil {
+		return err
+	}
+	if _, err := io.CopyN(connection, upload, uploadSize); err != nil {
+		return errors.New("local Workspace upload was incomplete")
+	}
+	response, err := workspaceprotocol.ReadFileResponse(connection)
+	if err != nil || !response.OK || response.Size != uploadSize {
+		return errors.New("Workspace file upload failed")
+	}
+	return nil
 }
 
-func shellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+func prepareWorkspaceDownload(localPath string, download bool) (string, *os.File, error) {
+	if !download {
+		return "", nil, nil
+	}
+	parent := filepath.Dir(localPath)
+	if info, err := os.Stat(parent); err != nil || !info.IsDir() {
+		return "", nil, errors.New("local download directory does not exist")
+	}
+	if info, err := os.Lstat(localPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", nil, errors.New("refusing to replace a symlink with a Workspace download")
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", nil, errors.New("inspect local download destination")
+	}
+	random := make([]byte, 12)
+	if _, err := rand.Read(random); err != nil {
+		return "", nil, errors.New("create local download name")
+	}
+	temp := filepath.Join(parent, ".hako-download-"+fmt.Sprintf("%x", random))
+	file, err := os.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return "", nil, errors.New("create private local download file")
+	}
+	return temp, file, nil
 }
+
+func validWorkspaceFileCLIPath(value string) bool {
+	if value == "" || !path.IsAbs(value) || path.Clean(value) != value || strings.ContainsAny(value, "\\\x00\r\n") {
+		return false
+	}
+	return strings.HasPrefix(value, "/workspace/") && value != "/workspace/"
+}
+
+func validCopyID(value string) bool { return copyIDPattern.MatchString(value) }

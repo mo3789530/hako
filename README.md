@@ -636,6 +636,8 @@ Disk
 16 GB
 ```
 
+この値はMicroVM Imageのbaseline sizingです（Run APIでMicroVMごとにCPU/RAMを指定する設計ではありません）。AWSの公開サイズ表では4 GiB baseline / 2 vCPUに対して最大16 GiB / 8 vCPUへburstし、disk上限は16 GiBです。1 MicroVMの存続時間は最大8時間、ARM64のみです。Quotaとnested containerの実動作はTask 61のPoC待ちで、Runtime Class名だけでは隔離・capacityを保証しません。[Lambda MicroVM runtime constraints](docs/lambda-microvm-workloads.md)
+
 ## 17. MicroVM内部
 
 標準Workspace Imageは、
@@ -710,9 +712,11 @@ Hako独自のService Catalogとも共存します。
 hako add <tenant-id> <workspace-id> postgres [instance-name]
 hako add <tenant-id> <workspace-id> redis [instance-name]
 hako services <tenant-id> <workspace-id>
+hako service usage <tenant-id> <workspace-id>
+hako service rotate-credentials <tenant-id> <workspace-id> postgres
 ```
 
-現時点の`hako add`は認証・認可済みAPIを通じてdesired-state metadataを登録します。Service executorは未接続のため、実コンテナ起動やhealthcheck完了を意味しません。登録直後は`observed_state=pending`です。下図はruntime接続後の目標フローです。
+現時点の`hako add`は認証・認可済みAPIを通じてdesired-state metadataを登録し、revision付きOutbox commandをWorkspace PlacementのResource Plane queueへ配送します。Resource Plane consumerはGuestを呼ぶ直前にHMACでControl Planeから最新Service revision/stateを取得するため、古いSQS recordは実行せず最新状態へreconcileします。その後、durable journal上のLambda MicroVM bindingを再検証し、port 8080限定の短命AWS tokenとone-use CapabilityでGuestを呼び、HMAC状態報告を返します。Terraformにはdefault-offのqueue/event-source/IAM wiringと監視alarmを追加しましたが、mock plan検証のみでAWSには未適用です。Workspace init imageには`nerdctl-full`を含める構成と、root initがrootless containerdを起動・監督する`HAKO_WORKSPACE_SERVICES_ENABLED=true` opt-inを追加しました（既定off）。PostgreSQL資格情報は`hako service rotate-credentials`でgeneration付きに更新し、Guest側適用とhealth確認後にSecrets Managerの`AWSCURRENT`を進めます。ARM64イメージの実ビルドとLambda MicroVM内でのコンテナ起動、ネットワーク・resource limit、AWS接続は未検証です。Service削除は旧MicroVM世代を含むcleanup確認までtombstoneを保持しますが、実環境での動作確認は未完了です。登録直後の状態は`observed_state=pending`であり、実環境のhealthcheck完了を意味しません。詳細は[Workspace Agent shell and PTY](docs/workspace-agent-shell.md)、[Service credentials](docs/workspace-service-secrets.md)、[Task 84](tasks/task-84-workspace-service-runtime.md)を参照してください。
 
 ```bash
 hako add postgres
@@ -1563,6 +1567,9 @@ Hakoは最初は **Lambda MicroVMを使ったRemote Development Environment** �
 - [x] `POST /v1/tenants/{tenant_id}/workspaces`と`hako create <tenant-id> <name>`を追加し、Quota超過を`workspace_quota_exceeded` HTTP 409としてCLIに表示する。
 - [x] Workspace一覧・取得APIへRBACを適用する。Memberは自分のWorkspaceのみ、Tenant Owner/AdminはTenant内すべてとし、非所有・越境拒否を検証する。
 - [x] Workspace一覧APIのlimit/offsetページネーション、`hako list`/`hako get` CLIを追加する。
+- [x] Tenant membershipで保護したusage APIと`hako usage <tenant-id>`を追加する。Workspace 10枠、concurrent Workload 5枠、Tenant-configurable Preview concurrency/lifetimeを表示し、terminal確定まで予約を保持する。値は設定quotaで、実測resource usageや請求額ではない。
+- [x] Workspace Member visibility付きService usage APIと`hako service usage <tenant-id> <workspace-id>`を追加し、Serviceのcatalog-request reservationとadmission limitを表示する。値は実測MicroVM使用量ではない。
+- [x] Tenant Owner/Admin向けQuota read/update APIと`hako tenant quota get|set`を追加。Workspace 10、Workload 5、Preview 5のplatform ceiling以下で設定し、現在usageを下回る変更を拒否する。admissionとのOCC直列化は[Tenant quotas](docs/tenant-quotas.md)を参照。
 - [x] Workspaceの停止・再開・削除API/CLIを追加し、Desired State・Operation・イベント・Outbox commandを原子的に記録する。非同期動作、冪等性、Quota解放条件は[Workspace lifecycle API](docs/workspace-lifecycle-api.md)を参照。
 - [x] API入力検証、エラー形式、ページネーション、監査イベントを標準化する。JSON body制約、共通error envelope、offset paginationとactor-oriented mutation auditを実装し、監査の運用前提・未対応範囲を[Control Plane API Contract](docs/api-contract.md)に記載。
 
@@ -1597,7 +1604,7 @@ Hakoは最初は **Lambda MicroVMを使ったRemote Development Environment** �
 
 - [ ] WorkspaceごとのEFS Access Point作成・削除と`/workspace` mountを実装する。
 - [ ] 標準MicroVM Imageとhako-agentの配布・起動方式を定義する（protocol/backendと`cmd/hako-agent`のport 8080 listener、image-owned public-key loaderを実装。MicroVM image build/run-hook wiring、production key distribution/rotation、AWS image/network PoCは未完了）。[Lambda MicroVM Workload Controller](docs/lambda-microvm-workloads.md)。
-- [ ] hako-agentにheartbeat、exec、shell/PTY、プロセス管理を実装する（Workspace向けLinux PTY managerとGateway WSS-to-PTY adapterは追加済み。固定`/bin/sh`、session制限/期限、terminal/input上限、process-group cleanupを実装・local race test/E2E済み。heartbeat/exec API、複数Workspace router、MicroVM上の`/dev/pts`検証は未完了）。[Workspace Agent shell and PTY](docs/workspace-agent-shell.md)。
+- [ ] hako-agentにheartbeat、exec、shell/PTY、プロセス管理を実装する（Workspace向けLinux PTYとGateway WSS、専用Session権限付き`hako exec`、versioned Guest heartbeat/30秒lease、one-use Guest Ticket、出力量/実行時間制限を実装。PTYは同一MicroVM上で切断中も維持し、同一ユーザーの再接続と1 MiB出力保持をlocal test済み。実MicroVM image・`/dev/pts`検証、production key provisioningは未完了）。[Workspace Agent shell and PTY](docs/workspace-agent-shell.md)。
 - [ ] MicroVM再作成後にWorkspace IDとソースデータが維持されることを確認する。
 - [ ] Secret参照をSecrets Managerに接続し、平文Secretをログ・DBに残さない。
 
@@ -1606,17 +1613,17 @@ Hakoは最初は **Lambda MicroVMを使ったRemote Development Environment** �
 - [ ] 短命Hako Session Ticketの発行・署名・失効・権限検証を実装する（Ed25519の5分ticketとRBAC確認付き発行/失効API、HTTPS/HMAC active-session API/clientとPostgreSQL照合、WSS-to-PTY/localhost port-forward local E2Eは実装。production key provisioning/rotation、Gateway client配備、production revocation確認は未完了）。[Workspace Session Ticket](docs/workspace-session-ticket.md)。
 - [ ] Gatewayを常駐サービスとして配置し、HTTPS/WSSでSession検証・ルーティングする（TLS-only WSS core、共有接続上限、同一Session TicketのGateway複数台間同時利用拒否、Workspace単位30新規Lease/分の共有rate limit、実PTY接続とallowlisted port-forwardをlocal E2E済み。Resource Planeのdefault-off HTTPS ALB/private Fargate deployment等をTerraform化してmock plan検証済み。構造化ログと低カーディナリティEMFも実装。AWS配備、production keys/secrets/certificate/DNS/network、実MicroVM接続とCloudWatch ingestionは未完了）。[Workspace HTTPS/WSS Gateway](docs/workspace-gateway.md)。
 - [ ] VS Code Remote SSH接続を実装する（`hako ssh-proxy`のlocal TLS/WSS ProxyCommandは実装。MicroVM sshd/router deploymentは未検証）。
-- [ ] CLIのshell、browser IDE、SSH proxy、port forward、file transferを実装する（`hako open`のloopback-only browser tunnel、per-stream VS Code Session、fixed Guest bridge、Lambda adapter、EFS UID/GIDで動作するpinned/checksummed code-server process lifecycleをlocal実装。ARM64 Workspace image buildと実MicroVM接続は未検証。`hako shell`のLinux terminal resize/framing、`hako wait`、`hako ssh-proxy`、`hako cp`、`hako forward`もlocal実装・race test済み。guest SFTP/host-key provisioning未検証）。[Workspace CLI](docs/workspace-cli.md)
-- [ ] 切断後もPTY/processを維持し、Grace Period後にSuspendするLifecycleを実装する。
+- [ ] CLIのshell、browser IDE、SSH proxy、port forward、file transferを実装する（`hako shell`はLinux terminal resize/framingに加え、TLS/WSS切断後に新Sessionで同じGuest PTYへ再接続するlocal E2Eを実装。PTYはMicroVM置換後には維持されない。`hako open`のloopback-only browser tunnel、per-stream VS Code Session、fixed Guest bridge、Lambda adapter、EFS UID/GIDで動作するpinned/checksummed code-server process lifecycleをlocal実装。ARM64 Workspace image buildと実MicroVM接続は未検証。`hako wait`、`hako ssh-proxy`、`hako cp`、`hako forward`もlocal実装。`hako cp`は独立したsigned Agent file-transfer routeで、SSH/SFTP host-keyに依存しない。Production Gateway/MicroVM routingは未検証）。[Workspace CLI](docs/workspace-cli.md)
+- [ ] 切断後もPTY/processを維持し、Grace Period後にSuspendするLifecycleを実装する（同一MicroVM内のPTY detach/reattach、durable lease、allocation-bound Gateway heartbeat、Owner/Admin向けdefault-off policy API/CLI、fenced Suspend Operation/Outbox/system-audit sweep、EventBridge Lambda entrypoint、default-off Terraform schedule/IAM contractはlocal実装・PostgreSQL/Terraform検証済み。Gateway WSS→署名lease API→PostgreSQLのdisconnect/reconnect/sweep E2Eもfake upstreamで検証。`hako resume --wait`でrunning状態まで待機可能。実MicroVM Guest reconnectとAWS配備は[Task 85](tasks/task-85-workspace-idle-suspend.md)で追跡）。[Workspace connection lifecycle](docs/workspace-connection-lifecycle.md)。
 - [ ] レート制限、接続上限、監査記録、Gatewayヘルス監視を実装する。
 
 ### Phase 7: Service Catalogと利用者向けCLI
 
 - [x] Versioned Service Catalog schemaとPostgreSQL/Redis初期Templateを追加（固定version image、resource limits、private ports、volume/healthcheck policy）。
-- [ ] hako-agent経由でServiceの起動・停止・状態確認を実装する。
+- [ ] hako-agent経由でServiceの起動・停止・状態確認を実装する（revision付きOutbox/Resource Plane queue route、固定Catalog Guest reconcile handler/rootless `nerdctl` adapter、root initによるAgent child再起動耐性revision/replay fence、HMAC状態報告API、SQS Lambda consumer、Terraform default-off配線とPostgreSQL用のSecrets Manager生成credential providerを実装・fake/local検証。SecretはResource Planeから正確なMicroVMへHTTPSで渡し、Guest内の一時mode-0600 env-file経由でのみnerdctlへ注入する。`hako service rotate-credentials`はgeneration付きAWSPENDINGをDBへ適用しhealth確認後にAWSCURRENTへpromoteする。MicroVM image daemon/実PoCとMicroVM世代をまたぐdurable cleanup確認は未完了。詳細は[Workspace Service generated credentials](docs/workspace-service-secrets.md)。
 - [x] 認証済みWorkspace-scoped APIと`hako add`、`hako services`、desired-stateの`hako service start|stop|remove`を追加（DB登録まで。runtime execution/physical cleanupは未接続）。
 - [ ] `hako create/code/open/shell/forward/suspend/resume/delete`のCLI UXを仕上げる。
-- [ ] Resource Class、Quota、操作確認、利用状況表示を追加する。
+- [ ] Resource Class、Quota、操作確認、利用状況表示を追加する（Workspace 10枠/Workload concurrent 5枠、Preview concurrency/lifetime、Tenant設定可能なArtifact quota（10 GiB default/100 GiB max、最大100 MiB/Run予約）、Workspace Service per-Workspace memory/CPU caps（2 GiB/1500mCPU default/hard ceiling、Tenantは下げられる）はOwner/Admin API/CLIで設定しTenant OCC下でadmission。`hako usage`/`hako service usage`はreserved usageを表示し、`hako tenant quota set`は現在usage/limitの表示と明示確認に対応。Artifact usageは登録metadataで、live S3 inventory、実測resource usage、他の破壊的/高影響操作確認は未完了）。
 
 ### Phase 8: セキュリティ・運用・拡張
 
@@ -1643,9 +1650,9 @@ Hakoは最初は **Lambda MicroVMを使ったRemote Development Environment** �
 - [ ] Fake Runtime上でRepository commitに対する`go test ./...` Jobを実行し、結果とredacted logsを保存する（commit照合・隔離Podman実行・redaction・DSQL状態/metadata保存と、SSE-S3/SSE-KMS対応のS3 writerまで実装。bucket/IAM provisioning、worker接続、scheduler連携は未実装）。[Workload Run設計](docs/software-factory-workloads.md)。
 - [ ] GitHub Checks APIでqueued/in-progress/completed check、commit SHA照合、summary/annotationを返す。
 - [ ] GitHub Actions `workflow_job.queued`を受け、専用権限でephemeral runnerを登録し、1 Job実行後にderegister・Runtime cleanupする（Task 52でdurable admission/claim、Tenant broker token、runner status correlation、Plane-fenced cleanup worker、mTLS broker deregistration、AWS SDK Lambda MicroVM terminator、Resource Plane SQS Lambda handler/runtime composition、ARM64 ZIP build target、Outbox Dispatcherからのdefault-off startup queue publisher、Terraformのdefault-off queue/DLQ/exact IAM/lambda event-source mapping、integration/job/attempt単位のdurable Checkとshared Checks consumer連携を実装。PostgreSQL webhook→Check outbox→Dispatcher→fake GitHubのdelivery/ID persistenceをローカル検証。AWS apply、multi-Plane placement、guest listener/image、full runner cleanup E2E、live AWS/GitHub検証は未完了。[queue and Check contract](docs/actions-runner-startup-queue.md)）。
-- [ ] `.hako/factory.yaml`のversioned strict schema、allowlisted step、network/secret policyを実装し、既存GitHub Actionsと共存させる（Task 53でstrict version 1 parser、push/PR branch trigger selectorと`hako factory validate [--file path]`を追加済み。manifestからのRun生成・policy enforcement・Pipeline実行は未実装）。
-- [ ] IssueからAgent Runを開始し、明示的な最小write permissionでbranch/PRを作成するworkflowを追加する。
-- [ ] PR Preview Workspace、artifact/SBOM storage、Software Catalog、OIDC deploy policyを分離タスクとして実装する。
+- [ ] `.hako/factory.yaml`のversioned strict schema、allowlisted step、network/secret policyを実装し、既存GitHub Actionsと共存させる（Task 53でstrict version 1 parser、push/PR selector、固定Catalog command plan、per-pipeline terminal result/Checksを実装。Issue commandはTenant member/Repository pin/immutable SHAを検証し、Agent Run/taskを作成・Workerへ安全に渡すところまで実装。dispatcher/runtimeはJob-onlyで、Agent executor、Tenant model credential policy、pipeline service orchestration、resource/network enforcementは未完了）。
+- [ ] IssueからAgent Runを実行し、明示的な最小write permissionでbranch/PRを作成するworkflowを追加する（Repository branch/PR policy API/CLIと認可判定は実装済みだが`execution_enabled=false`。Agent scheduling、model execution/credential policy、write token発行、runtime enforcement、human review flowは未完了）。
+- [ ] PR Preview Workspace、artifact/SBOM storage、OIDC deploy policyを分離タスクとして実装する（Tenant Software Catalog API/CLI、legacy/immutable-ID GitHub OIDC RS256/JWKS claim検証APIはTask 54で追加。Preview lifecycle/routing、GitHub Environment approval確認、AWS STS trust/exchangeと実deployは未完了。検証APIは常に`execution_enabled=false`）。
 - [ ] GitHub App install→PR→Webhook→isolated `go test`→GitHub Check→logs保管→ephemeral Runtime破棄のSoftware Factory E2Eを追加する。
 
 ### MVP完了条件

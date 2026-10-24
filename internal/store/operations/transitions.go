@@ -26,19 +26,21 @@ type TransitionInput struct {
 }
 
 type ResultInput struct {
-	OperationID        domain.OperationID
-	WorkspaceRevision  int64
-	TenantID           domain.TenantID
-	WorkspaceID        domain.WorkspaceID
-	ResourcePlaneID    domain.ResourcePlaneID
-	Type               domain.OperationType
-	Status             domain.OperationStatus
-	ObservedState      domain.ObservedWorkspaceState
-	ErrorCode          string
-	ResourceKind       string
-	ExternalResourceID string
-	Payload            json.RawMessage
-	CompletedAt        time.Time
+	OperationID          domain.OperationID
+	CorrelationID        string
+	WorkspaceRevision    int64
+	TenantID             domain.TenantID
+	WorkspaceID          domain.WorkspaceID
+	ResourcePlaneID      domain.ResourcePlaneID
+	Type                 domain.OperationType
+	Status               domain.OperationStatus
+	ObservedState        domain.ObservedWorkspaceState
+	ErrorCode            string
+	ResourceKind         string
+	ExternalResourceID   string
+	AllocationGeneration int64
+	Payload              json.RawMessage
+	CompletedAt          time.Time
 }
 
 // ApplyResult atomically validates a Resource Plane result, transitions the
@@ -64,6 +66,8 @@ func ApplyResult(ctx context.Context, pool transaction.Beginner, policy transact
 	}
 	if (input.ResourceKind == "") != (input.ExternalResourceID == "") ||
 		(input.ResourceKind != "" && input.ResourceKind != "lambda_microvm") ||
+		(input.ResourceKind == "lambda_microvm") != (input.AllocationGeneration > 0) ||
+		input.AllocationGeneration < 0 ||
 		(len(input.ExternalResourceID) > 256 || strings.TrimSpace(input.ExternalResourceID) != input.ExternalResourceID || strings.ContainsAny(input.ExternalResourceID, "\r\n\x00")) {
 		return false, errors.New("Resource Plane result binding is invalid")
 	}
@@ -78,6 +82,22 @@ func ApplyResult(ctx context.Context, pool transaction.Beginner, policy transact
 		}
 		if operation.TenantID != input.TenantID || operation.WorkspaceID != input.WorkspaceID || operation.ResourcePlaneID != input.ResourcePlaneID || operation.Type != input.Type {
 			return false, errors.New("Resource Plane result identity does not match Operation")
+		}
+		if input.CorrelationID != "" {
+			var originalPayload []byte
+			if err := tx.QueryRow(ctx, `SELECT payload_json FROM operation_events WHERE operation_id = $1 AND sequence = 1`, input.OperationID).Scan(&originalPayload); err != nil {
+				return false, fmt.Errorf("load original Operation correlation ID: %w", err)
+			}
+			var originalCommand struct {
+				CorrelationID string `json:"correlation_id"`
+			}
+			if err := json.Unmarshal(originalPayload, &originalCommand); err != nil {
+				return false, fmt.Errorf("decode original Operation correlation ID: %w", err)
+			}
+			expectedCorrelationID := originalCommand.CorrelationID
+			if expectedCorrelationID == "" || expectedCorrelationID != input.CorrelationID {
+				return false, errors.New("Resource Plane result correlation ID does not match Operation")
+			}
 		}
 		if operation.Status == domain.OperationSucceeded || operation.Status == domain.OperationFailed || operation.Status == domain.OperationCancelled {
 			return false, nil
@@ -124,22 +144,34 @@ func ApplyResult(ctx context.Context, pool transaction.Beginner, policy transact
 			return false, errors.New("Workspace status row is missing")
 		}
 		if input.Status == domain.OperationSucceeded && input.ObservedState == domain.ObservedWorkspaceDeleted {
+			if _, err := tx.Exec(ctx, `UPDATE workspace_service_runtime_generations SET retired = TRUE, updated_at = $3
+				WHERE workspace_id = $1 AND resource_plane_id = $2 AND retired = FALSE`, input.WorkspaceID, input.ResourcePlaneID, input.CompletedAt); err != nil {
+				return false, fmt.Errorf("retire deleted Workspace Service runtime generations: %w", err)
+			}
 			if _, err := tx.Exec(ctx, `DELETE FROM resource_bindings WHERE workspace_id = $1 AND resource_plane_id = $2 AND kind = 'lambda_microvm'`, input.WorkspaceID, input.ResourcePlaneID); err != nil {
 				return false, fmt.Errorf("delete Workspace MicroVM resource binding: %w", err)
 			}
 		} else if input.Status == domain.OperationSucceeded && input.ResourceKind != "" {
 			var boundID string
-			err := tx.QueryRow(ctx, `INSERT INTO resource_bindings (workspace_id, resource_plane_id, kind, external_id, created_at)
-				VALUES ($1, $2, $3, $4, $5)
+			err := tx.QueryRow(ctx, `INSERT INTO resource_bindings (workspace_id, resource_plane_id, kind, external_id, allocation_generation, created_at)
+				VALUES ($1, $2, $3, $4, $5, $6)
 				ON CONFLICT (workspace_id, kind) DO UPDATE SET
-				resource_plane_id = EXCLUDED.resource_plane_id, external_id = EXCLUDED.external_id, created_at = EXCLUDED.created_at
+				resource_plane_id = EXCLUDED.resource_plane_id, external_id = EXCLUDED.external_id,
+				allocation_generation = EXCLUDED.allocation_generation, created_at = EXCLUDED.created_at
 				WHERE resource_bindings.resource_plane_id = EXCLUDED.resource_plane_id
-				RETURNING external_id`, input.WorkspaceID, input.ResourcePlaneID, input.ResourceKind, input.ExternalResourceID, input.CompletedAt).Scan(&boundID)
+				AND resource_bindings.allocation_generation <= EXCLUDED.allocation_generation
+				AND (resource_bindings.allocation_generation < EXCLUDED.allocation_generation OR resource_bindings.external_id = EXCLUDED.external_id)
+				RETURNING external_id`, input.WorkspaceID, input.ResourcePlaneID, input.ResourceKind, input.ExternalResourceID, input.AllocationGeneration, input.CompletedAt).Scan(&boundID)
 			if err != nil {
 				return false, fmt.Errorf("persist Workspace Resource Plane binding: %w", err)
 			}
 			if boundID != input.ExternalResourceID {
 				return false, errors.New("persisted Workspace Resource Plane binding does not match result")
+			}
+			if _, err := tx.Exec(ctx, `UPDATE workspace_service_runtime_generations SET retired = TRUE, updated_at = $3
+				WHERE workspace_id = $1 AND resource_plane_id = $2 AND allocation_generation < $4 AND retired = FALSE`,
+				input.WorkspaceID, input.ResourcePlaneID, input.CompletedAt, input.AllocationGeneration); err != nil {
+				return false, fmt.Errorf("retire prior Workspace Service runtime generations: %w", err)
 			}
 		}
 		if input.ObservedState == domain.ObservedWorkspaceDeleted {

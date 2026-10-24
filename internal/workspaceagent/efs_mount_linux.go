@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -23,6 +24,9 @@ const (
 	workspaceMountBinary   = "/bin/mount"
 	workspaceUmountBinary  = "/bin/umount"
 	workspaceMountInfoPath = "/proc/self/mountinfo"
+	// Leave margin below Lambda MicroVM's maximum 60-second run-hook deadline.
+	workspaceEFSMountTimeout      = 50 * time.Second
+	workspaceEFSMountPollInterval = 100 * time.Millisecond
 )
 
 type mountCommandRunner interface {
@@ -50,6 +54,7 @@ type LinuxEFSMountExecutor struct {
 	mountInfoPath string
 	markerPath    string
 	workspacePath string
+	mountTimeout  time.Duration
 	isRoot        func() bool
 	makeDirectory func(string, os.FileMode) error
 }
@@ -58,7 +63,8 @@ func NewLinuxEFSMountExecutor() *LinuxEFSMountExecutor {
 	return &LinuxEFSMountExecutor{runner: execMountCommandRunner{}, mountBinary: workspaceMountBinary,
 		umountBinary:  workspaceUmountBinary,
 		mountInfoPath: workspaceMountInfoPath, markerPath: workspaceEFSMarkerPath, workspacePath: workspaceEFSMountPath,
-		isRoot: func() bool { return os.Geteuid() == 0 }, makeDirectory: os.MkdirAll}
+		mountTimeout: workspaceEFSMountTimeout,
+		isRoot:       func() bool { return os.Geteuid() == 0 }, makeDirectory: os.MkdirAll}
 }
 
 // NewLinuxWorkspaceMountLifecycle returns both the lifecycle handler and the
@@ -89,7 +95,8 @@ func NewLinuxWorkspaceMountLifecycleHandler(next http.Handler) (http.Handler, er
 
 func (m *LinuxEFSMountExecutor) MountAndVerify(ctx context.Context, spec WorkspaceMountSpec) error {
 	if m == nil || ctx == nil || ctx.Err() != nil || !validWorkspaceMountSpec(spec) || m.runner == nil ||
-		m.mountBinary == "" || m.mountInfoPath == "" || m.markerPath == "" || m.workspacePath != workspaceEFSMountPath || m.isRoot == nil || !m.isRoot() || m.makeDirectory == nil {
+		m.mountBinary == "" || m.mountInfoPath == "" || m.markerPath == "" || m.workspacePath != workspaceEFSMountPath ||
+		m.mountTimeout <= 0 || m.isRoot == nil || !m.isRoot() || m.makeDirectory == nil {
 		return errors.New("Workspace EFS mount configuration or privilege is invalid")
 	}
 	m.mu.Lock()
@@ -120,14 +127,27 @@ func (m *LinuxEFSMountExecutor) MountAndVerify(ctx context.Context, spec Workspa
 	if err := m.makeDirectory(m.workspacePath, 0755); err != nil {
 		return errors.New("create Workspace mount directory")
 	}
-	if err := m.runner.Run(ctx, m.mountBinary, "-t", "efs", "-o", mountOptions(spec), spec.FileSystemID+":/", m.workspacePath); err != nil {
+	mountCtx, cancel := context.WithTimeout(ctx, m.mountTimeout)
+	defer cancel()
+	if err := m.runner.Run(mountCtx, m.mountBinary, "-t", "efs", "-o", mountOptions(spec), spec.FileSystemID+":/", m.workspacePath); err != nil {
 		return errors.New("mount Workspace EFS Access Point")
 	}
-	mounted, err = workspacePathMounted(m.mountInfoPath, m.workspacePath)
-	if err != nil || !mounted {
-		return errors.New("EFS mount helper returned without mounting Workspace storage")
+	ticker := time.NewTicker(workspaceEFSMountPollInterval)
+	defer ticker.Stop()
+	for {
+		mounted, err = workspacePathMounted(m.mountInfoPath, m.workspacePath)
+		if err != nil {
+			return err
+		}
+		if mounted {
+			return nil
+		}
+		select {
+		case <-mountCtx.Done():
+			return errors.New("Workspace EFS mount was not healthy before the mount timeout")
+		case <-ticker.C:
+		}
 	}
-	return nil
 }
 
 // Unmount removes only a mount whose exact Workspace identity was recorded by

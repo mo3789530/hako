@@ -10,8 +10,17 @@ terraform {
 }
 
 data "aws_partition" "current" {}
+data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
 
 locals {
+  dynamic_workspace_role_arn_pattern         = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/hako/workspaces/*"
+  dynamic_workspace_access_point_arn_pattern = "arn:${data.aws_partition.current.partition}:elasticfilesystem:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:access-point/fsap-*"
+  allowed_workspace_principal_arns = concat(
+    [for binding in var.workspace_access_point_role_bindings : binding.role_arn],
+    var.enable_dynamic_workspace_roles ? [local.dynamic_workspace_role_arn_pattern] : []
+  )
+
   common_tags = merge(var.tags, {
     "hako:managed-by"        = "hako"
     "hako:resource-plane-id" = var.resource_plane_id
@@ -44,8 +53,8 @@ locals {
         Resource  = aws_efs_file_system.workspace.arn
         Principal = { AWS = "*" }
         Condition = {
-          ArnNotEquals = {
-            "aws:PrincipalArn" = [for binding in var.workspace_access_point_role_bindings : binding.role_arn]
+          ArnNotLike = {
+            "aws:PrincipalArn" = local.allowed_workspace_principal_arns
           }
         }
       }],
@@ -69,7 +78,21 @@ locals {
         Condition = {
           ArnNotEquals = { "elasticfilesystem:AccessPointArn" = binding.access_point_arn }
         }
-      }]
+      }],
+      var.enable_dynamic_workspace_roles ? [{
+        Sid       = "AllowDynamicWorkspaceRolesThroughEFSAccessPoints"
+        Effect    = "Allow"
+        Action    = ["elasticfilesystem:ClientMount", "elasticfilesystem:ClientWrite"]
+        Resource  = aws_efs_file_system.workspace.arn
+        Principal = { AWS = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:root" }
+        Condition = {
+          Bool = { "aws:SecureTransport" = "true" }
+          ArnLike = {
+            "aws:PrincipalArn"                 = local.dynamic_workspace_role_arn_pattern
+            "elasticfilesystem:AccessPointArn" = local.dynamic_workspace_access_point_arn_pattern
+          }
+        }
+      }] : []
     )
   })
 }

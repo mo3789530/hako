@@ -16,11 +16,13 @@ var ErrExecutionSpecNotFound = errors.New("Workload execution specification not 
 // trusted Resource Plane resolver. It intentionally excludes AWS image and
 // network configuration, which are Resource Plane-owned, and all credentials.
 type ExecutionMetadata struct {
+	Kind                 domain.WorkloadKind
 	TenantID             domain.TenantID
 	WorkloadRunID        domain.WorkloadRunID
 	AttemptID            string
 	Generation           int64
 	ResourcePlaneID      domain.ResourcePlaneID
+	CorrelationID        string
 	GitHubInstallationID int64
 	GitHubRepositoryID   int64
 	GitHubOwner          string
@@ -49,7 +51,7 @@ func ResolveExecutionMetadata(ctx context.Context, tx pgx.Tx, resourcePlaneID do
 	}
 	var result ExecutionMetadata
 	err := tx.QueryRow(ctx, `
-		SELECT wr.tenant_id, wr.id, a.id, a.generation, a.resource_plane_id,
+		SELECT wr.kind, wr.tenant_id, wr.id, a.id, a.generation, a.resource_plane_id, COALESCE(wr.correlation_id, ''),
 		       wr.github_installation_id, wr.github_repository_id, repo.owner_login, repo.repository_name,
 		       COALESCE(wr.github_integration_id, ''), COALESCE(wr.github_config_revision, 0),
 		       COALESCE(wr.github_credential_generation, 0), wr.commit_sha, wr.ref, wr.trigger_event, wr.trigger_branch, wr.runtime_class,
@@ -66,7 +68,10 @@ func ResolveExecutionMetadata(ctx context.Context, tx pgx.Tx, resourcePlaneID do
 		 AND repo.github_repository_id = wr.github_repository_id
 		WHERE wr.tenant_id = $1 AND wr.id = $2 AND a.id = $3 AND a.generation = $4
 		  AND wr.resource_plane_id = $5 AND a.resource_plane_id = $5
-		  AND wr.kind = 'job' AND wr.desired_state = 'running' AND wr.state IN ('provisioning', 'running')
+		  AND ((wr.kind='job' AND (wr.trigger_event='' OR wr.trigger_event IN ('push','pull_request'))) OR
+		       (wr.kind='agent' AND wr.trigger_event='issue_comment'))
+		  AND (wr.kind <> 'agent' OR wr.github_integration_id IS NOT NULL)
+		  AND wr.desired_state = 'running' AND wr.state IN ('provisioning', 'running')
 		  AND a.state IN ('dispatch_pending', 'accepted', 'running')
 		  AND wr.timeout_at > $6
 		  AND installation.status = 'active' AND installation.suspended_at IS NULL
@@ -98,7 +103,7 @@ func ResolveExecutionMetadata(ctx context.Context, tx pgx.Tx, resourcePlaneID do
 		            AND credential.status = 'approved' AND app_binding.installation_id = wr.github_installation_id
 		      ))
 		  )`, tenantID, runID, attemptID, generation, resourcePlaneID, now.UTC()).Scan(
-		&result.TenantID, &result.WorkloadRunID, &result.AttemptID, &result.Generation, &result.ResourcePlaneID,
+		&result.Kind, &result.TenantID, &result.WorkloadRunID, &result.AttemptID, &result.Generation, &result.ResourcePlaneID, &result.CorrelationID,
 		&result.GitHubInstallationID, &result.GitHubRepositoryID, &result.GitHubOwner, &result.GitHubRepository,
 		&result.GitHubIntegrationID, &result.GitHubConfigRevision, &result.GitHubCredentialGen,
 		&result.CommitSHA, &result.Ref, &result.TriggerEvent, &result.TriggerBranch, &result.RuntimeClass, &result.TrustLevel, &result.RequestedAt, &result.Deadline)

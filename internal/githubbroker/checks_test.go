@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -45,7 +46,7 @@ func TestChecksServiceIssuesPinnedTokenForTerminalRunAndRechecksState(t *testing
 		return identity, nil
 	}, func(_ context.Context, got ChecksRunIdentity) (githubapp.CheckToken, error) {
 		mintCalls++
-		if got != identity {
+		if !reflect.DeepEqual(got, identity) {
 			t.Fatal("token minter did not receive the durable terminal Run and Check revision")
 		}
 		return fakeBrokerChecksToken{value: "ghs_checks_write_secret_value", expiry: time.Now().Add(time.Hour)}, nil

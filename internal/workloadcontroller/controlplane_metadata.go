@@ -22,8 +22,9 @@ import (
 )
 
 var (
-	ErrExecutionMetadata = errors.New("trusted Workload execution metadata is unavailable")
-	metadataIDPattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
+	ErrExecutionMetadata         = errors.New("trusted Workload execution metadata is unavailable")
+	metadataIDPattern            = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
+	metadataCorrelationIDPattern = regexp.MustCompile(`^req_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 )
 
 const (
@@ -31,15 +32,18 @@ const (
 	maxMetadataResponse    = 16 << 10
 	workloadSpecSchemaV1   = 1
 	workloadSpecSchemaV2   = 2
+	workloadSpecSchemaV3   = 3
 )
 
 type ControlPlaneExecutionMetadata struct {
 	SchemaVersion        int                       `json:"schema_version"`
+	Kind                 domain.WorkloadKind       `json:"kind,omitempty"`
 	TenantID             domain.TenantID           `json:"tenant_id"`
 	WorkloadRunID        domain.WorkloadRunID      `json:"workload_run_id"`
 	AttemptID            string                    `json:"attempt_id"`
 	Generation           int64                     `json:"generation"`
 	ResourcePlaneID      domain.ResourcePlaneID    `json:"resource_plane_id"`
+	CorrelationID        string                    `json:"correlation_id,omitempty"`
 	GitHubInstallationID int64                     `json:"github_installation_id"`
 	GitHubRepositoryID   int64                     `json:"github_repository_id"`
 	GitHubOwner          string                    `json:"github_owner"`
@@ -151,12 +155,17 @@ func (c *ControlPlaneMetadataClient) Resolve(ctx context.Context, id workloadjou
 }
 
 func (m ControlPlaneExecutionMetadata) matches(id workloadjournal.Command) bool {
-	return (m.SchemaVersion == workloadSpecSchemaV1 || m.SchemaVersion == workloadSpecSchemaV2) && m.TenantID == domain.TenantID(id.TenantID) && m.WorkloadRunID == domain.WorkloadRunID(id.WorkloadRunID) &&
+	return (m.SchemaVersion == workloadSpecSchemaV1 || m.SchemaVersion == workloadSpecSchemaV2 || m.SchemaVersion == workloadSpecSchemaV3) && m.TenantID == domain.TenantID(id.TenantID) && m.WorkloadRunID == domain.WorkloadRunID(id.WorkloadRunID) &&
 		m.AttemptID == id.AttemptID && m.Generation == id.Generation && m.ResourcePlaneID == domain.ResourcePlaneID(id.ResourcePlaneID)
 }
 
 func validExecutionMetadata(m ControlPlaneExecutionMetadata, now time.Time) bool {
-	if m.GitHubInstallationID <= 0 || m.GitHubRepositoryID <= 0 || m.GitHubOwner == "" || m.GitHubRepository == "" ||
+	kind := m.Kind
+	if kind == "" && m.SchemaVersion <= workloadSpecSchemaV2 {
+		kind = domain.WorkloadJob
+	}
+	if (m.CorrelationID != "" && !metadataCorrelationIDPattern.MatchString(m.CorrelationID)) ||
+		m.GitHubInstallationID <= 0 || m.GitHubRepositoryID <= 0 || m.GitHubOwner == "" || m.GitHubRepository == "" ||
 		len(m.GitHubOwner) > 100 || len(m.GitHubRepository) > 100 || strings.ContainsAny(m.GitHubOwner+m.GitHubRepository, "/\\\r\n\x00") ||
 		!commitPattern.MatchString(m.CommitSHA) || m.RuntimeClass == "" || len(m.RuntimeClass) > 100 ||
 		m.TrustLevel != domain.WorkloadUntrusted && m.TrustLevel != domain.WorkloadTrusted && m.TrustLevel != domain.WorkloadPrivileged ||
@@ -169,11 +178,14 @@ func validExecutionMetadata(m ControlPlaneExecutionMetadata, now time.Time) bool
 		(m.GitHubIntegrationID != "" && !metadataIDPattern.MatchString(m.GitHubIntegrationID)) {
 		return false
 	}
-	if m.SchemaVersion == workloadSpecSchemaV1 && m.TriggerEvent != "" {
+	if m.SchemaVersion == workloadSpecSchemaV1 && m.TriggerEvent != "" ||
+		m.SchemaVersion < workloadSpecSchemaV3 && m.Kind != "" ||
+		m.SchemaVersion == workloadSpecSchemaV3 && m.Kind != domain.WorkloadJob && m.Kind != domain.WorkloadAgent {
 		return false
 	}
 	if (m.TriggerEvent == "") != (m.TriggerBranch == "") ||
-		(m.TriggerEvent != "" && m.TriggerEvent != "push" && m.TriggerEvent != "pull_request") ||
+		(kind == domain.WorkloadJob && m.TriggerEvent != "" && m.TriggerEvent != "push" && m.TriggerEvent != "pull_request") ||
+		(kind == domain.WorkloadAgent && m.TriggerEvent != "issue_comment") ||
 		len(m.TriggerBranch) > 255 || strings.Contains(m.TriggerBranch, "..") ||
 		strings.Contains(m.TriggerBranch, "//") || strings.HasSuffix(m.TriggerBranch, "/") || strings.HasSuffix(m.TriggerBranch, ".") || strings.Contains(m.TriggerBranch, "@{") {
 		return false
@@ -184,6 +196,13 @@ func validExecutionMetadata(m ControlPlaneExecutionMetadata, now time.Time) bool
 		}
 	}
 	return true
+}
+
+func effectiveWorkloadKind(metadata ControlPlaneExecutionMetadata) domain.WorkloadKind {
+	if metadata.Kind == "" {
+		return domain.WorkloadJob
+	}
+	return metadata.Kind
 }
 
 func metadataSignature(key []byte, method, path, timestamp, requestID string) string {

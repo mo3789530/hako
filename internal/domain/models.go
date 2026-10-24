@@ -181,15 +181,34 @@ type Session struct {
 }
 
 type Service struct {
-	ID             ServiceID   `json:"id"`
-	WorkspaceID    WorkspaceID `json:"workspace_id"`
-	Name           string      `json:"name"`
-	CatalogVersion string      `json:"catalog_version"`
-	ConfigJSON     string      `json:"config_json"`
-	DesiredState   string      `json:"desired_state"`
-	ObservedState  string      `json:"observed_state"`
-	CreatedAt      time.Time   `json:"created_at"`
-	UpdatedAt      time.Time   `json:"updated_at"`
+	ID                        ServiceID   `json:"id"`
+	WorkspaceID               WorkspaceID `json:"workspace_id"`
+	Name                      string      `json:"name"`
+	CatalogVersion            string      `json:"catalog_version"`
+	ConfigJSON                string      `json:"config_json"`
+	DesiredState              string      `json:"desired_state"`
+	ObservedState             string      `json:"observed_state"`
+	DesiredRevision           int64       `json:"desired_revision"`
+	CredentialGeneration      int64       `json:"credential_generation"`
+	ObservedRevision          int64       `json:"observed_revision"`
+	ObservedRuntimeGeneration int64       `json:"observed_runtime_generation"`
+	CreatedAt                 time.Time   `json:"created_at"`
+	UpdatedAt                 time.Time   `json:"updated_at"`
+}
+
+// WorkspaceServiceCommand is a non-secret desired-state snapshot sent from
+// the Control Plane Outbox to the Resource Plane Service runtime.
+type WorkspaceServiceCommand struct {
+	SchemaVersion        int             `json:"schema_version"`
+	TenantID             TenantID        `json:"tenant_id"`
+	WorkspaceID          WorkspaceID     `json:"workspace_id"`
+	ResourcePlaneID      ResourcePlaneID `json:"resource_plane_id"`
+	ServiceID            ServiceID       `json:"service_id"`
+	Revision             int64           `json:"revision"`
+	CredentialGeneration int64           `json:"credential_generation,omitempty"`
+	DesiredState         string          `json:"desired_state"`
+	CatalogVersion       string          `json:"catalog_version"`
+	Config               json.RawMessage `json:"config"`
 }
 
 type Volume struct {
@@ -238,34 +257,43 @@ const (
 )
 
 type WorkloadRun struct {
-	ID                         WorkloadRunID        `json:"id"`
-	TenantID                   TenantID             `json:"tenant_id"`
-	Kind                       WorkloadKind         `json:"kind"`
-	RequestedBy                UserID               `json:"requested_by,omitempty"`
-	GitHubInstallation         int64                `json:"github_installation_id,omitempty"`
-	GitHubRepository           int64                `json:"github_repository_id,omitempty"`
-	GitHubIntegrationID        string               `json:"github_integration_id,omitempty"`
-	GitHubConfigRevision       int64                `json:"github_config_revision,omitempty"`
-	GitHubCredentialGeneration int64                `json:"github_credential_generation,omitempty"`
-	CommitSHA                  string               `json:"commit_sha,omitempty"`
-	Ref                        string               `json:"ref,omitempty"`
-	TriggerEvent               string               `json:"trigger_event,omitempty"`
-	TriggerBranch              string               `json:"trigger_branch,omitempty"`
-	RuntimeClass               string               `json:"runtime_class"`
-	TrustLevel                 WorkloadTrustLevel   `json:"trust_level"`
-	DesiredState               WorkloadDesiredState `json:"desired_state"`
-	State                      WorkloadRunState     `json:"state"`
-	ResourcePlaneID            ResourcePlaneID      `json:"resource_plane_id,omitempty"`
-	IdempotencyKey             string               `json:"-"`
-	RequestHash                string               `json:"-"`
-	TimeoutSeconds             int64                `json:"timeout_seconds"`
-	TimeoutAt                  time.Time            `json:"timeout_at"`
-	StartedAt                  *time.Time           `json:"started_at,omitempty"`
-	CompletedAt                *time.Time           `json:"completed_at,omitempty"`
-	ErrorCode                  string               `json:"error_code,omitempty"`
-	Revision                   int64                `json:"revision"`
-	CreatedAt                  time.Time            `json:"created_at"`
-	UpdatedAt                  time.Time            `json:"updated_at"`
+	ID                         WorkloadRunID            `json:"id"`
+	TenantID                   TenantID                 `json:"tenant_id"`
+	Kind                       WorkloadKind             `json:"kind"`
+	RequestedBy                UserID                   `json:"requested_by,omitempty"`
+	CorrelationID              string                   `json:"correlation_id,omitempty"`
+	GitHubInstallation         int64                    `json:"github_installation_id,omitempty"`
+	GitHubRepository           int64                    `json:"github_repository_id,omitempty"`
+	GitHubIntegrationID        string                   `json:"github_integration_id,omitempty"`
+	GitHubConfigRevision       int64                    `json:"github_config_revision,omitempty"`
+	GitHubCredentialGeneration int64                    `json:"github_credential_generation,omitempty"`
+	CommitSHA                  string                   `json:"commit_sha,omitempty"`
+	Ref                        string                   `json:"ref,omitempty"`
+	TriggerEvent               string                   `json:"trigger_event,omitempty"`
+	TriggerBranch              string                   `json:"trigger_branch,omitempty"`
+	RuntimeClass               string                   `json:"runtime_class"`
+	TrustLevel                 WorkloadTrustLevel       `json:"trust_level"`
+	DesiredState               WorkloadDesiredState     `json:"desired_state"`
+	State                      WorkloadRunState         `json:"state"`
+	ResourcePlaneID            ResourcePlaneID          `json:"resource_plane_id,omitempty"`
+	IdempotencyKey             string                   `json:"-"`
+	RequestHash                string                   `json:"-"`
+	TimeoutSeconds             int64                    `json:"timeout_seconds"`
+	TimeoutAt                  time.Time                `json:"timeout_at"`
+	StartedAt                  *time.Time               `json:"started_at,omitempty"`
+	CompletedAt                *time.Time               `json:"completed_at,omitempty"`
+	ErrorCode                  string                   `json:"error_code,omitempty"`
+	Revision                   int64                    `json:"revision"`
+	CreatedAt                  time.Time                `json:"created_at"`
+	UpdatedAt                  time.Time                `json:"updated_at"`
+	PipelineResults            []WorkloadPipelineResult `json:"pipeline_results,omitempty"`
+}
+
+type WorkloadPipelineResult struct {
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	ExitCode  int    `json:"exit_code"`
+	ErrorCode string `json:"error_code,omitempty"`
 }
 
 type WorkloadRunEvent struct {
@@ -276,14 +304,15 @@ type WorkloadRunEvent struct {
 }
 
 type WorkloadArtifact struct {
-	ID         string        `json:"id"`
-	TenantID   TenantID      `json:"tenant_id"`
-	RunID      WorkloadRunID `json:"run_id"`
-	Kind       string        `json:"kind"`
-	StorageRef string        `json:"storage_ref"`
-	SizeBytes  int64         `json:"size_bytes"`
-	SHA256     string        `json:"sha256"`
-	Redacted   bool          `json:"redacted"`
-	ExpiresAt  *time.Time    `json:"expires_at,omitempty"`
-	CreatedAt  time.Time     `json:"created_at"`
+	ID            string        `json:"id"`
+	TenantID      TenantID      `json:"tenant_id"`
+	RunID         WorkloadRunID `json:"run_id"`
+	CorrelationID string        `json:"correlation_id,omitempty"`
+	Kind          string        `json:"kind"`
+	StorageRef    string        `json:"storage_ref"`
+	SizeBytes     int64         `json:"size_bytes"`
+	SHA256        string        `json:"sha256"`
+	Redacted      bool          `json:"redacted"`
+	ExpiresAt     *time.Time    `json:"expires_at,omitempty"`
+	CreatedAt     time.Time     `json:"created_at"`
 }

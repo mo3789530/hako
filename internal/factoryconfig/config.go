@@ -70,6 +70,21 @@ type Command struct {
 	Args       []string
 }
 
+// AgentCommand is a closed set of commands that may be requested by an
+// authenticated repository collaborator. Free-form comment text is never
+// interpreted as an instruction; the implementation task is read separately
+// from the referenced Issue through a Tenant-authorized GitHub integration.
+type AgentCommand = webhookevent.AgentCommand
+
+const AgentCommandImplement = webhookevent.AgentCommandImplement
+
+// ParseAgentCommand recognizes only an exact, bounded comment command. It does
+// not authorize the actor, repository, or any GitHub write; callers must do
+// those checks before creating an Agent Run.
+func ParseAgentCommand(comment string) (AgentCommand, bool) {
+	return webhookevent.ParseAgentCommand(comment)
+}
+
 // ExecutionPlan contains the static commands and declared local services for
 // one validated pipeline. It is a policy artifact only; a trusted worker must
 // still bind it to the immutable Run commit and enforce the runtime boundary.

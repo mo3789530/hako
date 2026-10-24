@@ -11,8 +11,11 @@
 | Tenant OAuth identity | integration/App/revision/generationをstateに固定し、callbackのApp一致と設定失効を再検証。shared verifierへのfallbackとowned Installationの再assignmentを拒否 | adapter/local検証。production OAuth broker未配備 |
 | Webhook identity/retry | optional App ID照合、generation/Installation再検証。DB障害を失効として隔離せず再試行 | 前回実装・検証済み |
 | Audit改ざん | API DB roleの広いDML grantはaudit UPDATE/DELETEも許可。bootstrap templateでaudit_events/platform_audit_eventsのUPDATE/DELETEをrevoke | template修正。実環境へのgrant適用は未実施 |
+| Artifact cleanup error propagation | Cleanup Workerは構造化ログをredactしていたが、返却errorにS3/DSQL詳細やArtifact IDを含める経路があった。Workerの戻り値を固定sentinelへ変更し、失敗分類と相関IDだけをlogへ残す | list/delete/release/oversized batchのunit testを追加。Lambdaへ渡るerror文面もsanitize |
 
 ## 確認した境界
+
+- APIは全リクエストにサーバー生成の`X-Hako-Request-ID`を返し、route template、status、durationと共に構造化ログへ記録する。入力された同名Headerは採用しない。GitHub webhook ingressも同じIDを信頼済みrequest context経由でInboxに保存し、repository-triggered Workload RunとActions Runner Checkに引き継ぐ。Actions Runner Checkを含むCheck Outboxは相関IDを保持し、consumerは永続Checkと一致するIDだけ配信してstructured delivery logに記録する。Workload Runの相関IDはDB・transactional Scheduler Outbox/SQS・認証済みResource Plane execution metadata・Lambda MicroVM run hook・署名付きAgent execution binding・terminal result・GitHub Check Outboxまで伝播し、resultは永続Runと一致する場合だけ適用する。artifact metadataは所有RunからIDを解決する。個別worker/API failure logへの相関ID追加は未完了。
 
 - Cognito verifierはRS256、issuer、client_id、token_use、期限を検証し、API scopeとDB Tenant membershipを別に確認する。
 - MemberのWorkspaceはowner_idで絞り、Owner/Adminの表示・操作もTenant内に限定する。越境はhidden 404。Tenant App設定はOwner/Adminのみ。
@@ -26,7 +29,7 @@
 - **公開Webhookの負荷制御**: Tenant ingressではheader preflightの後、active integrationに限定したDSQL共有rate counterとAPI Gateway route throttleをHMAC/Secret取得より前に適用する（Task 68）。default-offのため、これらの制限はAWSへ配備されるまで有効にならない。429/DB failureの監視と実環境負荷の確認が残る。
 - **trusted brokerの侵害範囲**: processのAssumeRole許可が複数Tenant readerに及ぶ場合、そのbroker侵害の影響も複数Tenantへ及び得る。IAM trust/KMS/Secret resource policyを実環境で確認し、用途とTenantを限定する。
 - **実Runtime/通信経路**: MicroVM guest network/container権限、EFS Access Point越境、Gateway session ticketのreplay/revocation、agent相互認証は後続実装とAWS PoCの受入条件。
-- **運用**: 監査の保持/export、callback query非記録、readアクセス監査、Secret rotation、DLQ redrive、backup/recovery演習、container image scanは未完了。Secret値を取得して確認しない。
+- **運用**: 監査の保持/export、callback query非記録、readアクセス監査、Secret rotation、実AWSのDLQ redrive・backup/recovery演習、container image scanは未完了。手順は[Operations Runbook](operations-runbook.md)に記載し、Secret値を取得して確認しない。
 
 ## 再検証
 

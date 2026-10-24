@@ -40,11 +40,15 @@ func main() {
 	}
 	queueURLs := make(map[string]string, len(queues))
 	workloadQueueURLs := make(map[string]string, len(queues))
+	workspaceServiceQueueURLs := make(map[string]string, len(queues))
 	regionalClients := make(map[string]dispatcher.SQSAPI, len(queues))
 	for resourcePlaneID, queue := range queues {
 		queueURLs[resourcePlaneID] = queue.URL
 		if queue.WorkloadURL != "" {
 			workloadQueueURLs[resourcePlaneID] = queue.WorkloadURL
+		}
+		if queue.WorkspaceServiceURL != "" {
+			workspaceServiceQueueURLs[resourcePlaneID] = queue.WorkspaceServiceURL
 		}
 		if queue.Region != "" {
 			regionalConfig := awsCfg
@@ -52,6 +56,9 @@ func main() {
 			regionalClients[queue.URL] = sqs.NewFromConfig(regionalConfig)
 			if queue.WorkloadURL != "" {
 				regionalClients[queue.WorkloadURL] = sqs.NewFromConfig(regionalConfig)
+			}
+			if queue.WorkspaceServiceURL != "" {
+				regionalClients[queue.WorkspaceServiceURL] = sqs.NewFromConfig(regionalConfig)
 			}
 		}
 	}
@@ -64,6 +71,7 @@ func main() {
 		WorkloadSchedulerQueueURL: strings.TrimSpace(os.Getenv("HAKO_WORKLOAD_SCHEDULER_QUEUE_URL")),
 		WorkloadCommandQueueURLs:  workloadQueueURLs,
 		GitHubChecksQueueURL:      strings.TrimSpace(os.Getenv("HAKO_GITHUB_CHECKS_QUEUE_URL")),
+		WorkspaceServiceQueueURLs: workspaceServiceQueueURLs,
 	})
 	if err != nil {
 		log.Fatalf("configure Outbox dispatcher: %v", err)
@@ -75,7 +83,7 @@ func main() {
 	for {
 		stats, err := engine.RunOnce(ctx)
 		if err != nil {
-			log.Printf("dispatch batch: %v (claimed=%d published=%d failed=%d)", err, stats.Claimed, stats.Published, stats.Failed)
+			log.Printf("Outbox dispatch batch failed (failure_class=dispatch_batch claimed=%d published=%d failed=%d)", stats.Claimed, stats.Published, stats.Failed)
 		} else if stats.Claimed > 0 {
 			log.Printf("dispatch batch complete (claimed=%d published=%d)", stats.Claimed, stats.Published)
 		}
@@ -88,9 +96,10 @@ func main() {
 }
 
 type queueConfiguration struct {
-	URL         string
-	WorkloadURL string
-	Region      string
+	URL                 string
+	WorkloadURL         string
+	WorkspaceServiceURL string
+	Region              string
 }
 
 func configuredQueueURLs() (map[string]string, error) {
@@ -131,7 +140,8 @@ func configuredQueues() (map[string]queueConfiguration, error) {
 		}
 		queues := make(map[string]queueConfiguration, len(manifest.ResourcePlanes))
 		for _, registration := range manifest.ResourcePlanes {
-			queues[registration.ID] = queueConfiguration{URL: registration.CommandQueueURL, WorkloadURL: registration.WorkloadCommandQueueURL, Region: registration.Region}
+			queues[registration.ID] = queueConfiguration{URL: registration.CommandQueueURL, WorkloadURL: registration.WorkloadCommandQueueURL,
+				WorkspaceServiceURL: registration.WorkspaceServiceCommandQueueURL, Region: registration.Region}
 		}
 		return queues, nil
 	}

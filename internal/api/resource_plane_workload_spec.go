@@ -17,7 +17,7 @@ import (
 )
 
 const workloadSpecRequestIDHeader = "X-Hako-Request-ID"
-const resourcePlaneWorkloadSpecSchemaVersion = 2
+const resourcePlaneWorkloadSpecSchemaVersion = 3
 
 var workloadSpecRequestIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
 
@@ -28,11 +28,13 @@ type ResourcePlaneWorkloadSpecKeyResolver func(context.Context, domain.ResourceP
 
 type resourcePlaneWorkloadSpecResponse struct {
 	SchemaVersion        int                       `json:"schema_version"`
+	Kind                 domain.WorkloadKind       `json:"kind"`
 	TenantID             domain.TenantID           `json:"tenant_id"`
 	WorkloadRunID        domain.WorkloadRunID      `json:"workload_run_id"`
 	AttemptID            string                    `json:"attempt_id"`
 	Generation           int64                     `json:"generation"`
 	ResourcePlaneID      domain.ResourcePlaneID    `json:"resource_plane_id"`
+	CorrelationID        string                    `json:"correlation_id,omitempty"`
 	GitHubInstallationID int64                     `json:"github_installation_id"`
 	GitHubRepositoryID   int64                     `json:"github_repository_id"`
 	GitHubOwner          string                    `json:"github_owner"`
@@ -98,8 +100,9 @@ func getResourcePlaneWorkloadSpecification(pool transaction.Beginner, resolveKey
 			return fmt.Errorf("resolve Resource Plane Workload specification: %w", err)
 		}
 		return c.JSON(http.StatusOK, resourcePlaneWorkloadSpecResponse{
-			SchemaVersion: resourcePlaneWorkloadSpecSchemaVersion, TenantID: metadata.TenantID, WorkloadRunID: metadata.WorkloadRunID,
+			SchemaVersion: resourcePlaneWorkloadSpecSchemaVersion, Kind: metadata.Kind, TenantID: metadata.TenantID, WorkloadRunID: metadata.WorkloadRunID,
 			AttemptID: metadata.AttemptID, Generation: metadata.Generation, ResourcePlaneID: metadata.ResourcePlaneID,
+			CorrelationID:        metadata.CorrelationID,
 			GitHubInstallationID: metadata.GitHubInstallationID, GitHubRepositoryID: metadata.GitHubRepositoryID,
 			GitHubOwner: metadata.GitHubOwner, GitHubRepository: metadata.GitHubRepository,
 			GitHubIntegrationID: metadata.GitHubIntegrationID, GitHubConfigRevision: metadata.GitHubConfigRevision,

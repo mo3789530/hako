@@ -1,6 +1,62 @@
 # Task 55: Workload/Service Quotas and Usage UX
 
-Status: Blocked on Tasks 40, 47, and 50. Priority: P3.
+Status: In Progress (Workspace aggregate quota read API and `hako usage` are
+implemented and PostgreSQL integration coverage verifies membership isolation,
+pending-delete reservations, confirmed release, and the fixed limit of 10.
+Concurrent Workload admission reserves one of five Tenant-wide slots in the
+creation transaction, returns a stable 409 on exhaustion, preserves idempotent
+replay, releases the slot on terminal transition, and backfills active runs
+during migration. PostgreSQL concurrency tests cover the exact cap and reuse.
+Workspace-local Service admission now enforces aggregate 2 GiB/1500 millicore
+catalog-request limits with a durable reservation table and per-Workspace OCC
+guard row (Aurora DSQL-compatible; no row locks), retains reservations during
+pending stop/delete, and returns a stable 409 on exhaustion. PostgreSQL API
+integration covers the exact boundary. Workspace-scoped authenticated API and
+`hako service usage` report catalog-request reservation totals while explicitly
+not presenting them as measured usage. Tenant Owners/Admins can configure lower
+Workspace and concurrent Workload limits up to platform ceilings, with changes
+below current usage rejected and admission serialized under Aurora DSQL OCC.
+Tenant artifact quota is now configurable from 1 byte through 100 GiB (10 GiB
+default). New Workload admission reserves 100 MiB for its bounded redacted log
+artifact in the same Tenant OCC budget; artifact registration converts it to
+retained bytes and terminal runs release unused reservation. Usage reports
+stored and reserved bytes separately; Owner/Admin API and CLI configure it.
+Workspace Service admission caps are also configurable per Tenant down from the
+2 GiB/1500mCPU platform ceiling. Service start/admission and confirmed release
+share the Tenant OCC guard; quota changes are rejected if any Workspace's
+current Service reservation exceeds the proposed limits. Usage reports the
+effective limits. These are still requested-resource budgets, not measured
+Runtime enforcement. The store provides a bounded expired-artifact listing and
+exact-reference/expiry-conditional metadata deletion. A Resource Plane cleanup
+core validates a configured bucket/prefix, deletes each S3 object before
+requesting metadata release, bounds batches, and isolates per-object failures;
+it does not connect to Control Plane DSQL. The Control Plane now has
+Resource-Plane-scoped HMAC candidate/acknowledgement endpoints and a signed
+client which binds the query and exact artifact identity. Resource Plane S3
+The Control Plane API has a dedicated per-Plane cleanup HMAC resolver and
+Terraform Secret-ARN map, separate from execution metadata keys. The Resource
+Plane Workload Controller has a scheduled cleanup event path;
+Terraform keeps it default-off, scopes `s3:DeleteObject` to the configured
+Artifact prefix, and adds a separate schedule/alarm. Local PostgreSQL E2E
+verifies cross-Plane candidate isolation, signed requests,
+object-delete-before-metadata-release, and idempotent acknowledgement. No AWS
+deployment or Secret retrieval has been performed; cross-account Secret policy
+and bucket versioning/lifecycle posture must be reviewed because the object
+bucket is not owned by this module. Tenant-configurable Preview concurrency
+(default 2, ceiling 5) and lifetime (5 minutes–24 hours), same-Tenant OCC
+admission, API/CLI configuration, and usage reporting are implemented.
+PostgreSQL lifecycle coverage exercises
+cancel-before-start, failed provisioning, timeout expiry, duplicate terminal
+transitions, release of both Workload and Artifact reservations, and recovery
+of stale terminal reservations during admission. `hako tenant quota set` now
+fetches current limits and usage before mutation, shows current reservations
+and requested limits, and requires explicit `y`/`yes` confirmation. `--yes` is
+required for non-interactive automation; EOF and any other answer cancel
+without calling the update API. Parser, defaults-preservation, confirmation,
+rejection, and fail-closed EOF behavior have CLI unit coverage. Measured live
+resource usage remains future work; the CLI continues to label these values
+as reservations/configured limits and does not imply billing.
+Priority: P3.
 
 ## Goal
 
@@ -13,9 +69,34 @@ Protect Tenant and platform capacity and make expected resource use visible befo
 - Add Tenant Owner/Admin APIs for quota configuration and read-only usage views with pagination.
 - Show validation, current usage, estimated Runtime class, and safe confirmation in CLI without exposing other Tenant usage.
 
+Usage reports active Workspace reservations (limit 10) and concurrent
+Workload Runs (limit 5), not measured resource consumption. Service requests
+are capped per Workspace by Tenant-configurable limits up to 2 GiB and 1500
+millicores; this is an admission budget, not an observed runtime limit. Workspace usage
+uses the same active-state rule as admission, including pending deletion.
+Workload usage includes pending, queued, provisioning, running, and
+cancel-requested Runs until a terminal result is durably committed. Members
+must have membership in the requested Tenant; foreign-Tenant reads are hidden
+as not found, and no Workspace names or billing data are returned.
+`hako usage <tenant-id>` prints both `used/limit` values.
+`hako service usage <tenant-id> <workspace-id>` reports durable per-Workspace
+Service reservation totals and limits; accepted stopped/deleted reports release
+exactly one reservation, and Members can only read visible Workspaces.
+Tenant Owners/Admins can read/update Tenant Workspace and Workload limits;
+updates cannot exceed platform ceilings or lower a limit below current
+reservations. Admission and configuration write the same Tenant quota revision
+row to serialize under Aurora DSQL OCC. See [Tenant quota configuration](../docs/tenant-quotas.md).
+
 ## Acceptance criteria
 
 - Concurrent integration tests prove limits cannot be exceeded under OCC/transaction retries and reservations release exactly once.
-- Tests cover canceled-before-start, failed provisioning, timeout, orphan cleanup, and duplicate terminal events.
+- Tests cover canceled-before-start, failed provisioning, timeout, orphan reservation cleanup, and duplicate terminal events.
 - Tenant members cannot read or modify other Tenant quotas/usage; sensitive billing identifiers are not exposed.
 - Document configured quota versus measured usage and explicitly defer billing until a separate ADR.
+
+## Local integration follow-up
+
+The Resource Plane expired-artifact candidate query now returns the Run
+correlation ID required by the shared artifact response projection. The
+signed candidate-listing and cleanup acknowledgement PostgreSQL E2E covers
+the endpoint and cross-Plane isolation.

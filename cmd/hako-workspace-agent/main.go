@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/workloadagent"
 	"github.com/mo3789530/hako/internal/workspaceagent"
 )
@@ -49,6 +50,40 @@ func run() error {
 	}
 	if err := agent.BindWorkspaceRuntime(payload.MicroVMID, payload.Mount); err != nil {
 		return errors.New("bind Workspace shell Agent identity")
+	}
+	workspaceFiles, err := workspaceagent.NewWorkspaceFiles(payload.Mount.MountPath, payload.Mount.UID, payload.Mount.GID)
+	if err != nil {
+		return errors.New("configure confined Workspace file transfer")
+	}
+	defer workspaceFiles.Close()
+	if err := agent.BindWorkspaceFileRuntime(workspaceFiles); err != nil {
+		return errors.New("bind Workspace file transfer")
+	}
+	servicesEnabled := os.Getenv(workspaceagent.WorkspaceServicesEnabledEnvironment)
+	containerdSocket := strings.TrimSpace(os.Getenv(workspaceagent.ContainerdSocketEnvironment))
+	switch servicesEnabled {
+	case "":
+		if containerdSocket != "" {
+			return errors.New("unexpected Workspace containerd socket while Services are disabled")
+		}
+	case "true":
+		if containerdSocket == "" {
+			return errors.New("Workspace containerd socket is required when Services are enabled")
+		}
+	default:
+		return errors.New("Workspace Service runtime setting is invalid")
+	}
+	if servicesEnabled == "true" {
+		engine, err := workspaceagent.NewNerdctlServiceEngine(workspaceagent.NerdctlServiceEngineConfig{
+			BinaryPath: "/usr/local/bin/nerdctl", ContainerdSocket: containerdSocket,
+			WorkspaceRoot: payload.Mount.MountPath, WorkspaceID: domain.WorkspaceID(payload.Mount.WorkspaceID), RunAsUID: payload.Mount.UID,
+		})
+		if err != nil {
+			return errors.New("configure rootless containerd Service engine")
+		}
+		if err := agent.BindWorkspaceServiceRuntime(engine); err != nil {
+			return errors.New("bind Workspace Service runtime")
+		}
 	}
 	codeServer, err := workspaceagent.StartWorkspaceCodeServer(payload.Mount)
 	if err != nil {

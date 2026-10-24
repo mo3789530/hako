@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"time"
 
@@ -24,24 +25,29 @@ type Command struct {
 	WorkspaceID       domain.WorkspaceID     `json:"workspace_id"`
 	ResourcePlaneID   domain.ResourcePlaneID `json:"resource_plane_id"`
 	Type              domain.OperationType   `json:"type"`
+	CorrelationID     string                 `json:"correlation_id,omitempty"`
 	CreatedAt         time.Time              `json:"created_at"`
 }
 
 type Result struct {
-	SchemaVersion      int                           `json:"schema_version"`
-	WorkspaceRevision  int64                         `json:"workspace_revision,omitempty"`
-	OperationID        domain.OperationID            `json:"operation_id"`
-	TenantID           domain.TenantID               `json:"tenant_id"`
-	WorkspaceID        domain.WorkspaceID            `json:"workspace_id"`
-	ResourcePlaneID    domain.ResourcePlaneID        `json:"resource_plane_id"`
-	Type               domain.OperationType          `json:"type"`
-	Status             domain.OperationStatus        `json:"status"`
-	ObservedState      domain.ObservedWorkspaceState `json:"observed_state"`
-	ErrorCode          string                        `json:"error_code,omitempty"`
-	ResourceKind       string                        `json:"resource_kind,omitempty"`
-	ExternalResourceID string                        `json:"external_resource_id,omitempty"`
-	CompletedAt        time.Time                     `json:"completed_at"`
+	SchemaVersion        int                           `json:"schema_version"`
+	WorkspaceRevision    int64                         `json:"workspace_revision,omitempty"`
+	OperationID          domain.OperationID            `json:"operation_id"`
+	CorrelationID        string                        `json:"correlation_id,omitempty"`
+	TenantID             domain.TenantID               `json:"tenant_id"`
+	WorkspaceID          domain.WorkspaceID            `json:"workspace_id"`
+	ResourcePlaneID      domain.ResourcePlaneID        `json:"resource_plane_id"`
+	Type                 domain.OperationType          `json:"type"`
+	Status               domain.OperationStatus        `json:"status"`
+	ObservedState        domain.ObservedWorkspaceState `json:"observed_state"`
+	ErrorCode            string                        `json:"error_code,omitempty"`
+	ResourceKind         string                        `json:"resource_kind,omitempty"`
+	ExternalResourceID   string                        `json:"external_resource_id,omitempty"`
+	AllocationGeneration int64                         `json:"allocation_generation,omitempty"`
+	CompletedAt          time.Time                     `json:"completed_at"`
 }
+
+var operationCorrelationIDPattern = regexp.MustCompile(`^req_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 // Runtime applies a Workspace command. Implementations that manage real
 // resources must durably and atomically compare WorkspaceRevision against a
@@ -56,7 +62,7 @@ type Runtime interface {
 // after a Runtime operation. Control Plane applies it atomically with the
 // terminal result; delete results intentionally omit the binding.
 type ResourceBindingReporter interface {
-	ResourceBinding(context.Context, Command) (kind, externalID string, err error)
+	ResourceBinding(context.Context, Command) (kind, externalID string, allocationGeneration int64, err error)
 }
 
 // ResultSink must durably report a result before Handle returns success. SQS
@@ -116,7 +122,7 @@ func (c *Controller) Handle(ctx context.Context, payload []byte) error {
 	if now.Sub(command.CreatedAt) > c.maxCommandAge {
 		result := Result{
 			SchemaVersion: command.SchemaVersion, WorkspaceRevision: command.WorkspaceRevision, OperationID: command.OperationID, TenantID: command.TenantID, WorkspaceID: command.WorkspaceID,
-			ResourcePlaneID: command.ResourcePlaneID, Type: command.Type, Status: domain.OperationFailed,
+			ResourcePlaneID: command.ResourcePlaneID, Type: command.Type, CorrelationID: command.CorrelationID, Status: domain.OperationFailed,
 			ObservedState: domain.ObservedWorkspaceFailed, ErrorCode: "operation_expired", CompletedAt: now,
 		}
 		if err := c.sink.Report(ctx, result); err != nil {
@@ -127,17 +133,19 @@ func (c *Controller) Handle(ctx context.Context, payload []byte) error {
 	executionCtx, cancel := context.WithTimeout(ctx, c.executionTimeout)
 	observed, executeErr := c.runtime.Execute(executionCtx, command)
 	resourceKind, externalResourceID := "", ""
+	allocationGeneration := int64(0)
 	if executeErr == nil && observed != domain.ObservedWorkspaceDeleted {
 		if reporter, ok := c.runtime.(ResourceBindingReporter); ok {
-			resourceKind, externalResourceID, executeErr = reporter.ResourceBinding(executionCtx, command)
+			resourceKind, externalResourceID, allocationGeneration, executeErr = reporter.ResourceBinding(executionCtx, command)
 		}
 	}
 	cancel()
 	result := Result{
 		SchemaVersion: command.SchemaVersion, WorkspaceRevision: command.WorkspaceRevision, OperationID: command.OperationID, TenantID: command.TenantID, WorkspaceID: command.WorkspaceID,
-		ResourcePlaneID: command.ResourcePlaneID, Type: command.Type, Status: domain.OperationSucceeded,
+		ResourcePlaneID: command.ResourcePlaneID, Type: command.Type, CorrelationID: command.CorrelationID, Status: domain.OperationSucceeded,
 		ObservedState: observed, CompletedAt: c.now().UTC(),
 		ResourceKind: resourceKind, ExternalResourceID: externalResourceID,
+		AllocationGeneration: allocationGeneration,
 	}
 	if executeErr != nil {
 		result.Status = domain.OperationFailed
@@ -165,6 +173,9 @@ func decodeCommand(payload []byte) (Command, error) {
 	}
 	if command.OperationID == "" || command.TenantID == "" || command.WorkspaceID == "" || command.ResourcePlaneID == "" || command.CreatedAt.IsZero() {
 		return Command{}, errors.New("Resource Plane command has an incomplete or unsupported envelope")
+	}
+	if command.CorrelationID != "" && !operationCorrelationIDPattern.MatchString(command.CorrelationID) {
+		return Command{}, errors.New("Resource Plane command correlation ID is invalid")
 	}
 	switch command.SchemaVersion {
 	case 1:

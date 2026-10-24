@@ -3,6 +3,7 @@ package workspaceprotocol
 import (
 	"bytes"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -26,6 +27,43 @@ func TestResizeFrameRoundTrip(t *testing.T) {
 	got, err := Decode(encoded)
 	if err != nil || !got.Resize || got.Columns != 120 || got.Rows != 40 {
 		t.Fatalf("Decode() = %#v, %v", got, err)
+	}
+}
+
+func TestTerminalAttachAndSessionFrames(t *testing.T) {
+	attach, err := EncodeAttach("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := Decode(attach)
+	if err != nil || !decoded.Attach || decoded.Session != "" {
+		t.Fatalf("new terminal attach = %+v, %v", decoded, err)
+	}
+	sessionID := "0123456789abcdef0123456789abcdef0123456789abcdef"
+	attach, err = EncodeAttach(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err = Decode(attach)
+	if err != nil || !decoded.Attach || decoded.Session != sessionID {
+		t.Fatalf("resume terminal attach = %+v, %v", decoded, err)
+	}
+	ack, err := EncodeSession(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err = Decode(ack)
+	if err != nil || decoded.Session != sessionID || decoded.Attach {
+		t.Fatalf("terminal session ack = %+v, %v", decoded, err)
+	}
+	decoded, err = Decode(EncodeEnd())
+	if err != nil || !decoded.End {
+		t.Fatalf("terminal end frame = %+v, %v", decoded, err)
+	}
+	for _, invalid := range []string{"bad", strings.Repeat("A", 48), strings.Repeat("0", 49)} {
+		if _, err := EncodeAttach(invalid); !errors.Is(err, ErrInvalidFrame) {
+			t.Fatalf("invalid session ID %q error = %v", invalid, err)
+		}
 	}
 }
 

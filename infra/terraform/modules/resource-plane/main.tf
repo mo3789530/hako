@@ -220,6 +220,298 @@ resource "aws_sqs_queue_policy" "actions_runner_startup" {
   })
 }
 
+# The Workspace Service consumer is opt-in and uses a distinct queue and IAM
+# role. Its Lambda stays in caller-provisioned private subnets; Terraform does
+# not create the VPC endpoints or routes needed to reach the MicroVM/Control Plane.
+resource "aws_sqs_queue" "workspace_service_commands" {
+  count = var.workspace_service_controller_deployment == null ? 0 : 1
+
+  name                       = "${var.resource_plane_id}-workspace-services"
+  message_retention_seconds  = var.message_retention_seconds
+  visibility_timeout_seconds = var.command_visibility_timeout_seconds
+  receive_wait_time_seconds  = 20
+  sqs_managed_sse_enabled    = true
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.workspace_service_commands_dlq[0].arn
+    maxReceiveCount     = var.max_receive_count
+  })
+  tags = merge(local.common_tags, { "hako:queue-role" = "workspace-service-commands" })
+}
+
+resource "aws_sqs_queue" "workspace_service_commands_dlq" {
+  count = var.workspace_service_controller_deployment == null ? 0 : 1
+
+  name                      = "${var.resource_plane_id}-workspace-services-dlq"
+  message_retention_seconds = var.dlq_retention_seconds
+  sqs_managed_sse_enabled   = true
+  tags                      = merge(local.common_tags, { "hako:queue-role" = "workspace-service-commands-dlq" })
+}
+
+resource "aws_sqs_queue_redrive_allow_policy" "workspace_service_commands_dlq" {
+  count = var.workspace_service_controller_deployment == null ? 0 : 1
+
+  queue_url = aws_sqs_queue.workspace_service_commands_dlq[0].id
+  redrive_allow_policy = jsonencode({
+    redrivePermission = "byQueue"
+    sourceQueueArns   = [aws_sqs_queue.workspace_service_commands[0].arn]
+  })
+}
+
+resource "aws_sqs_queue_policy" "workspace_service_commands" {
+  count = var.workspace_service_controller_deployment == null ? 0 : 1
+
+  queue_url = aws_sqs_queue.workspace_service_commands[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "AllowExactControlPlaneDispatcherSend"
+      Effect    = "Allow"
+      Principal = { AWS = var.control_plane_dispatcher_role_arn }
+      Action    = "sqs:SendMessage"
+      Resource  = aws_sqs_queue.workspace_service_commands[0].arn
+    }]
+  })
+}
+
+resource "aws_cloudwatch_log_group" "workspace_service_controller" {
+  count = var.workspace_service_controller_deployment == null ? 0 : 1
+
+  name              = "/aws/lambda/${var.resource_plane_id}-workspace-service-controller"
+  retention_in_days = var.log_retention_days
+  tags              = merge(local.common_tags, { "hako:component" = "workspace-service-controller" })
+}
+
+data "aws_iam_policy_document" "workspace_service_controller_assume_role" {
+  count = var.workspace_service_controller_deployment == null ? 0 : 1
+
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["lambda.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values   = ["arn:${data.aws_partition.current.partition}:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:${var.resource_plane_id}-workspace-service-controller"]
+    }
+  }
+}
+
+resource "aws_iam_role" "workspace_service_controller" {
+  count = var.workspace_service_controller_deployment == null ? 0 : 1
+
+  name               = "${var.resource_plane_id}-workspace-service-controller"
+  assume_role_policy = data.aws_iam_policy_document.workspace_service_controller_assume_role[0].json
+  tags               = merge(local.common_tags, { "hako:component" = "workspace-service-controller" })
+}
+
+resource "aws_iam_role_policy" "workspace_service_controller" {
+  count = var.workspace_service_controller_deployment == null ? 0 : 1
+
+  name = "${var.resource_plane_id}-workspace-service-controller-runtime"
+  role = aws_iam_role.workspace_service_controller[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = concat([
+      {
+        Sid      = "ConsumeOnlyWorkspaceServiceCommands"
+        Effect   = "Allow"
+        Action   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:ChangeMessageVisibility", "sqs:GetQueueAttributes"]
+        Resource = aws_sqs_queue.workspace_service_commands[0].arn
+      },
+      {
+        Sid      = "ReadOnlyWorkspaceRuntimeJournal"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "${var.workspace_service_controller_deployment.journal_bucket_arn}/${var.workspace_service_controller_deployment.journal_prefix == "" ? "" : "${var.workspace_service_controller_deployment.journal_prefix}/"}${var.resource_plane_id}/*"
+      },
+      {
+        Sid      = "ReadOnlyExactWorkspaceServiceSecrets"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = [var.workspace_service_controller_deployment.ticket_key_secret_arn, var.workspace_service_controller_deployment.report_key_secret_arn]
+      },
+      {
+        Sid      = "CreateOnlyTaggedWorkspaceServiceGeneratedSecrets"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:CreateSecret"]
+        Resource = "arn:${data.aws_partition.current.partition}:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:hako/workspaces/*/services/*/*"
+        Condition = {
+          StringLike = {
+            "secretsmanager:Name"              = "hako/workspaces/*/services/*/*"
+            "aws:RequestTag/hako:tenant-id"    = "?*"
+            "aws:RequestTag/hako:workspace-id" = "?*"
+            "aws:RequestTag/hako:service-id"   = "?*"
+            "aws:RequestTag/hako:secret-name"  = "?*"
+          }
+          StringEquals = {
+            "aws:RequestTag/hako:managed-by" = "hako"
+          }
+          "ForAllValues:StringEquals" = {
+            "aws:TagKeys" = [
+              "hako:managed-by",
+              "hako:tenant-id",
+              "hako:workspace-id",
+              "hako:service-id",
+              "hako:secret-name"
+            ]
+          }
+        }
+      },
+      {
+        Sid      = "ReadOnlyTaggedWorkspaceServiceGeneratedSecrets"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:DescribeSecret", "secretsmanager:GetSecretValue"]
+        Resource = "arn:${data.aws_partition.current.partition}:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:hako/workspaces/*/services/*/*"
+        Condition = {
+          StringEquals = {
+            "aws:ResourceTag/hako:managed-by" = "hako"
+          }
+        }
+      },
+      {
+        Sid      = "PutTaggedWorkspaceServiceCredentialVersions"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:PutSecretValue"]
+        Resource = "arn:${data.aws_partition.current.partition}:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:hako/workspaces/*/services/*/*"
+        Condition = {
+          StringEquals = {
+            "aws:ResourceTag/hako:managed-by" = "hako"
+          }
+        }
+      },
+      {
+        Sid      = "MoveOnlyWorkspaceServiceCredentialStages"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:UpdateSecretVersionStage"]
+        Resource = "arn:${data.aws_partition.current.partition}:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:hako/workspaces/*/services/*/*"
+        Condition = {
+          StringEquals = {
+            "aws:ResourceTag/hako:managed-by" = "hako"
+            "secretsmanager:VersionStage"     = ["AWSCURRENT", "AWSPENDING"]
+          }
+        }
+      },
+      {
+        Sid      = "RetireOnlyTaggedWorkspaceServiceGeneratedSecrets"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:DeleteSecret"]
+        Resource = "arn:${data.aws_partition.current.partition}:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:hako/workspaces/*/services/*/*"
+        Condition = {
+          StringEquals = {
+            "aws:ResourceTag/hako:managed-by" = "hako"
+          }
+        }
+      },
+      {
+        Sid      = "OperateOnlyConfiguredWorkspaceMicroVMImage"
+        Effect   = "Allow"
+        Action   = ["lambda:GetMicrovm", "lambda:CreateMicrovmAuthToken"]
+        Resource = var.workspace_service_controller_deployment.microvm_image_arn
+      },
+      {
+        Sid    = "CreateLambdaVpcNetworkInterfaces"
+        Effect = "Allow"
+        Action = ["ec2:CreateNetworkInterface"]
+        Resource = concat(
+          ["arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:network-interface/*"],
+          [for id in var.workspace_service_controller_vpc_config.subnet_ids : "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:subnet/${id}"],
+          [for id in var.workspace_service_controller_vpc_config.security_group_ids : "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:security-group/${id}"]
+        )
+      },
+      {
+        Sid      = "ManageLambdaVpcNetworkInterfaces"
+        Effect   = "Allow"
+        Action   = ["ec2:AssignPrivateIpAddresses", "ec2:DeleteNetworkInterface", "ec2:UnassignPrivateIpAddresses"]
+        Resource = ["arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:network-interface/*"]
+      },
+      {
+        Sid      = "DescribeLambdaVpcNetworkInterfaces"
+        Effect   = "Allow"
+        Action   = ["ec2:DescribeNetworkInterfaces"]
+        Resource = ["*"]
+      },
+      {
+        Sid      = "WriteOnlyWorkspaceServiceControllerLogs"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "${aws_cloudwatch_log_group.workspace_service_controller[0].arn}:*"
+      }
+      ], length(var.workspace_service_controller_deployment.secret_kms_key_arns) == 0 ? [] : [{
+        Sid      = "DecryptOnlyWorkspaceServiceSecrets"
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt"]
+        Resource = var.workspace_service_controller_deployment.secret_kms_key_arns
+    }])
+  })
+}
+
+resource "aws_lambda_function" "workspace_service_controller" {
+  count = var.workspace_service_controller_deployment == null ? 0 : 1
+
+  function_name                  = "${var.resource_plane_id}-workspace-service-controller"
+  role                           = aws_iam_role.workspace_service_controller[0].arn
+  handler                        = "bootstrap"
+  runtime                        = "provided.al2023"
+  architectures                  = ["arm64"]
+  filename                       = var.workspace_service_controller_deployment.zip_path
+  source_code_hash               = filebase64sha256(var.workspace_service_controller_deployment.zip_path)
+  memory_size                    = var.workspace_service_controller_deployment.lambda_memory_size
+  timeout                        = var.workspace_service_controller_deployment.lambda_timeout_seconds
+  reserved_concurrent_executions = var.workspace_service_controller_deployment.reserved_concurrent_executions
+
+  environment {
+    variables = {
+      HAKO_RESOURCE_PLANE_ID                       = var.resource_plane_id
+      HAKO_WORKSPACE_RUNTIME_JOURNAL_BUCKET        = trimprefix(var.workspace_service_controller_deployment.journal_bucket_arn, "arn:${data.aws_partition.current.partition}:s3:::")
+      HAKO_WORKSPACE_RUNTIME_JOURNAL_PREFIX        = var.workspace_service_controller_deployment.journal_prefix
+      HAKO_WORKSPACE_SERVICE_TICKET_KEY_ID         = var.workspace_service_controller_deployment.ticket_key_id
+      HAKO_WORKSPACE_SERVICE_TICKET_KEY_SECRET_ARN = var.workspace_service_controller_deployment.ticket_key_secret_arn
+      HAKO_WORKSPACE_SERVICE_REPORT_KEY_SECRET_ARN = var.workspace_service_controller_deployment.report_key_secret_arn
+      HAKO_WORKSPACE_SERVICE_REPORT_ENDPOINT       = var.workspace_service_controller_deployment.report_endpoint
+    }
+  }
+
+  vpc_config {
+    subnet_ids         = var.workspace_service_controller_vpc_config.subnet_ids
+    security_group_ids = var.workspace_service_controller_vpc_config.security_group_ids
+  }
+
+  depends_on = [aws_iam_role_policy.workspace_service_controller]
+  tags       = merge(local.common_tags, { "hako:component" = "workspace-service-controller" })
+
+  lifecycle {
+    precondition {
+      condition     = split(":", var.workspace_service_controller_deployment.microvm_image_arn)[3] == data.aws_region.current.name
+      error_message = "Workspace MicroVM image and service controller must be in the same AWS Region."
+    }
+    precondition {
+      condition = alltrue([
+        for arn in [var.workspace_service_controller_deployment.ticket_key_secret_arn, var.workspace_service_controller_deployment.report_key_secret_arn] :
+        split(":", arn)[3] == data.aws_region.current.name
+      ])
+      error_message = "Workspace Service Secrets and controller must be in the same AWS Region."
+    }
+  }
+}
+
+resource "aws_lambda_event_source_mapping" "workspace_service_controller" {
+  count = var.workspace_service_controller_deployment == null ? 0 : 1
+
+  event_source_arn        = aws_sqs_queue.workspace_service_commands[0].arn
+  function_name           = aws_lambda_function.workspace_service_controller[0].arn
+  batch_size              = 1
+  function_response_types = ["ReportBatchItemFailures"]
+  enabled                 = true
+}
+
 resource "aws_cloudwatch_log_group" "actions_runner_worker" {
   count = var.actions_runner_deployment == null ? 0 : 1
 
@@ -623,6 +915,66 @@ resource "aws_cloudwatch_metric_alarm" "actions_runner_startup_dlq_visible" {
   ok_actions          = var.alarm_actions
   dimensions          = { QueueName = aws_sqs_queue.actions_runner_startup_dlq[0].name }
   tags                = merge(local.common_tags, { "hako:component" = "actions-runner-worker" })
+}
+
+resource "aws_cloudwatch_metric_alarm" "workspace_service_commands_dlq_visible" {
+  count = var.workspace_service_controller_deployment == null ? 0 : 1
+
+  alarm_name          = "${var.resource_plane_id}-workspace-services-dlq-visible"
+  alarm_description   = "Workspace Service commands reached the dead-letter queue."
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  dimensions = {
+    QueueName = aws_sqs_queue.workspace_service_commands_dlq[0].name
+  }
+  alarm_actions = var.alarm_actions
+  tags          = local.common_tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "workspace_service_commands_oldest_message" {
+  count = var.workspace_service_controller_deployment == null ? 0 : 1
+
+  alarm_name          = "${var.resource_plane_id}-workspace-services-oldest-message"
+  alarm_description   = "Workspace Service command processing is delayed."
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateAgeOfOldestMessage"
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 2
+  threshold           = var.oldest_message_age_alarm_seconds
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  dimensions = {
+    QueueName = aws_sqs_queue.workspace_service_commands[0].name
+  }
+  alarm_actions = var.alarm_actions
+  tags          = local.common_tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "workspace_service_controller_errors" {
+  count = var.workspace_service_controller_deployment == null ? 0 : 1
+
+  alarm_name          = "${var.resource_plane_id}-workspace-service-controller-errors"
+  alarm_description   = "Workspace Service controller Lambda reported invocation errors."
+  namespace           = "AWS/Lambda"
+  metric_name         = "Errors"
+  statistic           = "Sum"
+  period              = 60
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  dimensions = {
+    FunctionName = aws_lambda_function.workspace_service_controller[0].function_name
+  }
+  alarm_actions = var.alarm_actions
+  tags          = local.common_tags
 }
 
 resource "aws_cloudwatch_metric_alarm" "commands_dlq_visible" {
@@ -1080,9 +1432,9 @@ resource "aws_iam_role_policy" "workload_controller_runtime" {
         Resource = "${var.workload_controller_runtime.source_bucket_arn}/${var.workload_controller_runtime.source_prefix}/*"
       },
       {
-        Sid      = "AttemptLogWriteOnly"
+        Sid      = "AttemptLogWriteAndExpiredObjectCleanup"
         Effect   = "Allow"
-        Action   = ["s3:PutObject"]
+        Action   = ["s3:PutObject", "s3:DeleteObject"]
         Resource = "${var.workload_controller_runtime.artifact_bucket_arn}/${var.workload_controller_runtime.artifact_prefix}/*"
       }
       ], var.workload_controller_runtime.source_kms_key_arn == "" ? [] : [{
@@ -1101,6 +1453,130 @@ resource "aws_iam_role_policy" "workload_controller_runtime" {
         Action   = ["kms:Decrypt"]
         Resource = var.workload_controller_runtime.secret_kms_key_arns
     }])
+  })
+}
+
+# Artifact storage is a separate opt-in from the runtime IAM scope. This allows
+# existing externally managed buckets to remain supported while new Resource
+# Planes can provision a private, versioned bucket with bounded retention.
+resource "aws_s3_bucket" "workload_artifacts" {
+  count  = var.workload_artifact_storage == null ? 0 : 1
+  bucket = split(":::", var.workload_controller_runtime.artifact_bucket_arn)[1]
+
+  force_destroy = false
+
+  tags = merge(local.common_tags, {
+    "hako:component" = "workload-artifacts"
+  })
+}
+
+resource "aws_s3_bucket_ownership_controls" "workload_artifacts" {
+  count  = var.workload_artifact_storage == null ? 0 : 1
+  bucket = aws_s3_bucket.workload_artifacts[0].id
+
+  rule {
+    object_ownership = "BucketOwnerEnforced"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "workload_artifacts" {
+  count  = var.workload_artifact_storage == null ? 0 : 1
+  bucket = aws_s3_bucket.workload_artifacts[0].id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_versioning" "workload_artifacts" {
+  count  = var.workload_artifact_storage == null ? 0 : 1
+  bucket = aws_s3_bucket.workload_artifacts[0].id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "workload_artifacts" {
+  count  = var.workload_artifact_storage == null ? 0 : 1
+  bucket = aws_s3_bucket.workload_artifacts[0].id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm     = var.workload_controller_runtime.artifact_kms_key_arn == "" ? "AES256" : "aws:kms"
+      kms_master_key_id = var.workload_controller_runtime.artifact_kms_key_arn == "" ? null : var.workload_controller_runtime.artifact_kms_key_arn
+    }
+    bucket_key_enabled = var.workload_controller_runtime.artifact_kms_key_arn != ""
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "workload_artifacts" {
+  count  = var.workload_artifact_storage == null ? 0 : 1
+  bucket = aws_s3_bucket.workload_artifacts[0].id
+
+  rule {
+    id     = "hako-attempt-artifact-retention"
+    status = "Enabled"
+
+    filter {
+      prefix = "${var.workload_controller_runtime.artifact_prefix}/"
+    }
+
+    expiration {
+      days = var.workload_artifact_storage.retention_days
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = var.workload_artifact_storage.retention_days
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1
+    }
+  }
+
+  rule {
+    id     = "hako-expired-artifact-delete-markers"
+    status = "Enabled"
+
+    filter {
+      prefix = "${var.workload_controller_runtime.artifact_prefix}/"
+    }
+
+    expiration {
+      expired_object_delete_marker = true
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "workload_artifacts" {
+  count  = var.workload_artifact_storage == null ? 0 : 1
+  bucket = aws_s3_bucket.workload_artifacts[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "DenyInsecureTransport"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource = [
+          aws_s3_bucket.workload_artifacts[0].arn,
+          "${aws_s3_bucket.workload_artifacts[0].arn}/*",
+        ]
+        Condition = {
+          Bool = { "aws:SecureTransport" = "false" }
+        }
+      },
+      {
+        Sid       = "AllowControllerAttemptArtifactAccess"
+        Effect    = "Allow"
+        Principal = { AWS = aws_iam_role.workload_controller[0].arn }
+        Action    = ["s3:PutObject", "s3:DeleteObject"]
+        Resource  = "${aws_s3_bucket.workload_artifacts[0].arn}/${var.workload_controller_runtime.artifact_prefix}/*"
+      },
+    ]
   })
 }
 
@@ -1124,30 +1600,32 @@ resource "aws_lambda_function" "workload_controller" {
 
   environment {
     variables = {
-      HAKO_WORKLOAD_LAMBDA_MODE                   = "combined"
-      HAKO_RESOURCE_PLANE_ID                      = var.resource_plane_id
-      HAKO_WORKLOAD_CONTROL_PLANE_ENDPOINT        = var.workload_controller_deployment.control_plane_endpoint
-      HAKO_WORKLOAD_CONTROL_PLANE_HMAC_SECRET_ARN = var.workload_controller_deployment.control_plane_hmac_secret_arn
-      HAKO_WORKLOAD_CHECKOUT_BROKER_URL           = var.workload_controller_deployment.broker_url
-      HAKO_WORKLOAD_BROKER_CLIENT_CERT_SECRET_ARN = var.workload_controller_deployment.broker_client_cert_secret_arn
-      HAKO_WORKLOAD_BROKER_CLIENT_KEY_SECRET_ARN  = var.workload_controller_deployment.broker_client_key_secret_arn
-      HAKO_WORKLOAD_BROKER_CA_SECRET_ARN          = var.workload_controller_deployment.broker_ca_secret_arn
-      HAKO_WORKLOAD_JOURNAL_BUCKET                = split(":::", var.workload_controller_runtime.journal_bucket_arn)[1]
-      HAKO_WORKLOAD_JOURNAL_PREFIX                = var.workload_controller_runtime.journal_prefix
-      HAKO_WORKLOAD_RECOVERY_LEASE_KEY            = trimprefix(var.workload_controller_runtime.recovery_lease_object_arn, "${var.workload_controller_runtime.journal_bucket_arn}/")
-      HAKO_WORKLOAD_SOURCE_BUCKET                 = split(":::", var.workload_controller_runtime.source_bucket_arn)[1]
-      HAKO_WORKLOAD_SOURCE_PREFIX                 = var.workload_controller_runtime.source_prefix
-      HAKO_WORKLOAD_SOURCE_KMS_KEY_ID             = var.workload_controller_runtime.source_kms_key_arn
-      HAKO_WORKLOAD_ARTIFACT_BUCKET               = split(":::", var.workload_controller_runtime.artifact_bucket_arn)[1]
-      HAKO_WORKLOAD_ARTIFACT_PREFIX               = var.workload_controller_runtime.artifact_prefix
-      HAKO_WORKLOAD_ARTIFACT_KMS_KEY_ID           = var.workload_controller_runtime.artifact_kms_key_arn
-      HAKO_WORKLOAD_RESULT_QUEUE_URL              = aws_sqs_queue.workload_results[0].url
-      HAKO_WORKLOAD_TICKET_KEY_ID                 = var.workload_controller_deployment.ticket_key_id
-      HAKO_WORKLOAD_TICKET_PRIVATE_KEY_SECRET_ARN = var.workload_controller_deployment.ticket_private_key_secret_arn
-      HAKO_WORKLOAD_RUNTIME_PROFILES_JSON         = var.workload_controller_deployment.runtime_profiles_json
-      HAKO_WORKLOAD_RECOVERY_PAGE_SIZE            = tostring(var.workload_controller_deployment.recovery_page_size)
-      HAKO_WORKLOAD_RECOVERY_MAX_PAGES            = tostring(var.workload_controller_deployment.recovery_max_pages)
-      HAKO_WORKLOAD_RECOVERY_LEASE_TTL            = var.workload_controller_deployment.recovery_lease_ttl
+      HAKO_WORKLOAD_LAMBDA_MODE                      = "combined"
+      HAKO_RESOURCE_PLANE_ID                         = var.resource_plane_id
+      HAKO_WORKLOAD_CONTROL_PLANE_ENDPOINT           = var.workload_controller_deployment.control_plane_endpoint
+      HAKO_WORKLOAD_CONTROL_PLANE_HMAC_SECRET_ARN    = var.workload_controller_deployment.control_plane_hmac_secret_arn
+      HAKO_WORKLOAD_ARTIFACT_CLEANUP_HMAC_SECRET_ARN = var.workload_controller_deployment.artifact_cleanup_hmac_secret_arn
+      HAKO_WORKLOAD_CHECKOUT_BROKER_URL              = var.workload_controller_deployment.broker_url
+      HAKO_WORKLOAD_BROKER_CLIENT_CERT_SECRET_ARN    = var.workload_controller_deployment.broker_client_cert_secret_arn
+      HAKO_WORKLOAD_BROKER_CLIENT_KEY_SECRET_ARN     = var.workload_controller_deployment.broker_client_key_secret_arn
+      HAKO_WORKLOAD_BROKER_CA_SECRET_ARN             = var.workload_controller_deployment.broker_ca_secret_arn
+      HAKO_WORKLOAD_JOURNAL_BUCKET                   = split(":::", var.workload_controller_runtime.journal_bucket_arn)[1]
+      HAKO_WORKLOAD_JOURNAL_PREFIX                   = var.workload_controller_runtime.journal_prefix
+      HAKO_WORKLOAD_RECOVERY_LEASE_KEY               = trimprefix(var.workload_controller_runtime.recovery_lease_object_arn, "${var.workload_controller_runtime.journal_bucket_arn}/")
+      HAKO_WORKLOAD_SOURCE_BUCKET                    = split(":::", var.workload_controller_runtime.source_bucket_arn)[1]
+      HAKO_WORKLOAD_SOURCE_PREFIX                    = var.workload_controller_runtime.source_prefix
+      HAKO_WORKLOAD_SOURCE_KMS_KEY_ID                = var.workload_controller_runtime.source_kms_key_arn
+      HAKO_WORKLOAD_ARTIFACT_BUCKET                  = split(":::", var.workload_controller_runtime.artifact_bucket_arn)[1]
+      HAKO_WORKLOAD_ARTIFACT_PREFIX                  = var.workload_controller_runtime.artifact_prefix
+      HAKO_WORKLOAD_ARTIFACT_KMS_KEY_ID              = var.workload_controller_runtime.artifact_kms_key_arn
+      HAKO_WORKLOAD_RESULT_QUEUE_URL                 = aws_sqs_queue.workload_results[0].url
+      HAKO_WORKLOAD_TICKET_KEY_ID                    = var.workload_controller_deployment.ticket_key_id
+      HAKO_WORKLOAD_TICKET_PRIVATE_KEY_SECRET_ARN    = var.workload_controller_deployment.ticket_private_key_secret_arn
+      HAKO_WORKLOAD_RUNTIME_PROFILES_JSON            = var.workload_controller_deployment.runtime_profiles_json
+      HAKO_WORKLOAD_RECOVERY_PAGE_SIZE               = tostring(var.workload_controller_deployment.recovery_page_size)
+      HAKO_WORKLOAD_RECOVERY_MAX_PAGES               = tostring(var.workload_controller_deployment.recovery_max_pages)
+      HAKO_WORKLOAD_RECOVERY_LEASE_TTL               = var.workload_controller_deployment.recovery_lease_ttl
+      HAKO_WORKLOAD_ARTIFACT_CLEANUP_BATCH_SIZE      = tostring(var.workload_controller_deployment.artifact_cleanup_batch_size)
     }
   }
 
@@ -1205,6 +1683,39 @@ resource "aws_lambda_permission" "workload_controller_recovery" {
   source_arn    = aws_cloudwatch_event_rule.workload_controller_recovery[0].arn
 }
 
+resource "aws_cloudwatch_event_rule" "workload_artifact_cleanup" {
+  count = var.workload_controller_deployment == null ? 0 : 1
+
+  name                = "${var.resource_plane_id}-workload-artifact-cleanup"
+  description         = "Bounded expiry cleanup for Workload Artifacts in the configured prefix."
+  schedule_expression = var.workload_controller_deployment.artifact_cleanup_schedule_expression
+  tags                = merge(local.common_tags, { "hako:component" = "workload-artifact-cleanup" })
+}
+
+resource "aws_cloudwatch_event_target" "workload_artifact_cleanup" {
+  count = var.workload_controller_deployment == null ? 0 : 1
+
+  rule      = aws_cloudwatch_event_rule.workload_artifact_cleanup[0].name
+  target_id = "workload-controller-artifact-cleanup"
+  arn       = aws_lambda_function.workload_controller[0].arn
+  input     = jsonencode({ source = "aws.events", hako_task = "artifact-cleanup" })
+
+  retry_policy {
+    maximum_event_age_in_seconds = 3600
+    maximum_retry_attempts       = 2
+  }
+}
+
+resource "aws_lambda_permission" "workload_artifact_cleanup" {
+  count = var.workload_controller_deployment == null ? 0 : 1
+
+  statement_id  = "AllowWorkloadArtifactCleanupSchedule"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.workload_controller[0].function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.workload_artifact_cleanup[0].arn
+}
+
 resource "aws_cloudwatch_metric_alarm" "workload_controller_errors" {
   count = var.workload_controller_deployment == null ? 0 : 1
 
@@ -1241,6 +1752,23 @@ resource "aws_cloudwatch_metric_alarm" "workload_recovery_failed_invocations" {
   alarm_actions       = var.alarm_actions
   ok_actions          = var.alarm_actions
   tags                = merge(local.common_tags, { "hako:component" = "workload-controller-recovery" })
+}
+
+resource "aws_cloudwatch_metric_alarm" "workload_artifact_cleanup_failed_invocations" {
+  count = var.workload_controller_deployment == null ? 0 : 1
+
+  alarm_name          = "${var.resource_plane_id}-workload-artifact-cleanup-failed-invocations"
+  alarm_description   = "EventBridge could not invoke the scheduled Workload Artifact cleanup Lambda."
+  namespace           = "AWS/Events"
+  metric_name         = "FailedInvocations"
+  dimensions          = { RuleName = aws_cloudwatch_event_rule.workload_artifact_cleanup[0].name }
+  statistic           = "Sum"
+  period              = 60
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  tags                = merge(local.common_tags, { "hako:component" = "workload-artifact-cleanup" })
 }
 
 resource "aws_cloudwatch_log_group" "fake_resource_controller" {
@@ -1532,6 +2060,159 @@ resource "aws_iam_role_policy" "resource_controller" {
   name   = "${var.resource_plane_id}-resource-controller-runtime"
   role   = aws_iam_role.resource_controller.id
   policy = data.aws_iam_policy_document.resource_controller.json
+}
+
+# Workspace Access Point and execution-role lifecycle is separately opt-in and
+# fenced to one configured EFS filesystem plus Hako's dedicated role path.
+resource "aws_iam_role_policy" "resource_controller_workspace_storage" {
+  count = var.workspace_storage_runtime == null ? 0 : 1
+
+  name = "${var.resource_plane_id}-resource-controller-workspace-storage"
+  role = aws_iam_role.resource_controller.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "CreateWorkspaceAccessPointsOnExactFilesystem"
+        Effect   = "Allow"
+        Action   = ["elasticfilesystem:CreateAccessPoint"]
+        Resource = var.workspace_storage_runtime.file_system_arn
+        Condition = {
+          StringEquals = {
+            "aws:RequestTag/hako:managed-by"        = "hako"
+            "aws:RequestTag/hako:resource-plane-id" = var.resource_plane_id
+          }
+          StringLike = {
+            "aws:RequestTag/hako:tenant-id"    = "?*"
+            "aws:RequestTag/hako:workspace-id" = "?*"
+          }
+          "ForAllValues:StringEquals" = {
+            "aws:TagKeys" = ["hako:managed-by", "hako:tenant-id", "hako:workspace-id", "hako:resource-plane-id"]
+          }
+        }
+      },
+      {
+        Sid      = "TagOnlyNewWorkspaceAccessPoints"
+        Effect   = "Allow"
+        Action   = ["elasticfilesystem:TagResource"]
+        Resource = "arn:${data.aws_partition.current.partition}:elasticfilesystem:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:access-point/fsap-*"
+        Condition = {
+          StringEquals = {
+            "elasticfilesystem:CreateAction"        = "CreateAccessPoint"
+            "aws:RequestTag/hako:managed-by"        = "hako"
+            "aws:RequestTag/hako:resource-plane-id" = var.resource_plane_id
+          }
+          StringLike = {
+            "aws:RequestTag/hako:tenant-id"    = "?*"
+            "aws:RequestTag/hako:workspace-id" = "?*"
+          }
+          "ForAllValues:StringEquals" = {
+            "aws:TagKeys" = ["hako:managed-by", "hako:tenant-id", "hako:workspace-id", "hako:resource-plane-id"]
+          }
+        }
+      },
+      {
+        Sid    = "DescribeOnlyWorkspaceStorageResources"
+        Effect = "Allow"
+        Action = ["elasticfilesystem:DescribeAccessPoints"]
+        Resource = [
+          var.workspace_storage_runtime.file_system_arn,
+          "arn:${data.aws_partition.current.partition}:elasticfilesystem:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:access-point/fsap-*"
+        ]
+        Condition = {
+          StringEquals = {
+            "aws:ResourceTag/hako:managed-by"        = "hako"
+            "aws:ResourceTag/hako:resource-plane-id" = var.resource_plane_id
+          }
+        }
+      },
+      {
+        Sid      = "DeleteOnlyOwnedWorkspaceAccessPoints"
+        Effect   = "Allow"
+        Action   = ["elasticfilesystem:DeleteAccessPoint"]
+        Resource = "arn:${data.aws_partition.current.partition}:elasticfilesystem:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:access-point/fsap-*"
+        Condition = {
+          StringEquals = {
+            "aws:ResourceTag/hako:managed-by"        = "hako"
+            "aws:ResourceTag/hako:resource-plane-id" = var.resource_plane_id
+          }
+        }
+      },
+      {
+        Sid      = "CreateOnlyTaggedWorkspaceExecutionRoles"
+        Effect   = "Allow"
+        Action   = ["iam:CreateRole"]
+        Resource = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/hako/workspaces/*"
+        Condition = {
+          StringEquals = {
+            "aws:RequestTag/hako:managed-by"        = "hako"
+            "aws:RequestTag/hako:resource-plane-id" = var.resource_plane_id
+          }
+          StringLike = {
+            "aws:RequestTag/hako:tenant-id"    = "?*"
+            "aws:RequestTag/hako:workspace-id" = "?*"
+          }
+          "ForAllValues:StringEquals" = {
+            "aws:TagKeys" = ["hako:managed-by", "hako:tenant-id", "hako:workspace-id", "hako:resource-plane-id"]
+          }
+        }
+      },
+      {
+        Sid      = "TagOnlyWorkspaceExecutionRolesAtCreation"
+        Effect   = "Allow"
+        Action   = ["iam:TagRole"]
+        Resource = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/hako/workspaces/*"
+        Condition = {
+          StringEquals = {
+            "aws:RequestTag/hako:managed-by"        = "hako"
+            "aws:RequestTag/hako:resource-plane-id" = var.resource_plane_id
+          }
+          StringLike = {
+            "aws:RequestTag/hako:tenant-id"    = "?*"
+            "aws:RequestTag/hako:workspace-id" = "?*"
+          }
+          "ForAllValues:StringEquals" = {
+            "aws:TagKeys" = ["hako:managed-by", "hako:tenant-id", "hako:workspace-id", "hako:resource-plane-id"]
+          }
+        }
+      },
+      {
+        Sid    = "ManageOnlyTaggedWorkspaceExecutionRoles"
+        Effect = "Allow"
+        Action = [
+          "iam:DeleteRole", "iam:GetRole", "iam:PutRolePolicy", "iam:GetRolePolicy",
+          "iam:ListRolePolicies", "iam:ListAttachedRolePolicies", "iam:DeleteRolePolicy"
+        ]
+        Resource = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/hako/workspaces/*"
+        Condition = {
+          StringEquals = {
+            "aws:ResourceTag/hako:managed-by"        = "hako"
+            "aws:ResourceTag/hako:resource-plane-id" = var.resource_plane_id
+          }
+        }
+      },
+      {
+        Sid      = "PassOnlyWorkspaceExecutionRolesToLambda"
+        Effect   = "Allow"
+        Action   = ["iam:PassRole"]
+        Resource = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/hako/workspaces/*"
+        Condition = {
+          StringEquals = { "iam:PassedToService" = "lambda.amazonaws.com" }
+        }
+      }
+    ]
+  })
+
+  lifecycle {
+    precondition {
+      condition = (
+        split(":", var.workspace_storage_runtime.file_system_arn)[3] == data.aws_region.current.name &&
+        split(":", var.workspace_storage_runtime.file_system_arn)[4] == data.aws_caller_identity.current.account_id &&
+        endswith(var.workspace_storage_runtime.file_system_arn, "/${var.workspace_storage_runtime.file_system_id}")
+      )
+      error_message = "Workspace runtime IAM may manage only an EFS filesystem in this Resource Plane account and Region."
+    }
+  }
 }
 
 # This optional Lambda is deliberately fake-runtime-only. The production

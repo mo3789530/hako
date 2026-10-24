@@ -69,6 +69,37 @@ func listWorkspaceServices(pool transaction.Beginner) echo.HandlerFunc {
 	}
 }
 
+func getWorkspaceServiceUsage(pool transaction.Beginner) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		user, ok := HakoUserFromContext(c)
+		if !ok || pool == nil {
+			return databaseUnavailable(c)
+		}
+		tenantID := domain.TenantID(strings.TrimSpace(c.Param("tenant_id")))
+		workspaceID := domain.WorkspaceID(strings.TrimSpace(c.Param("workspace_id")))
+		usage, err := transaction.Within(c.Request().Context(), pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (services.ResourceUsage, error) {
+			membership, err := authz.RequireTenantMembership(ctx, tx, user.ID, tenantID)
+			if err != nil {
+				return services.ResourceUsage{}, err
+			}
+			if _, err := workspaces.GetVisible(ctx, tx, tenantID, workspaceID, user.ID, membership.Role); err != nil {
+				return services.ResourceUsage{}, err
+			}
+			return services.ReadResourceUsage(ctx, tx, workspaceID)
+		})
+		if errors.Is(err, authz.ErrTenantAccessDenied) {
+			return tenantNotFound(c)
+		}
+		if errors.Is(err, workspaces.ErrWorkspaceAccessDenied) {
+			return workspaceNotFound(c)
+		}
+		if err != nil {
+			return databaseUnavailable(c)
+		}
+		return c.JSON(http.StatusOK, usage)
+	}
+}
+
 func addWorkspaceService(pool transaction.Beginner) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		user, ok := HakoUserFromContext(c)
@@ -118,6 +149,13 @@ func addWorkspaceService(pool transaction.Beginner) echo.HandlerFunc {
 			if err != nil || !created {
 				return stored, err
 			}
+			resourcePlaneID, err := workspaceServiceResourcePlane(ctx, tx, workspaceID)
+			if err != nil {
+				return domain.Service{}, err
+			}
+			if err := enqueueWorkspaceService(ctx, tx, tenantID, resourcePlaneID, stored, now); err != nil {
+				return domain.Service{}, err
+			}
 			details, err := json.Marshal(map[string]string{"catalog_name": template.Name, "catalog_version": template.Version, "service_name": name})
 			if err != nil {
 				return domain.Service{}, err
@@ -138,6 +176,9 @@ func addWorkspaceService(pool transaction.Beginner) echo.HandlerFunc {
 		}
 		if errors.Is(err, services.ErrDeleted) {
 			return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "service_deleted", Message: "Deleted Service names cannot be reused"}})
+		}
+		if errors.Is(err, services.ErrResourceQuotaExceeded) {
+			return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "service_resource_quota_exceeded", Message: "Workspace Service memory or CPU budget would be exceeded"}})
 		}
 		if err != nil {
 			return databaseUnavailable(c)
@@ -160,6 +201,7 @@ func requestWorkspaceServiceAction(pool transaction.Beginner) echo.HandlerFunc {
 			return invalidServiceAction(c)
 		}
 		var desiredState string
+		rotateCredentials := false
 		switch request.Action {
 		case "start":
 			desiredState = "running"
@@ -167,6 +209,9 @@ func requestWorkspaceServiceAction(pool transaction.Beginner) echo.HandlerFunc {
 			desiredState = "stopped"
 		case "remove":
 			desiredState = "deleted"
+		case "rotate-credentials":
+			desiredState = "running"
+			rotateCredentials = true
 		default:
 			return invalidServiceAction(c)
 		}
@@ -185,15 +230,32 @@ func requestWorkspaceServiceAction(pool transaction.Beginner) echo.HandlerFunc {
 			if _, err := workspaces.GetVisible(ctx, tx, tenantID, workspaceID, user.ID, membership.Role); err != nil {
 				return domain.Service{}, err
 			}
-			service, changed, err := services.RequestState(ctx, tx, workspaceID, serviceName, desiredState, now)
-			if err != nil || !changed {
-				return service, err
+			var service domain.Service
+			if rotateCredentials {
+				service, err = services.RequestCredentialRotation(ctx, tx, workspaceID, serviceName, now)
+				if err != nil {
+					return domain.Service{}, err
+				}
+			} else {
+				var changed bool
+				service, changed, err = services.RequestState(ctx, tx, workspaceID, serviceName, desiredState, now)
+				if err != nil || !changed {
+					return service, err
+				}
 			}
+			resourcePlaneID, err := workspaceServiceResourcePlane(ctx, tx, workspaceID)
+			if err != nil {
+				return domain.Service{}, err
+			}
+			if err := enqueueWorkspaceService(ctx, tx, tenantID, resourcePlaneID, service, now); err != nil {
+				return domain.Service{}, err
+			}
+			auditAction := "workspace.service." + request.Action
 			details, err := json.Marshal(map[string]string{"service_name": serviceName, "desired_state": desiredState})
 			if err != nil {
 				return domain.Service{}, err
 			}
-			if err := audit.Append(ctx, tx, audit.Event{TenantID: tenantID, ActorID: user.ID, Action: "workspace.service." + request.Action,
+			if err := audit.Append(ctx, tx, audit.Event{TenantID: tenantID, ActorID: user.ID, Action: auditAction,
 				TargetType: "service", TargetID: string(service.ID), Details: details, OccurredAt: now}); err != nil {
 				return domain.Service{}, err
 			}
@@ -214,6 +276,12 @@ func requestWorkspaceServiceAction(pool transaction.Beginner) echo.HandlerFunc {
 		if errors.Is(err, services.ErrConcurrentUpdate) {
 			return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "service_state_conflict", Message: "Service state changed concurrently; retry the action"}})
 		}
+		if errors.Is(err, services.ErrResourceQuotaExceeded) {
+			return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "service_resource_quota_exceeded", Message: "Workspace Service memory or CPU budget would be exceeded"}})
+		}
+		if errors.Is(err, services.ErrCredentialRotationUnavailable) {
+			return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "service_credential_rotation_unavailable", Message: "Only a running Service with generated credentials can rotate credentials"}})
+		}
 		if err != nil {
 			return databaseUnavailable(c)
 		}
@@ -221,6 +289,44 @@ func requestWorkspaceServiceAction(pool transaction.Beginner) echo.HandlerFunc {
 	}
 }
 
+func workspaceServiceResourcePlane(ctx context.Context, tx pgx.Tx, workspaceID domain.WorkspaceID) (domain.ResourcePlaneID, error) {
+	var resourcePlaneID domain.ResourcePlaneID
+	if err := tx.QueryRow(ctx, `SELECT resource_plane_id FROM placements WHERE workspace_id = $1`, workspaceID).Scan(&resourcePlaneID); err != nil {
+		return "", errors.New("Workspace placement is required for Service runtime reconciliation")
+	}
+	if resourcePlaneID == "" {
+		return "", errors.New("Workspace placement has no Resource Plane")
+	}
+	return resourcePlaneID, nil
+}
+
+func enqueueWorkspaceService(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, resourcePlaneID domain.ResourcePlaneID, service domain.Service, createdAt time.Time) error {
+	eventID, err := idgen.New("evt_")
+	if err != nil {
+		return err
+	}
+	config := json.RawMessage(service.ConfigJSON)
+	if !json.Valid(config) {
+		return errors.New("Workspace Service catalog config is invalid JSON")
+	}
+	command, err := json.Marshal(domain.WorkspaceServiceCommand{
+		SchemaVersion: 1, TenantID: tenantID, WorkspaceID: service.WorkspaceID,
+		ResourcePlaneID: resourcePlaneID, ServiceID: service.ID, Revision: service.DesiredRevision,
+		CredentialGeneration: service.CredentialGeneration, DesiredState: service.DesiredState,
+		CatalogVersion: service.CatalogVersion, Config: config,
+	})
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO outbox_events
+		(id, aggregate_type, aggregate_id, event_type, payload_json, created_at, published_at, attempt)
+		VALUES ($1, 'workspace_service', $2, 'workspace_service.reconcile_requested', $3, $4, NULL, 0)`,
+		eventID, service.ID, string(command), createdAt); err != nil {
+		return errors.New("enqueue Workspace Service runtime reconciliation")
+	}
+	return nil
+}
+
 func invalidServiceAction(c *echo.Context) error {
-	return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_service_action", Message: "action must be start, stop, or remove"}})
+	return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_service_action", Message: "action must be start, stop, remove, or rotate-credentials"}})
 }

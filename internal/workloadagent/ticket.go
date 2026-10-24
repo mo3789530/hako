@@ -12,14 +12,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/workloadjournal"
 )
 
 const AgentTicketMaxTTL = 5 * time.Minute
 
 var (
-	ErrAgentTicket = errors.New("invalid Hako Agent credential")
-	keyIDPattern   = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+	ErrAgentTicket          = errors.New("invalid Hako Agent credential")
+	keyIDPattern            = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+	agentIntegrationPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
+	correlationIDPattern    = regexp.MustCompile(`^req_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 )
 
 type Operation string
@@ -44,11 +47,17 @@ type TicketIssuer interface {
 // ExecutionBinding is signed into Start and Source tickets so request-body or
 // upload-header changes cannot alter the attempt's immutable execution input.
 type ExecutionBinding struct {
-	SourceDigest  string    `json:"source_digest"`
-	CommitSHA     string    `json:"commit_sha"`
-	TriggerEvent  string    `json:"trigger_event,omitempty"`
-	TriggerBranch string    `json:"trigger_branch,omitempty"`
-	Deadline      time.Time `json:"deadline"`
+	Kind                   domain.WorkloadKind `json:"kind,omitempty"`
+	AgentIntegrationID     string              `json:"agent_integration_id,omitempty"`
+	AgentInstallationID    int64               `json:"agent_installation_id,omitempty"`
+	AgentRepositoryID      int64               `json:"agent_repository_id,omitempty"`
+	AgentTaskContextSHA256 string              `json:"agent_task_context_sha256,omitempty"`
+	SourceDigest           string              `json:"source_digest"`
+	CommitSHA              string              `json:"commit_sha"`
+	TriggerEvent           string              `json:"trigger_event,omitempty"`
+	TriggerBranch          string              `json:"trigger_branch,omitempty"`
+	CorrelationID          string              `json:"correlation_id,omitempty"`
+	Deadline               time.Time           `json:"deadline"`
 }
 
 type TicketClaims struct {
@@ -113,7 +122,9 @@ func (i *Ed25519TicketIssuer) issue(microVMID string, identity workloadjournal.C
 		return "", ErrAgentTicket
 	}
 	version := 1
-	if execution != nil && execution.TriggerEvent != "" {
+	if execution != nil && execution.Kind == domain.WorkloadAgent {
+		version = 3
+	} else if execution != nil && execution.TriggerEvent != "" {
 		version = 2
 	}
 	claims := TicketClaims{Version: version, MicroVMID: microVMID, Identity: IdentityFromCommand(identity), Operation: operation, Execution: execution,
@@ -159,7 +170,7 @@ func VerifyTicketClaims(token string, keys map[string]ed25519.PublicKey, identit
 	var claims TicketClaims
 	decoder := json.NewDecoder(strings.NewReader(string(payload)))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&claims) != nil || decoder.Decode(new(any)) != io.EOF || (claims.Version != 1 && claims.Version != 2) || !protocolID.MatchString(claims.MicroVMID) ||
+	if decoder.Decode(&claims) != nil || decoder.Decode(new(any)) != io.EOF || (claims.Version != 1 && claims.Version != 2 && claims.Version != 3) || !protocolID.MatchString(claims.MicroVMID) ||
 		claims.Identity.Command() != identity || claims.Operation != operation || !validOperation(claims.Operation) || len(claims.Nonce) != 32 ||
 		((claims.Operation == OperationStart || claims.Operation == OperationSource) != (claims.Execution != nil)) {
 		return TicketClaims{}, ErrAgentTicket
@@ -167,8 +178,9 @@ func VerifyTicketClaims(token string, keys map[string]ed25519.PublicKey, identit
 	if claims.Execution != nil && !validExecutionBinding(*claims.Execution) {
 		return TicketClaims{}, ErrAgentTicket
 	}
-	if claims.Version == 1 && claims.Execution != nil && claims.Execution.TriggerEvent != "" ||
-		claims.Version == 2 && (claims.Execution == nil || claims.Execution.TriggerEvent == "") {
+	if claims.Version == 1 && claims.Execution != nil && (claims.Execution.TriggerEvent != "" || claims.Execution.Kind == domain.WorkloadAgent) ||
+		claims.Version == 2 && (claims.Execution == nil || claims.Execution.TriggerEvent == "" || claims.Execution.Kind == domain.WorkloadAgent) ||
+		claims.Version == 3 && (claims.Execution == nil || claims.Execution.Kind != domain.WorkloadAgent || claims.Execution.TriggerEvent != "issue_comment") {
 		return TicketClaims{}, ErrAgentTicket
 	}
 	if nonce, err := hex.DecodeString(claims.Nonce); err != nil || len(nonce) != 16 {
@@ -192,11 +204,17 @@ func VerifyTicketClaims(token string, keys map[string]ed25519.PublicKey, identit
 }
 
 func validExecutionBinding(binding ExecutionBinding) bool {
-	if !protocolDigest.MatchString(binding.SourceDigest) || !protocolCommit.MatchString(binding.CommitSHA) || binding.Deadline.IsZero() || binding.Deadline.Location() != time.UTC {
+	if binding.Kind != "" && binding.Kind != domain.WorkloadJob && binding.Kind != domain.WorkloadAgent ||
+		(binding.Kind == domain.WorkloadAgent && (!agentIntegrationPattern.MatchString(binding.AgentIntegrationID) || binding.AgentInstallationID <= 0 || binding.AgentRepositoryID <= 0 || !protocolDigest.MatchString(binding.AgentTaskContextSHA256))) ||
+		(binding.Kind != domain.WorkloadAgent && (binding.AgentIntegrationID != "" || binding.AgentInstallationID != 0 || binding.AgentRepositoryID != 0 || binding.AgentTaskContextSHA256 != "")) ||
+		(binding.CorrelationID != "" && !correlationIDPattern.MatchString(binding.CorrelationID)) ||
+		!protocolDigest.MatchString(binding.SourceDigest) || !protocolCommit.MatchString(binding.CommitSHA) || binding.Deadline.IsZero() || binding.Deadline.Location() != time.UTC {
 		return false
 	}
 	if (binding.TriggerEvent == "") != (binding.TriggerBranch == "") ||
-		(binding.TriggerEvent != "" && binding.TriggerEvent != "push" && binding.TriggerEvent != "pull_request") ||
+		(binding.Kind == domain.WorkloadAgent && binding.TriggerEvent != "issue_comment") ||
+		(binding.Kind != domain.WorkloadAgent && binding.TriggerEvent != "" && binding.TriggerEvent != "push" && binding.TriggerEvent != "pull_request") ||
+		(binding.Kind == domain.WorkloadAgent && binding.TriggerBranch == "") ||
 		len(binding.TriggerBranch) > 255 ||
 		strings.Contains(binding.TriggerBranch, "..") || strings.Contains(binding.TriggerBranch, "//") ||
 		strings.HasSuffix(binding.TriggerBranch, "/") || strings.HasSuffix(binding.TriggerBranch, ".") || strings.Contains(binding.TriggerBranch, "@{") {

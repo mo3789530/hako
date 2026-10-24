@@ -33,6 +33,14 @@ func (d *GatewayDialer) OpenShell(ctx context.Context, claims workspacesession.C
 	return d.Shells.Open(ctx, TerminalSize{Columns: 120, Rows: 40})
 }
 
+func (d *GatewayDialer) OpenFileTransfer(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
+	return nil, ErrInteractiveChannelUnavailable
+}
+
+func (d *GatewayDialer) OpenExec(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
+	return nil, ErrInteractiveChannelUnavailable
+}
+
 func (d *GatewayDialer) OpenVSCode(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
 	return nil, ErrInteractiveChannelUnavailable
 }
@@ -57,6 +65,8 @@ func (d *GatewayDialer) OpenPort(ctx context.Context, claims workspacesession.Cl
 
 var _ interface {
 	OpenShell(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error)
+	OpenExec(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error)
+	OpenFileTransfer(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error)
 	OpenVSCode(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error)
 	OpenPort(context.Context, workspacesession.Claims, workspacesession.Permission, uint16) (io.ReadWriteCloser, error)
 } = (*GatewayDialer)(nil)

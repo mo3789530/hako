@@ -37,6 +37,54 @@ type shellTestDialer struct {
 	opened chan struct{}
 }
 
+type reconnectShellTestDialer struct {
+	shellTestDialer
+	opens atomic.Int32
+}
+
+func (d *reconnectShellTestDialer) OpenShell(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
+	client, runtime := net.Pipe()
+	open := d.opens.Add(1)
+	go func() {
+		defer runtime.Close()
+		buffer := make([]byte, 64*1024)
+		var decoder workspaceprotocol.Decoder
+		for {
+			n, err := runtime.Read(buffer)
+			if n > 0 {
+				frames, decodeErr := decoder.Feed(buffer[:n])
+				if decodeErr != nil {
+					return
+				}
+				for _, frame := range frames {
+					if !frame.Attach {
+						continue
+					}
+					ack, _ := workspaceprotocol.EncodeSession("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+					if _, writeErr := runtime.Write(ack); writeErr != nil {
+						return
+					}
+					payload := []byte("first\n")
+					if open > 1 {
+						payload = []byte("resumed\n")
+					}
+					data, _ := workspaceprotocol.EncodeData(payload)
+					if _, writeErr := runtime.Write(data); writeErr != nil {
+						return
+					}
+					if open == 1 {
+						return
+					}
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return client, nil
+}
+
 func (d shellTestDialer) OpenShell(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
 	client, runtime := net.Pipe()
 	if d.opened != nil {
@@ -57,6 +105,16 @@ func (d shellTestDialer) OpenShell(context.Context, workspacesession.Claims) (io
 					return
 				}
 				for _, decoded := range frames {
+					if decoded.Attach {
+						ack, encodeErr := workspaceprotocol.EncodeSession(strings.Repeat("a", 48))
+						if encodeErr != nil {
+							return
+						}
+						if _, writeErr := runtime.Write(ack); writeErr != nil {
+							return
+						}
+						continue
+					}
 					if decoded.Resize {
 						continue
 					}
@@ -80,6 +138,16 @@ func (d shellTestDialer) OpenShell(context.Context, workspacesession.Claims) (io
 	return client, nil
 }
 
+func (d shellTestDialer) OpenExec(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
+	client, runtime := net.Pipe()
+	go runtime.Close()
+	return client, nil
+}
+
+func (shellTestDialer) OpenFileTransfer(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
+	return nil, workspacegateway.ErrClientConfig
+}
+
 func (shellTestDialer) OpenVSCode(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
 	return nil, workspacegateway.ErrClientConfig
 }
@@ -90,6 +158,15 @@ func (shellTestDialer) OpenPort(context.Context, workspacesession.Claims, worksp
 type forwardTestDialer struct{}
 
 func (forwardTestDialer) OpenShell(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
+	return nil, workspacegateway.ErrClientConfig
+}
+
+func (forwardTestDialer) OpenExec(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
+	client, runtime := net.Pipe()
+	go runtime.Close()
+	return client, nil
+}
+func (forwardTestDialer) OpenFileTransfer(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
 	return nil, workspacegateway.ErrClientConfig
 }
 func (forwardTestDialer) OpenVSCode(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
@@ -124,6 +201,12 @@ func (vscodeTestDialer) OpenVSCode(context.Context, workspacesession.Claims) (io
 		defer runtime.Close()
 		_, _ = io.Copy(runtime, runtime)
 	}()
+	return client, nil
+}
+
+func (vscodeTestDialer) OpenExec(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
+	client, runtime := net.Pipe()
+	go runtime.Close()
 	return client, nil
 }
 
@@ -301,6 +384,111 @@ func TestWorkspaceShellCLIRequestsTicketStreamsAndRevokes(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "echo hako-cli-shell") {
 		t.Fatalf("shell output did not reach CLI: %q", output.String())
+	}
+}
+
+type execCLITestDialer struct{ opened chan workspacesession.Claims }
+
+func (d execCLITestDialer) OpenShell(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
+	return nil, workspacegateway.ErrClientConfig
+}
+func (d execCLITestDialer) OpenExec(_ context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
+	if d.opened != nil {
+		d.opened <- claims
+	}
+	client, runtime := net.Pipe()
+	go func() {
+		defer runtime.Close()
+		var request workspaceprotocol.ExecRequest
+		if err := json.NewDecoder(runtime).Decode(&request); err != nil || len(request.Argv) != 2 || request.Argv[0] != "printf" || request.Argv[1] != "cli-exec-ok" {
+			return
+		}
+		result, _ := json.Marshal(workspaceprotocol.ExecResult{Stdout: []byte("cli-exec-ok")})
+		_, _ = runtime.Write(result)
+	}()
+	return client, nil
+}
+func (d execCLITestDialer) OpenFileTransfer(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
+	return nil, workspacegateway.ErrClientConfig
+}
+func (d execCLITestDialer) OpenVSCode(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
+	return nil, workspacegateway.ErrClientConfig
+}
+func (d execCLITestDialer) OpenPort(context.Context, workspacesession.Claims, workspacesession.Permission, uint16) (io.ReadWriteCloser, error) {
+	return nil, workspacegateway.ErrClientConfig
+}
+
+func TestWorkspaceExecCLIUsesDedicatedSessionGatewayAndRevokes(t *testing.T) {
+	previousGetter := cliCredentialGetter
+	cliCredentialGetter = workspaceShellCredentials(`{"access_token":"exec-access","token_type":"Bearer","expires_in":3600,"stored_at":"` + time.Now().UTC().Format(time.RFC3339) + `"}`)
+	t.Cleanup(func() { cliCredentialGetter = previousGetter })
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuer := &workspacesession.Ed25519Issuer{KeyID: "exec-cli-test", PrivateKey: privateKey, TTL: time.Minute}
+	ticket, claims, err := issuer.Issue(workspacesession.Claims{UserID: "usr_cli", TenantID: "tenant_cli", WorkspaceID: "ws_cli",
+		ResourcePlane: "rp_cli", Permissions: []workspacesession.Permission{workspacesession.PermissionExec}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created, revoked atomic.Int32
+	apiServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer exec-access" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if r.Method == http.MethodPost {
+			var request struct {
+				Permissions []workspacesession.Permission `json:"permissions"`
+			}
+			if r.URL.Path != "/v1/tenants/tenant_cli/workspaces/ws_cli/sessions" || json.NewDecoder(r.Body).Decode(&request) != nil ||
+				len(request.Permissions) != 1 || request.Permissions[0] != workspacesession.PermissionExec {
+				http.Error(w, "unexpected exec session request", http.StatusBadRequest)
+				return
+			}
+			created.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(api.WorkspaceSession{SessionID: domain.SessionID(claims.TicketID), Ticket: ticket,
+				ExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC(), Permissions: []workspacesession.Permission{workspacesession.PermissionExec}})
+			return
+		}
+		if r.Method == http.MethodDelete {
+			revoked.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}))
+	defer apiServer.Close()
+	dialer := execCLITestDialer{opened: make(chan workspacesession.Claims, 1)}
+	gateway, err := workspacegateway.New(workspacegateway.Config{ResourcePlaneID: "rp_cli",
+		Verifier: &workspacesession.Verifier{Keys: map[string]ed25519.PublicKey{"exec-cli-test": publicKey}, Audience: workspacesession.AudienceGateway, Lookup: activeWorkspaceSession{}},
+		Dialer:   dialer, MaxConnections: 1, MaxConnectionsPerWorkspace: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatewayServer := httptest.NewTLSServer(gateway.Handler())
+	defer gatewayServer.Close()
+	gatewayTLS := gatewayServer.Client().Transport.(*http.Transport).TLSClientConfig
+	t.Setenv("HAKO_API_URL", apiServer.URL)
+	t.Setenv("HAKO_GATEWAY_URL", gatewayServer.URL)
+	var stdout, stderr strings.Builder
+	if err := workspaceExecWith(context.Background(), "tenant_cli", "ws_cli", []string{"printf", "cli-exec-ok"}, &stdout, &stderr,
+		apiServer.Client(), &tls.Config{RootCAs: gatewayTLS.RootCAs}); err != nil {
+		t.Fatalf("workspaceExecWith: %v", err)
+	}
+	if stdout.String() != "cli-exec-ok" || stderr.Len() != 0 || created.Load() != 1 || revoked.Load() != 1 {
+		t.Fatalf("stdout=%q stderr=%q session create=%d revoke=%d", stdout.String(), stderr.String(), created.Load(), revoked.Load())
+	}
+	select {
+	case opened := <-dialer.opened:
+		if len(opened.Permissions) != 1 || opened.Permissions[0] != workspacesession.PermissionExec {
+			t.Fatalf("Gateway received unexpected permissions: %v", opened.Permissions)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Gateway exec route was not opened")
 	}
 }
 
@@ -508,6 +696,76 @@ func TestWorkspaceShellCLICancellationClosesStreamAndRevokesSession(t *testing.T
 	}
 	if revoked.Load() != 1 {
 		t.Fatalf("session revoke count=%d, want 1", revoked.Load())
+	}
+}
+
+func TestWorkspaceShellReconnectRenewsSessionAndReattachesSamePTY(t *testing.T) {
+	previousGetter := cliCredentialGetter
+	cliCredentialGetter = workspaceShellCredentials(`{"access_token":"cli-access","token_type":"Bearer","expires_in":3600,"stored_at":"` + time.Now().UTC().Format(time.RFC3339) + `"}`)
+	t.Cleanup(func() { cliCredentialGetter = previousGetter })
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuer := &workspacesession.Ed25519Issuer{KeyID: "reconnect-test", PrivateKey: privateKey, TTL: time.Minute}
+	var created, revoked atomic.Int32
+	apiServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			revoked.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
+			return
+		}
+		created.Add(1)
+		ticket, claims, issueErr := issuer.Issue(workspacesession.Claims{UserID: "usr_cli", TenantID: "tenant_cli", WorkspaceID: "ws_cli",
+			ResourcePlane: "rp_cli", Permissions: []workspacesession.Permission{workspacesession.PermissionShell}})
+		if issueErr != nil {
+			http.Error(w, "issue failed", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(api.WorkspaceSession{SessionID: domain.SessionID(claims.TicketID), Ticket: ticket,
+			ExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC(), Permissions: []workspacesession.Permission{workspacesession.PermissionShell}})
+	}))
+	defer apiServer.Close()
+	dialer := &reconnectShellTestDialer{}
+	gateway, err := workspacegateway.New(workspacegateway.Config{ResourcePlaneID: "rp_cli",
+		Verifier: &workspacesession.Verifier{Keys: map[string]ed25519.PublicKey{"reconnect-test": publicKey}, Audience: workspacesession.AudienceGateway, Lookup: activeWorkspaceSession{}},
+		Dialer:   dialer, MaxConnections: 2, MaxConnectionsPerWorkspace: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatewayServer := httptest.NewTLSServer(gateway.Handler())
+	defer gatewayServer.Close()
+	t.Setenv("HAKO_API_URL", apiServer.URL)
+	t.Setenv("HAKO_GATEWAY_URL", gatewayServer.URL)
+	gatewayTLS := gatewayServer.Client().Transport.(*http.Transport).TLSClientConfig
+	shell := &workspaceShellReconnect{ctx: context.Background(), apiURL: apiServer.URL, accessToken: "cli-access", tenantID: "tenant_cli",
+		workspaceID: "ws_cli", gatewayURL: gatewayServer.URL, apiHTTPClient: apiServer.Client(),
+		gatewayTLSConfig: &tls.Config{RootCAs: gatewayTLS.RootCAs}}
+	if err := shell.connect(); err != nil {
+		t.Fatalf("initial shell connect: %v", err)
+	}
+	first := make([]byte, len("first\n"))
+	if _, err := io.ReadFull(shell, first); err != nil || string(first) != "first\n" {
+		t.Fatalf("initial PTY output=%q err=%v", first, err)
+	}
+	resumed := make([]byte, len("resumed\n"))
+	if _, err := io.ReadFull(shell, resumed); err != nil || string(resumed) != "resumed\n" {
+		t.Fatalf("resumed PTY output=%q err=%v", resumed, err)
+	}
+	if dialer.opens.Load() != 2 || created.Load() != 2 || revoked.Load() != 1 {
+		t.Fatalf("before close: opens=%d sessions-created=%d sessions-revoked=%d", dialer.opens.Load(), created.Load(), revoked.Load())
+	}
+	if err := shell.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if revoked.Load() != 2 {
+		t.Fatalf("session revoke count=%d, want 2", revoked.Load())
 	}
 }
 

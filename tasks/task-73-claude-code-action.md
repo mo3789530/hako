@@ -1,6 +1,6 @@
 # Task 73: Claude Code Action on Hako Ephemeral Runners
 
-Status: Todo (decomposed into Tasks 74–77; no Claude Code Action runtime integration implemented yet). Priority: P2. Parent: Task 52. Depends on: Tasks 40, 41, 50, 51, 52.
+Status: Local acceptance complete in Tasks 74–77: provenance-gated admission, Tenant-scoped credential resolver, signed guest bootstrap, runner execution, durable Checks, cleanup/retry, fake-provider PostgreSQL E2E, and a digest-pinned ARM64 runner image build are implemented. The image was inspected but not executed on this x86_64 host. Real MicroVM/GitHub/AWS integration and production rollout remain approval-gated; no model API or external account was used. Priority: P2. Parent: Task 52. Depends on: Tasks 40, 41, 50, 51, 52.
 
 ## Goal
 

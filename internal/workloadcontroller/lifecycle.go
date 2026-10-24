@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/workloadjobs"
 	"github.com/mo3789530/hako/internal/workloadjournal"
 )
@@ -27,11 +28,17 @@ var (
 // command message. The resolver owns authorization and source staging.
 type Specification struct {
 	Identity                 workloadjournal.Command
+	Kind                     domain.WorkloadKind
 	ImageDigest              string
 	SourceDigest             string
 	CommitSHA                string
+	GitHubIntegrationID      string
+	GitHubInstallationID     int64
+	GitHubRepositoryID       int64
+	AgentTaskContextSHA256   string
 	TriggerEvent             string
 	TriggerBranch            string
+	CorrelationID            string
 	Deadline                 time.Time
 	Predecessor              *workloadjournal.Command
 	ArtifactPrefix           string
@@ -311,7 +318,12 @@ func identity(j workloadjournal.Journal) workloadjournal.Command {
 
 func specificationHash(s Specification, id workloadjournal.Command) (string, error) {
 	if s.Identity != id || !digestPattern.MatchString(s.ImageDigest) || !digestPattern.MatchString(s.SourceDigest) ||
-		!commitPattern.MatchString(s.CommitSHA) || s.Deadline.IsZero() || !validTriggerSelection(s.TriggerEvent, s.TriggerBranch) {
+		!commitPattern.MatchString(s.CommitSHA) || s.Deadline.IsZero() ||
+		(s.Kind == domain.WorkloadAgent && (!metadataIDPattern.MatchString(s.GitHubIntegrationID) || s.GitHubInstallationID <= 0 ||
+			s.GitHubRepositoryID <= 0 || !digestPattern.MatchString(s.AgentTaskContextSHA256))) ||
+		(s.Kind != domain.WorkloadAgent && (s.GitHubIntegrationID != "" || s.GitHubInstallationID != 0 || s.GitHubRepositoryID != 0 || s.AgentTaskContextSHA256 != "")) ||
+		(s.Kind != "" && s.Kind != domain.WorkloadJob && s.Kind != domain.WorkloadAgent) ||
+		!validTriggerSelection(effectiveSpecificationKind(s.Kind), s.TriggerEvent, s.TriggerBranch) {
 		return "", ErrSpecification
 	}
 	if id.Generation == 1 && s.Predecessor != nil {
@@ -334,11 +346,20 @@ func specificationHash(s Specification, id workloadjournal.Command) (string, err
 	return hex.EncodeToString(digest[:]), nil
 }
 
-func validTriggerSelection(event, branch string) bool {
-	if event == "" && branch == "" {
-		return true
+func effectiveSpecificationKind(kind domain.WorkloadKind) domain.WorkloadKind {
+	if kind == "" {
+		return domain.WorkloadJob
 	}
-	if event != "push" && event != "pull_request" || len(branch) == 0 || len(branch) > 255 ||
+	return kind
+}
+
+func validTriggerSelection(kind domain.WorkloadKind, event, branch string) bool {
+	if event == "" && branch == "" {
+		return kind == domain.WorkloadJob
+	}
+	if kind == domain.WorkloadJob && event != "push" && event != "pull_request" ||
+		kind == domain.WorkloadAgent && event != "issue_comment" ||
+		kind != domain.WorkloadJob && kind != domain.WorkloadAgent || len(branch) == 0 || len(branch) > 255 ||
 		strings.Contains(branch, "..") || strings.Contains(branch, "//") || strings.HasSuffix(branch, "/") || strings.HasSuffix(branch, ".") ||
 		strings.Contains(branch, "@{") {
 		return false

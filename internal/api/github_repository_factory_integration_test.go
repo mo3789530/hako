@@ -150,4 +150,44 @@ func TestRepositoryFactorySettingRequiresTenantOwnerAndActiveRegisteredRepositor
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE tenant_id='tenant_factory_api' AND action='tenant.github_repository.actions_runner.workflow_policy.configure'`).Scan(&auditCount); err != nil || auditCount != 1 {
 		t.Fatalf("workflow policy audit count = %d, error = %v", auditCount, err)
 	}
+
+	agentPolicyPath := "/v1/tenants/tenant_factory_api/github/installations/7001/repositories/7002/agent-write-policy"
+	agentPolicyBody := `{"enabled":true,"branch_prefixes":["hako/agent/"],"allow_pull_requests":true,"required_checks":["hako/lint","hako/test"],"require_checks_to_pass":true}`
+	if response := call(agentPolicyPath, "factory-owner", "tenant_factory_api", agentPolicyBody); response.Code != http.StatusNotFound {
+		t.Fatalf("Agent policy configured without Factory opt-in returned HTTP %d", response.Code)
+	}
+	if response := call(path, "factory-owner", "tenant_factory_api", `{"enabled":true}`); response.Code != http.StatusOK {
+		t.Fatalf("enable Factory for Agent policy test returned HTTP %d: %s", response.Code, response.Body.String())
+	}
+	for _, test := range []struct {
+		subject, tenant, body string
+		want                  int
+	}{
+		{"factory-owner", "tenant_factory_api", agentPolicyBody, http.StatusOK},
+		{"factory-admin", "tenant_factory_api", `{"enabled":true,"branch_prefixes":["*"],"required_checks":["hako/test"],"require_checks_to_pass":true}`, http.StatusBadRequest},
+		{"factory-member", "tenant_factory_api", agentPolicyBody, http.StatusNotFound},
+		{"factory-owner", "tenant_factory_other", agentPolicyBody, http.StatusNotFound},
+		{"factory-owner", "tenant_factory_api", `{"enabled":true,"branch_prefixes":["hako/agent/"],"required_checks":["hako/test"],"require_checks_to_pass":false}`, http.StatusBadRequest},
+	} {
+		response := call(agentPolicyPath, test.subject, test.tenant, test.body)
+		if response.Code != test.want {
+			t.Fatalf("Agent policy for %s/%s returned HTTP %d, want %d: %s", test.subject, test.tenant, response.Code, test.want, response.Body.String())
+		}
+		if response.Code == http.StatusOK && !strings.Contains(response.Body.String(), `"execution_enabled":false`) {
+			t.Fatalf("Agent write policy must remain dormant until runtime rollout: %s", response.Body.String())
+		}
+	}
+	var storedAgentPolicy string
+	if err := pool.QueryRow(ctx, `SELECT agent_write_policy->>'enabled' FROM tenant_github_repositories WHERE tenant_id='tenant_factory_api' AND installation_id=7001 AND github_repository_id=7002`).Scan(&storedAgentPolicy); err != nil || storedAgentPolicy != "true" {
+		t.Fatalf("stored Agent policy enabled = %q, error=%v", storedAgentPolicy, err)
+	}
+	if response := call(path, "factory-admin", "tenant_factory_api", `{"enabled":false}`); response.Code != http.StatusOK {
+		t.Fatalf("disable Factory after Agent policy returned HTTP %d: %s", response.Code, response.Body.String())
+	}
+	if err := pool.QueryRow(ctx, `SELECT agent_write_policy IS NULL FROM tenant_github_repositories WHERE tenant_id='tenant_factory_api' AND installation_id=7001 AND github_repository_id=7002`).Scan(&policyIsNull); err != nil || !policyIsNull {
+		t.Fatalf("Agent write policy was not cleared after Factory opt-out (null=%v, err=%v)", policyIsNull, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE tenant_id='tenant_factory_api' AND action='tenant.github_repository.agent_write_policy.configure'`).Scan(&auditCount); err != nil || auditCount != 1 {
+		t.Fatalf("Agent write policy audit count = %d, error = %v", auditCount, err)
+	}
 }

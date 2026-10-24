@@ -16,22 +16,24 @@ var commitSHAPattern = regexp.MustCompile(`^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$
 // RepositoryEvent is the versioned, GitHub-independent subset Hako stores for
 // routing and future processing. Raw provider payloads are not copied here.
 type RepositoryEvent struct {
-	SchemaVersion       int             `json:"schema_version"`
-	DeliveryID          string          `json:"delivery_id"`
-	Type                string          `json:"type"`
-	GitHubEvent         string          `json:"github_event"`
-	Action              string          `json:"action,omitempty"`
-	InstallationID      int64           `json:"installation_id,omitempty"`
-	GitHubAppID         *int64          `json:"github_app_id,omitempty"`
-	Repository          *RepositoryRef  `json:"repository,omitempty"`
-	RepositoriesAdded   []RepositoryRef `json:"repositories_added,omitempty"`
-	RepositoriesRemoved []RepositoryRef `json:"repositories_removed,omitempty"`
-	Ref                 string          `json:"ref,omitempty"`
-	CommitSHA           string          `json:"commit_sha,omitempty"`
-	Deleted             bool            `json:"deleted,omitempty"`
-	Actor               string          `json:"actor,omitempty"`
-	PullRequest         *PullRequestRef `json:"pull_request,omitempty"`
-	WorkflowJob         *WorkflowJobRef `json:"workflow_job,omitempty"`
+	SchemaVersion       int              `json:"schema_version"`
+	DeliveryID          string           `json:"delivery_id"`
+	Type                string           `json:"type"`
+	GitHubEvent         string           `json:"github_event"`
+	Action              string           `json:"action,omitempty"`
+	InstallationID      int64            `json:"installation_id,omitempty"`
+	GitHubAppID         *int64           `json:"github_app_id,omitempty"`
+	Repository          *RepositoryRef   `json:"repository,omitempty"`
+	RepositoriesAdded   []RepositoryRef  `json:"repositories_added,omitempty"`
+	RepositoriesRemoved []RepositoryRef  `json:"repositories_removed,omitempty"`
+	Ref                 string           `json:"ref,omitempty"`
+	CommitSHA           string           `json:"commit_sha,omitempty"`
+	Deleted             bool             `json:"deleted,omitempty"`
+	Actor               string           `json:"actor,omitempty"`
+	ActorGitHubID       int64            `json:"actor_github_id,omitempty"`
+	PullRequest         *PullRequestRef  `json:"pull_request,omitempty"`
+	WorkflowJob         *WorkflowJobRef  `json:"workflow_job,omitempty"`
+	IssueComment        *IssueCommentRef `json:"issue_comment,omitempty"`
 }
 
 type RepositoryRef struct {
@@ -66,6 +68,23 @@ type WorkflowJobRef struct {
 	RunnerGroupName string   `json:"runner_group_name,omitempty"`
 }
 
+// IssueCommentRef intentionally contains no comment body. Commands are
+// extracted into a closed enum and are only hints; tenant authorization and
+// immutable commit resolution are required before any Agent Run is created.
+type IssueCommentRef struct {
+	IssueNumber       int64        `json:"issue_number"`
+	CommentID         int64        `json:"comment_id"`
+	IsPullRequest     bool         `json:"is_pull_request,omitempty"`
+	AuthorAssociation string       `json:"author_association,omitempty"`
+	AgentCommand      AgentCommand `json:"agent_command,omitempty"`
+}
+
+// AgentCommand is a closed set of commands recognized from collaborator
+// comments. It never carries free-form user text.
+type AgentCommand string
+
+const AgentCommandImplement AgentCommand = "implement"
+
 type githubPayload struct {
 	Action       string `json:"action"`
 	Ref          string `json:"ref"`
@@ -83,6 +102,7 @@ type githubPayload struct {
 	RepositoriesRemoved []githubRepository `json:"repositories_removed"`
 	Sender              struct {
 		Login string `json:"login"`
+		ID    int64  `json:"id"`
 	} `json:"sender"`
 	PullRequest struct {
 		Number int64  `json:"number"`
@@ -111,6 +131,17 @@ type githubPayload struct {
 		RunnerGroupID   *int64   `json:"runner_group_id"`
 		RunnerGroupName *string  `json:"runner_group_name"`
 	} `json:"workflow_job"`
+	Issue struct {
+		Number      int64 `json:"number"`
+		PullRequest *struct {
+			URL string `json:"url"`
+		} `json:"pull_request"`
+	} `json:"issue"`
+	Comment struct {
+		ID                int64  `json:"id"`
+		Body              string `json:"body"`
+		AuthorAssociation string `json:"author_association"`
+	} `json:"comment"`
 }
 
 type githubRepository struct {
@@ -146,6 +177,7 @@ func Normalize(delivery VerifiedDelivery) (RepositoryEvent, error) {
 		GitHubEvent:   delivery.Event,
 		Action:        delivery.Action,
 		Actor:         boundedText(payload.Sender.Login, 100),
+		ActorGitHubID: payload.Sender.ID,
 		GitHubAppID:   payload.Installation.AppID,
 	}
 	switch delivery.Event {
@@ -191,6 +223,20 @@ func Normalize(delivery VerifiedDelivery) (RepositoryEvent, error) {
 			Status: job.Status, Conclusion: boundedText(job.Conclusion, 100), Labels: labels, RunnerID: job.RunnerID,
 			RunnerName: optionalWorkflowText(job.RunnerName, 200), RunnerGroupID: job.RunnerGroupID,
 			RunnerGroupName: optionalWorkflowText(job.RunnerGroupName, 200)}
+	case "issue_comment":
+		repository, err := normalizeRepository(payload.Repository)
+		if err != nil || payload.Installation.ID <= 0 || payload.Issue.Number <= 0 || payload.Comment.ID <= 0 || payload.Sender.ID <= 0 {
+			return RepositoryEvent{}, fmt.Errorf("%w: issue comment requires installation, repository, issue, comment, and actor identifiers", ErrInvalidDelivery)
+		}
+		authorAssociation := normalizeAuthorAssociation(payload.Comment.AuthorAssociation)
+		command := AgentCommand("")
+		if isAgentCommandAuthorAssociation(authorAssociation) {
+			command, _ = ParseAgentCommand(payload.Comment.Body)
+		}
+		event.Type = "repository.issue_comment.created"
+		event.Repository, event.InstallationID = repository, payload.Installation.ID
+		event.IssueComment = &IssueCommentRef{IssueNumber: payload.Issue.Number, CommentID: payload.Comment.ID,
+			IsPullRequest: payload.Issue.PullRequest != nil, AuthorAssociation: authorAssociation, AgentCommand: command}
 	case "installation":
 		if payload.Installation.ID <= 0 {
 			return RepositoryEvent{}, fmt.Errorf("%w: installation event requires installation ID", ErrInvalidDelivery)
@@ -218,6 +264,30 @@ func Normalize(delivery VerifiedDelivery) (RepositoryEvent, error) {
 		return RepositoryEvent{}, fmt.Errorf("%w: unsupported event %q", ErrInvalidDelivery, delivery.Event)
 	}
 	return event, nil
+}
+
+// ParseAgentCommand recognizes only one exact, bounded comment command.
+// Surrounding whitespace is ignored; arbitrary or appended instructions are
+// never passed through as Agent prompts.
+func ParseAgentCommand(comment string) (AgentCommand, bool) {
+	if len(comment) > 128 {
+		return "", false
+	}
+	if strings.TrimSpace(comment) == "/hako implement" {
+		return AgentCommandImplement, true
+	}
+	return "", false
+}
+
+func isAgentCommandAuthorAssociation(value string) bool {
+	return oneOf(value, "OWNER", "MEMBER", "COLLABORATOR")
+}
+
+func normalizeAuthorAssociation(value string) string {
+	if oneOf(value, "OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR", "FIRST_TIMER", "FIRST_TIME_CONTRIBUTOR", "MANNEQUIN", "NONE") {
+		return value
+	}
+	return ""
 }
 
 func workflowJobActionMatchesStatus(action, status string) bool {

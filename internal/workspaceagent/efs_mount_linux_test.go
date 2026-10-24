@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 )
 
 type mountCommandCall struct {
@@ -17,18 +18,27 @@ type mountCommandCall struct {
 }
 
 type mountCommandStub struct {
-	infoPath string
-	calls    []mountCommandCall
-	err      error
+	infoPath  string
+	calls     []mountCommandCall
+	err       error
+	block     bool
+	skipMount bool
 }
 
-func (s *mountCommandStub) Run(_ context.Context, binary string, args ...string) error {
+func (s *mountCommandStub) Run(ctx context.Context, binary string, args ...string) error {
 	s.calls = append(s.calls, mountCommandCall{binary: binary, args: append([]string(nil), args...)})
+	if s.block {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	if s.err != nil {
 		return s.err
 	}
 	if binary == workspaceUmountBinary {
 		return os.WriteFile(s.infoPath, nil, 0600)
+	}
+	if s.skipMount {
+		return nil
 	}
 	return os.WriteFile(s.infoPath, []byte("36 25 0:42 / /workspace rw,relatime - nfs4 127.0.0.1:/ rw,vers=4.1\n"), 0600)
 }
@@ -41,7 +51,7 @@ func TestLinuxEFSMountUsesFixedTLSAccessPointAndIsIdempotent(t *testing.T) {
 	}
 	runner := &mountCommandStub{infoPath: infoPath}
 	executor := &LinuxEFSMountExecutor{runner: runner, mountBinary: "/bin/mount", umountBinary: workspaceUmountBinary, mountInfoPath: infoPath,
-		markerPath: markerPath, workspacePath: "/workspace", isRoot: func() bool { return true },
+		markerPath: markerPath, workspacePath: "/workspace", mountTimeout: workspaceEFSMountTimeout, isRoot: func() bool { return true },
 		makeDirectory: func(string, os.FileMode) error { return nil }}
 	spec := testMountSpec()
 	if err := executor.MountAndVerify(context.Background(), spec); err != nil {
@@ -77,7 +87,7 @@ func TestLinuxEFSMountRecordsIntentBeforeCommandAndRetriesFailure(t *testing.T) 
 	}
 	runner := &mountCommandStub{infoPath: infoPath, err: errors.New("mount failed")}
 	executor := &LinuxEFSMountExecutor{runner: runner, mountBinary: "/bin/mount", umountBinary: workspaceUmountBinary, mountInfoPath: infoPath,
-		markerPath: markerPath, workspacePath: "/workspace", isRoot: func() bool { return true },
+		markerPath: markerPath, workspacePath: "/workspace", mountTimeout: workspaceEFSMountTimeout, isRoot: func() bool { return true },
 		makeDirectory: func(string, os.FileMode) error { return nil }}
 	spec := testMountSpec()
 	if err := executor.MountAndVerify(context.Background(), spec); err == nil {
@@ -92,6 +102,37 @@ func TestLinuxEFSMountRecordsIntentBeforeCommandAndRetriesFailure(t *testing.T) 
 	}
 }
 
+func TestLinuxEFSMountHasBoundedHelperAndHealthCheck(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		runner *mountCommandStub
+	}{
+		{name: "helper exceeds timeout", runner: &mountCommandStub{block: true}},
+		{name: "helper returns without mount", runner: &mountCommandStub{skipMount: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			infoPath := filepath.Join(t.TempDir(), "mountinfo")
+			markerPath := filepath.Join(t.TempDir(), "mount-marker.json")
+			if err := os.WriteFile(infoPath, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			tc.runner.infoPath = infoPath
+			executor := &LinuxEFSMountExecutor{runner: tc.runner, mountBinary: "/bin/mount", mountInfoPath: infoPath,
+				markerPath: markerPath, workspacePath: "/workspace", mountTimeout: 5 * time.Millisecond, isRoot: func() bool { return true },
+				makeDirectory: func(string, os.FileMode) error { return nil }}
+			if err := executor.MountAndVerify(context.Background(), testMountSpec()); err == nil {
+				t.Fatal("mount completed without satisfying the bounded health check")
+			}
+			if len(tc.runner.calls) != 1 {
+				t.Fatalf("mount command calls = %d, want 1", len(tc.runner.calls))
+			}
+			if _, found, err := readWorkspaceMountMarker(markerPath); err != nil || !found {
+				t.Fatalf("failed mount lost its retry identity: found=%v err=%v", found, err)
+			}
+		})
+	}
+}
+
 func TestLinuxEFSMountRejectsUnownedMountAndNonRoot(t *testing.T) {
 	infoPath := filepath.Join(t.TempDir(), "mountinfo")
 	markerPath := filepath.Join(t.TempDir(), "mount-marker.json")
@@ -100,7 +141,7 @@ func TestLinuxEFSMountRejectsUnownedMountAndNonRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	executor := &LinuxEFSMountExecutor{runner: runner, mountBinary: "/bin/mount", umountBinary: workspaceUmountBinary, mountInfoPath: infoPath,
-		markerPath: markerPath, workspacePath: "/workspace", isRoot: func() bool { return true },
+		markerPath: markerPath, workspacePath: "/workspace", mountTimeout: workspaceEFSMountTimeout, isRoot: func() bool { return true },
 		makeDirectory: func(string, os.FileMode) error { return nil }}
 	if err := executor.MountAndVerify(context.Background(), testMountSpec()); err == nil || len(runner.calls) != 0 {
 		t.Fatal("adopted a pre-existing mount without an Hako-owned marker")

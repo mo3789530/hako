@@ -1,8 +1,11 @@
 package resourcecontroller
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -48,11 +51,16 @@ func TestLambdaHandlerRetriesResultSinkFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var logs bytes.Buffer
+	handler.logger = slog.New(slog.NewTextHandler(&logs, nil))
 	response, err := handler.Handle(context.Background(), events.SQSEvent{Records: []events.SQSMessage{{MessageId: "msg-result-failed", Body: string(encodedCommand(t, "rp_1"))}}})
 	if err != nil || len(response.BatchItemFailures) != 1 || response.BatchItemFailures[0].ItemIdentifier != "msg-result-failed" {
 		t.Fatalf("result sink failure must return its SQS message ID for retry: response=%+v error=%v", response, err)
 	}
 	if _, err := NewLambdaHandler(nil); err == nil {
 		t.Fatal("nil controller should fail")
+	}
+	if !strings.Contains(logs.String(), "correlation_id=req_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa") || strings.Contains(logs.String(), "SQS unavailable") {
+		t.Fatalf("operation failure log must correlate without leaking raw error: %s", logs.String())
 	}
 }

@@ -8,6 +8,142 @@ variable "resource_plane_id" {
   }
 }
 
+variable "workspace_storage_runtime" {
+  description = "Optional exact EFS identity used to grant the Resource Controller only Workspace Access Point and scoped execution-role lifecycle permissions. Null disables these permissions."
+  type = object({
+    file_system_id  = string
+    file_system_arn = string
+  })
+  default = null
+
+  validation {
+    condition = var.workspace_storage_runtime == null || (
+      can(regex("^fs-[0-9a-f]{8,40}$", var.workspace_storage_runtime.file_system_id)) &&
+      can(regex("^arn:(aws|aws-us-gov|aws-cn):elasticfilesystem:[a-z0-9-]+:[0-9]{12}:file-system/fs-[0-9a-f]{8,40}$", var.workspace_storage_runtime.file_system_arn)) &&
+      endswith(var.workspace_storage_runtime.file_system_arn, "/${var.workspace_storage_runtime.file_system_id}")
+    )
+    error_message = "workspace_storage_runtime requires an exact EFS filesystem ID and matching ARN."
+  }
+}
+
+variable "workspace_gateway_deployment" {
+  description = "Optional default-off private Fargate Workspace Gateway behind a public HTTPS/WSS ALB. Secret ARNs refer to operator-provisioned plain-text SecretString values; no Secret values enter Terraform."
+  type = object({
+    image_uri                 = string
+    secret_loader_image_uri   = string
+    ecs_cluster_arn           = string
+    ecs_cluster_name          = string
+    vpc_id                    = string
+    vpc_cidr_block            = string
+    public_subnet_ids         = list(string)
+    private_subnet_ids        = list(string)
+    ingress_cidr_blocks       = list(string)
+    egress_cidr_blocks        = list(string)
+    acm_certificate_arn       = string
+    microvm_image_arn         = string
+    journal_bucket_name       = string
+    journal_bucket_arn        = string
+    journal_prefix            = string
+    session_lookup_endpoint   = string
+    connection_lease_endpoint = string
+    public_origin             = string
+    allowed_origins           = list(string)
+    agent_ticket_key_id       = string
+    secret_arns = object({
+      tls_certificate          = string
+      tls_private_key          = string
+      session_public_keys      = string
+      session_lookup_hmac      = string
+      connection_lease_hmac    = string
+      agent_ticket_private_key = string
+    })
+    kms_key_arns                  = list(string)
+    access_log_bucket             = string
+    task_cpu                      = number
+    task_memory                   = number
+    desired_count                 = number
+    min_capacity                  = number
+    max_capacity                  = number
+    max_connections               = number
+    max_connections_per_workspace = number
+    log_retention_days            = number
+    deletion_protection           = bool
+  })
+  default = null
+
+  validation {
+    condition = var.workspace_gateway_deployment == null || (
+      can(regex("^[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com/[A-Za-z0-9._/-]+@sha256:[0-9a-f]{64}$", var.workspace_gateway_deployment.image_uri)) &&
+      can(regex("^public\\.ecr\\.aws/[A-Za-z0-9._/-]+@sha256:[0-9a-f]{64}$", var.workspace_gateway_deployment.secret_loader_image_uri)) &&
+      can(regex("^arn:(aws|aws-us-gov|aws-cn):ecs:[a-z0-9-]+:[0-9]{12}:cluster/.+$", var.workspace_gateway_deployment.ecs_cluster_arn)) &&
+      can(regex("^[A-Za-z0-9_-]{1,255}$", var.workspace_gateway_deployment.ecs_cluster_name)) &&
+      endswith(var.workspace_gateway_deployment.ecs_cluster_arn, "/${var.workspace_gateway_deployment.ecs_cluster_name}") &&
+      can(regex("^vpc-[0-9a-f]{8,17}$", var.workspace_gateway_deployment.vpc_id)) &&
+      can(cidrhost(var.workspace_gateway_deployment.vpc_cidr_block, 0)) &&
+      length(var.workspace_gateway_deployment.public_subnet_ids) >= 2 &&
+      length(var.workspace_gateway_deployment.private_subnet_ids) >= 2 &&
+      length(toset(concat(var.workspace_gateway_deployment.public_subnet_ids, var.workspace_gateway_deployment.private_subnet_ids))) == length(var.workspace_gateway_deployment.public_subnet_ids) + length(var.workspace_gateway_deployment.private_subnet_ids) &&
+      alltrue([for subnet_id in concat(var.workspace_gateway_deployment.public_subnet_ids, var.workspace_gateway_deployment.private_subnet_ids) : can(regex("^subnet-[0-9a-f]{8,17}$", subnet_id))]) &&
+      length(var.workspace_gateway_deployment.ingress_cidr_blocks) > 0 &&
+      alltrue([for cidr in concat(var.workspace_gateway_deployment.ingress_cidr_blocks, var.workspace_gateway_deployment.egress_cidr_blocks) : can(cidrhost(cidr, 0))]) &&
+      length(var.workspace_gateway_deployment.egress_cidr_blocks) > 0 &&
+      can(regex("^arn:(aws|aws-us-gov|aws-cn):acm:[a-z0-9-]+:[0-9]{12}:certificate/[0-9a-fA-F-]+$", var.workspace_gateway_deployment.acm_certificate_arn)) &&
+      can(regex("^arn:(aws|aws-us-gov|aws-cn):lambda:[a-z0-9-]+:[0-9]{12}:microvm-image:[A-Za-z0-9_-]+$", var.workspace_gateway_deployment.microvm_image_arn)) &&
+      can(regex("^[a-z0-9.-]{3,63}$", var.workspace_gateway_deployment.journal_bucket_name)) &&
+      can(regex("^arn:(aws|aws-us-gov|aws-cn):s3:::[a-z0-9.-]{3,63}$", var.workspace_gateway_deployment.journal_bucket_arn)) &&
+      endswith(var.workspace_gateway_deployment.journal_bucket_arn, var.workspace_gateway_deployment.journal_bucket_name) &&
+      !strcontains(var.workspace_gateway_deployment.journal_prefix, "..") &&
+      can(regex("^https://[^/?#]+(?::[0-9]+)?$", var.workspace_gateway_deployment.session_lookup_endpoint)) &&
+      can(regex("^https://[^/?#]+(?::[0-9]+)?$", var.workspace_gateway_deployment.connection_lease_endpoint)) &&
+      can(regex("^https://[^/?#]+$", var.workspace_gateway_deployment.public_origin)) &&
+      can(regex("^[A-Za-z0-9_-]{1,64}$", var.workspace_gateway_deployment.agent_ticket_key_id)) &&
+      length(var.workspace_gateway_deployment.allowed_origins) > 0 &&
+      alltrue([for origin in var.workspace_gateway_deployment.allowed_origins : can(regex("^https://[^/?#]+$", origin))]) &&
+      length(var.workspace_gateway_deployment.kms_key_arns) == length(toset(var.workspace_gateway_deployment.kms_key_arns)) &&
+      alltrue([for arn in var.workspace_gateway_deployment.kms_key_arns : can(regex("^arn:(aws|aws-us-gov|aws-cn):kms:[a-z0-9-]+:[0-9]{12}:key/[0-9a-fA-F-]+$", arn))]) &&
+      (var.workspace_gateway_deployment.access_log_bucket == "" || can(regex("^[a-z0-9.-]{3,63}$", var.workspace_gateway_deployment.access_log_bucket))) &&
+      contains([256, 512, 1024, 2048, 4096], var.workspace_gateway_deployment.task_cpu) &&
+      contains({
+        256  = [512, 1024, 2048]
+        512  = [1024, 2048, 3072, 4096]
+        1024 = [2048, 3072, 4096, 5120, 6144, 7168, 8192]
+        2048 = [4096, 5120, 6144, 7168, 8192, 9216, 10240, 11264, 12288, 13312, 14336, 15360, 16384]
+        4096 = [8192, 9216, 10240, 11264, 12288, 13312, 14336, 15360, 16384, 17408, 18432, 19456, 20480, 21504, 22528, 23552, 24576, 25600, 26624, 27648, 28672, 29696, 30720]
+      }[var.workspace_gateway_deployment.task_cpu], var.workspace_gateway_deployment.task_memory) &&
+      var.workspace_gateway_deployment.desired_count >= var.workspace_gateway_deployment.min_capacity &&
+      var.workspace_gateway_deployment.desired_count <= var.workspace_gateway_deployment.max_capacity &&
+      var.workspace_gateway_deployment.min_capacity >= 2 && var.workspace_gateway_deployment.max_capacity <= 100 &&
+      var.workspace_gateway_deployment.max_connections >= 1 && var.workspace_gateway_deployment.max_connections <= 10000 &&
+      var.workspace_gateway_deployment.max_connections_per_workspace >= 1 &&
+      var.workspace_gateway_deployment.max_connections_per_workspace <= var.workspace_gateway_deployment.max_connections &&
+      contains([1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365], var.workspace_gateway_deployment.log_retention_days)
+    )
+    error_message = "workspace_gateway_deployment requires pinned ARM64 image digests, a multi-AZ Fargate/ALB network, exact runtime and Secret ARNs, HTTPS endpoints/origins, bounded scaling, and valid log settings."
+  }
+
+  validation {
+    condition = var.workspace_gateway_deployment == null || (
+      length(toset([
+        var.workspace_gateway_deployment.secret_arns.tls_certificate,
+        var.workspace_gateway_deployment.secret_arns.tls_private_key,
+        var.workspace_gateway_deployment.secret_arns.session_public_keys,
+        var.workspace_gateway_deployment.secret_arns.session_lookup_hmac,
+        var.workspace_gateway_deployment.secret_arns.connection_lease_hmac,
+        var.workspace_gateway_deployment.secret_arns.agent_ticket_private_key,
+      ])) == 6 &&
+      alltrue([for arn in [
+        var.workspace_gateway_deployment.secret_arns.tls_certificate,
+        var.workspace_gateway_deployment.secret_arns.tls_private_key,
+        var.workspace_gateway_deployment.secret_arns.session_public_keys,
+        var.workspace_gateway_deployment.secret_arns.session_lookup_hmac,
+        var.workspace_gateway_deployment.secret_arns.connection_lease_hmac,
+        var.workspace_gateway_deployment.secret_arns.agent_ticket_private_key,
+      ] : can(regex("^arn:(aws|aws-us-gov|aws-cn):secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]{1,512}$", arn))])
+    )
+    error_message = "workspace_gateway_deployment requires six distinct concrete Secrets Manager ARNs, one per TLS, public-key, HMAC, and Agent signing key."
+  }
+}
+
 variable "control_plane_dispatcher_role_arn" {
   description = "Exact IAM role ARN allowed to send Resource Plane commands."
   type        = string
@@ -67,12 +203,12 @@ variable "workload_controller_secret_arns" {
     error_message = "Workload Controller Secret permissions require the dedicated Workload command/result queues."
   }
   validation {
-    condition     = length(var.workload_controller_secret_arns) == 0 || length(var.workload_controller_secret_arns) == 5
-    error_message = "When configured, Workload Controller Secret permissions must include the five distinct runtime Secret ARNs."
+    condition     = length(var.workload_controller_secret_arns) == 0 || length(var.workload_controller_secret_arns) == 6
+    error_message = "When configured, Workload Controller Secret permissions must include six distinct runtime Secret ARNs."
   }
   validation {
-    condition     = var.workload_controller_runtime == null || length(var.workload_controller_secret_arns) == 5
-    error_message = "Runtime IAM requires all five exact Workload Controller Secret ARNs."
+    condition     = var.workload_controller_runtime == null || length(var.workload_controller_secret_arns) == 6
+    error_message = "Runtime IAM requires all six exact Workload Controller Secret ARNs."
   }
   validation {
     condition     = length(var.workload_controller_secret_arns) == 0 || var.workload_controller_runtime != null
@@ -128,6 +264,25 @@ variable "workload_controller_runtime" {
   }
 }
 
+variable "workload_artifact_storage" {
+  description = "Optional managed private bucket configuration for the Workload artifact prefix. Requires the explicit Workload runtime IAM scope; null keeps bucket provisioning disabled."
+  type = object({
+    retention_days = number
+  })
+  default = null
+
+  validation {
+    condition = var.workload_artifact_storage == null || (
+      var.workload_controller_runtime != null &&
+      var.enable_workload_result_queue &&
+      var.workload_artifact_storage.retention_days >= 1 &&
+      var.workload_artifact_storage.retention_days <= 3650 &&
+      floor(var.workload_artifact_storage.retention_days) == var.workload_artifact_storage.retention_days
+    )
+    error_message = "Managed artifact storage requires the enabled Workload runtime and an integer retention period from 1 to 3650 days."
+  }
+}
+
 variable "workload_controller_vpc_config" {
   description = "Pre-provisioned private subnets and a dedicated security group for the Workload Controller Lambda. Network routes/endpoints remain owned and reviewed by the Resource Plane account."
   type = object({
@@ -150,25 +305,28 @@ variable "workload_controller_vpc_config" {
 }
 
 variable "workload_controller_deployment" {
-  description = "Optional default-off combined Workload command/recovery Lambda deployment. Requires the dedicated Workload queues, exact runtime policy, and five Secret ARNs; Terraform never receives Secret values."
+  description = "Optional default-off combined Workload command/recovery/cleanup Lambda deployment. Requires the dedicated Workload queues, exact runtime policy, and six Secret ARNs; Terraform never receives Secret values."
   type = object({
-    zip_path                       = string
-    control_plane_endpoint         = string
-    control_plane_hmac_secret_arn  = string
-    broker_url                     = string
-    broker_client_cert_secret_arn  = string
-    broker_client_key_secret_arn   = string
-    broker_ca_secret_arn           = string
-    ticket_key_id                  = string
-    ticket_private_key_secret_arn  = string
-    runtime_profiles_json          = string
-    recovery_page_size             = number
-    recovery_max_pages             = number
-    recovery_lease_ttl             = string
-    recovery_schedule_expression   = string
-    lambda_timeout_seconds         = number
-    lambda_memory_size             = number
-    reserved_concurrent_executions = number
+    zip_path                             = string
+    control_plane_endpoint               = string
+    control_plane_hmac_secret_arn        = string
+    artifact_cleanup_hmac_secret_arn     = string
+    broker_url                           = string
+    broker_client_cert_secret_arn        = string
+    broker_client_key_secret_arn         = string
+    broker_ca_secret_arn                 = string
+    ticket_key_id                        = string
+    ticket_private_key_secret_arn        = string
+    runtime_profiles_json                = string
+    recovery_page_size                   = number
+    recovery_max_pages                   = number
+    recovery_lease_ttl                   = string
+    recovery_schedule_expression         = string
+    artifact_cleanup_batch_size          = number
+    artifact_cleanup_schedule_expression = string
+    lambda_timeout_seconds               = number
+    lambda_memory_size                   = number
+    reserved_concurrent_executions       = number
   })
   default = null
 
@@ -187,6 +345,9 @@ variable "workload_controller_deployment" {
       floor(var.workload_controller_deployment.recovery_max_pages) == var.workload_controller_deployment.recovery_max_pages &&
       can(regex("^[1-9][0-9]*[smh]$", var.workload_controller_deployment.recovery_lease_ttl)) &&
       can(regex("^(rate\\(1 (minute|hour|day)s?\\)|rate\\(([2-9]|[1-9][0-9]+) (minutes|hours|days)\\)|cron\\(.+\\))$", var.workload_controller_deployment.recovery_schedule_expression)) &&
+      var.workload_controller_deployment.artifact_cleanup_batch_size >= 1 && var.workload_controller_deployment.artifact_cleanup_batch_size <= 1000 &&
+      floor(var.workload_controller_deployment.artifact_cleanup_batch_size) == var.workload_controller_deployment.artifact_cleanup_batch_size &&
+      can(regex("^(rate\\(1 (minute|hour|day)s?\\)|rate\\(([2-9]|[1-9][0-9]+) (minutes|hours|days)\\)|cron\\(.+\\))$", var.workload_controller_deployment.artifact_cleanup_schedule_expression)) &&
       var.workload_controller_deployment.lambda_timeout_seconds >= 1 && var.workload_controller_deployment.lambda_timeout_seconds <= 900 &&
       floor(var.workload_controller_deployment.lambda_timeout_seconds) == var.workload_controller_deployment.lambda_timeout_seconds &&
       var.workload_controller_deployment.lambda_memory_size >= 1024 && var.workload_controller_deployment.lambda_memory_size <= 10240 &&
@@ -196,13 +357,14 @@ variable "workload_controller_deployment" {
       var.command_visibility_timeout_seconds >= var.workload_controller_deployment.lambda_timeout_seconds * 6 &&
       toset([
         var.workload_controller_deployment.control_plane_hmac_secret_arn,
+        var.workload_controller_deployment.artifact_cleanup_hmac_secret_arn,
         var.workload_controller_deployment.broker_client_cert_secret_arn,
         var.workload_controller_deployment.broker_client_key_secret_arn,
         var.workload_controller_deployment.broker_ca_secret_arn,
         var.workload_controller_deployment.ticket_private_key_secret_arn
       ]) == toset(var.workload_controller_secret_arns)
     )
-    error_message = "Workload Controller deployment requires an existing ZIP, HTTPS endpoints, private VPC subnets/security groups, exact five matching Secret ARNs, enabled dedicated queues/runtime IAM, bounded Lambda/recovery settings, at least two Lambda concurrency slots, and queue visibility at least six times its timeout."
+    error_message = "Workload Controller deployment requires an existing ZIP, HTTPS endpoints, private VPC subnets/security groups, exact six matching Secret ARNs, enabled dedicated queues/runtime IAM, bounded Lambda/recovery/cleanup settings, at least two Lambda concurrency slots, and queue visibility at least six times its timeout."
   }
 }
 
@@ -440,6 +602,78 @@ variable "fake_controller_memory_size" {
   validation {
     condition     = var.fake_controller_memory_size >= 128 && var.fake_controller_memory_size <= 10240
     error_message = "fake_controller_memory_size must be between 128 and 10240 MB."
+  }
+}
+
+variable "workspace_service_controller_vpc_config" {
+  description = "Pre-provisioned private subnets and dedicated security group for the optional Workspace Service controller. Routes/endpoints are owned and reviewed by the Resource Plane account."
+  type = object({
+    subnet_ids         = list(string)
+    security_group_ids = list(string)
+  })
+  default = null
+
+  validation {
+    condition = var.workspace_service_controller_vpc_config == null || (
+      length(var.workspace_service_controller_vpc_config.subnet_ids) >= 2 && length(var.workspace_service_controller_vpc_config.subnet_ids) <= 16 &&
+      length(var.workspace_service_controller_vpc_config.subnet_ids) == length(toset(var.workspace_service_controller_vpc_config.subnet_ids)) &&
+      alltrue([for id in var.workspace_service_controller_vpc_config.subnet_ids : can(regex("^subnet-[0-9A-Fa-f]+$", id))]) &&
+      length(var.workspace_service_controller_vpc_config.security_group_ids) >= 1 && length(var.workspace_service_controller_vpc_config.security_group_ids) <= 5 &&
+      length(var.workspace_service_controller_vpc_config.security_group_ids) == length(toset(var.workspace_service_controller_vpc_config.security_group_ids)) &&
+      alltrue([for id in var.workspace_service_controller_vpc_config.security_group_ids : can(regex("^sg-[0-9A-Fa-f]+$", id))])
+    )
+    error_message = "workspace_service_controller_vpc_config requires unique private subnet and dedicated security group IDs."
+  }
+}
+
+variable "workspace_service_controller_deployment" {
+  description = "Optional default-off Workspace Service SQS/Lambda deployment. Accept only a built ARM64 ZIP, exact journal/image/Secret references, and an HTTPS Control Plane endpoint; never provide Secret values."
+  type = object({
+    zip_path                       = string
+    journal_bucket_arn             = string
+    journal_prefix                 = optional(string, "")
+    microvm_image_arn              = string
+    ticket_key_id                  = string
+    ticket_key_secret_arn          = string
+    report_key_secret_arn          = string
+    report_endpoint                = string
+    lambda_timeout_seconds         = number
+    lambda_memory_size             = number
+    reserved_concurrent_executions = number
+    secret_kms_key_arns            = optional(list(string), [])
+  })
+  default = null
+
+  validation {
+    condition = var.workspace_service_controller_deployment == null || (
+      var.workspace_service_controller_vpc_config != null &&
+      var.workspace_service_controller_deployment.zip_path != "" && fileexists(var.workspace_service_controller_deployment.zip_path) &&
+      can(regex("^arn:(aws|aws-us-gov|aws-cn):s3:::[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.workspace_service_controller_deployment.journal_bucket_arn)) &&
+      (var.workspace_service_controller_deployment.journal_prefix == "" || (
+        can(regex("^[A-Za-z0-9/_=-]{1,512}$", var.workspace_service_controller_deployment.journal_prefix)) &&
+        !startswith(var.workspace_service_controller_deployment.journal_prefix, "/") &&
+        !endswith(var.workspace_service_controller_deployment.journal_prefix, "/") &&
+        !can(regex("\\.\\.|//", var.workspace_service_controller_deployment.journal_prefix))
+      )) &&
+      can(regex("^arn:(aws|aws-us-gov|aws-cn):lambda:[a-z0-9-]+:[0-9]{12}:microvm-image:[A-Za-z0-9_-]+$", var.workspace_service_controller_deployment.microvm_image_arn)) &&
+      can(regex("^[A-Za-z0-9_-]{1,64}$", var.workspace_service_controller_deployment.ticket_key_id)) &&
+      can(regex("^arn:(aws|aws-us-gov|aws-cn):secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]{1,512}$", var.workspace_service_controller_deployment.ticket_key_secret_arn)) &&
+      can(regex("^arn:(aws|aws-us-gov|aws-cn):secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]{1,512}$", var.workspace_service_controller_deployment.report_key_secret_arn)) &&
+      var.workspace_service_controller_deployment.ticket_key_secret_arn != var.workspace_service_controller_deployment.report_key_secret_arn &&
+      try(split(":", var.workspace_service_controller_deployment.microvm_image_arn)[3] == split(":", var.workspace_service_controller_deployment.ticket_key_secret_arn)[3], false) &&
+      try(split(":", var.workspace_service_controller_deployment.microvm_image_arn)[3] == split(":", var.workspace_service_controller_deployment.report_key_secret_arn)[3], false) &&
+      can(regex("^https://[^/?#]+(?::[0-9]+)?$", var.workspace_service_controller_deployment.report_endpoint)) &&
+      var.workspace_service_controller_deployment.lambda_timeout_seconds >= 30 && var.workspace_service_controller_deployment.lambda_timeout_seconds <= 900 &&
+      floor(var.workspace_service_controller_deployment.lambda_timeout_seconds) == var.workspace_service_controller_deployment.lambda_timeout_seconds &&
+      var.command_visibility_timeout_seconds >= var.workspace_service_controller_deployment.lambda_timeout_seconds * 6 &&
+      var.workspace_service_controller_deployment.lambda_memory_size >= 1024 && var.workspace_service_controller_deployment.lambda_memory_size <= 10240 &&
+      floor(var.workspace_service_controller_deployment.lambda_memory_size) == var.workspace_service_controller_deployment.lambda_memory_size &&
+      var.workspace_service_controller_deployment.reserved_concurrent_executions >= 1 && var.workspace_service_controller_deployment.reserved_concurrent_executions <= 1000 &&
+      floor(var.workspace_service_controller_deployment.reserved_concurrent_executions) == var.workspace_service_controller_deployment.reserved_concurrent_executions &&
+      alltrue([for arn in var.workspace_service_controller_deployment.secret_kms_key_arns : can(regex("^arn:(aws|aws-us-gov|aws-cn):kms:[a-z0-9-]+:[0-9]{12}:key/[A-Fa-f0-9-]+$", arn))]) &&
+      length(var.workspace_service_controller_deployment.secret_kms_key_arns) == length(toset(var.workspace_service_controller_deployment.secret_kms_key_arns))
+    )
+    error_message = "Workspace Service deployment requires a built ZIP, private VPC configuration, valid journal/image/exact Secret ARNs in the image Region, HTTPS report endpoint, bounded Lambda settings, and queue visibility at least six times the Lambda timeout."
   }
 }
 

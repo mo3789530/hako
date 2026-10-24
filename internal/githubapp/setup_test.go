@@ -29,6 +29,10 @@ func TestSetupClientNeverFollowsCredentialRedirects(t *testing.T) {
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
+				if r.URL.Path == "/user" {
+					_, _ = io.WriteString(w, `{"id":765,"login":"hako-user"}`)
+					return
+				}
 				_, _ = io.WriteString(w, `{"access_token":"test-user-token","token_type":"bearer"}`)
 			}))
 			defer server.Close()
@@ -49,7 +53,7 @@ func TestSetupClientNeverFollowsCredentialRedirects(t *testing.T) {
 }
 
 func TestSetupClientExchangesCodeAndVerifiesUserInstallation(t *testing.T) {
-	var installationAuth string
+	var installationAuth, userAuth string
 	const codeVerifier = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -73,6 +77,9 @@ func TestSetupClientExchangesCodeAndVerifiesUserInstallation(t *testing.T) {
 				t.Error("GitHub API version header was not set")
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"total_count": 1, "installations": []any{map[string]any{"id": 987, "app_id": 123, "account": map[string]string{"login": "acme"}}}})
+		case "/user":
+			userAuth = r.Header.Get("Authorization")
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 765, "login": "hako-user"})
 		default:
 			http.NotFound(w, r)
 		}
@@ -89,11 +96,11 @@ func TestSetupClientExchangesCodeAndVerifiesUserInstallation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify Installation: %v", err)
 	}
-	if identity.ID != 987 || identity.AppID != 123 || identity.AccountLogin != "acme" {
+	if identity.ID != 987 || identity.AppID != 123 || identity.AccountLogin != "acme" || identity.GitHubUserID != 765 || identity.GitHubUserLogin != "hako-user" {
 		t.Fatalf("Installation identity = %+v", identity)
 	}
-	if installationAuth != "Bearer transient-user-token" {
-		t.Fatalf("Installation authorization header = %q", installationAuth)
+	if installationAuth != "Bearer transient-user-token" || userAuth != installationAuth {
+		t.Fatalf("GitHub user/Installation authorization headers = %q / %q", userAuth, installationAuth)
 	}
 	if strings.Contains(client.SetupURL("state + value"), " ") || !strings.Contains(client.SetupURL("state + value"), "state=state+%2B+value") {
 		t.Fatalf("setup URL did not safely encode state: %s", client.SetupURL("state + value"))
@@ -119,6 +126,10 @@ func TestSetupClientRejectsDifferentAppOrInstallation(t *testing.T) {
 				w.Header().Set("Content-Type", "application/json")
 				if r.URL.Path == "/login/oauth/access_token" {
 					_, _ = io.WriteString(w, `{"access_token":"token","token_type":"bearer"}`)
+					return
+				}
+				if r.URL.Path == "/user" {
+					_, _ = io.WriteString(w, `{"id":765,"login":"hako-user"}`)
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")

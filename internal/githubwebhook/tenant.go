@@ -130,6 +130,7 @@ func (h *TenantHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid webhook request", http.StatusUnauthorized)
 		return
 	}
+	verified.CorrelationID = CorrelationIDFromContext(r.Context())
 	normalized, err := Normalize(verified)
 	if err != nil {
 		http.Error(w, "unsupported or incomplete webhook event", http.StatusUnprocessableEntity)

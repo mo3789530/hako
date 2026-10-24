@@ -160,7 +160,7 @@ func (s *Server) start(w http.ResponseWriter, r *http.Request, claims TicketClai
 		http.Error(w, "invalid Hako Agent request", http.StatusBadRequest)
 		return
 	}
-	if claims.Execution == nil || input.SourceDigest != claims.Execution.SourceDigest || input.CommitSHA != claims.Execution.CommitSHA ||
+	if claims.Execution == nil || input.Kind != claims.Execution.Kind || input.SourceDigest != claims.Execution.SourceDigest || input.CommitSHA != claims.Execution.CommitSHA ||
 		!input.Deadline.Equal(claims.Execution.Deadline) {
 		http.Error(w, "request does not match signed execution ticket", http.StatusUnauthorized)
 		return

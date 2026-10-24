@@ -126,6 +126,14 @@ func (d *LambdaMicroVMGatewayDialer) OpenShell(ctx context.Context, claims works
 	return d.open(ctx, claims, workspacesession.PermissionShell, 0)
 }
 
+func (d *LambdaMicroVMGatewayDialer) OpenExec(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
+	return d.open(ctx, claims, workspacesession.PermissionExec, 0)
+}
+
+func (d *LambdaMicroVMGatewayDialer) OpenFileTransfer(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
+	return d.open(ctx, claims, workspacesession.PermissionFileTransfer, 0)
+}
+
 func (d *LambdaMicroVMGatewayDialer) OpenVSCode(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
 	return d.open(ctx, claims, workspacesession.PermissionVSCode, 0)
 }
@@ -143,7 +151,8 @@ func (d *LambdaMicroVMGatewayDialer) open(ctx context.Context, claims workspaces
 	if d == nil || ctx == nil || claims.UserID == "" || claims.TenantID != d.endpoint.TenantID ||
 		claims.WorkspaceID != d.endpoint.WorkspaceID || claims.ResourcePlane != d.endpoint.ResourcePlane ||
 		!hasWorkspacePermission(claims.Permissions, permission) ||
-		(permission != workspacesession.PermissionShell && permission != workspacesession.PermissionVSCode && permission != workspacesession.PermissionSSHProxy && permission != workspacesession.PermissionPortForward) {
+		(permission != workspacesession.PermissionShell && permission != workspacesession.PermissionExec && permission != workspacesession.PermissionVSCode && permission != workspacesession.PermissionSSHProxy &&
+			permission != workspacesession.PermissionPortForward && permission != workspacesession.PermissionFileTransfer) {
 		return nil, ErrInteractiveChannelUnavailable
 	}
 	connectCtx, cancel := context.WithTimeout(ctx, workspaceAgentConnectTimeout)
@@ -217,7 +226,8 @@ func newWorkspaceAgentWebSocketConfigForPermission(httpsEndpoint, workspaceID, o
 	permission workspacesession.Permission, port uint16) (*websocket.Config, error) {
 	if !validWebSocketSubprotocol(awsToken, 8000) || !validWorkspaceHeaderCredential(agentTicket, maxAgentTicketBytes) ||
 		!validGatewayOrigin(origin) || !validWorkspaceHookVMID(workspaceID) ||
-		(permission != workspacesession.PermissionShell && permission != workspacesession.PermissionVSCode && permission != workspacesession.PermissionSSHProxy && permission != workspacesession.PermissionPortForward) ||
+		(permission != workspacesession.PermissionShell && permission != workspacesession.PermissionExec && permission != workspacesession.PermissionVSCode && permission != workspacesession.PermissionSSHProxy &&
+			permission != workspacesession.PermissionPortForward && permission != workspacesession.PermissionFileTransfer) ||
 		(permission == workspacesession.PermissionPortForward && port == 0) || (permission != workspacesession.PermissionPortForward && permission != workspacesession.PermissionSSHProxy && port != 0) ||
 		(permission == workspacesession.PermissionSSHProxy && port != 22) {
 		return nil, ErrInteractiveChannelUnavailable
@@ -229,12 +239,17 @@ func newWorkspaceAgentWebSocketConfigForPermission(httpsEndpoint, workspaceID, o
 	}
 	endpoint.Scheme = "wss"
 	channel := "shell"
+	if permission == workspacesession.PermissionExec {
+		channel = "exec"
+	}
 	if permission == workspacesession.PermissionVSCode {
 		channel = "vscode"
 	} else if permission == workspacesession.PermissionSSHProxy {
 		channel = "ssh"
 	} else if permission == workspacesession.PermissionPortForward {
 		channel = "ports/" + strconv.Itoa(int(port))
+	} else if permission == workspacesession.PermissionFileTransfer {
+		channel = "files"
 	}
 	endpoint.Path = "/v1/workspaces/" + url.PathEscape(workspaceID) + "/" + channel
 	config, err := websocket.NewConfig(endpoint.String(), origin)
@@ -269,6 +284,8 @@ func validWebSocketSubprotocol(value string, maxBytes int) bool {
 
 var _ interface {
 	OpenShell(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error)
+	OpenExec(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error)
+	OpenFileTransfer(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error)
 	OpenVSCode(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error)
 	OpenPort(context.Context, workspacesession.Claims, workspacesession.Permission, uint16) (io.ReadWriteCloser, error)
 } = (*LambdaMicroVMGatewayDialer)(nil)

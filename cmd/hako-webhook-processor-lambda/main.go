@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -32,7 +33,8 @@ func handlerFor(run runOnce) func(context.Context, events.CloudWatchEvent) error
 	return func(ctx context.Context, _ events.CloudWatchEvent) error {
 		stats, err := run(ctx)
 		if err != nil {
-			return fmt.Errorf("process GitHub repository event batch (claimed=%d processed=%d workload_runs_created=%d actions_runner_jobs_admitted=%d deferred=%d raw_payloads_purged=%d): %w", stats.Claimed, stats.Processed, stats.WorkloadRunsCreated, stats.ActionsRunnerJobsAdmitted, stats.Deferred, stats.RawPayloadsPurged, err)
+			log.Printf("GitHub repository event batch failed (failure_class=process_batch claimed=%d processed=%d workload_runs_created=%d actions_runner_jobs_admitted=%d deferred=%d raw_payloads_purged=%d)", stats.Claimed, stats.Processed, stats.WorkloadRunsCreated, stats.ActionsRunnerJobsAdmitted, stats.Deferred, stats.RawPayloadsPurged)
+			return errors.New("GitHub repository event batch failed")
 		}
 		log.Printf("GitHub repository event batch complete (claimed=%d processed=%d workload_runs_created=%d actions_runner_jobs_admitted=%d deferred=%d raw_payloads_purged=%d)", stats.Claimed, stats.Processed, stats.WorkloadRunsCreated, stats.ActionsRunnerJobsAdmitted, stats.Deferred, stats.RawPayloadsPurged)
 		return nil

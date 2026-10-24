@@ -34,10 +34,12 @@ var (
 type Permission string
 
 const (
-	PermissionShell       Permission = "shell"
-	PermissionVSCode      Permission = "vscode"
-	PermissionPortForward Permission = "port-forward"
-	PermissionSSHProxy    Permission = "ssh-proxy"
+	PermissionShell        Permission = "shell"
+	PermissionExec         Permission = "exec"
+	PermissionVSCode       Permission = "vscode"
+	PermissionPortForward  Permission = "port-forward"
+	PermissionSSHProxy     Permission = "ssh-proxy"
+	PermissionFileTransfer Permission = "file-transfer"
 )
 
 type Claims struct {
@@ -151,13 +153,13 @@ func Verify(token string, keys map[string]ed25519.PublicKey, audience string, no
 }
 
 func validPermissions(permissions []Permission) bool {
-	if len(permissions) == 0 || len(permissions) > 4 {
+	if len(permissions) == 0 || len(permissions) > 6 {
 		return false
 	}
 	seen := make(map[Permission]struct{}, len(permissions))
 	for _, permission := range permissions {
 		switch permission {
-		case PermissionShell, PermissionVSCode, PermissionPortForward, PermissionSSHProxy:
+		case PermissionShell, PermissionExec, PermissionVSCode, PermissionPortForward, PermissionSSHProxy, PermissionFileTransfer:
 		default:
 			return false
 		}

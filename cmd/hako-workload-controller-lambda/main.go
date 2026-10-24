@@ -27,6 +27,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	"github.com/mo3789530/hako/internal/artifactretention"
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/githubbroker"
 	"github.com/mo3789530/hako/internal/workloadagent"
@@ -48,29 +49,31 @@ type profileDocument struct {
 }
 
 type deploymentConfig struct {
-	Mode                   string
-	ResourcePlaneID        domain.ResourcePlaneID
-	ControlPlaneEndpoint   string
-	ControlPlaneHMACKeyARN string
-	BrokerURL              string
-	BrokerCertSecretARN    string
-	BrokerKeySecretARN     string
-	BrokerCASecretARN      string
-	JournalBucket          string
-	JournalPrefix          string
-	RecoveryLeaseKey       string
-	SourceBucket           string
-	SourcePrefix           string
-	SourceKMSKeyID         string
-	ArtifactBucket         string
-	ArtifactPrefix         string
-	ArtifactKMSKeyID       string
-	ResultQueueURL         string
-	TicketKeyID            string
-	TicketPrivateKeyARN    string
-	Profiles               map[workloadcontroller.RuntimeProfileKey]workloadcontroller.RuntimeProfile
-	Runtime                workloadcontroller.LambdaConfig
-	Recovery               workloadcontroller.RecoveryLambdaConfig
+	Mode                      string
+	ResourcePlaneID           domain.ResourcePlaneID
+	ControlPlaneEndpoint      string
+	ControlPlaneHMACKeyARN    string
+	ArtifactCleanupHMACKeyARN string
+	BrokerURL                 string
+	BrokerCertSecretARN       string
+	BrokerKeySecretARN        string
+	BrokerCASecretARN         string
+	JournalBucket             string
+	JournalPrefix             string
+	RecoveryLeaseKey          string
+	SourceBucket              string
+	SourcePrefix              string
+	SourceKMSKeyID            string
+	ArtifactBucket            string
+	ArtifactPrefix            string
+	ArtifactKMSKeyID          string
+	ResultQueueURL            string
+	TicketKeyID               string
+	TicketPrivateKeyARN       string
+	Profiles                  map[workloadcontroller.RuntimeProfileKey]workloadcontroller.RuntimeProfile
+	Runtime                   workloadcontroller.LambdaConfig
+	Recovery                  workloadcontroller.RecoveryLambdaConfig
+	ArtifactCleanupBatch      int
 }
 
 func main() {
@@ -89,7 +92,7 @@ func run() error {
 	if err != nil {
 		return errors.New("load Resource Plane Workload AWS configuration")
 	}
-	controllerConfig, publisher, lease, err := compose(ctx, awsCfg, config)
+	controllerConfig, publisher, lease, cleanupWorker, err := compose(ctx, awsCfg, config)
 	if err != nil {
 		return err
 	}
@@ -115,7 +118,10 @@ func run() error {
 		recoveryHandler := func(ctx context.Context, event events.CloudWatchEvent) (any, error) {
 			return recovery.Handle(ctx, event)
 		}
-		lambda.Start(newEventMux(command.Handle, recoveryHandler))
+		cleanupHandler := func(ctx context.Context) (any, error) {
+			return cleanupWorker.RunOnce(ctx, time.Now().UTC())
+		}
+		lambda.Start(newEventMux(command.Handle, recoveryHandler, cleanupHandler))
 		return nil
 	}
 	lambda.Start(recovery.Handle)
@@ -123,91 +129,112 @@ func run() error {
 }
 
 func compose(ctx context.Context, awsCfg aws.Config, config deploymentConfig) (workloadcontroller.LambdaWorkloadHandlerConfig,
-	*workloadcontroller.SQSResultPublisher, *workloadjournal.S3RecoveryLease, error) {
+	*workloadcontroller.SQSResultPublisher, *workloadjournal.S3RecoveryLease, *artifactretention.Worker, error) {
 	if ctx == nil {
-		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, errors.New("Workload composition context is required")
+		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("Workload composition context is required")
 	}
 	secretReader := secretsmanager.NewFromConfig(awsCfg)
 	metadataKey, err := readSecret(ctx, secretReader, config.ControlPlaneHMACKeyARN, 4096)
 	if err != nil || len(metadataKey) < 32 {
-		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, errors.New("load Resource Plane metadata HMAC key")
+		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("load Resource Plane metadata HMAC key")
 	}
 	defer wipeSecretBytes(metadataKey)
+	cleanupKey, err := readSecret(ctx, secretReader, config.ArtifactCleanupHMACKeyARN, 4096)
+	if err != nil || len(cleanupKey) < 32 {
+		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("load Resource Plane artifact cleanup HMAC key")
+	}
+	defer wipeSecretBytes(cleanupKey)
 	ticketKeyBytes, err := readSecret(ctx, secretReader, config.TicketPrivateKeyARN, 16<<10)
 	if err != nil {
-		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, errors.New("load Agent ticket signing key secret")
+		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("load Agent ticket signing key secret")
 	}
 	defer wipeSecretBytes(ticketKeyBytes)
 	ticketKey, err := workloadagent.LoadTicketSigningKey(bytes.NewReader(ticketKeyBytes))
 	if err != nil {
-		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, errors.New("parse Agent ticket signing key secret")
+		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("parse Agent ticket signing key secret")
 	}
 	certPEM, err := readSecret(ctx, secretReader, config.BrokerCertSecretARN, 64<<10)
 	if err != nil {
-		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, errors.New("load checkout broker client certificate secret")
+		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("load checkout broker client certificate secret")
 	}
 	keyPEM, err := readSecret(ctx, secretReader, config.BrokerKeySecretARN, 64<<10)
 	if err != nil {
-		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, errors.New("load checkout broker client key secret")
+		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("load checkout broker client key secret")
 	}
 	defer wipeSecretBytes(keyPEM)
 	caPEM, err := readSecret(ctx, secretReader, config.BrokerCASecretARN, 64<<10)
 	if err != nil {
-		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, errors.New("load checkout broker CA secret")
+		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("load checkout broker CA secret")
 	}
 	certificate, roots, err := checkoutTLSFromPEM(certPEM, keyPEM, caPEM)
 	if err != nil {
-		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, errors.New("configure checkout broker mTLS")
+		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("configure checkout broker mTLS")
 	}
 	brokerClient, err := githubbroker.NewResourcePlaneCheckoutMTLSClient(string(config.ResourcePlaneID), certificate, roots)
 	if err != nil {
-		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, errors.New("configure checkout broker client")
+		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("configure checkout broker client")
 	}
 	checkoutCredentials, err := githubbroker.NewHTTPCheckoutProvider(config.BrokerURL, brokerClient)
 	if err != nil {
-		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, errors.New("configure checkout broker endpoint")
+		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("configure checkout broker endpoint")
+	}
+	agentTaskClient, err := githubbroker.NewHTTPAgentTaskClient(config.BrokerURL, string(config.ResourcePlaneID), certificate, roots)
+	if err != nil {
+		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("configure Agent task broker client")
 	}
 	awsS3 := s3.NewFromConfig(awsCfg)
 	journal, err := workloadjournal.NewS3Store(awsS3, config.JournalBucket, config.JournalPrefix)
 	if err != nil {
-		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, errors.New("configure Workload journal store")
+		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("configure Workload journal store")
 	}
 	sourceStager, err := workloadsource.NewS3SourceArchiveStager(awsS3, config.SourceBucket, config.SourcePrefix, config.SourceKMSKeyID, 0)
 	if err != nil {
-		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, errors.New("configure source archive stager")
+		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("configure source archive stager")
 	}
 	sources, err := workloadcontroller.NewTenantBrokeredRepositorySourceMaterializer(checkoutCredentials, sourceStager, nil)
 	if err != nil {
-		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, errors.New("configure Tenant-pinned source materializer")
+		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("configure Tenant-pinned source materializer")
 	}
 	metadata, err := workloadcontroller.NewControlPlaneMetadataClient(workloadcontroller.ControlPlaneMetadataConfig{
 		Endpoint: config.ControlPlaneEndpoint, ResourcePlaneID: config.ResourcePlaneID, HMACKey: metadataKey,
 	})
 	if err != nil {
-		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, errors.New("configure Control Plane metadata client")
+		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("configure Control Plane metadata client")
+	}
+	cleanupClient, err := artifactretention.NewControlPlaneClient(artifactretention.ControlPlaneClientConfig{
+		Endpoint: config.ControlPlaneEndpoint, ResourcePlaneID: config.ResourcePlaneID, HMACKey: cleanupKey,
+	})
+	if err != nil {
+		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("configure Control Plane artifact cleanup client")
+	}
+	cleanupWorker, err := artifactretention.New(cleanupClient, awsS3, artifactretention.Config{
+		Bucket: config.ArtifactBucket, KeyPrefix: strings.TrimSuffix(config.ArtifactPrefix, "/") + "/", BatchSize: config.ArtifactCleanupBatch,
+	})
+	if err != nil {
+		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("configure Workload artifact cleanup")
 	}
 	resolver, err := workloadcontroller.NewMetadataSpecificationResolver(workloadcontroller.MetadataSpecificationResolverConfig{
 		ResourcePlaneID: config.ResourcePlaneID, Metadata: metadata, Sources: sources, Profiles: config.Profiles,
 	})
 	if err != nil {
-		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, errors.New("configure trusted Workload specification resolver")
+		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("configure trusted Workload specification resolver")
 	}
 	archiveReader, err := workloadsource.NewS3SourceArchiveReader(awsS3, config.SourceBucket, config.SourcePrefix, 0)
 	if err != nil {
-		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, errors.New("configure source archive reader")
+		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("configure source archive reader")
 	}
 	logWriter, err := workloadagent.NewS3AttemptLogWriter(awsS3, config.ArtifactBucket, config.ArtifactPrefix, config.ArtifactKMSKeyID)
 	if err != nil {
-		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, errors.New("configure attempt log writer")
+		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("configure attempt log writer")
 	}
 	resultPublisher, err := workloadcontroller.NewSQSResultPublisher(sqs.NewFromConfig(awsCfg), config.ResultQueueURL)
 	if err != nil {
-		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, errors.New("configure Workload result queue publisher")
+		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("configure Workload result queue publisher")
 	}
 	ticketIssuer := &workloadagent.Ed25519TicketIssuer{KeyID: config.TicketKeyID, PrivateKey: ticketKey, TTL: workloadagent.AgentTicketMaxTTL}
 	controllerConfig := workloadcontroller.LambdaWorkloadHandlerConfig{
 		ResourcePlaneID: string(config.ResourcePlaneID), Journal: journal, LambdaAPI: lambdamicrovms.NewFromConfig(awsCfg), Resolver: resolver,
-		SourceArchives: archiveReader, AttemptLogs: logWriter,
+		SourceArchives: archiveReader, AttemptLogs: logWriter, AgentTasks: brokerAgentTaskProvider{client: agentTaskClient},
 		Runtime: workloadcontroller.LambdaConfig{ImageIdentifier: config.Runtime.ImageIdentifier, ImageVersion: config.Runtime.ImageVersion,
 			ImageDigest: config.Runtime.ImageDigest, IngressConnector: config.Runtime.IngressConnector,
 			VPCEgressConnector: config.Runtime.VPCEgressConnector, AgentTicketIssuer: ticketIssuer},
@@ -216,10 +243,31 @@ func compose(ctx context.Context, awsCfg aws.Config, config deploymentConfig) (w
 	if config.Mode == "recovery" || config.Mode == "combined" {
 		lease, err = workloadjournal.NewS3RecoveryLease(awsS3, config.JournalBucket, config.RecoveryLeaseKey)
 		if err != nil {
-			return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, errors.New("configure Workload recovery lease")
+			return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("configure Workload recovery lease")
 		}
 	}
-	return controllerConfig, resultPublisher, lease, nil
+	return controllerConfig, resultPublisher, lease, cleanupWorker, nil
+}
+
+type brokerAgentTaskProvider struct {
+	client *githubbroker.HTTPAgentTaskClient
+}
+
+func (p brokerAgentTaskProvider) ResolveAgentTask(ctx context.Context, id workloadjournal.Command) (workloadagent.AgentTask, error) {
+	if p.client == nil {
+		return workloadagent.AgentTask{}, errors.New("Agent task broker is unavailable")
+	}
+	record, err := p.client.Resolve(ctx, githubbroker.AgentTaskIdentity{TenantID: domain.TenantID(id.TenantID),
+		WorkloadRunID: domain.WorkloadRunID(id.WorkloadRunID), AttemptID: id.AttemptID, Generation: id.Generation,
+		ResourcePlaneID: domain.ResourcePlaneID(id.ResourcePlaneID)})
+	if err != nil {
+		return workloadagent.AgentTask{}, errors.New("Agent task broker resolution failed")
+	}
+	return workloadagent.AgentTask{TenantID: string(record.TenantID), WorkloadRunID: string(record.WorkloadRunID),
+		IntegrationID: record.IntegrationID, DeliveryID: record.DeliveryID, InstallationID: record.InstallationID,
+		RepositoryID: record.RepositoryID, IssueNumber: record.IssueNumber, CommentID: record.CommentID,
+		DefaultBranch: record.DefaultBranch, CommitSHA: record.CommitSHA, Title: record.Title, Body: record.Body,
+		ContextSHA256: record.ContextSHA256}, nil
 }
 
 func configuredDeployment(getenv func(string) string) (deploymentConfig, error) {
@@ -230,7 +278,8 @@ func configuredDeployment(getenv func(string) string) (deploymentConfig, error) 
 	cfg := deploymentConfig{
 		Mode: get("HAKO_WORKLOAD_LAMBDA_MODE"), ResourcePlaneID: domain.ResourcePlaneID(get("HAKO_RESOURCE_PLANE_ID")),
 		ControlPlaneEndpoint: get("HAKO_WORKLOAD_CONTROL_PLANE_ENDPOINT"), ControlPlaneHMACKeyARN: get("HAKO_WORKLOAD_CONTROL_PLANE_HMAC_SECRET_ARN"),
-		BrokerURL: get("HAKO_WORKLOAD_CHECKOUT_BROKER_URL"), BrokerCertSecretARN: get("HAKO_WORKLOAD_BROKER_CLIENT_CERT_SECRET_ARN"),
+		ArtifactCleanupHMACKeyARN: get("HAKO_WORKLOAD_ARTIFACT_CLEANUP_HMAC_SECRET_ARN"),
+		BrokerURL:                 get("HAKO_WORKLOAD_CHECKOUT_BROKER_URL"), BrokerCertSecretARN: get("HAKO_WORKLOAD_BROKER_CLIENT_CERT_SECRET_ARN"),
 		BrokerKeySecretARN: get("HAKO_WORKLOAD_BROKER_CLIENT_KEY_SECRET_ARN"), BrokerCASecretARN: get("HAKO_WORKLOAD_BROKER_CA_SECRET_ARN"),
 		JournalBucket: get("HAKO_WORKLOAD_JOURNAL_BUCKET"), JournalPrefix: get("HAKO_WORKLOAD_JOURNAL_PREFIX"),
 		RecoveryLeaseKey: get("HAKO_WORKLOAD_RECOVERY_LEASE_KEY"), SourceBucket: get("HAKO_WORKLOAD_SOURCE_BUCKET"),
@@ -238,16 +287,25 @@ func configuredDeployment(getenv func(string) string) (deploymentConfig, error) 
 		ArtifactBucket: get("HAKO_WORKLOAD_ARTIFACT_BUCKET"), ArtifactPrefix: get("HAKO_WORKLOAD_ARTIFACT_PREFIX"),
 		ArtifactKMSKeyID: get("HAKO_WORKLOAD_ARTIFACT_KMS_KEY_ID"), ResultQueueURL: get("HAKO_WORKLOAD_RESULT_QUEUE_URL"),
 		TicketKeyID: get("HAKO_WORKLOAD_TICKET_KEY_ID"), TicketPrivateKeyARN: get("HAKO_WORKLOAD_TICKET_PRIVATE_KEY_SECRET_ARN"),
+		ArtifactCleanupBatch: 100,
 	}
 	if cfg.Mode != "command" && cfg.Mode != "recovery" && cfg.Mode != "combined" {
 		return deploymentConfig{}, errors.New("HAKO_WORKLOAD_LAMBDA_MODE must be command, recovery, or combined")
 	}
-	if cfg.ResourcePlaneID == "" || cfg.ControlPlaneEndpoint == "" || !validSecretARN(cfg.ControlPlaneHMACKeyARN) || cfg.BrokerURL == "" ||
+	if cfg.ResourcePlaneID == "" || cfg.ControlPlaneEndpoint == "" || !validSecretARN(cfg.ControlPlaneHMACKeyARN) ||
+		!validSecretARN(cfg.ArtifactCleanupHMACKeyARN) || cfg.BrokerURL == "" ||
 		!validSecretARN(cfg.BrokerCertSecretARN) || !validSecretARN(cfg.BrokerKeySecretARN) || !validSecretARN(cfg.BrokerCASecretARN) || cfg.JournalBucket == "" ||
 		cfg.SourceBucket == "" || cfg.ArtifactBucket == "" || cfg.ResultQueueURL == "" || cfg.TicketKeyID == "" || !validSecretARN(cfg.TicketPrivateKeyARN) {
 		return deploymentConfig{}, errors.New("Workload Lambda Resource Plane, metadata, broker, S3, result queue, and ticket settings are required")
 	}
-	secretARNs := []string{cfg.ControlPlaneHMACKeyARN, cfg.BrokerCertSecretARN, cfg.BrokerKeySecretARN, cfg.BrokerCASecretARN, cfg.TicketPrivateKeyARN}
+	if rawBatch := get("HAKO_WORKLOAD_ARTIFACT_CLEANUP_BATCH_SIZE"); rawBatch != "" {
+		batch, parseErr := positiveInt(rawBatch, 100, 1, artifactretention.MaxBatchSize)
+		if parseErr != nil {
+			return deploymentConfig{}, errors.New("HAKO_WORKLOAD_ARTIFACT_CLEANUP_BATCH_SIZE must be 1-1000")
+		}
+		cfg.ArtifactCleanupBatch = batch
+	}
+	secretARNs := []string{cfg.ControlPlaneHMACKeyARN, cfg.ArtifactCleanupHMACKeyARN, cfg.BrokerCertSecretARN, cfg.BrokerKeySecretARN, cfg.BrokerCASecretARN, cfg.TicketPrivateKeyARN}
 	seenSecrets := make(map[string]struct{}, len(secretARNs))
 	for _, arn := range secretARNs {
 		if _, exists := seenSecrets[arn]; exists {

@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"regexp"
 	"time"
 
 	"github.com/mo3789530/hako/internal/domain"
@@ -16,6 +18,8 @@ import (
 	"github.com/mo3789530/hako/internal/store/operations"
 	"github.com/mo3789530/hako/internal/store/transaction"
 )
+
+var operationCorrelationIDPattern = regexp.MustCompile(`^req_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 type Store interface {
 	Apply(context.Context, resourcecontroller.Result) (bool, error)
@@ -40,6 +44,7 @@ type Consumer struct {
 	store  Store
 	queue  Queue
 	config Config
+	logger *slog.Logger
 }
 
 type Stats struct {
@@ -65,7 +70,7 @@ func New(store Store, queue Queue, config Config) (*Consumer, error) {
 	if config.WaitTime < 0 || config.WaitTime > 20*time.Second {
 		return nil, errors.New("SQS result long-poll wait time must be 0-20 seconds")
 	}
-	return &Consumer{store: store, queue: queue, config: config}, nil
+	return &Consumer{store: store, queue: queue, config: config, logger: slog.Default()}, nil
 }
 
 // RunOnce acknowledges a result only after its database transaction commits.
@@ -88,17 +93,24 @@ func (c *Consumer) RunOnce(ctx context.Context) (Stats, error) {
 		result, err := decode(delivery.Body)
 		if err != nil {
 			stats.Failed++
+			c.loggerOrDefault().ErrorContext(ctx, "Operation result decoding failed", "failure_class", "decode_result")
 			failures = append(failures, fmt.Errorf("decode Operation result: %w", err))
 			continue
 		}
 		applied, err := c.store.Apply(ctx, result)
 		if err != nil {
 			stats.Failed++
+			c.loggerOrDefault().ErrorContext(ctx, "Operation result application failed", "failure_class", "apply_result",
+				"correlation_id", result.CorrelationID, "operation_id", result.OperationID,
+				"resource_plane_id", result.ResourcePlaneID, "workspace_id", result.WorkspaceID)
 			failures = append(failures, fmt.Errorf("apply Operation result %s: %w", result.OperationID, err))
 			continue
 		}
 		if err := c.queue.Delete(ctx, delivery.ReceiptHandle); err != nil {
 			stats.Failed++
+			c.loggerOrDefault().ErrorContext(ctx, "Operation result acknowledgement failed", "failure_class", "delete_delivery",
+				"correlation_id", result.CorrelationID, "operation_id", result.OperationID,
+				"resource_plane_id", result.ResourcePlaneID, "workspace_id", result.WorkspaceID)
 			failures = append(failures, fmt.Errorf("delete applied Operation result: %w", err))
 			continue
 		}
@@ -109,6 +121,13 @@ func (c *Consumer) RunOnce(ctx context.Context) (Stats, error) {
 		}
 	}
 	return stats, errors.Join(failures...)
+}
+
+func (c *Consumer) loggerOrDefault() *slog.Logger {
+	if c.logger != nil {
+		return c.logger
+	}
+	return slog.Default()
 }
 
 func decode(payload []byte) (resourcecontroller.Result, error) {
@@ -123,6 +142,9 @@ func decode(payload []byte) (resourcecontroller.Result, error) {
 	}
 	if result.OperationID == "" || result.TenantID == "" || result.WorkspaceID == "" || result.ResourcePlaneID == "" || result.Type == "" || result.CompletedAt.IsZero() {
 		return resourcecontroller.Result{}, errors.New("result envelope is incomplete or unsupported")
+	}
+	if result.CorrelationID != "" && !operationCorrelationIDPattern.MatchString(result.CorrelationID) {
+		return resourcecontroller.Result{}, errors.New("result correlation ID is invalid")
 	}
 	switch result.SchemaVersion {
 	case 1:
@@ -144,6 +166,9 @@ func decode(payload []byte) (resourcecontroller.Result, error) {
 			return resourcecontroller.Result{}, errors.New("failed result requires an error code and failed observed state")
 		}
 		return result, nil
+	}
+	if (result.ResourceKind == "lambda_microvm") != (result.AllocationGeneration > 0) {
+		return resourcecontroller.Result{}, errors.New("successful MicroVM result must include its allocation generation")
 	}
 	wantState := domain.ObservedWorkspaceState("")
 	switch result.Type {
@@ -173,10 +198,12 @@ func (s StoreAdapter) Apply(ctx context.Context, result resourcecontroller.Resul
 		return false, fmt.Errorf("encode Operation result audit payload: %w", err)
 	}
 	return operations.ApplyResult(ctx, s.Pool, s.Policy, operations.ResultInput{
-		OperationID: result.OperationID, WorkspaceRevision: result.WorkspaceRevision, TenantID: result.TenantID, WorkspaceID: result.WorkspaceID,
+		OperationID: result.OperationID, CorrelationID: result.CorrelationID,
+		WorkspaceRevision: result.WorkspaceRevision, TenantID: result.TenantID, WorkspaceID: result.WorkspaceID,
 		ResourcePlaneID: result.ResourcePlaneID, Type: result.Type, Status: result.Status,
 		ObservedState: result.ObservedState, ErrorCode: result.ErrorCode, CompletedAt: result.CompletedAt,
 		ResourceKind: result.ResourceKind, ExternalResourceID: result.ExternalResourceID,
-		Payload: payload,
+		AllocationGeneration: result.AllocationGeneration,
+		Payload:              payload,
 	})
 }

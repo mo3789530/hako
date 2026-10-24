@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -22,6 +23,19 @@ import (
 type agentRoundTrip func(*http.Request) (*http.Response, error)
 
 func (f agentRoundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type fixedAgentTaskProvider struct {
+	task  workloadagent.AgentTask
+	err   error
+	calls int
+	id    workloadjournal.Command
+}
+
+func (p *fixedAgentTaskProvider) ResolveAgentTask(_ context.Context, id workloadjournal.Command) (workloadagent.AgentTask, error) {
+	p.calls++
+	p.id = id
+	return p.task, p.err
+}
 
 func TestHTTPAgentRunnerFailsClosedWithoutSourceReader(t *testing.T) {
 	called := false
@@ -74,6 +88,73 @@ func TestHTTPAgentRunnerMapsTrustedSpecificationToProtocol(t *testing.T) {
 	})
 	if err != nil || !sourceUploaded || sourceReader.calls != 1 {
 		t.Fatalf("Start() = %v, sourceUploaded=%v reads=%d", err, sourceUploaded, sourceReader.calls)
+	}
+}
+
+func TestHTTPAgentRunnerResolvesAndTransfersBoundIssueTask(t *testing.T) {
+	id := workloadjournal.Command{TenantID: "tenant_1", WorkloadRunID: "run_1", AttemptID: "attempt_1", Generation: 2,
+		ResourcePlaneID: "rp_1", IdempotencyToken: "idem_1"}
+	issueBody := "Implement the approved issue request"
+	task := workloadagent.AgentTask{TenantID: "tenant_1", WorkloadRunID: "run_1", IntegrationID: "integration_1", DeliveryID: "delivery_12345678",
+		InstallationID: 71, RepositoryID: 81, IssueNumber: 33, CommentID: 44, DefaultBranch: "main", CommitSHA: strings.Repeat("b", 40),
+		Title: "Add feature", Body: issueBody}
+	task.ContextSHA256 = workloadagent.AgentTaskContextSHA256(task)
+	provider := &fixedAgentTaskProvider{task: task}
+	archiveBytes := []byte("verified Agent source archive")
+	var sourceUploaded, taskStarted bool
+	transport := agentRoundTrip(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/source"):
+			sourceUploaded = true
+			return &http.Response{StatusCode: http.StatusNoContent, Header: http.Header{"X-Hako-Agent-Protocol": []string{workloadagent.ProtocolVersion}},
+				Body: io.NopCloser(strings.NewReader(""))}, nil
+		case strings.HasSuffix(req.URL.Path, "/resource-planes/rp_1"):
+			if !sourceUploaded || req.Header.Get("Authorization") != "Bearer agent-ticket" {
+				t.Fatal("Agent Start preceded source upload or used the wrong ticket")
+			}
+			var start workloadagent.StartRequest
+			if err := json.NewDecoder(req.Body).Decode(&start); err != nil {
+				t.Fatal(err)
+			}
+			if start.Kind != domain.WorkloadAgent || start.AgentTask == nil || *start.AgentTask != task {
+				t.Fatalf("Agent task context was not transferred intact: %+v", start)
+			}
+			taskStarted = true
+			return &http.Response{StatusCode: http.StatusNoContent, Header: http.Header{"X-Hako-Agent-Protocol": []string{workloadagent.ProtocolVersion}},
+				Body: io.NopCloser(strings.NewReader(""))}, nil
+		default:
+			t.Fatalf("unexpected Agent protocol route: %s", req.URL.Path)
+			return nil, nil
+		}
+	})
+	reader := &fixedSourceArchiveReader{archive: workloadsource.SourceArchive{Body: io.NopCloser(bytes.NewReader(archiveBytes)), Size: int64(len(archiveBytes))}}
+	runner := NewHTTPAgentRunner(workloadagent.NewClient(transport), reader, nil, provider)
+	err := runner.Start(context.Background(), AgentConnection{MicroVMID: "vm_1", Endpoint: "https://microvm_1.lambda-microvm.ap-northeast-1.on.aws",
+		AuthToken: "one-use-token", AgentTicket: "agent-ticket", SourceTicket: "source-ticket"}, Specification{Identity: id,
+		Kind: domain.WorkloadAgent, GitHubIntegrationID: task.IntegrationID, GitHubInstallationID: task.InstallationID, GitHubRepositoryID: task.RepositoryID,
+		AgentTaskContextSHA256: task.ContextSHA256,
+		SourceDigest:           strings.Repeat("a", 64), CommitSHA: task.CommitSHA, TriggerEvent: "issue_comment", TriggerBranch: task.DefaultBranch,
+		Deadline: time.Now().UTC().Add(time.Hour), ArtifactPrefix: "s3://bucket/artifacts/tenant_1/run_1/attempt_1/"})
+	if err != nil || !sourceUploaded || !taskStarted || provider.calls != 1 || provider.id != id {
+		t.Fatalf("Agent task dispatch err=%v source=%t started=%t provider calls=%d identity=%+v", err, sourceUploaded, taskStarted, provider.calls, provider.id)
+	}
+}
+
+func TestHTTPAgentRunnerRequiresValidIssueTaskBeforeSourceSideEffects(t *testing.T) {
+	id := workloadjournal.Command{TenantID: "tenant_1", WorkloadRunID: "run_1", AttemptID: "attempt_1", Generation: 1,
+		ResourcePlaneID: "rp_1", IdempotencyToken: "idem_1"}
+	archive := &fixedSourceArchiveReader{archive: workloadsource.SourceArchive{Body: io.NopCloser(strings.NewReader("archive")), Size: 7}}
+	runner := NewHTTPAgentRunner(workloadagent.NewClient(agentRoundTrip(func(*http.Request) (*http.Response, error) {
+		t.Fatal("invalid or unavailable Agent task reached the MicroVM")
+		return nil, nil
+	})), archive, nil)
+	err := runner.Start(context.Background(), AgentConnection{MicroVMID: "vm_1", Endpoint: "https://microvm_1.lambda-microvm.ap-northeast-1.on.aws",
+		AuthToken: "one-use-token", AgentTicket: "agent-ticket", SourceTicket: "source-ticket"}, Specification{Identity: id,
+		Kind: domain.WorkloadAgent, GitHubIntegrationID: "integration_1", GitHubInstallationID: 71, GitHubRepositoryID: 81,
+		SourceDigest: strings.Repeat("a", 64), CommitSHA: strings.Repeat("b", 40), TriggerBranch: "main",
+		Deadline: time.Now().UTC().Add(time.Hour), ArtifactPrefix: "s3://bucket/artifacts/tenant_1/run_1/attempt_1/"})
+	if !errors.Is(err, ErrExecutionMaterialization) || archive.calls != 0 {
+		t.Fatalf("Agent task without broker provider err=%v source reads=%d", err, archive.calls)
 	}
 }
 

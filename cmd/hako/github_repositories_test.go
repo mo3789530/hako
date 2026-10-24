@@ -2,82 +2,18 @@ package main
 
 import "testing"
 
-func TestParseGitHubRepositoryFactoryCLI(t *testing.T) {
-	for _, test := range []struct {
-		name string
-		args []string
-		want bool
-	}{
-		{name: "enable", args: []string{"enable", "--tenant", "tenant_one", "--installation", "123", "--repository", "456"}, want: true},
-		{name: "disable", args: []string{"disable", "--tenant", "tenant_one", "--installation", "123", "--repository", "456"}, want: false},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			input, err := parseGitHubRepositoryFactoryCLI(test.args)
-			if err != nil || input.enabled != test.want || input.tenantID != "tenant_one" || input.installationID != 123 || input.repositoryID != 456 {
-				t.Fatalf("parseGitHubRepositoryFactoryCLI() = %+v, error = %v", input, err)
-			}
-		})
-	}
-}
-
-func TestParseGitHubRepositoryFactoryCLIRejectsUnsafeOrIncompleteInput(t *testing.T) {
-	for _, args := range [][]string{
-		{}, {"start", "--tenant", "tenant_one", "--installation", "123", "--repository", "456"},
-		{"enable", "--installation", "123", "--repository", "456"},
-		{"enable", "--tenant", "tenant_one", "--installation", "0", "--repository", "456"},
-		{"disable", "--tenant", "tenant_one", "--installation", "123", "--repository", "not-a-number"},
-		{"enable", "--tenant", "tenant_one", "--installation", "123", "--repository", "456", "extra"},
-	} {
-		if _, err := parseGitHubRepositoryFactoryCLI(args); err == nil {
-			t.Fatalf("parseGitHubRepositoryFactoryCLI(%q) unexpectedly succeeded", args)
-		}
-	}
-}
-
-func TestParseGitHubRepositoryActionsRunnerCLI(t *testing.T) {
-	for _, test := range []struct {
-		name string
-		args []string
-		want bool
-	}{
-		{name: "enable", args: []string{"enable", "--tenant", "tenant_one", "--installation", "123", "--repository", "456"}, want: true},
-		{name: "disable", args: []string{"disable", "--tenant", "tenant_one", "--installation", "123", "--repository", "456"}, want: false},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			input, err := parseGitHubRepositoryActionsRunnerCLI(test.args)
-			if err != nil || input.enabled != test.want || input.tenantID != "tenant_one" || input.installationID != 123 || input.repositoryID != 456 {
-				t.Fatalf("parseGitHubRepositoryActionsRunnerCLI() = %+v, error = %v", input, err)
-			}
-		})
-	}
-}
-
-func TestParseGitHubRepositoryActionsRunnerCLIRejectsInvalidInput(t *testing.T) {
-	for _, args := range [][]string{
-		{}, {"run", "--tenant", "tenant_one", "--installation", "123", "--repository", "456"},
-		{"enable", "--installation", "123", "--repository", "456"},
-		{"enable", "--tenant", "tenant_one", "--installation", "0", "--repository", "456"},
-		{"disable", "--tenant", "tenant_one", "--installation", "123", "--repository", "bad"},
-		{"enable", "--tenant", "tenant_one", "--installation", "123", "--repository", "456", "extra"},
-	} {
-		if _, err := parseGitHubRepositoryActionsRunnerCLI(args); err == nil {
-			t.Fatalf("parseGitHubRepositoryActionsRunnerCLI(%q) unexpectedly succeeded", args)
-		}
-	}
-}
-
-func TestParseGitHubRepositoryActionsRunnerWorkflowPolicyCLI(t *testing.T) {
-	input, err := parseGitHubRepositoryActionsRunnerWorkflowPolicyCLI([]string{"policy", "--tenant", "tenant_one", "--installation", "123", "--repository", "456", "--policy-file", "policy.json"})
-	if err != nil || input.tenantID != "tenant_one" || input.installationID != 123 || input.repositoryID != 456 || input.policyFile != "policy.json" {
-		t.Fatalf("parseGitHubRepositoryActionsRunnerWorkflowPolicyCLI() = %+v, error = %v", input, err)
+func TestParseGitHubRepositoryAgentWritePolicyCLI(t *testing.T) {
+	got, err := parseGitHubRepositoryAgentWritePolicyCLI([]string{"set", "--tenant", " tenant_a ", "--installation", "4", "--repository", "8", "--policy-file", "policy.json"})
+	if err != nil || got.tenantID != "tenant_a" || got.installationID != 4 || got.repositoryID != 8 || got.policyFile != "policy.json" {
+		t.Fatalf("parse Agent write policy CLI = %+v error=%v", got, err)
 	}
 	for _, args := range [][]string{
-		{}, {"policy", "--tenant", "tenant_one", "--installation", "123", "--repository", "456"},
-		{"policy", "--tenant", "tenant_one", "--installation", "0", "--repository", "456", "--policy-file", "policy.json"},
-		{"policy", "--tenant", "tenant_one", "--installation", "123", "--repository", "456", "--policy-file", "policy.json", "extra"},
+		{}, {"enable", "--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--policy-file", "p.json"},
+		{"set", "--tenant", "tenant_a", "--installation", "0", "--repository", "8", "--policy-file", "p.json"},
+		{"set", "--tenant", "tenant_a", "--installation", "4", "--repository", "8"},
 	} {
-		if _, err := parseGitHubRepositoryActionsRunnerWorkflowPolicyCLI(args); err == nil {
-			t.Fatalf("invalid workflow-policy CLI args %q accepted", args)
+		if _, err := parseGitHubRepositoryAgentWritePolicyCLI(args); err == nil {
+			t.Errorf("accepted invalid Agent write policy CLI args %q", args)
 		}
 	}
 }

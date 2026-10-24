@@ -106,6 +106,78 @@ func TestShellManagerContextCancellationKillsSession(t *testing.T) {
 	_ = manager.Close()
 }
 
+func TestOwnedShellCanDetachAndResumeOnlyForItsOwner(t *testing.T) {
+	manager := newTestShellManager(t, 2, time.Minute)
+	session, err := manager.OpenOwned(context.Background(), TerminalSize{Columns: 80, Rows: 24}, "user-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(session, "sleep 0.1; printf 'after-detach-marker\\n'\n"); err != nil {
+		t.Fatal(err)
+	}
+	session.Detach()
+	if _, err := manager.AttachOwned(session.ID(), "user-2"); !errors.Is(err, ErrSessionClosed) {
+		t.Fatalf("foreign owner attach error = %v", err)
+	}
+	if _, err := manager.AttachOwned(session.ID(), "user-1"); err != nil {
+		t.Fatalf("owner reconnect: %v", err)
+	}
+	if _, err := manager.AttachOwned(session.ID(), "user-1"); !errors.Is(err, ErrSessionClosed) {
+		t.Fatalf("concurrent attach error = %v", err)
+	}
+	output := make(chan string, 1)
+	go func() {
+		var got strings.Builder
+		buffer := make([]byte, 256)
+		for !strings.Contains(got.String(), "after-detach-marker") {
+			n, readErr := session.Read(buffer)
+			if n > 0 {
+				got.Write(buffer[:n])
+			}
+			if readErr != nil {
+				break
+			}
+		}
+		output <- got.String()
+	}()
+	select {
+	case got := <-output:
+		if !strings.Contains(got, "after-detach-marker") {
+			t.Fatalf("resumed shell output = %q", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for detached shell output")
+	}
+}
+
+func TestStaleShellAttachmentCannotCompeteAfterImmediateResume(t *testing.T) {
+	manager := newTestShellManager(t, 1, time.Minute)
+	session, err := manager.OpenOwned(context.Background(), TerminalSize{Columns: 80, Rows: 24}, "user-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := session.Attachment()
+	readDone := make(chan error, 1)
+	go func() {
+		_, readErr := stale.Read(make([]byte, 64))
+		readDone <- readErr
+	}()
+	if err := stale.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.AttachOwned(session.ID(), "user-1"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-readDone:
+		if !errors.Is(err, io.EOF) {
+			t.Fatalf("stale attachment read error=%v, want EOF", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stale attachment remained blocked after detach")
+	}
+}
+
 func TestShellManagerRejectsInvalidConfigAndTerminalSize(t *testing.T) {
 	temp := t.TempDir()
 	if _, err := NewShellManager(ShellConfig{WorkspaceRoot: filepath.Join(temp, "missing")}); !errors.Is(err, ErrInvalidConfig) {

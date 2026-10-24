@@ -1,9 +1,12 @@
 package operationresults
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,6 +62,25 @@ func TestConsumerAcknowledgesOnlyAfterStoreCommit(t *testing.T) {
 	}
 }
 
+func TestConsumerFailureLogIncludesCorrelationAndOmitsRawError(t *testing.T) {
+	store := &testStore{err: errors.New("database password detail")}
+	queue := &testQueue{deliveries: []Delivery{{Body: resultJSON(t), ReceiptHandle: "receipt-1"}}}
+	consumer, err := New(store, queue, Config{WaitTime: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	consumer.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	if _, err := consumer.RunOnce(context.Background()); err == nil {
+		t.Fatal("failed result should remain retryable")
+	}
+	logged := logs.String()
+	if !strings.Contains(logged, "correlation_id=req_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa") ||
+		!strings.Contains(logged, "failure_class=apply_result") || strings.Contains(logged, "database password detail") {
+		t.Fatalf("unsafe or incomplete structured failure log: %s", logged)
+	}
+}
+
 func TestConsumerAcknowledgesDuplicateTerminalResult(t *testing.T) {
 	store := &testStore{applied: false}
 	queue := &testQueue{deliveries: []Delivery{{Body: resultJSON(t), ReceiptHandle: "receipt-1"}}}
@@ -75,7 +97,7 @@ func TestConsumerAcknowledgesDuplicateTerminalResult(t *testing.T) {
 func TestDecodeRejectsUnsupportedOrInconsistentResult(t *testing.T) {
 	valid := resourcecontroller.Result{
 		SchemaVersion: 1, OperationID: "op_1", TenantID: "tenant_1", WorkspaceID: "ws_1",
-		ResourcePlaneID: "rp_1", Type: domain.OperationEnsureRunning, Status: domain.OperationSucceeded,
+		ResourcePlaneID: "rp_1", CorrelationID: "req_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Type: domain.OperationEnsureRunning, Status: domain.OperationSucceeded,
 		ObservedState: domain.ObservedWorkspaceRunning, CompletedAt: time.Now().UTC(),
 	}
 
@@ -93,6 +115,7 @@ func TestDecodeRejectsUnsupportedOrInconsistentResult(t *testing.T) {
 		name   string
 		mutate func(*resourcecontroller.Result)
 	}{
+		{name: "invalid correlation id", mutate: func(result *resourcecontroller.Result) { result.CorrelationID = "client-supplied" }},
 		{name: "unsupported type", mutate: func(result *resourcecontroller.Result) { result.Type = "unknown" }},
 		{name: "wrong successful state", mutate: func(result *resourcecontroller.Result) { result.ObservedState = domain.ObservedWorkspaceSuspended }},
 		{name: "failed without error code", mutate: func(result *resourcecontroller.Result) {
@@ -129,7 +152,7 @@ func resultJSON(t *testing.T) []byte {
 	t.Helper()
 	encoded, err := json.Marshal(resourcecontroller.Result{
 		SchemaVersion: 1, OperationID: "op_1", TenantID: "tenant_1", WorkspaceID: "ws_1",
-		ResourcePlaneID: "rp_1", Type: domain.OperationEnsureRunning, Status: domain.OperationSucceeded,
+		ResourcePlaneID: "rp_1", CorrelationID: "req_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Type: domain.OperationEnsureRunning, Status: domain.OperationSucceeded,
 		ObservedState: domain.ObservedWorkspaceRunning, CompletedAt: time.Now().UTC(),
 	})
 	if err != nil {

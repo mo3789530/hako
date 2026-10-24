@@ -4,6 +4,47 @@
 
 Status: In Progress (local code/dependency review, pinned OAuth authorization, credential-redirect rejection and CI govulncheck implemented; production gates depend on Tasks 40, 42 and 49). Priority: P2.
 
+Progress (2026-10-24): API requests receive a server-generated `req_…`
+correlation ID returned in `X-Hako-Request-ID`, added to request context, and
+included in structured access logs with route template/status/duration. A
+client-supplied ID is never trusted. GitHub webhook ingress carries this ID
+through the authenticated inbox; repository-triggered Workload Runs and
+platform Actions Runner Checks persist it, include it in transactional Check
+Outbox messages, verify it at delivery, and record it in structured Check
+delivery logs. Workload Run creation also copies the ID into the Scheduler
+Outbox; authenticated Resource Plane execution metadata returns it, and the
+Worker carries it in the Lambda MicroVM run hook and signed Agent execution
+binding. Artifacts and terminal result events retain and verify the same ID;
+the result handler logs it and artifact metadata resolves it from its owning
+Run. Raw application output is not modified to inject the ID.
+
+Progress (2026-10-24): Resource Plane Workload dispatch/cancel envelopes now
+carry the persisted request correlation ID through Dispatcher validation to
+the Lambda SQS handler. Failed command records and Workload result-consumer
+deliveries emit structured failure-class logs with validated correlation and
+execution identifiers when available; raw provider/database errors and queue
+payloads are intentionally omitted. API access logs already include the
+server-generated request ID and response status. Focused tests verify the ID
+is present on valid failed records and raw errors are not copied into logs.
+
+Workspace Operation create/action requests now copy the server-generated API
+request ID into their transactional Outbox command. Dispatcher validates the
+optional ID, the Resource Plane controller carries it into terminal results,
+and Operation result-consumer failures log it with safe resource identifiers.
+Before applying a result, the Control Plane compares any supplied ID against
+the original immutable Operation event, preventing a Resource Plane result
+from being attributed to another valid request ID.
+PostgreSQL API lifecycle tests verify create and suspend commands match their
+`X-Hako-Request-ID`; unit tests verify controller result propagation and
+failure-log redaction. Legacy commands without a correlation ID remain
+accepted. Failure-path correlation is now implemented for Workload and
+Workspace Operations. Workspace Gateway authorization/dial/recheck failures
+now log trusted Ticket/Tenant/Workspace/Plane identifiers and a bounded failure
+class, and artifact cleanup failures log Run/artifact/correlation identifiers;
+neither includes raw errors or storage references. Tests cover active Session
+recheck failure and S3 cleanup failure. Remaining work is the wider
+Gateway/cleanup worker inventory and production log/alert review.
+
 ## Goal
 
 Close cross-cutting security and operational gaps before production or broader Tenant onboarding.
@@ -14,7 +55,7 @@ Review evidence and remaining risks: [Security review](../docs/security-review.m
 
 - Review Tenant isolation, Hako RBAC, session replay, duplicate/out-of-order Operations, webhook replay, queue poison messages, secrets, artifact access, and untrusted fork PRs.
 - Define DSQL backup/restore, migration rollback/forward fix, Outbox retention, artifact retention/deletion, Workspace cleanup, orphan AWS discovery, and DLQ redrive procedures.
-- Add structured correlation IDs from webhook/Operation/Run through Queue, Runtime, logs, artifacts, and GitHub Checks; redact secrets and minimize developer data in logs.
+- Add structured correlation IDs from webhook/Operation/Run through Queue, Runtime, logs, artifacts, and GitHub Checks; redact secrets and minimize developer data in logs. Workload/Operation/Gateway/artifact-cleanup failure paths are locally covered; remaining verification is the wider cleanup failure inventory and production log/alert review.
 - Establish metrics/SLO alarms for API, DSQL, Outbox lag, queue age/DLQ, worker capacity/failure, Gateway, Runtime, and cleanup backlog.
 - Record deferred BYOC, multi-region, persistent database, and billing requirements as independent ADRs with owners and non-goals.
 
@@ -24,3 +65,47 @@ Review evidence and remaining risks: [Security review](../docs/security-review.m
 - Recovery/cleanup drills run against disposable local/fake data and prove idempotence; AWS drills require explicit approval and isolated accounts.
 - CI includes Go tests, PostgreSQL integration tests, Podman-isolated workload tests, Terraform fmt/validate, and security/policy checks.
 - Operator runbooks include alerts, diagnosis, safe retry/redrive, restore, rollback, and escalation instructions.
+
+## 2026-10-24 Artifact cleanup error boundary
+
+Artifact retention failures now return only bounded sentinel errors (listing,
+invalid oversized batch, or one-or-more item failures). The worker records
+fixed failure classes with Run/artifact correlation in structured logs, while
+provider/DSQL errors, Artifact IDs, and S3 references are absent from the
+error returned to the Lambda runtime. Tests exercise list, object-delete,
+metadata-release, and oversized-list failures. This closes the Artifact
+cleanup response/log boundary locally; Gateway-wide inventory and production
+log/alert review remain.
+
+The operator runbook [Control Plane and Resource Plane Operations](../docs/operations-runbook.md)
+now defines the non-destructive DSQL backup/restore sequence, forward-fix
+migration policy, Outbox/DLQ handling, Workspace/MicroVM cleanup fencing,
+tagged-orphan investigation, Artifact retention, and local recovery-drill
+evidence. It does not perform or authorize AWS restore, migration cutover,
+redrive, or deletion. A real AWS Backup restore and operational drill remain
+unverified.
+
+## 2026-10-24 Control Plane monitoring progress
+
+The Control Plane Terraform module now defines HTTP API stage alarms for 5xx
+responses and p95 latency, plus Aurora DSQL alarms for query timeouts and
+sustained OCC conflicts. Alarm names are exported. The Outbox Dispatcher emits
+the indexed oldest-unpublished age in low-cardinality Embedded Metric Format,
+with a conditional five-minute lag alarm. The outbox age lookup and Terraform
+configuration passed focused PostgreSQL integration, Go unit, OpenTofu
+format, and OpenTofu validation checks. `docs/control-plane-terraform.md`
+records dimensions, initial thresholds, missing-data behavior, and the fact
+that notification actions require environment-specific configuration. End-to-
+end alarm notification wiring and production log/alert review remain open.
+
+The wider local failure-log inventory also found outer process logs that copied
+raw errors from the Outbox Dispatcher, webhook processor, Operation result
+consumer, and Reconciler. Those logs now retain fixed failure classes and
+bounded counters/resource-plane identity; Lambda handlers return static retry
+errors while internal consumers keep their bounded identity-aware diagnostic
+records. API 500 responses use generic HTTP status messages. Workspace Gateway
+and artifact cleanup paths were reviewed: runtime server errors are normalized,
+cleanup logs use fixed classes and trusted IDs, and storage references/provider
+errors are not written. Local process-log changes are covered by bounded-error
+handler tests; deployed log retention, alarm delivery, and escalation review
+remain.

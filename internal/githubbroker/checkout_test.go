@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -40,7 +41,7 @@ func TestCheckoutServiceResolvesAndRechecksCanonicalTenantRun(t *testing.T) {
 		return run, access, nil
 	}, func(_ context.Context, actual domain.WorkloadRun, actualAccess githubapp.TenantPrivateKeyAccess) (string, time.Time, error) {
 		mintCalls++
-		if actual != run || actualAccess != access {
+		if !reflect.DeepEqual(actual, run) || actualAccess != access {
 			t.Fatal("mint did not receive canonical Run and exact credential pin")
 		}
 		return "ghs_token_value_that_is_never_logged", time.Now().Add(time.Hour), nil

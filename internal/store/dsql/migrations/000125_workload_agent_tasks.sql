@@ -1,0 +1,20 @@
+CREATE TABLE IF NOT EXISTS workload_agent_tasks (
+    tenant_id TEXT NOT NULL,
+    workload_run_id TEXT NOT NULL,
+    requested_by TEXT NOT NULL REFERENCES users(id),
+    integration_id TEXT NOT NULL,
+    delivery_id TEXT NOT NULL,
+    installation_id BIGINT NOT NULL CHECK (installation_id > 0),
+    repository_id BIGINT NOT NULL CHECK (repository_id > 0),
+    issue_number BIGINT NOT NULL CHECK (issue_number > 0),
+    comment_id BIGINT NOT NULL CHECK (comment_id > 0),
+    default_branch TEXT NOT NULL CHECK (length(default_branch) BETWEEN 1 AND 255),
+    commit_sha TEXT NOT NULL CHECK (commit_sha ~ '^(?:[0-9a-f]{40}|[0-9a-f]{64})$'),
+    issue_title TEXT NOT NULL CHECK (length(issue_title) BETWEEN 1 AND 1024),
+    issue_body TEXT NOT NULL CHECK (octet_length(issue_body) <= 65536),
+    context_sha256 TEXT NOT NULL CHECK (context_sha256 ~ '^[0-9a-f]{64}$'),
+    created_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (tenant_id, workload_run_id),
+    UNIQUE (integration_id, delivery_id),
+    FOREIGN KEY (tenant_id, workload_run_id) REFERENCES workload_runs(tenant_id, id)
+);

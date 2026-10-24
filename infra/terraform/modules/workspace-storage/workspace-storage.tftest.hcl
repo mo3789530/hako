@@ -4,6 +4,12 @@ mock_provider "aws" {
   mock_data "aws_partition" {
     defaults = { partition = "aws" }
   }
+  mock_data "aws_caller_identity" {
+    defaults = { account_id = "123456789012" }
+  }
+  mock_data "aws_region" {
+    defaults = { name = "ap-northeast-1" }
+  }
   mock_resource "aws_efs_file_system" {
     defaults = {
       id  = "fs-0123456789abcdef0"
@@ -94,13 +100,44 @@ run "workspace_storage_is_encrypted_private_and_backed_up" {
     condition = length([for statement in jsondecode(local.filesystem_policy).Statement : statement
       if statement.Sid == "DenyUnconfiguredWorkspaceRuntimeRole" && statement.Effect == "Deny" &&
       statement.Principal.AWS == "*" &&
-    statement.Condition.ArnNotEquals["aws:PrincipalArn"] == ["arn:aws:iam::123456789012:role/hako-ws-runtime-a"]]) == 1
+    statement.Condition.ArnNotLike["aws:PrincipalArn"] == ["arn:aws:iam::123456789012:role/hako-ws-runtime-a"]]) == 1
     error_message = "Unconfigured principals must not mount even if an identity policy grants EFS access."
   }
 
   assert {
     condition     = output.file_system_id == aws_efs_file_system.workspace.id && output.backup_plan_id == aws_backup_plan.workspace.id
     error_message = "Storage and backup resource identifiers must be exposed for Resource Plane wiring."
+  }
+}
+
+run "workspace_storage_dynamic_roles_require_scoped_identity_denies" {
+  command   = plan
+  providers = { aws = aws.mock }
+
+  variables {
+    resource_plane_id                    = "rp-test"
+    vpc_id                               = "vpc-0123456789abcdef0"
+    private_subnet_ids                   = ["subnet-11111111", "subnet-22222222"]
+    microvm_security_group_ids           = ["sg-11111111"]
+    workspace_access_point_role_bindings = []
+    enable_dynamic_workspace_roles       = true
+  }
+
+  assert {
+    condition = length([for statement in jsondecode(local.filesystem_policy).Statement : statement
+      if statement.Sid == "AllowDynamicWorkspaceRolesThroughEFSAccessPoints" && statement.Effect == "Allow" &&
+      statement.Principal.AWS == "arn:aws:iam::123456789012:root" &&
+      statement.Condition.Bool["aws:SecureTransport"] == "true" &&
+      statement.Condition.ArnLike["aws:PrincipalArn"] == "arn:aws:iam::123456789012:role/hako/workspaces/*" &&
+    statement.Condition.ArnLike["elasticfilesystem:AccessPointArn"] == "arn:aws:elasticfilesystem:ap-northeast-1:123456789012:access-point/fsap-*"]) == 1
+    error_message = "Dynamic EFS resource policy must be limited to Hako Workspace role path, AP ARN, and TLS."
+  }
+
+  assert {
+    condition = length([for statement in jsondecode(local.filesystem_policy).Statement : statement
+      if statement.Sid == "DenyUnconfiguredWorkspaceRuntimeRole" &&
+    statement.Condition.ArnNotLike["aws:PrincipalArn"] == ["arn:aws:iam::123456789012:role/hako/workspaces/*"]]) == 1
+    error_message = "Dynamic mode must deny every principal outside the generated Workspace role path."
   }
 }
 

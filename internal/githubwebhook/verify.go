@@ -25,6 +25,9 @@ var ErrDeliveryIDConflict = errors.New("GitHub Delivery ID was reused with a dif
 
 type VerifiedDelivery struct {
 	DeliveryID string
+	// CorrelationID is set by the trusted API wrapper from its generated
+	// request context; it is never read from a caller-controlled header.
+	CorrelationID string
 	// IntegrationID is empty for the legacy shared-App route. Tenant-owned
 	// ingress sets it only after the route-specific HMAC has been verified.
 	IntegrationID        string
@@ -79,6 +82,7 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid webhook request", http.StatusUnauthorized)
 		return
 	}
+	delivery.CorrelationID = CorrelationIDFromContext(r.Context())
 	if _, err := Normalize(delivery); err != nil {
 		http.Error(w, "unsupported or incomplete webhook event", http.StatusUnprocessableEntity)
 		return
@@ -169,7 +173,7 @@ func ValidateWebhookHeaders(headers http.Header) error {
 }
 
 func validEventName(event string) bool {
-	return oneOf(event, "push", "installation", "installation_repositories", "pull_request", "workflow_job")
+	return oneOf(event, "push", "installation", "installation_repositories", "pull_request", "workflow_job", "issue_comment")
 }
 
 func verifySignature(secret, body []byte, supplied string) error {
@@ -218,6 +222,8 @@ func supportedEventAction(event, action string) bool {
 		return oneOf(action, "opened", "reopened", "synchronize", "closed")
 	case "workflow_job":
 		return oneOf(action, "queued", "in_progress", "completed")
+	case "issue_comment":
+		return action == "created"
 	default:
 		return false
 	}

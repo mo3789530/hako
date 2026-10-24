@@ -13,6 +13,26 @@ output "dsql_endpoint" {
   value       = "${aws_dsql_cluster.control_plane.identifier}.dsql.${var.aws_region}.on.aws"
 }
 
+output "api_5xx_alarm_name" {
+  description = "HTTP API server error alarm name."
+  value       = aws_cloudwatch_metric_alarm.api_5xx.alarm_name
+}
+
+output "api_latency_p95_alarm_name" {
+  description = "HTTP API p95 latency alarm name."
+  value       = aws_cloudwatch_metric_alarm.api_latency_p95.alarm_name
+}
+
+output "dsql_query_timeouts_alarm_name" {
+  description = "Aurora DSQL query timeout alarm name."
+  value       = aws_cloudwatch_metric_alarm.dsql_query_timeouts.alarm_name
+}
+
+output "dsql_occ_conflicts_alarm_name" {
+  description = "Aurora DSQL sustained OCC conflict alarm name."
+  value       = aws_cloudwatch_metric_alarm.dsql_occ_conflicts.alarm_name
+}
+
 output "api_lambda_arn" {
   description = "ARN of the API Lambda currently targeted by API Gateway."
   value       = local.api_lambda_image_enabled ? aws_lambda_function.api_image[0].arn : aws_lambda_function.api.arn
@@ -56,6 +76,11 @@ output "outbox_dispatcher_schedule_arn" {
 output "outbox_dispatcher_error_alarm_name" {
   description = "CloudWatch invocation error alarm for the optional Outbox Dispatcher; null unless enabled."
   value       = try(aws_cloudwatch_metric_alarm.outbox_dispatcher_errors[0].alarm_name, null)
+}
+
+output "outbox_oldest_unpublished_age_alarm_name" {
+  description = "CloudWatch alarm for the oldest unpublished Outbox event; null unless the Dispatcher is enabled."
+  value       = try(aws_cloudwatch_metric_alarm.outbox_oldest_unpublished_age[0].alarm_name, null)
 }
 
 output "workload_scheduler_queue_url" {
@@ -136,6 +161,26 @@ output "github_webhook_processor_schedule_arn" {
 output "github_webhook_processor_error_alarm_name" {
   description = "CloudWatch invocation error alarm for the optional processor; null unless enabled."
   value       = try(aws_cloudwatch_metric_alarm.github_webhook_processor_errors[0].alarm_name, null)
+}
+
+output "workspace_idle_reconciler_role_arn" {
+  description = "Stable IAM role ARN to map to the least-privilege hako_workspace_idle_reconciler DSQL user; its DbConnect policy is attached only when the schedule is enabled."
+  value       = aws_iam_role.workspace_idle_reconciler.arn
+}
+
+output "workspace_idle_reconciler_lambda_arn" {
+  description = "ARN of the optional scheduled Workspace idle reconciler Lambda; null unless enabled."
+  value       = try(aws_lambda_function.workspace_idle_reconciler[0].arn, null)
+}
+
+output "workspace_idle_reconciler_schedule_arn" {
+  description = "EventBridge schedule ARN for the optional Workspace idle reconciler; null unless enabled."
+  value       = try(aws_cloudwatch_event_rule.workspace_idle_reconciler[0].arn, null)
+}
+
+output "workspace_idle_reconciler_error_alarm_name" {
+  description = "CloudWatch invocation error alarm for the optional Workspace idle reconciler; null unless enabled."
+  value       = try(aws_cloudwatch_metric_alarm.workspace_idle_reconciler_errors[0].alarm_name, null)
 }
 
 output "http_api_endpoint" {

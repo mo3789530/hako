@@ -4,14 +4,16 @@ This module creates one encrypted EFS filesystem for Workspace Access Points,
 private mount targets in supplied subnets, and a dedicated mount-target
 security group. Ingress is TCP/2049 only from explicitly listed Lambda
 MicroVM connector security groups; the mount-target group has no outbound
-rules. The filesystem policy requires TLS and IAM client authorization through
-an exact one-to-one mapping of Workspace runtime role ARN to Access Point ARN.
-Reusing a role or Access Point is rejected; each Allow statement names only its
-bound role and exact Access Point ARN, and an explicit Deny prevents that role
-from mounting through a different Access Point even if an identity policy is
-broader. A second explicit Deny rejects principals not present in the binding
-list, preventing a same-account identity policy from granting an unconfigured
-role access to this filesystem.
+rules. The filesystem policy requires TLS and IAM client authorization. Static
+mode (`enable_dynamic_workspace_roles=false`, the default) uses an exact
+one-to-one mapping of Workspace runtime role ARN to Access Point ARN; reusing
+a role or Access Point is rejected. Dynamic mode allows only roles under
+`/hako/workspaces/` and EFS Access Points in this account/Region, still over
+TLS. Dynamic roles must carry Hako's generated identity policy, which grants
+only one exact Access Point and explicitly denies root access, non-TLS, and
+other Access Points. This explicit Deny is required because same-account
+identity and resource policies contribute allows by union. Do not enable
+dynamic mode without the paired role provider and IAM boundary.
 It does not create Workspace Access Points; the Resource Controller's
 idempotent EFS provisioner remains responsible for that lifecycle.
 
@@ -23,14 +25,15 @@ Access Point ownership/POSIX policy before cutover. EFS capacity and
 throughput remain shared: Access Points are not quotas and this module does
 not impose per-Workspace capacity limits.
 
-The dev Resource Plane root now wires this module behind the nullable
+The dev Resource Plane root wires this module behind the nullable
 `workspace_storage` input; `null` (the default) creates no storage resources.
-The input requires the exact role/AP pairs to be supplied. The Resource
-Controller still creates and deletes Workspace Access Points dynamically, so
-the operator must maintain these bindings as APs are provisioned; this does
-not yet automate per-Workspace role lifecycle. Keep Workspace execution
-disabled until dynamic role provisioning, the Lambda MicroVM VPC connector
-path, and live mount behavior are validated. Subnets must be private and in
+Static mode requires exact role/AP pairs; dynamic mode is explicit opt-in. The
+Resource Controller now has a local IAM role provider and Lambda MicroVM
+runtime wiring, but the runtime IAM permissions are not yet provisioned by
+the Resource Plane deployment and the EFS policy has not been applied. Keep
+Workspace execution disabled until the controller role's CreateRole/PutRolePolicy/
+PassRole/DeleteRole scopes, Lambda MicroVM connector path, and live mount
+behavior are validated. Subnets must be private and in
 distinct Availability Zones; this is a caller contract. Terraform does not
 verify route-table Internet reachability.
 

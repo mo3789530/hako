@@ -47,4 +47,38 @@ func TestValidateWorkloadResult(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("pipeline metadata is bounded and sorted", func(t *testing.T) {
+		result := valid
+		result.PipelineResults = []WorkloadPipelineResult{
+			{Name: "build", Status: "succeeded"},
+			{Name: "test", Status: "failed", ExitCode: 2, ErrorCode: "step_failed"},
+		}
+		result.Status, result.ExitCode, result.ErrorCode = domain.WorkloadFailed, 2, "test_failed"
+		if err := ValidateResult(result); err != nil {
+			t.Fatalf("valid pipeline metadata rejected: %v", err)
+		}
+	})
+
+	for _, test := range []struct {
+		name    string
+		results []WorkloadPipelineResult
+	}{
+		{name: "duplicate or unsorted", results: []WorkloadPipelineResult{{Name: "test", Status: "succeeded"}, {Name: "build", Status: "succeeded"}}},
+		{name: "unsafe name", results: []WorkloadPipelineResult{{Name: "../test", Status: "succeeded"}}},
+		{name: "unsupported status", results: []WorkloadPipelineResult{{Name: "test", Status: "running"}}},
+		{name: "failed without exit code", results: []WorkloadPipelineResult{{Name: "test", Status: "failed", ErrorCode: "step_failed"}}},
+		{name: "timeout without exit code", results: []WorkloadPipelineResult{{Name: "test", Status: "timed_out"}}},
+	} {
+		t.Run("reject pipeline "+test.name, func(t *testing.T) {
+			result := valid
+			result.PipelineResults = test.results
+			if test.name == "duplicate or unsorted" {
+				result.PipelineResults = []WorkloadPipelineResult{{Name: "test", Status: "succeeded"}, {Name: "test", Status: "succeeded"}}
+			}
+			if err := ValidateResult(result); !errors.Is(err, ErrWorkloadResultInvalid) {
+				t.Fatalf("validation error = %v, want ErrWorkloadResultInvalid", err)
+			}
+		})
+	}
 }

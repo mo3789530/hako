@@ -8,6 +8,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -102,6 +103,7 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 		req.Header.Set("Authorization", "Bearer "+token)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Idempotency-Key", key)
+		req.Header.Set(requestIDHeader, "req_11111111-1111-4111-8111-111111111111")
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, req)
 		return recorder
@@ -116,8 +118,14 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 	if err := json.Unmarshal(created.Body.Bytes(), &createdRun); err != nil || createdRun.ID == "" || createdRun.TenantID != "tenant_runs_a" {
 		t.Fatalf("decode created Workload Run: run=%+v error=%v", createdRun, err)
 	}
+	requestCorrelationID := created.Header().Get(requestIDHeader)
+	if requestCorrelationID == "" || requestCorrelationID == "req_11111111-1111-4111-8111-111111111111" ||
+		createdRun.CorrelationID != requestCorrelationID {
+		t.Fatalf("Workload Run correlation ID=%q response header=%q", createdRun.CorrelationID, requestCorrelationID)
+	}
 	replayedCreate := createRequest("runs-member", "create-run-key", createBody)
-	if replayedCreate.Code != http.StatusAccepted || !strings.Contains(replayedCreate.Body.String(), `"id":"`+string(createdRun.ID)+`"`) {
+	if replayedCreate.Code != http.StatusAccepted || !strings.Contains(replayedCreate.Body.String(), `"id":"`+string(createdRun.ID)+`"`) ||
+		!strings.Contains(replayedCreate.Body.String(), `"correlation_id":"`+requestCorrelationID+`"`) {
 		t.Fatalf("idempotent create did not return existing run: HTTP %d %s", replayedCreate.Code, replayedCreate.Body.String())
 	}
 	if conflict := createRequest("runs-member", "create-run-key", strings.Replace(createBody, "refs/heads/main", "refs/heads/other", 1)); conflict.Code != http.StatusConflict {
@@ -127,11 +135,31 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 		t.Fatalf("unregistered repository returned HTTP %d %s", inactive.Code, inactive.Body.String())
 	}
 	var scheduledEvents, createAudits int
+	var outboxPayload string
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM outbox_events WHERE aggregate_id = $1 AND event_type = 'workload_run.schedule_requested'`, createdRun.ID).Scan(&scheduledEvents); err != nil || scheduledEvents != 1 {
 		t.Fatalf("scheduled outbox events=%d error=%v", scheduledEvents, err)
 	}
+	if err := pool.QueryRow(ctx, `SELECT payload_json::text FROM outbox_events WHERE aggregate_id = $1 AND event_type = 'workload_run.schedule_requested'`, createdRun.ID).Scan(&outboxPayload); err != nil {
+		t.Fatalf("read Workload Run scheduling payload: %v", err)
+	}
+	var scheduled struct {
+		CorrelationID string `json:"correlation_id"`
+	}
+	if err := json.Unmarshal([]byte(outboxPayload), &scheduled); err != nil || scheduled.CorrelationID != requestCorrelationID {
+		t.Fatalf("scheduled correlation ID=%q, error=%v, payload=%s", scheduled.CorrelationID, err, outboxPayload)
+	}
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM audit_events WHERE tenant_id = $1 AND actor_user_id = $2 AND action = 'workload_run.create' AND target_id = $3`, "tenant_runs_a", "usr_runs_member", createdRun.ID).Scan(&createAudits); err != nil || createAudits != 1 {
 		t.Fatalf("create audit count=%d error=%v", createAudits, err)
+	}
+	for index := 1; index <= 2; index++ {
+		if response := createRequest("runs-member", fmt.Sprintf("additional-run-key-%d", index), createBody); response.Code != http.StatusAccepted {
+			t.Fatalf("Workload Run %d below quota returned HTTP %d %s", index, response.Code, response.Body.String())
+		}
+	}
+	quotaExceeded := createRequest("runs-member", "over-quota-run-key", createBody)
+	var quotaError errorResponse
+	if quotaExceeded.Code != http.StatusConflict || json.Unmarshal(quotaExceeded.Body.Bytes(), &quotaError) != nil || quotaError.Error.Code != "workload_quota_exceeded" {
+		t.Fatalf("sixth concurrent Workload Run should return a stable quota conflict: HTTP %d %s", quotaExceeded.Code, quotaExceeded.Body.String())
 	}
 	handler = NewHandler(verifier, pool)
 	if disabled := createRequest("runs-member", "disabled-create-key", createBody); disabled.Code != http.StatusServiceUnavailable {
@@ -143,8 +171,12 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 		t.Fatalf("Tenant member should see only own runs: HTTP %d %s", list.Code, list.Body.String())
 	}
 	ownerList := request("runs-owner", http.MethodGet, "/v1/tenants/tenant_runs_a/workload-runs?limit=1&offset=0")
-	if ownerList.Code != http.StatusOK || !strings.Contains(ownerList.Body.String(), `"total":3`) {
+	if ownerList.Code != http.StatusOK || !strings.Contains(ownerList.Body.String(), `"total":5`) {
 		t.Fatalf("Tenant owner should see all tenant runs with pagination: HTTP %d %s", ownerList.Code, ownerList.Body.String())
+	}
+	usage := request("runs-member", http.MethodGet, "/v1/tenants/tenant_runs_a/usage")
+	if usage.Code != http.StatusOK || !strings.Contains(usage.Body.String(), `"workload_runs_used":5`) || !strings.Contains(usage.Body.String(), `"workload_runs_limit":5`) {
+		t.Fatalf("Tenant usage should include five active Workload reservations: HTTP %d %s", usage.Code, usage.Body.String())
 	}
 	if badPage := request("runs-owner", http.MethodGet, "/v1/tenants/tenant_runs_a/workload-runs?limit=101"); badPage.Code != http.StatusBadRequest {
 		t.Fatalf("invalid pagination returned HTTP %d", badPage.Code)

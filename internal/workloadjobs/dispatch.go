@@ -48,6 +48,7 @@ type DispatchCommand struct {
 	Generation       int64                  `json:"generation"`
 	ResourcePlane    domain.ResourcePlaneID `json:"resource_plane_id"`
 	IdempotencyToken string                 `json:"idempotency_token"`
+	CorrelationID    string                 `json:"correlation_id,omitempty"`
 }
 
 // Handle durably hands a scheduler delivery to the Resource Plane. It never
@@ -84,6 +85,9 @@ func (h *DispatchHandler) Handle(ctx context.Context, request ScheduleRequest) e
 		}
 		if err != nil {
 			return struct{}{}, err
+		}
+		if request.CorrelationID != "" && request.CorrelationID != run.CorrelationID {
+			return struct{}{}, errors.New("Workload schedule correlation ID does not match persisted Run")
 		}
 		if isTerminalWorkloadState(run.State) {
 			return struct{}{}, nil
@@ -135,7 +139,8 @@ func (h *DispatchHandler) Handle(ctx context.Context, request ScheduleRequest) e
 			return struct{}{}, fmt.Errorf("persist Workload attempt: %w", err)
 		}
 		command := DispatchCommand{SchemaVersion: 1, TenantID: run.TenantID, WorkloadRunID: run.ID,
-			AttemptID: attemptID, Generation: generation, ResourcePlane: planeID, IdempotencyToken: idempotencyToken}
+			AttemptID: attemptID, Generation: generation, ResourcePlane: planeID, IdempotencyToken: idempotencyToken,
+			CorrelationID: run.CorrelationID}
 		payload, err := json.Marshal(command)
 		if err != nil {
 			return struct{}{}, fmt.Errorf("encode Workload dispatch command: %w", err)

@@ -9,8 +9,11 @@ module "control_plane" {
   github_webhook_secret_arn                       = var.github_webhook_secret_arn
   tenant_github_webhook_enabled                   = var.tenant_github_webhook_enabled
   tenant_github_webhook_reader_role_arns          = var.tenant_github_webhook_reader_role_arns
+  github_broker_role_name                         = var.github_broker_role_name
+  tenant_github_private_key_reader_role_arns      = var.tenant_github_private_key_reader_role_arns
   resource_plane_health_report_secret_arns        = var.resource_plane_health_report_secret_arns
   resource_plane_workload_spec_secret_arns        = var.resource_plane_workload_spec_secret_arns
+  resource_plane_artifact_cleanup_secret_arns     = var.resource_plane_artifact_cleanup_secret_arns
   resource_plane_health_report_throttle_rate      = var.resource_plane_health_report_throttle_rate
   resource_plane_health_report_throttle_burst     = var.resource_plane_health_report_throttle_burst
   github_app_slug                                 = var.github_app_slug
@@ -49,5 +52,9 @@ module "control_plane" {
   dispatcher_lambda_zip_path                      = var.dispatcher_lambda_zip_path
   enable_github_webhook_processor                 = var.enable_github_webhook_processor
   github_webhook_processor_lambda_zip_path        = var.github_webhook_processor_lambda_zip_path
+  enable_workspace_idle_reconciler                = var.enable_workspace_idle_reconciler
+  workspace_idle_reconciler_lambda_zip_path       = var.workspace_idle_reconciler_lambda_zip_path
+  workspace_idle_reconciler_batch_size            = var.workspace_idle_reconciler_batch_size
+  workspace_idle_reconciler_schedule_expression   = var.workspace_idle_reconciler_schedule_expression
   resource_plane_manifest_json                    = var.resource_plane_manifest_json
 }

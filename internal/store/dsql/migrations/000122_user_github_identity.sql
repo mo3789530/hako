@@ -1,0 +1,3 @@
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS github_user_id BIGINT,
+    ADD COLUMN IF NOT EXISTS github_login TEXT;

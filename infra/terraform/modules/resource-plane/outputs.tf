@@ -118,6 +118,41 @@ output "actions_runner_cleanup_errors_alarm_name" {
   value       = try(aws_cloudwatch_metric_alarm.actions_runner_cleanup_errors[0].alarm_name, null)
 }
 
+output "workspace_service_commands_queue_url" {
+  description = "URL of the opt-in Workspace Service command queue; null until its consumer is configured."
+  value       = try(aws_sqs_queue.workspace_service_commands[0].url, null)
+}
+
+output "workspace_service_commands_queue_arn" {
+  description = "ARN of the opt-in Workspace Service command queue; null until its consumer is configured."
+  value       = try(aws_sqs_queue.workspace_service_commands[0].arn, null)
+}
+
+output "workspace_service_commands_dlq_arn" {
+  description = "ARN of the opt-in Workspace Service dead-letter queue; null until its consumer is configured."
+  value       = try(aws_sqs_queue.workspace_service_commands_dlq[0].arn, null)
+}
+
+output "workspace_service_controller_lambda_arn" {
+  description = "ARN of the opt-in Workspace Service Lambda MicroVM consumer."
+  value       = try(aws_lambda_function.workspace_service_controller[0].arn, null)
+}
+
+output "workspace_service_controller_event_source_mapping_uuid" {
+  description = "SQS event-source mapping UUID for the opt-in Workspace Service consumer."
+  value       = try(aws_lambda_event_source_mapping.workspace_service_controller[0].uuid, null)
+}
+
+output "workspace_service_controller_role_arn" {
+  description = "Least-privilege Workspace Service consumer role; null unless explicitly deployed."
+  value       = try(aws_iam_role.workspace_service_controller[0].arn, null)
+}
+
+output "workspace_service_controller_log_group_name" {
+  description = "Retained Workspace Service consumer log group; null unless explicitly deployed."
+  value       = try(aws_cloudwatch_log_group.workspace_service_controller[0].name, null)
+}
+
 output "resource_controller_role_arn" {
   description = "ARN of the least-privilege Resource Controller execution role."
   value       = aws_iam_role.resource_controller.arn
@@ -146,6 +181,21 @@ output "workload_controller_event_source_mapping_uuid" {
 output "workload_recovery_schedule_arn" {
   description = "EventBridge schedule ARN for the opt-in bounded Workload recovery sweep; null unless deployed."
   value       = try(aws_cloudwatch_event_rule.workload_controller_recovery[0].arn, null)
+}
+
+output "workload_artifact_cleanup_schedule_arn" {
+  description = "EventBridge schedule ARN for bounded Workload Artifact cleanup; null unless deployed."
+  value       = try(aws_cloudwatch_event_rule.workload_artifact_cleanup[0].arn, null)
+}
+
+output "workload_artifact_bucket_arn" {
+  description = "ARN of the optional private, versioned Workload artifact bucket; null when bucket provisioning is disabled."
+  value       = try(aws_s3_bucket.workload_artifacts[0].arn, null)
+}
+
+output "workload_artifact_bucket_name" {
+  description = "Name of the optional private Workload artifact bucket; null when bucket provisioning is disabled."
+  value       = try(aws_s3_bucket.workload_artifacts[0].bucket, null)
 }
 
 output "resource_controller_log_group_name" {
@@ -187,12 +237,18 @@ output "monitoring_alarm_names" {
     try([aws_cloudwatch_metric_alarm.workload_commands_backlog[0].alarm_name], []),
     try([aws_cloudwatch_metric_alarm.workload_controller_errors[0].alarm_name], []),
     try([aws_cloudwatch_metric_alarm.workload_recovery_failed_invocations[0].alarm_name], []),
+    try([aws_cloudwatch_metric_alarm.workload_artifact_cleanup_failed_invocations[0].alarm_name], []),
     try([aws_cloudwatch_metric_alarm.actions_runner_startup_dlq_visible[0].alarm_name], []),
+    try([aws_cloudwatch_metric_alarm.workspace_service_commands_dlq_visible[0].alarm_name], []),
+    try([aws_cloudwatch_metric_alarm.workspace_service_commands_oldest_message[0].alarm_name], []),
+    try([aws_cloudwatch_metric_alarm.workspace_service_controller_errors[0].alarm_name], []),
     try([aws_cloudwatch_metric_alarm.health_report_stale[0].alarm_name], []),
     try([aws_cloudwatch_metric_alarm.health_report_unhealthy[0].alarm_name], []),
     try([aws_cloudwatch_metric_alarm.health_report_probe_failures[0].alarm_name], []),
     try([aws_cloudwatch_metric_alarm.health_reporter_errors[0].alarm_name], []),
-    try([aws_cloudwatch_metric_alarm.fake_controller_errors[0].alarm_name], [])
+    try([aws_cloudwatch_metric_alarm.fake_controller_errors[0].alarm_name], []),
+    try([aws_cloudwatch_metric_alarm.workspace_gateway_unhealthy_targets[0].alarm_name], []),
+    try([aws_cloudwatch_metric_alarm.workspace_gateway_alb_5xx[0].alarm_name], [])
   )
 }
 
@@ -204,4 +260,37 @@ output "health_reporter_log_group_name" {
 output "health_reporter_role_arn" {
   description = "Dedicated opt-in Lambda role limited to the exact HMAC Secret, two queue metadata APIs, configured MicroVM image version and VPC egress connector, and reporter log group; null unless the reporter is enabled."
   value       = try(aws_iam_role.health_reporter[0].arn, null)
+}
+
+output "workspace_gateway_url" {
+  description = "Configured public HTTPS/WSS origin of the optional Workspace Gateway; null until explicitly deployed."
+  value       = try(var.workspace_gateway_deployment.public_origin, null)
+}
+
+output "workspace_gateway_alb_dns_name" {
+  description = "AWS-assigned DNS name of the optional Workspace Gateway ALB; configure public_origin DNS to point here."
+  value       = try(aws_lb.workspace_gateway[0].dns_name, null)
+}
+
+output "workspace_gateway_service_arn" {
+  description = "ARN of the optional private ECS/Fargate Workspace Gateway service."
+  value       = try(aws_ecs_service.workspace_gateway[0].id, null)
+}
+
+output "workspace_gateway_task_role_arn" {
+  description = "Task role ARN for the optional Workspace Gateway exact runtime and Secret allowlists."
+  value       = try(aws_iam_role.workspace_gateway_task[0].arn, null)
+}
+
+output "workspace_gateway_alb_arn" {
+  description = "ARN of the optional HTTPS/WSS-only Workspace Gateway ALB."
+  value       = try(aws_lb.workspace_gateway[0].arn, null)
+}
+
+output "workspace_gateway_alarm_names" {
+  description = "Health and ALB error alarms for the optional Workspace Gateway; empty when disabled."
+  value = var.workspace_gateway_deployment == null ? [] : [
+    aws_cloudwatch_metric_alarm.workspace_gateway_unhealthy_targets[0].alarm_name,
+    aws_cloudwatch_metric_alarm.workspace_gateway_alb_5xx[0].alarm_name,
+  ]
 }

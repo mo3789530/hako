@@ -43,8 +43,8 @@ func TestWebhookProcessorCreatesOneUntrustedRunCheckAndOutboxForEnabledRepositor
 	if inserted, err := (webhookstore.Inbox{Pool: pool}).Record(ctx, delivery, now); err != nil || !inserted {
 		t.Fatalf("record push delivery: inserted=%v error=%v", inserted, err)
 	}
-	creator := func(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, integrationID, deliveryID string, createdAt time.Time) (bool, error) {
-		return CreateWebhookRepositoryRun(ctx, tx, tenantID, integrationID, deliveryID, createdAt)
+	creator := func(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, integrationID, deliveryID, correlationID string, createdAt time.Time) (bool, error) {
+		return CreateWebhookRepositoryRun(ctx, tx, tenantID, integrationID, deliveryID, correlationID, createdAt)
 	}
 	stats, err := webhookstore.ProcessBatchWithRepositoryTriggers(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(time.Second), creator)
 	if err != nil || stats.Claimed != 1 || stats.Processed != 1 || stats.WorkloadRunsCreated != 1 {

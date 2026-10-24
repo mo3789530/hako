@@ -151,7 +151,8 @@ func validAgentTicketBinding(ticket AgentTicket) bool {
 
 func validAgentPermission(permission workspacesession.Permission) bool {
 	switch permission {
-	case workspacesession.PermissionShell, workspacesession.PermissionVSCode, workspacesession.PermissionPortForward, workspacesession.PermissionSSHProxy:
+	case workspacesession.PermissionShell, workspacesession.PermissionExec, workspacesession.PermissionVSCode, workspacesession.PermissionPortForward,
+		workspacesession.PermissionSSHProxy, workspacesession.PermissionFileTransfer:
 		return true
 	default:
 		return false

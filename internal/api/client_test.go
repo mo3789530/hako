@@ -160,6 +160,37 @@ func TestTenantPlacementPolicyClientGetAndPut(t *testing.T) {
 	}
 }
 
+func TestTenantWorkspaceIdlePolicyClientGetAndPut(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/tenants/tenant_123/workspace-idle-policy" || r.Header.Get("Authorization") != "Bearer access-token" {
+			t.Fatalf("unexpected request path/auth: %s %q", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		if r.Method == http.MethodPut {
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["enabled"] != true || body["grace_period_seconds"] != float64(900) {
+				t.Fatalf("unexpected idle policy request: %+v err=%v", body, err)
+			}
+		}
+		_ = json.NewEncoder(w).Encode(TenantWorkspaceIdlePolicy{TenantID: "tenant_123", Enabled: true, GracePeriodSeconds: 900, Revision: 1})
+	}))
+	defer server.Close()
+	policy, err := GetTenantWorkspaceIdlePolicy(context.Background(), server.URL, "access-token", "tenant_123", server.Client())
+	if err != nil || policy.Revision != 1 || !policy.Enabled {
+		t.Fatalf("get idle policy = %+v, err=%v", policy, err)
+	}
+	policy, err = PutTenantWorkspaceIdlePolicy(context.Background(), server.URL, "access-token", TenantWorkspaceIdlePolicy{
+		TenantID: "tenant_123", Enabled: true, GracePeriodSeconds: 900,
+	}, server.Client())
+	if err != nil || policy.Revision != 1 || !policy.Enabled {
+		t.Fatalf("put idle policy = %+v, err=%v", policy, err)
+	}
+	if _, err := PutTenantWorkspaceIdlePolicy(context.Background(), server.URL, "access-token", TenantWorkspaceIdlePolicy{
+		TenantID: "tenant_123", Enabled: true, GracePeriodSeconds: 299,
+	}, server.Client()); err == nil {
+		t.Fatal("client accepted an out-of-range grace period")
+	}
+}
+
 func TestCreateWorkspaceSendsIdempotencyAndDecodesAsyncResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/tenants/tenant_123/workspaces" {
@@ -223,6 +254,85 @@ func TestListWorkspacesSendsPageAndDecodesResult(t *testing.T) {
 	}
 	if page.Total != 3 || len(page.Items) != 1 || page.Items[0].Workspace.Name != "api-dev" || page.Offset != 2 {
 		t.Fatalf("unexpected Workspace page: %+v", page)
+	}
+}
+
+func TestGetTenantUsageUsesScopedPathAndValidatesResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/tenants/tenant_123/usage" || r.Header.Get("Authorization") != "Bearer test-access-token" {
+			t.Errorf("unexpected request: %s %s auth=%q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"workspaces_used":3,"workspaces_limit":10,"workload_runs_used":2,"workload_runs_limit":5,"preview_runs_used":1,"preview_runs_limit":2,"preview_lifetime_seconds_limit":86400,"artifact_bytes_used":1234,"artifact_bytes_reserved":104857600,"artifact_bytes_limit":10737418240}`))
+	}))
+	defer server.Close()
+
+	usage, err := GetTenantUsage(context.Background(), server.URL, "test-access-token", "tenant_123", server.Client())
+	if err != nil || usage.WorkspacesUsed != 3 || usage.WorkspacesLimit != 10 || usage.WorkloadRunsUsed != 2 || usage.WorkloadRunsLimit != 5 || usage.PreviewRunsUsed != 1 || usage.PreviewRunsLimit != 2 || usage.PreviewLifetimeLimit != 86400 || usage.ArtifactBytesUsed != 1234 || usage.ArtifactBytesReserved != 104857600 || usage.ArtifactBytesLimit != 10737418240 {
+		t.Fatalf("unexpected Tenant usage response: %+v error=%v", usage, err)
+	}
+
+	legacyOverQuota := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"workspaces_used":11,"workspaces_limit":10,"workload_runs_used":6,"workload_runs_limit":5,"preview_runs_used":3,"preview_runs_limit":2,"preview_lifetime_seconds_limit":86400,"artifact_bytes_used":0,"artifact_bytes_limit":10737418240}`))
+	}))
+	defer legacyOverQuota.Close()
+	if overage, err := GetTenantUsage(context.Background(), legacyOverQuota.URL, "test-access-token", "tenant_123", legacyOverQuota.Client()); err != nil || overage.WorkspacesUsed != 11 || overage.WorkloadRunsUsed != 6 || overage.PreviewRunsUsed != 3 {
+		t.Fatalf("did not expose legacy over-quota usage: %+v err=%v", overage, err)
+	}
+}
+
+func TestTenantQuotaClientUsesScopedOwnerRoutes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/tenants/tenant_123/quotas" || r.Header.Get("Authorization") != "Bearer test-access-token" {
+			t.Errorf("unexpected quota request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPut {
+			if r.Header.Get("Content-Type") != "application/json" {
+				t.Errorf("quota update Content-Type = %q", r.Header.Get("Content-Type"))
+			}
+			var body map[string]int64
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["workspaces_limit"] != 4 || body["workload_runs_limit"] != 2 || body["preview_runs_limit"] != 3 || body["preview_lifetime_seconds_limit"] != 43200 || body["artifact_bytes_limit"] != 2147483648 || body["service_memory_bytes_limit"] != 1073741824 || body["service_milli_cpu_limit"] != 750 {
+				t.Errorf("quota update body = %+v err=%v", body, err)
+			}
+		} else if r.Method != http.MethodGet {
+			t.Errorf("unexpected quota method: %s", r.Method)
+		}
+		_, _ = w.Write([]byte(`{"tenant_id":"tenant_123","workspaces_limit":4,"workload_runs_limit":2,"preview_runs_limit":3,"preview_lifetime_seconds_limit":43200,"artifact_bytes_limit":2147483648,"service_memory_bytes_limit":1073741824,"service_milli_cpu_limit":750,"revision":3}`))
+	}))
+	defer server.Close()
+
+	limits, err := GetTenantQuotaLimits(context.Background(), server.URL, "test-access-token", "tenant_123", server.Client())
+	if err != nil || limits.WorkspacesLimit != 4 || limits.WorkloadRunsLimit != 2 || limits.PreviewRunsLimit != 3 || limits.PreviewLifetimeSecondsLimit != 43200 || limits.ArtifactBytesLimit != 2147483648 || limits.WorkspaceServiceMemoryBytesLimit != 1073741824 || limits.WorkspaceServiceMilliCPULimit != 750 || limits.Revision != 3 {
+		t.Fatalf("GET quota limits = %+v err=%v", limits, err)
+	}
+	limits, err = SetTenantQuotaLimits(context.Background(), server.URL, "test-access-token", "tenant_123",
+		TenantQuotaLimits{WorkspacesLimit: 4, WorkloadRunsLimit: 2, PreviewRunsLimit: 3, PreviewLifetimeSecondsLimit: 43200, ArtifactBytesLimit: 2147483648, WorkspaceServiceMemoryBytesLimit: 1073741824, WorkspaceServiceMilliCPULimit: 750}, server.Client())
+	if err != nil || limits.WorkspacesLimit != 4 || limits.WorkloadRunsLimit != 2 || limits.PreviewRunsLimit != 3 || limits.PreviewLifetimeSecondsLimit != 43200 || limits.ArtifactBytesLimit != 2147483648 || limits.WorkspaceServiceMemoryBytesLimit != 1073741824 || limits.WorkspaceServiceMilliCPULimit != 750 {
+		t.Fatalf("PUT quota limits = %+v err=%v", limits, err)
+	}
+	if _, err := SetTenantQuotaLimits(context.Background(), server.URL, "test-access-token", "tenant_123",
+		TenantQuotaLimits{WorkspacesLimit: 11, WorkloadRunsLimit: 2}, server.Client()); err == nil {
+		t.Fatal("quota limit above platform maximum should be rejected client-side")
+	}
+}
+
+func TestGetWorkspaceServiceResourceUsageUsesScopedPathAndValidatesResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/tenants/tenant_123/workspaces/ws_1/services/usage" || r.Header.Get("Authorization") != "Bearer test-access-token" {
+			t.Errorf("unexpected request: %s %s auth=%q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"memory_bytes_used":1073741824,"memory_bytes_limit":2147483648,"milli_cpu_used":750,"milli_cpu_limit":1500}`))
+	}))
+	defer server.Close()
+
+	usage, err := GetWorkspaceServiceResourceUsage(context.Background(), server.URL, "test-access-token", "tenant_123", "ws_1", server.Client())
+	if err != nil || usage.MemoryBytesUsed != 1073741824 || usage.MemoryBytesLimit != 2147483648 || usage.MilliCPUUsed != 750 || usage.MilliCPULimit != 1500 {
+		t.Fatalf("unexpected Workspace Service usage response: %+v error=%v", usage, err)
+	}
+	if _, err := GetWorkspaceServiceResourceUsage(context.Background(), server.URL, "test-access-token", "tenant_123", "../ws_1", server.Client()); err == nil {
+		t.Fatal("unsafe Workspace ID should be rejected")
 	}
 }
 

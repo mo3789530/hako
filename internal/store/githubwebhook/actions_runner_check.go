@@ -26,6 +26,7 @@ type ActionsRunnerCheck struct {
 	CommitSHA     string
 	Name          string
 	ExternalID    string
+	CorrelationID string
 	CheckRunID    int64
 	Status        string
 	Conclusion    string
@@ -41,15 +42,17 @@ type actionsRunnerCheckOutboxEnvelope struct {
 	IntegrationID string `json:"integration_id"`
 	WorkflowJobID int64  `json:"workflow_job_id"`
 	RunAttempt    int64  `json:"run_attempt"`
+	CorrelationID string `json:"correlation_id,omitempty"`
 	Revision      int64  `json:"revision"`
 }
 
 // createActionsRunnerCheck creates the initial queued Check in the same
 // transaction as the opt-in Runner admission and schedules its delivery.
 func createActionsRunnerCheck(ctx context.Context, tx pgx.Tx, integrationID string, tenantID domain.TenantID, installationID, repositoryID int64,
-	jobID, runID, attempt int64, headSHA string, now time.Time) error {
+	jobID, runID, attempt int64, headSHA, correlationID string, now time.Time) error {
 	if ctx == nil || tx == nil || !validStoredIntegrationID(integrationID) || tenantID == "" || installationID <= 0 || repositoryID <= 0 ||
-		jobID <= 0 || runID <= 0 || attempt <= 0 || !validRunnerCommitSHA(headSHA) || now.IsZero() {
+		jobID <= 0 || runID <= 0 || attempt <= 0 || !validRunnerCommitSHA(headSHA) ||
+		correlationID != "" && !webhookCorrelationIDPattern.MatchString(correlationID) || now.IsZero() {
 		return errors.New("complete Actions Runner Check identity is required")
 	}
 	externalID := fmt.Sprintf("hako-actions-runner/%s/%d/%d", integrationID, jobID, attempt)
@@ -59,20 +62,20 @@ func createActionsRunnerCheck(ctx context.Context, tx pgx.Tx, integrationID stri
 	const summary = "Hako accepted this workflow job and is preparing an isolated Lambda MicroVM runner."
 	_, err := tx.Exec(ctx, `INSERT INTO github_actions_runner_checks
 		(integration_id,workflow_job_id,run_attempt,tenant_id,installation_id,repository_id,workflow_run_id,commit_sha,check_name,external_id,
-		 status,conclusion,started_at,completed_at,output_title,output_summary,revision,updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'queued',NULL,$11,NULL,$12,$13,1,$11)
+		 status,conclusion,started_at,completed_at,output_title,output_summary,revision,updated_at,correlation_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'queued',NULL,$11,NULL,$12,$13,1,$11,NULLIF($14,''))
 		ON CONFLICT (integration_id,workflow_job_id,run_attempt) DO NOTHING`,
-		integrationID, jobID, attempt, tenantID, installationID, repositoryID, runID, headSHA, actionsRunnerCheckName, externalID, now.UTC(), actionsRunnerCheckName, summary)
+		integrationID, jobID, attempt, tenantID, installationID, repositoryID, runID, headSHA, actionsRunnerCheckName, externalID, now.UTC(), actionsRunnerCheckName, summary, correlationID)
 	if err != nil {
 		return fmt.Errorf("persist initial Actions Runner Check: %w", err)
 	}
 	var stored ActionsRunnerCheck
 	if err := tx.QueryRow(ctx, `SELECT integration_id,tenant_id,installation_id,repository_id,workflow_job_id,workflow_run_id,run_attempt,
-		commit_sha,check_name,external_id,status,COALESCE(conclusion,''),started_at,completed_at,output_title,output_summary,revision
+		commit_sha,check_name,external_id,status,COALESCE(conclusion,''),started_at,completed_at,output_title,output_summary,revision,COALESCE(correlation_id,'')
 		FROM github_actions_runner_checks WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=$3 FOR UPDATE`, integrationID, jobID, attempt).
 		Scan(&stored.IntegrationID, &stored.TenantID, &stored.Installation, &stored.Repository, &stored.WorkflowJobID, &stored.WorkflowRunID, &stored.RunAttempt,
 			&stored.CommitSHA, &stored.Name, &stored.ExternalID, &stored.Status, &stored.Conclusion, &stored.StartedAt, &stored.CompletedAt,
-			&stored.OutputTitle, &stored.OutputSummary, &stored.Revision); err != nil {
+			&stored.OutputTitle, &stored.OutputSummary, &stored.Revision, &stored.CorrelationID); err != nil {
 		return fmt.Errorf("verify Actions Runner Check identity: %w", err)
 	}
 	if stored.TenantID != tenantID || stored.Installation != installationID || stored.Repository != repositoryID || stored.WorkflowRunID != runID ||
@@ -91,11 +94,11 @@ func updateActionsRunnerCheck(ctx context.Context, tx pgx.Tx, integrationID stri
 	job := event.WorkflowJob
 	var check ActionsRunnerCheck
 	err := tx.QueryRow(ctx, `SELECT integration_id,tenant_id,installation_id,repository_id,workflow_job_id,workflow_run_id,run_attempt,
-		commit_sha,check_name,external_id,COALESCE(check_run_id,0),status,COALESCE(conclusion,''),started_at,completed_at,output_title,output_summary,revision
+		commit_sha,check_name,external_id,COALESCE(check_run_id,0),status,COALESCE(conclusion,''),started_at,completed_at,output_title,output_summary,revision,COALESCE(correlation_id,'')
 		FROM github_actions_runner_checks WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=$3 FOR UPDATE`, integrationID, job.ID, job.RunAttempt).
 		Scan(&check.IntegrationID, &check.TenantID, &check.Installation, &check.Repository, &check.WorkflowJobID, &check.WorkflowRunID, &check.RunAttempt,
 			&check.CommitSHA, &check.Name, &check.ExternalID, &check.CheckRunID, &check.Status, &check.Conclusion, &check.StartedAt, &check.CompletedAt,
-			&check.OutputTitle, &check.OutputSummary, &check.Revision)
+			&check.OutputTitle, &check.OutputSummary, &check.Revision, &check.CorrelationID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
@@ -155,11 +158,11 @@ func FailActionsRunnerCheck(ctx context.Context, tx pgx.Tx, integrationID string
 	}
 	var check ActionsRunnerCheck
 	err := tx.QueryRow(ctx, `SELECT integration_id,tenant_id,installation_id,repository_id,workflow_job_id,workflow_run_id,run_attempt,
-		commit_sha,check_name,external_id,COALESCE(check_run_id,0),status,COALESCE(conclusion,''),started_at,completed_at,output_title,output_summary,revision
+		commit_sha,check_name,external_id,COALESCE(check_run_id,0),status,COALESCE(conclusion,''),started_at,completed_at,output_title,output_summary,revision,COALESCE(correlation_id,'')
 		FROM github_actions_runner_checks WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=$3 FOR UPDATE`, integrationID, workflowJobID, runAttempt).
 		Scan(&check.IntegrationID, &check.TenantID, &check.Installation, &check.Repository, &check.WorkflowJobID, &check.WorkflowRunID, &check.RunAttempt,
 			&check.CommitSHA, &check.Name, &check.ExternalID, &check.CheckRunID, &check.Status, &check.Conclusion, &check.StartedAt, &check.CompletedAt,
-			&check.OutputTitle, &check.OutputSummary, &check.Revision)
+			&check.OutputTitle, &check.OutputSummary, &check.Revision, &check.CorrelationID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
@@ -190,7 +193,7 @@ func FailActionsRunnerCheck(ctx context.Context, tx pgx.Tx, integrationID string
 
 func enqueueActionsRunnerCheck(ctx context.Context, tx pgx.Tx, check ActionsRunnerCheck, now time.Time) error {
 	payload, err := json.Marshal(actionsRunnerCheckOutboxEnvelope{SchemaVersion: 1, IntegrationID: check.IntegrationID,
-		WorkflowJobID: check.WorkflowJobID, RunAttempt: check.RunAttempt, Revision: check.Revision})
+		WorkflowJobID: check.WorkflowJobID, RunAttempt: check.RunAttempt, CorrelationID: check.CorrelationID, Revision: check.Revision})
 	if err != nil {
 		return fmt.Errorf("encode Actions Runner Check Outbox event: %w", err)
 	}
@@ -238,11 +241,11 @@ func GetActionsRunnerCheck(ctx context.Context, tx pgx.Tx, integrationID string,
 	}
 	var check ActionsRunnerCheck
 	err := tx.QueryRow(ctx, `SELECT integration_id,tenant_id,installation_id,repository_id,workflow_job_id,workflow_run_id,run_attempt,
-		commit_sha,check_name,external_id,COALESCE(check_run_id,0),status,COALESCE(conclusion,''),started_at,completed_at,output_title,output_summary,revision
+		commit_sha,check_name,external_id,COALESCE(check_run_id,0),status,COALESCE(conclusion,''),started_at,completed_at,output_title,output_summary,revision,COALESCE(correlation_id,'')
 		FROM github_actions_runner_checks WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=$3`, integrationID, workflowJobID, runAttempt).
 		Scan(&check.IntegrationID, &check.TenantID, &check.Installation, &check.Repository, &check.WorkflowJobID, &check.WorkflowRunID, &check.RunAttempt,
 			&check.CommitSHA, &check.Name, &check.ExternalID, &check.CheckRunID, &check.Status, &check.Conclusion, &check.StartedAt, &check.CompletedAt,
-			&check.OutputTitle, &check.OutputSummary, &check.Revision)
+			&check.OutputTitle, &check.OutputSummary, &check.Revision, &check.CorrelationID)
 	return check, err
 }
 

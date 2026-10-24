@@ -35,6 +35,34 @@ variable "actions_runner_vpc_config" {
   default = null
 }
 
+variable "workspace_service_controller_vpc_config" {
+  description = "Pre-provisioned private subnets and dedicated security group for an explicitly configured Workspace Service Lambda consumer."
+  type = object({
+    subnet_ids         = list(string)
+    security_group_ids = list(string)
+  })
+  default = null
+}
+
+variable "workspace_service_controller_deployment" {
+  description = "Default-off Workspace Service Lambda MicroVM consumer. Supply a built ZIP, journal bucket/prefix, exact image/Secret ARNs and HTTPS report endpoint; never provide Secret values."
+  type = object({
+    zip_path                       = string
+    journal_bucket_arn             = string
+    journal_prefix                 = string
+    microvm_image_arn              = string
+    ticket_key_id                  = string
+    ticket_key_secret_arn          = string
+    report_key_secret_arn          = string
+    report_endpoint                = string
+    lambda_timeout_seconds         = number
+    lambda_memory_size             = number
+    reserved_concurrent_executions = number
+    secret_kms_key_arns            = optional(list(string), [])
+  })
+  default = null
+}
+
 variable "actions_runner_deployment" {
   description = "Default-off Actions Runner Lambda MicroVM deployment. Supply exact Secret ARNs and a built ZIP, never Secret values."
   type = object({
@@ -107,6 +135,14 @@ variable "workload_controller_runtime" {
   default = null
 }
 
+variable "workload_artifact_storage" {
+  description = "Optional managed private bucket and lifecycle for the configured Workload artifact prefix. Requires workload_controller_runtime; null leaves the external bucket unmanaged."
+  type = object({
+    retention_days = number
+  })
+  default = null
+}
+
 variable "workload_controller_vpc_config" {
   description = "Private subnet and security group IDs for the optional Workload Controller Lambda."
   type = object({
@@ -119,41 +155,51 @@ variable "workload_controller_vpc_config" {
 variable "workload_controller_deployment" {
   description = "Optional default-off combined Workload Controller Lambda deployment. Only file paths, endpoints, profile data, and exact Secret ARNs are accepted; never provide Secret values."
   type = object({
-    zip_path                       = string
-    control_plane_endpoint         = string
-    control_plane_hmac_secret_arn  = string
-    broker_url                     = string
-    broker_client_cert_secret_arn  = string
-    broker_client_key_secret_arn   = string
-    broker_ca_secret_arn           = string
-    ticket_key_id                  = string
-    ticket_private_key_secret_arn  = string
-    runtime_profiles_json          = string
-    recovery_page_size             = number
-    recovery_max_pages             = number
-    recovery_lease_ttl             = string
-    recovery_schedule_expression   = string
-    lambda_timeout_seconds         = number
-    lambda_memory_size             = number
-    reserved_concurrent_executions = number
+    zip_path                             = string
+    control_plane_endpoint               = string
+    control_plane_hmac_secret_arn        = string
+    artifact_cleanup_hmac_secret_arn     = string
+    broker_url                           = string
+    broker_client_cert_secret_arn        = string
+    broker_client_key_secret_arn         = string
+    broker_ca_secret_arn                 = string
+    ticket_key_id                        = string
+    ticket_private_key_secret_arn        = string
+    runtime_profiles_json                = string
+    recovery_page_size                   = number
+    recovery_max_pages                   = number
+    recovery_lease_ttl                   = string
+    recovery_schedule_expression         = string
+    artifact_cleanup_batch_size          = number
+    artifact_cleanup_schedule_expression = string
+    lambda_timeout_seconds               = number
+    lambda_memory_size                   = number
+    reserved_concurrent_executions       = number
   })
   default = null
 }
 
 variable "workspace_storage" {
-  description = "Optional encrypted EFS Workspace storage deployment. Each runtime role must map to exactly one pre-existing Workspace Access Point; null keeps storage disabled."
+  description = "Optional encrypted EFS Workspace storage deployment; null keeps storage disabled. Static role/AP pairs or the reviewed dynamic Workspace role mode may be selected."
   type = object({
     vpc_id                     = string
     private_subnet_ids         = list(string)
     microvm_security_group_ids = list(string)
-    workspace_access_point_role_bindings = list(object({
+    workspace_access_point_role_bindings = optional(list(object({
       role_arn         = string
       access_point_arn = string
-    }))
-    backup_schedule       = optional(string, "cron(0 5 * * ? *)")
-    backup_retention_days = optional(number, 35)
+    })), [])
+    enable_dynamic_workspace_roles = optional(bool, false)
+    backup_schedule                = optional(string, "cron(0 5 * * ? *)")
+    backup_retention_days          = optional(number, 35)
   })
   default = null
+}
+
+variable "workspace_gateway_deployment" {
+  description = "Optional default-off HTTPS/WSS Fargate Gateway deployment contract. The object must contain Secret ARNs only, never Secret values."
+  type        = any
+  default     = null
 }
 
 variable "max_receive_count" {

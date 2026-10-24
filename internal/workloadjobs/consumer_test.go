@@ -43,7 +43,7 @@ func (q *fakeScheduleQueue) ChangeVisibility(_ context.Context, receipt string, 
 
 func TestSchedulerConsumerDeletesOnlyAfterHandlerSucceeds(t *testing.T) {
 	queue := &fakeScheduleQueue{deliveries: []ScheduleDelivery{
-		{ReceiptHandle: "receipt-1", Body: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_1"}`)},
+		{ReceiptHandle: "receipt-1", Body: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_1","correlation_id":"req_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}`)},
 		{ReceiptHandle: "receipt-2", Body: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_2"}`)},
 	}}
 	var handled []ScheduleRequest
@@ -64,6 +64,9 @@ func TestSchedulerConsumerDeletesOnlyAfterHandlerSucceeds(t *testing.T) {
 	}
 	if stats != (ConsumerStats{Received: 2, Handled: 1, Failed: 1}) || len(handled) != 2 || len(queue.deleted) != 1 || queue.deleted[0] != "receipt-1" || len(queue.visibility) != 2 {
 		t.Fatalf("unexpected scheduler handling outcome: stats=%+v handled=%v deleted=%v visibility=%v", stats, handled, queue.deleted, queue.visibility)
+	}
+	if handled[0].CorrelationID != "req_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" {
+		t.Fatalf("scheduler lost correlation ID: %+v", handled[0])
 	}
 }
 
@@ -141,6 +144,7 @@ func TestDecodeScheduleRequestRequiresVersionedTenantAndRun(t *testing.T) {
 		[]byte(`{"schema_version":2,"tenant_id":"tenant_1","workload_run_id":"run_1"}`),
 		[]byte(`{"schema_version":1,"workload_run_id":"run_1"}`),
 		[]byte(`{"schema_version":1,"tenant_id":"tenant_1"}`),
+		[]byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_1","correlation_id":"not-a-request-id"}`),
 	} {
 		if _, err := decodeScheduleRequest(body); err == nil {
 			t.Errorf("decodeScheduleRequest(%s) unexpectedly succeeded", body)

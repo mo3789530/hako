@@ -94,9 +94,21 @@ both API access and available webhook events.
 | Clone source for verification | Contents: read; token限定は[GitHub App credentials](github-app-credentials.md) |
 | Report CI results | Checks: write |
 | Receive workflow job lifecycle | Actions: read, subject to exact webhook/API requirements |
-| Issue-driven agent | Issues and Pull requests: read first; write only for an enabled action |
+| Issue-driven agent context lookup | Issues: read + Contents: read, both limited to the selected Repository; no write permission |
 | Push branch/open PR | Contents and Pull requests: write, isolated to an explicit Agent workload |
 | Register/delete self-hosted runner | Separate runner-manager App/credential; repository Administration or organization runner permission as required by GitHub |
+
+The Issue-comment webhook normalizer accepts only `created` deliveries and
+stores Issue number, comment ID, pull-request classification, author
+association, and a closed command enum. Only an exact bounded `/hako implement`
+from a GitHub `OWNER`, `MEMBER`, or `COLLABORATOR` association becomes a
+command; free-form comment text is never included in the normalized event and
+is redacted from the short-lived raw-payload column. Duplicate detection still
+uses the hash of the original signed bytes. This is not authorization or
+scheduling: the remaining flow must verify Tenant membership and the active
+Tenant-bound Repository/Installation, resolve an immutable commit before
+creating an Agent Run, and keep branch/PR writes disabled unless a separate
+policy explicitly enables them.
 
 Do not grant every permission to one always-on integration by default. Keep
 the runner-management credential distinct from normal repository/check
@@ -171,10 +183,50 @@ type RepositoryEvent struct {
 
 Initial event subscriptions should be narrow: installation/repository changes,
 push, pull request, and workflow job only when the corresponding features are
-enabled. Add issues/comments, check-run requests, release, and workflow-run
-events later. Webhook receipt and GitHub API mutation are separate operations:
+enabled. `issue_comment.created` can now be safely normalized for the bounded
+Agent command groundwork above. A transactional authorization resolver now
+revalidates the active Tenant/Installation/Repository binding, requires the
+Factory opt-in to predate delivery receipt, and maps the verified numeric
+GitHub sender ID to a current member of that Tenant. It rejects PR comments
+and returns only bounded Issue identity. The Control Plane-only broker route
+uses a separate Tenant-pinned
+`issues:read` + `contents:read` scope, and its bounded reader resolves an open
+Issue plus the default-branch tip to an immutable commit SHA. These libraries
+are connected to the broker endpoint. A separate Issue-command processor
+preflights Tenant authorization, then atomically revalidates it, creates/reuses
+an Agent Run, stores the bounded Issue task in `workload_agent_tasks`, and marks
+the delivery processed. A separate Broker mTLS endpoint can return that task
+only to an explicitly allowlisted Resource Plane and only for the current,
+unexpired attempt after rechecking Tenant membership, Factory opt-in, App
+binding, and the Run's immutable commit/branch/Repository pins. The broker role
+has read-only task access; the API role and user-facing Run responses do not
+expose Issue body text. The Resource Plane Worker now retrieves this task over
+its mTLS Broker client, checks the attempt and immutable pins, and transfers
+bounded text only through the authenticated MicroVM Agent protocol. A context
+digest is pinned in the launch specification, signed Start/Source tickets, and
+the MicroVM `/run` binding; the guest rejects a Start whose task differs from
+the signed digest. The canonical hash covers Tenant/Run, Integration/Delivery,
+Installation/Repository, Issue/comment IDs, branch/commit, title, and body.
+Control Plane persistence, Broker validation, Worker, and guest share the same
+digest implementation. Task text remains in memory and is excluded from journals,
+results, and logs. This transport does not enable scheduling: dispatcher and
+batch processing remain Job-only, and the default guest process factory rejects
+Agent execution until an isolated model-backed executor, Tenant model-credential
+policy, and runtime resource/network enforcement are ready. Check-run requests, release, and
+workflow-run events remain future work. Webhook receipt and GitHub API mutation are separate operations:
 acknowledge accepted deliveries promptly, then process from a durable queue or
 outbox with retry/idempotency.
+
+Resource Plane execution metadata schema v3 includes the Workload `kind` and
+correlation ID. The resolver accepts legacy v1/v2 metadata as `job` for
+backward compatibility; v3 accepts only `job` or `agent`, and permits an
+`agent` only for an `issue_comment` Run with an immutable Tenant App pin. The
+Resource Plane materializer and launch-spec hash preserve this kind. The Worker
+can materialize and securely transport an admitted Agent task, but the
+dispatcher still accepts Jobs only and the default guest executor fails Agent
+Runs closed. Scheduling and model-backed execution remain disabled until the
+isolated executor, Tenant model-credential policy, and runtime resource/network
+enforcement are wired.
 
 ### Workloads and execution modes
 
@@ -212,12 +264,15 @@ bounded.
 
 ### Checks, artifacts, and deployment identity
 
-Use Checks API check runs for `hako/test`, `hako/lint`, `hako/build`, and later
-`hako/ai-review`. Create a check early as queued/in-progress, then update it
-with conclusion, summary, external run link, and line annotations when
-available. Check annotations are line-scoped, so retain source path/line
-mapping through log/result collection. Tie every run to the exact repository
-ID and commit SHA; never report a result on a mutable branch name alone.
+Use a Run-level Checks API check as queued/in-progress, then update it with
+the aggregate conclusion and summary. Native manifest pipelines additionally
+create one completed `hako/<kind>/<pipeline>` check per selected pipeline.
+These pipeline checks are committed with the terminal Run result and delivered
+through the durable Checks outbox/consumer; they do not currently stream
+per-pipeline progress. Future annotations are line-scoped, so retain source
+path/line mapping through log/result collection. Tie every check to the exact
+repository ID and commit SHA; never report a result on a mutable branch name
+alone.
 
 Store test reports, logs, coverage, SBOMs, binaries, and container images in
 S3/ECR (or a configured artifact backend); DSQL holds metadata, status, and
@@ -250,6 +305,44 @@ secret policies. Shell execution is a capability granted by policy, not a
 trusted declarative value. Pin or policy-check third-party actions/images
 before production use.
 
+### Issue Agent repository write policy
+
+Tenant Owners/Admins can store an explicit per-Repository Agent write ceiling
+with `hako github repository agent-policy set --tenant ... --installation ...
+--repository ... --policy-file agent-policy.json`. An enabled policy must name
+one or more safe branch prefixes, at least one required `hako/...` Check, and
+require those Checks to pass. Pull-request creation is a separate boolean
+permission and is restricted to the same Repository, a policy-matching Agent
+branch, and the Repository's current default branch. The policy cannot grant
+merge, deployment, AWS, arbitrary API, or token capabilities; credentials must
+still be short-lived and Repository-scoped at execution time.
+
+Example policy file:
+
+```json
+{
+  "enabled": true,
+  "branch_prefixes": ["hako/agent/"],
+  "allow_pull_requests": true,
+  "required_checks": ["hako/lint", "hako/test"],
+  "require_checks_to_pass": true
+}
+```
+
+This is configuration and authorization groundwork only. The API response
+reports `execution_enabled: false`: Agent scheduling, model execution, and
+GitHub write token issuance remain disabled until the isolated Agent runtime
+and its Tenant credential and network/resource controls are deployed. Disabling
+the Repository Factory opt-in clears this policy. See the
+[Task 53 implementation record](../tasks/task-53-native-pipeline-agent.md).
+
+Tenant service metadata is tracked separately from built-in Workspace Service
+templates. Owners/Admins can maintain a Software Catalog entry bound to a
+Tenant-registered GitHub Repository, with service owner/team, language,
+Lambda MicroVM runtime, dependencies, and an optional HTTPS production URL.
+This metadata does not provision a Preview Workspace or authorize deployment;
+see the [Tenant Software Catalog API and CLI](software-catalog.md).
+
 ## Suggested implementation sequence
 
 1. GitHub App security baseline: installation flow, secret storage/rotation,
@@ -279,8 +372,14 @@ The first end-to-end milestone is: install a test GitHub App on an allowlisted
 repository → open a PR → receive/verify the webhook once → schedule one
 isolated MicroVM job → run `go test ./...` → post the result as a GitHub Check
 → retain redacted logs → destroy the ephemeral runtime. The current repository
-does not yet have the production runtime, GitHub App, webhook service, or this
-E2E, so this remains a future milestone rather than a supported workflow.
+contains local implementations for GitHub App registration and Tenant
+repository authorization, signed webhook intake and replay handling, durable
+Workload scheduling, Lambda MicroVM controller adapters, Checks delivery, and
+fake/PostgreSQL end-to-end coverage. The complete production milestone is not
+yet available: the Worker and event mappings are default-off, the Lambda
+MicroVM image/network/isolation path has not been verified in AWS, and live
+GitHub/AWS credentials and deployment have not been exercised. The local E2E
+is evidence for the composed contracts, not a production-readiness claim.
 
 ## Official references
 
@@ -369,9 +468,10 @@ a trailing `/*` prefix pattern. Push triggers match non-deleted `refs/heads/*`
 events; pull-request triggers match opened, reopened, or synchronized open PRs
 by their base branch. The webhook processor stores the trigger kind and
 selection branch on the immutable Run; the Agent reconstructs the normalized
-selection context from those fields after source verification. The scheduler
-still creates a generic untrusted Job rather than persisting pipeline names,
-so branch-filter misses are discovered by the Agent and fail that Run.
+selection context from those fields after source verification, selects fixed-
+catalog pipelines, and returns bounded per-pipeline terminal results. The
+scheduler does not persist selected pipeline names before execution. Branch-
+filter misses are discovered by the Agent and fail that Run.
 
 The parser rejects manifests larger than 64 KiB, multiple YAML documents,
 duplicate keys, aliases, anchors, explicit tags, nesting deeper than 20 levels,
@@ -398,7 +498,11 @@ from the generic Hako `go test ./...` trigger. No pipeline runs merely because
 `.hako/factory.yaml` exists. Disablement must stop new Hako admissions without
 changing GitHub workflow files or deleting historical run/check records.
 
-Issue-to-Agent execution, repository write permissions, human approval, and
-runtime execution are not implemented by this parser. Agent runs must use an
-isolated Lambda MicroVM with no cloud credentials by default and remain
-untrusted proposals requiring human review.
+Issue-to-Agent execution is not enabled by this parser. A Tenant Owner/Admin
+can configure a dormant per-Repository Agent branch/PR write policy through
+the API and CLI, but the response explicitly reports `execution_enabled: false`;
+no write token is issued and no Agent Run is scheduled from that policy. Agent
+runtime execution, model-credential authorization/handoff, and runtime
+resource/network enforcement remain incomplete. When enabled in a future
+deployment, Agent Runs must use an isolated Lambda MicroVM with no cloud
+credentials by default and remain untrusted proposals requiring human review.

@@ -40,6 +40,16 @@ func Dial(ctx context.Context, gatewayURL string, workspaceID domain.WorkspaceID
 			return nil, ErrClientConfig
 		}
 		path += "/shell"
+	case workspacesession.PermissionExec:
+		if port != 0 {
+			return nil, ErrClientConfig
+		}
+		path += "/exec"
+	case workspacesession.PermissionFileTransfer:
+		if port != 0 {
+			return nil, ErrClientConfig
+		}
+		path += "/files"
 	case workspacesession.PermissionVSCode:
 		if port != 0 {
 			return nil, ErrClientConfig

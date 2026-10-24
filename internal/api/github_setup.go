@@ -191,7 +191,7 @@ func completeGitHubInstallationSetup(pool transaction.Beginner, verifier githuba
 			return githubSetupUnavailable(c)
 		}
 		identity, err := requestVerifier.VerifyInstallation(ctx, query.Get("code"), setupState.InstallationID, setupState.CodeVerifier)
-		if err != nil || identity.ID != setupState.InstallationID || setupState.AppPin != nil && identity.AppID != setupState.AppPin.GitHubAppID {
+		if err != nil || identity.ID != setupState.InstallationID || identity.GitHubUserID <= 0 || strings.TrimSpace(identity.GitHubUserLogin) == "" || setupState.AppPin != nil && identity.AppID != setupState.AppPin.GitHubAppID {
 			if err != nil && !errors.Is(err, githubapp.ErrAuthorizationRejected) {
 				return c.JSON(http.StatusBadGateway, errorResponse{Error: errorBody{Code: "github_unavailable", Message: "GitHub Installation verification is temporarily unavailable"}})
 			}
@@ -200,11 +200,13 @@ func completeGitHubInstallationSetup(pool transaction.Beginner, verifier githuba
 		completedAt := time.Now().UTC()
 		var installation githubregistry.Installation
 		installation, err = transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (githubregistry.Installation, error) {
-			installation, err := githubregistry.CompleteSetupState(ctx, tx, stateHash, identity.ID, identity.AccountLogin, completedAt, identity.AppID)
+			installation, err := githubregistry.CompleteSetupStateWithGitHubUser(ctx, tx, stateHash, identity.ID, identity.AccountLogin, completedAt,
+				identity.AppID, githubregistry.VerifiedGitHubUser{ID: identity.GitHubUserID, Login: identity.GitHubUserLogin})
 			if err != nil {
 				return githubregistry.Installation{}, err
 			}
-			details, err := json.Marshal(map[string]any{"installation_id": installation.InstallationID, "account_login": installation.AccountLogin, "status": installation.Status})
+			details, err := json.Marshal(map[string]any{"installation_id": installation.InstallationID, "account_login": installation.AccountLogin,
+				"github_user_id": identity.GitHubUserID, "status": installation.Status})
 			if err != nil {
 				return githubregistry.Installation{}, err
 			}
@@ -223,6 +225,9 @@ func completeGitHubInstallationSetup(pool transaction.Beginner, verifier githuba
 		}
 		if errors.Is(err, githubregistry.ErrInstallationBound) {
 			return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "installation_conflict", Message: "GitHub Installation is already connected to another Tenant"}})
+		}
+		if errors.Is(err, githubregistry.ErrGitHubIdentityConflict) {
+			return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "github_identity_conflict", Message: "GitHub identity is already linked to another Hako user"}})
 		}
 		if errors.Is(err, authz.ErrTenantAccessDenied) {
 			return tenantNotFound(c)

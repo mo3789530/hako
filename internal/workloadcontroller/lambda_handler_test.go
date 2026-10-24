@@ -1,8 +1,11 @@
 package workloadcontroller
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -66,6 +69,37 @@ func TestLambdaHandlerDoesNotTrustEventTypeFromBody(t *testing.T) {
 	response, err := handler.Handle(context.Background(), events.SQSEvent{Records: []events.SQSMessage{{MessageId: "body-type-only", Body: string(body)}}})
 	if err != nil || len(response.BatchItemFailures) != 1 || response.BatchItemFailures[0].ItemIdentifier != "body-type-only" || len(api.inputs) != 0 {
 		t.Fatalf("body-supplied event type affected dispatch: response=%+v launches=%d err=%v", response, len(api.inputs), err)
+	}
+}
+
+func TestLambdaHandlerFailureLogIncludesValidatedCorrelationID(t *testing.T) {
+	controller, _, _, _, _ := setupLambda(t)
+	handler, err := NewLambdaHandler(controller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	handler.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	messageType := "workload_attempt.unsupported"
+	body := envelope(t, func(c *Command) {
+		c.CorrelationID = "req_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	})
+	response, err := handler.Handle(context.Background(), events.SQSEvent{Records: []events.SQSMessage{{
+		MessageId: "message-failed", Body: string(body), MessageAttributes: map[string]events.SQSMessageAttribute{
+			"HakoEventType": {DataType: "String", StringValue: &messageType},
+		},
+	}}})
+	if err != nil || len(response.BatchItemFailures) != 1 {
+		t.Fatalf("failed record response=%+v err=%v", response, err)
+	}
+	logged := logs.String()
+	for _, field := range []string{"correlation_id=req_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "sqs_message_id=message-failed", "attempt_id=attempt_1"} {
+		if !strings.Contains(logged, field) {
+			t.Fatalf("failure log missing %q: %s", field, logged)
+		}
+	}
+	if strings.Contains(logged, "unsupported Workload event type") {
+		t.Fatalf("raw processing error should not be logged: %s", logged)
 	}
 }
 

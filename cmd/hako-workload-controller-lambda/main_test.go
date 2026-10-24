@@ -69,6 +69,11 @@ func TestConfiguredDeploymentRequiresCompleteModeSpecificSettings(t *testing.T) 
 	if _, err := configuredDeployment(func(key string) string { return values[key] }); err == nil {
 		t.Fatal("non-numeric recovery page size was accepted")
 	}
+	values["HAKO_WORKLOAD_RECOVERY_PAGE_SIZE"] = "40"
+	values["HAKO_WORKLOAD_ARTIFACT_CLEANUP_BATCH_SIZE"] = "1001"
+	if _, err := configuredDeployment(func(key string) string { return values[key] }); err == nil {
+		t.Fatal("oversized artifact cleanup batch was accepted")
+	}
 }
 
 func TestConfiguredDeploymentRejectsProfileRuntimeDrift(t *testing.T) {
@@ -88,6 +93,11 @@ func TestConfiguredDeploymentRequiresDistinctConcreteSecretARNs(t *testing.T) {
 		t.Fatal("reused secret reference was accepted")
 	}
 	values = baseEnvironment()
+	values["HAKO_WORKLOAD_ARTIFACT_CLEANUP_HMAC_SECRET_ARN"] = values["HAKO_WORKLOAD_CONTROL_PLANE_HMAC_SECRET_ARN"]
+	if _, err := configuredDeployment(func(key string) string { return values[key] }); err == nil {
+		t.Fatal("cleanup HMAC Secret reuse was accepted")
+	}
+	values = baseEnvironment()
 	values["HAKO_WORKLOAD_TICKET_PRIVATE_KEY_SECRET_ARN"] = "arn:aws:secretsmanager:*:123456789012:secret:hako/ticket"
 	if _, err := configuredDeployment(func(key string) string { return values[key] }); err == nil {
 		t.Fatal("wildcard Secret ARN was accepted")
@@ -96,23 +106,24 @@ func TestConfiguredDeploymentRequiresDistinctConcreteSecretARNs(t *testing.T) {
 
 func baseEnvironment() map[string]string {
 	return map[string]string{
-		"HAKO_WORKLOAD_LAMBDA_MODE":                   "command",
-		"HAKO_RESOURCE_PLANE_ID":                      "rp-tokyo-01",
-		"HAKO_WORKLOAD_CONTROL_PLANE_ENDPOINT":        "https://api.hako.example",
-		"HAKO_WORKLOAD_CONTROL_PLANE_HMAC_SECRET_ARN": "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-dev/metadata-hmac-AbCdEf",
-		"HAKO_WORKLOAD_CHECKOUT_BROKER_URL":           "https://broker.hako.internal",
-		"HAKO_WORKLOAD_BROKER_CLIENT_CERT_SECRET_ARN": "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-dev/broker-client-cert-AbCdEf",
-		"HAKO_WORKLOAD_BROKER_CLIENT_KEY_SECRET_ARN":  "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-dev/broker-client-key-AbCdEf",
-		"HAKO_WORKLOAD_BROKER_CA_SECRET_ARN":          "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-dev/broker-ca-AbCdEf",
-		"HAKO_WORKLOAD_JOURNAL_BUCKET":                "hako-workload-journal",
-		"HAKO_WORKLOAD_JOURNAL_PREFIX":                "v1/attempt-journals",
-		"HAKO_WORKLOAD_SOURCE_BUCKET":                 "hako-workload-source",
-		"HAKO_WORKLOAD_SOURCE_PREFIX":                 "v1/source",
-		"HAKO_WORKLOAD_ARTIFACT_BUCKET":               "hako-workload-artifacts",
-		"HAKO_WORKLOAD_ARTIFACT_PREFIX":               "v1/artifacts",
-		"HAKO_WORKLOAD_RESULT_QUEUE_URL":              "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-workload-results",
-		"HAKO_WORKLOAD_TICKET_KEY_ID":                 "controller-v1",
-		"HAKO_WORKLOAD_TICKET_PRIVATE_KEY_SECRET_ARN": "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-dev/agent-ticket-AbCdEf",
-		"HAKO_WORKLOAD_RUNTIME_PROFILES_JSON":         testProfile,
+		"HAKO_WORKLOAD_LAMBDA_MODE":                      "command",
+		"HAKO_RESOURCE_PLANE_ID":                         "rp-tokyo-01",
+		"HAKO_WORKLOAD_CONTROL_PLANE_ENDPOINT":           "https://api.hako.example",
+		"HAKO_WORKLOAD_CONTROL_PLANE_HMAC_SECRET_ARN":    "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-dev/metadata-hmac-AbCdEf",
+		"HAKO_WORKLOAD_ARTIFACT_CLEANUP_HMAC_SECRET_ARN": "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-dev/artifact-cleanup-hmac-AbCdEf",
+		"HAKO_WORKLOAD_CHECKOUT_BROKER_URL":              "https://broker.hako.internal",
+		"HAKO_WORKLOAD_BROKER_CLIENT_CERT_SECRET_ARN":    "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-dev/broker-client-cert-AbCdEf",
+		"HAKO_WORKLOAD_BROKER_CLIENT_KEY_SECRET_ARN":     "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-dev/broker-client-key-AbCdEf",
+		"HAKO_WORKLOAD_BROKER_CA_SECRET_ARN":             "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-dev/broker-ca-AbCdEf",
+		"HAKO_WORKLOAD_JOURNAL_BUCKET":                   "hako-workload-journal",
+		"HAKO_WORKLOAD_JOURNAL_PREFIX":                   "v1/attempt-journals",
+		"HAKO_WORKLOAD_SOURCE_BUCKET":                    "hako-workload-source",
+		"HAKO_WORKLOAD_SOURCE_PREFIX":                    "v1/source",
+		"HAKO_WORKLOAD_ARTIFACT_BUCKET":                  "hako-workload-artifacts",
+		"HAKO_WORKLOAD_ARTIFACT_PREFIX":                  "v1/artifacts",
+		"HAKO_WORKLOAD_RESULT_QUEUE_URL":                 "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-workload-results",
+		"HAKO_WORKLOAD_TICKET_KEY_ID":                    "controller-v1",
+		"HAKO_WORKLOAD_TICKET_PRIVATE_KEY_SECRET_ARN":    "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-dev/agent-ticket-AbCdEf",
+		"HAKO_WORKLOAD_RUNTIME_PROFILES_JSON":            testProfile,
 	}
 }

@@ -1,5 +1,12 @@
 # Workspace CLI connections
 
+Tenant quota usage is available with `hako usage <tenant-id>`. It reports
+active Workspaces against the current limit of 10 and concurrent Workload Runs
+against the limit of 5. Pending deletion/cancellation remains counted until
+runtime cleanup/terminal result is confirmed. This aggregate view does not
+change Member visibility of Workspace records and does not report measured
+compute or storage consumption. See [Workspace lifecycle API](workspace-lifecycle-api.md).
+
 The first interactive CLI command is:
 
 ```sh
@@ -8,6 +15,7 @@ export HAKO_API_URL=https://api.example.test
 export HAKO_GATEWAY_URL=https://gateway.example.test
 hako wait <tenant-id> <workspace-id> --state running
 hako shell <tenant-id> <workspace-id>
+hako exec <tenant-id> <workspace-id> -- go test ./...
 hako open <tenant-id> <workspace-id> [local-port]
 hako ssh-proxy <tenant-id> <workspace-id>
 hako cp <tenant-id> <workspace-id> <local-path> <workspace-path>
@@ -23,10 +31,24 @@ stdout are the local Linux terminal, the CLI disables local echo/canonical
 line buffering, sends the terminal's initial size, tracks `SIGWINCH`, and
 restores the original terminal settings on exit. Piped input/output remains
 unchanged. The CLI keeps the
-ticket in memory and does not print it. On normal stream completion, input EOF,
-or interruption, it attempts to revoke the session with a bounded cleanup
+ticket in memory and does not print it. The Guest returns a random PTY session
+ID, retained only in the CLI process. If WSS is interrupted, the CLI requests
+a fresh authorized Hako Session and one-use Guest ticket, then resumes the same
+PTY with bounded retry/backoff. On normal stream completion, input EOF, or
+interruption, it attempts to revoke the current session with a bounded cleanup
 request. `Ctrl-C` disconnects; terminal EOF (`Ctrl-D`) sends EOT to the remote
-shell. A new invocation obtains a new ticket.
+shell. A new invocation obtains a new PTY session.
+
+`hako exec` accepts a bounded argv after `--`; it does not parse or invoke a
+shell command string. The Control Plane issues a distinct short-lived `exec`
+Session permission, and the Gateway forwards the WSS stream directly to the
+bound Workspace MicroVM Agent. The Guest Agent runs as the non-root Workspace
+identity, fixes cwd to `/workspace`, uses a minimal environment, limits runtime
+to five minutes and stdout/stderr to 256 KiB each, and kills the process group
+on timeout or cancellation. Exit status and captured output are returned to the
+CLI. Relative executable paths must resolve within `/workspace`; absolute
+image-provided executables are allowed. This route is locally tested, but
+deployed Lambda MicroVM image/routing verification remains outstanding.
 
 `hako open` starts a local listener bound only to `127.0.0.1`, opens the
 browser at that URL, and forwards each browser TCP connection through a
@@ -50,6 +72,13 @@ with `--timeout`; `--interval` defaults to 2 seconds and is bounded between
 observed state; it does not make the Lambda MicroVM runtime available where
 the Resource Plane executor is not deployed.
 
+After idle suspension, explicitly resume before opening an interactive
+connection. `hako resume <tenant-id> <workspace-id> --wait` waits until the
+Control Plane reports the replacement runtime as `running`; omit `--wait` to
+return as soon as the asynchronous resume Operation is accepted. Retrying the
+resume request with `--idempotency-key <key>` preserves the same operation.
+Shell and IDE commands never resume a Workspace implicitly.
+
 Configure OpenSSH or VS Code Remote SSH to use Hako as a ProxyCommand:
 
 ```sshconfig
@@ -71,24 +100,29 @@ dedicated `/ssh` WSS bridge and fixed `127.0.0.1:22` dial, with one-use
 MicroVM-bound authorization. This does not install the SSH daemon or provide a
 host key; those remain image/runtime provisioning gates.
 
-Copy files through the same private SSH tunnel:
+Copy files through the private Gateway-to-Agent stream:
 
 ```sh
 hako cp acme ws_api ./config.yaml /workspace/config.yaml
 hako cp --from acme ws_api /workspace/logs/app.log ./app.log
 ```
 
-`hako cp` delegates transfer to the system OpenSSH `scp` client and requires
-OpenSSH 9.0 or newer so transfers use SFTP rather than the legacy remote-shell
-protocol. It configures the Hako ProxyCommand plus a unique
-`HostKeyAlias` for the Tenant/Workspace pair. The remote path must be absolute
-and remain lexically under `/workspace`; the command never accepts a remote
-host. Normal SSH host-key checking remains enabled: verify and provision the
-Workspace host key in `known_hosts` before unattended copies. The SSH daemon
-must expose the SFTP subsystem. No file contents pass through the Control
-Plane, and the CLI does not add credential flags or place Hako tickets in the
-scp argument list. The actual MicroVM sshd/SFTP and host-key provisioning are
-still runtime deployment gates.
+`hako cp` does not invoke OpenSSH, SSH, or SFTP and does not require guest
+`sshd`, an SSH host key, or `known_hosts`. The CLI requests a short-lived,
+RBAC-authorized `file-transfer` Session, then streams a bounded binary file
+protocol over TLS/WSS through the Gateway to the Workspace Agent. The ticket
+is sent only in the WebSocket Authorization header and is revoked after the
+transfer (it also expires if revocation cannot reach the API). Files are
+restricted to absolute paths under `/workspace`; directory transfers and
+paths containing traversal or symlinks are rejected. Uploads are written to
+a private temporary file and atomically renamed; downloads use a private local
+temporary sibling and rename only after the complete stream arrives. Files are
+limited to 1 GiB, although the short-lived Session lifetime can end a slow
+transfer earlier. An interrupted upload is discarded and an incomplete
+download never replaces the local destination; retry starts the file again.
+File contents do not pass through the Control Plane and no
+SSH/database/application port is exposed. The actual Lambda MicroVM image and
+deployed Gateway-to-Agent route remain runtime verification gates.
 
 Forward one allowed Workspace loopback service port with:
 
@@ -111,29 +145,61 @@ Add and inspect Workspace-local catalog Services:
 hako add <tenant-id> <workspace-id> postgres [instance-name]
 hako add <tenant-id> <workspace-id> redis [instance-name]
 hako services <tenant-id> <workspace-id>
+hako service usage <tenant-id> <workspace-id>
 hako service stop <tenant-id> <workspace-id> <instance-name>
 hako service start <tenant-id> <workspace-id> <instance-name>
 hako service remove <tenant-id> <workspace-id> <instance-name>
+hako service rotate-credentials <tenant-id> <workspace-id> <instance-name>
 ```
 
 `hako add` resolves only a built-in, versioned template and persists a
 Workspace-scoped desired-running Service. Repeating the same catalog/name is
 safe and returns the existing instance; reusing a name for another template
 returns a conflict. `hako services` lists only Services in a Workspace the
-caller is authorized to see. The current API reports `observed_state=pending`:
-this metadata flow does not yet launch or health-check containers in the
-Lambda MicroVM. Do not treat an accepted request as a running database. No
-service port is published publicly; access is intended to go through the
-Workspace Gateway's authorized loopback port-forward path once the runtime
-router consumes Service state.
+caller is authorized to see. It prints desired and observed state, desired and
+observed revision, the runtime allocation generation backing the latest report,
+and a health column. Health is `pending` unless the API can match the report to
+the current active Lambda MicroVM binding and desired revision; therefore a
+healthy report from a replaced MicroVM is never presented as current. A
+`healthy` value means the Workspace runtime's catalog health check reported
+healthy for that current revision, not that the service is externally
+reachable or production-ready. An accepted request alone is not proof that a
+database is running. No service port is published publicly; access goes through
+the Workspace Gateway's authorized loopback port-forward path.
+
+Service admission reserves the catalog-declared memory/CPU request while the
+Service is desired-running or a stop/delete is still pending. A Workspace is
+limited to the Tenant's configured aggregate Service limits (default and hard
+ceiling 2 GiB/1500 millicores); a request exceeding the limit is rejected with
+HTTP 409 `service_resource_quota_exceeded`.
+The reservation is released only after a runtime report confirms `stopped` or
+`deleted`. These are configured admission limits, not measured MicroVM usage
+or a guarantee that a runtime class can provide that capacity. Tenant
+Owners/Admins can lower the Workspace Service cap through the quota API/CLI;
+see [Tenant quota configuration](tenant-quotas.md). Class-specific budgets and
+measured usage remain future work.
+
+`hako service usage <tenant-id> <workspace-id>` shows that Workspace's
+reserved catalog-request totals. The same data is available from the
+authenticated `GET /v1/tenants/{tenant_id}/workspaces/{workspace_id}/services/usage`
+route. Workspace Member visibility applies: a Member cannot inspect another
+Member's Workspace, and cross-Tenant requests are hidden as not found.
 
 `hako service start|stop|remove` records `running`, `stopped`, or `deleted` as
-desired state and returns `observed_state=pending`. Repeating the same action
-is idempotent. `remove` leaves a tombstone and reserves the Service name; it is
-not evidence that a container or volume has been physically deleted. A deleted
-Service cannot be restarted or recreated under the same name. Each changed
-state is audit-recorded; repeated no-op requests do not create additional
-audit events.
+desired state; observed state remains pending until a matching runtime report
+confirms the action. Repeating the same action is idempotent. `remove` leaves a
+tombstone and reserves the Service name until runtime cleanup is confirmed. The
+local executor removes the container and only its Service-scoped data subtree
+before reporting deletion, but deployed Lambda MicroVM/EFS behavior has not
+been verified. A deleted Service cannot be restarted or recreated under the
+same name. Each changed state is audit-recorded; repeated no-op requests do
+not create additional audit events.
+
+`hako service rotate-credentials` is available for a running catalog Service
+that declares generated credentials (currently PostgreSQL). It records a new
+credential generation and reconciliation revision. The command never returns
+the password; see [Workspace Service generated credentials](workspace-service-secrets.md)
+for staged promotion and retry behavior.
 
 The Gateway URL must be an HTTPS/WSS origin without a path, query, or embedded
 credentials. TLS verification remains enabled. The client constructs the route
@@ -141,19 +207,23 @@ from the Workspace ID and the command's fixed permission/channel; callers
 cannot choose a runtime hostname or destination port. The SSH route is always
 the dedicated `ssh-proxy` channel to port 22.
 
-The shell command is currently a single-stream transport. Its bounded binary
-protocol uses a magic/type/length header and typed data/resize frames; both
-ends decode incrementally because the Gateway transports a byte stream and
-does not preserve WebSocket message boundaries. It does not yet provide a
-reconnectable PTY, code-server image/runtime startup, or production SSH/SFTP
-runtime provisioning. File transfer uses the local OpenSSH `scp` client
-through the same unverified MicroVM SSH runtime path. The Service Catalog API/CLI currently persists
-desired state only; runtime start/health/stop/remove execution and
-persistent-data behavior are not yet implemented. The local forwarding CLI and Gateway protocol have a local
-E2E, but production Resource Plane routing remains unfinished. Deployment
-still needs production ticket signing
-and active-session lookup key configuration, a multi-Workspace runtime router,
-and fleet-wide limits/observability.
+The shell command uses a bounded binary protocol with attach/session, data,
+resize, and terminal-end frames. Both ends decode incrementally because the
+Gateway transports a byte stream and does not preserve WebSocket message
+boundaries. PTYs can reconnect while the same Guest/MicroVM remains alive;
+reconnect across Guest/MicroVM replacement is not provided. Production runtime
+provisioning for code-server and SSH remains open. File transfer uses its own
+signed Agent route, separate from the SSH capability and confined to the
+Workspace mount. The Service Catalog's
+revision-fenced Resource Plane consumer, rootless executor, health reporting,
+credential handoff, and cleanup are implemented and locally tested. They do
+not establish a production persistence guarantee: local development databases
+are Workspace runtime services, while real Lambda MicroVM image, EFS, networking,
+and resource-limit behavior remain unverified. The local forwarding CLI and
+Gateway protocol have a local E2E, but production Resource Plane routing remains
+unfinished. Deployment still needs production ticket signing and active-session
+lookup key configuration, a multi-Workspace runtime router, and fleet-wide
+limits/observability.
 
 ## Security and failure behavior
 
@@ -163,10 +233,12 @@ and fleet-wide limits/observability.
   request fails without opening the Gateway stream.
 - TLS certificate validation is mandatory. Tickets are not included in the
   URL, command line, or normal CLI output.
-- A Gateway disconnect ends the CLI stream; automatic reconnect is not
-  implemented. The client attempts session revocation when the stream exits,
-  but a network failure can prevent the revoke request from reaching the API;
-  tickets therefore also have a short expiration.
+- A Gateway disconnect causes the CLI to reauthorize and reconnect to the same
+  PTY. Retries are bounded; if recovery fails, the command exits with an error.
+  The client attempts session revocation when the stream exits, but a network
+  failure can prevent the revoke request from reaching the API; tickets
+  therefore also have a short expiration. Reconnect cannot survive Guest Agent
+  or MicroVM replacement.
 - `hako shell` opens no local listening port. `hako forward` binds exclusively
   to `127.0.0.1`, so it does not publish a Workspace service to the LAN or
   internet.
@@ -175,5 +247,7 @@ Local authenticated integration coverage exercises API ticket creation, a TLS
 WSS shell round trip, API revocation, authorization denial before Gateway
 connection, cancellation-triggered stream close/revoke, loopback TCP
 forwarding, per-connection session revocation, invalid-port rejection, and
-missing Gateway configuration. It does not substitute for a deployed
+missing Gateway configuration. Guest tests cover same-user PTY reattachment,
+cross-user/concurrent attach rejection, and output produced while detached.
+It does not substitute for a deployed
 MicroVM/PTY, production key-management, or multi-replica Gateway test.

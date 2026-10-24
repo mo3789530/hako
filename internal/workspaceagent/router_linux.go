@@ -17,6 +17,8 @@ import (
 // destinations from caller-controlled values.
 type WorkspaceStreamDialer interface {
 	OpenShell(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error)
+	OpenExec(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error)
+	OpenFileTransfer(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error)
 	OpenVSCode(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error)
 	OpenPort(context.Context, workspacesession.Claims, workspacesession.Permission, uint16) (io.ReadWriteCloser, error)
 }
@@ -75,6 +77,22 @@ func (r *WorkspaceRouter) OpenShell(ctx context.Context, claims workspacesession
 		return nil, err
 	}
 	return dialer.OpenShell(ctx, claims)
+}
+
+func (r *WorkspaceRouter) OpenExec(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
+	dialer, err := r.resolve(claims.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return dialer.OpenExec(ctx, claims)
+}
+
+func (r *WorkspaceRouter) OpenFileTransfer(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
+	dialer, err := r.resolve(claims.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return dialer.OpenFileTransfer(ctx, claims)
 }
 
 func (r *WorkspaceRouter) OpenVSCode(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {

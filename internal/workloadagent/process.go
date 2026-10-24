@@ -24,20 +24,28 @@ import (
 const defaultAgentOutputLimit = 1 << 20
 
 var (
-	ErrExecutionPlan   = errors.New("trusted Workload execution plan is invalid")
-	ErrFactoryManifest = errors.New("Hako factory manifest is invalid for this Run")
-	ErrProcessExit     = errors.New("Workload process exited unsuccessfully")
+	ErrExecutionPlan            = errors.New("trusted Workload execution plan is invalid")
+	ErrFactoryManifest          = errors.New("Hako factory manifest is invalid for this Run")
+	ErrAgentExecutorUnavailable = errors.New("native Agent executor is not configured")
+	ErrProcessExit              = errors.New("Workload process exited unsuccessfully")
 )
 
 type ExecutionPlan struct {
-	Identity         workloadjournal.Command
-	RepositoryPath   string
-	SourceDigest     string
-	CommitSHA        string
-	TriggerEvent     string
-	TriggerBranch    string
-	FactoryPipelines []factoryconfig.ExecutionPlan
-	Deadline         time.Time
+	Identity               workloadjournal.Command
+	Kind                   domain.WorkloadKind
+	RepositoryPath         string
+	SourceDigest           string
+	CommitSHA              string
+	TriggerEvent           string
+	TriggerBranch          string
+	CorrelationID          string
+	AgentIntegrationID     string
+	AgentInstallationID    int64
+	AgentRepositoryID      int64
+	AgentTaskContextSHA256 string
+	AgentTask              *AgentTask
+	FactoryPipelines       []factoryconfig.ExecutionPlan
+	Deadline               time.Time
 }
 
 // ExecutionResolver must resolve a repository path from the trusted attempt
@@ -110,6 +118,11 @@ func (b *ProcessBackend) Start(ctx context.Context, claims TicketClaims, req Sta
 		claims.Execution.SourceDigest != req.SourceDigest || claims.Execution.CommitSHA != req.CommitSHA || !claims.Execution.Deadline.Equal(req.Deadline) {
 		return ErrProtocolRequest
 	}
+	if req.Kind == domain.WorkloadAgent && (claims.Execution.TriggerEvent != "issue_comment" || claims.Execution.TriggerBranch != req.AgentTask.DefaultBranch ||
+		claims.Execution.AgentIntegrationID != req.AgentTask.IntegrationID || claims.Execution.AgentInstallationID != req.AgentTask.InstallationID ||
+		claims.Execution.AgentRepositoryID != req.AgentTask.RepositoryID || claims.Execution.AgentTaskContextSHA256 != req.AgentTask.ContextSHA256) {
+		return ErrProtocolRequest
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -121,7 +134,10 @@ func (b *ProcessBackend) Start(ctx context.Context, claims TicketClaims, req Sta
 	if b.attempt != nil {
 		if b.attempt.claims.MicroVMID != claims.MicroVMID || b.attempt.claims.Identity.Command() != claims.Identity.Command() ||
 			b.attempt.plan.SourceDigest != req.SourceDigest || b.attempt.plan.CommitSHA != req.CommitSHA || !b.attempt.plan.Deadline.Equal(req.Deadline) ||
-			b.attempt.plan.TriggerEvent != claims.Execution.TriggerEvent || b.attempt.plan.TriggerBranch != claims.Execution.TriggerBranch {
+			b.attempt.plan.Kind != req.Kind || claims.Execution.Kind != req.Kind ||
+			!sameAgentTask(b.attempt.plan.AgentTask, req.AgentTask) ||
+			b.attempt.plan.TriggerEvent != claims.Execution.TriggerEvent || b.attempt.plan.TriggerBranch != claims.Execution.TriggerBranch ||
+			b.attempt.plan.CorrelationID != claims.Execution.CorrelationID {
 			return ErrAttemptConflict
 		}
 		return nil
@@ -138,16 +154,28 @@ func (b *ProcessBackend) Start(ctx context.Context, claims TicketClaims, req Sta
 		return err
 	}
 	deadlineIn := plan.Deadline.Sub(b.config.Now())
-	if plan.Identity != claims.Identity.Command() || plan.SourceDigest != req.SourceDigest || plan.CommitSHA != req.CommitSHA ||
+	if plan.Identity != claims.Identity.Command() || plan.Kind != req.Kind || plan.SourceDigest != req.SourceDigest || plan.CommitSHA != req.CommitSHA ||
+		plan.AgentIntegrationID != claims.Execution.AgentIntegrationID || plan.AgentInstallationID != claims.Execution.AgentInstallationID ||
+		plan.AgentRepositoryID != claims.Execution.AgentRepositoryID ||
+		plan.AgentTaskContextSHA256 != claims.Execution.AgentTaskContextSHA256 ||
 		plan.TriggerEvent != claims.Execution.TriggerEvent || plan.TriggerBranch != claims.Execution.TriggerBranch ||
+		plan.CorrelationID != claims.Execution.CorrelationID ||
 		!plan.Deadline.Equal(req.Deadline) || deadlineIn <= 0 || deadlineIn > 8*time.Hour {
 		return ErrExecutionPlan
+	}
+	if req.AgentTask != nil {
+		task := *req.AgentTask
+		plan.AgentTask = &task
 	}
 	processCtx, cancel := context.WithDeadline(b.root, plan.Deadline)
 	output := &boundedOutput{limit: b.config.MaxOutput}
 	process, err := b.config.Factory.Start(processCtx, plan, output)
 	if err != nil {
 		cancel()
+		if errors.Is(err, ErrAgentExecutorUnavailable) {
+			b.recordAgentExecutorUnavailable(claims, req)
+			return nil
+		}
 		return ErrAgentBusy
 	}
 	attempt := &processAttempt{claims: claims, plan: plan, state: workloadjournal.Running,
@@ -158,6 +186,37 @@ func (b *ProcessBackend) Start(ctx context.Context, claims TicketClaims, req Sta
 	return nil
 }
 
+func sameAgentTask(left, right *AgentTask) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func (b *ProcessBackend) recordAgentExecutorUnavailable(claims TicketClaims, req StartRequest) {
+	completed := b.config.Now().UTC()
+	const message = "[Hako] native Agent executor is not configured for this runtime\n"
+	output := &boundedOutput{limit: b.config.MaxOutput}
+	_, _ = output.Write([]byte(message))
+	identity := claims.Identity.Command()
+	result := workloadjobs.WorkloadResult{SchemaVersion: 1, TenantID: domain.TenantID(identity.TenantID),
+		WorkloadRunID: domain.WorkloadRunID(identity.WorkloadRunID), AttemptID: identity.AttemptID, Generation: identity.Generation,
+		ResourcePlaneID: domain.ResourcePlaneID(identity.ResourcePlaneID), CommitSHA: req.CommitSHA,
+		CorrelationID: claims.Execution.CorrelationID, Status: domain.WorkloadFailed, ExitCode: 1,
+		ErrorCode: "agent_executor_unavailable", CompletedAt: completed}
+	var task *AgentTask
+	if req.AgentTask != nil {
+		copy := *req.AgentTask
+		task = &copy
+	}
+	b.attempt = &processAttempt{claims: claims, plan: ExecutionPlan{Identity: identity, Kind: req.Kind, AgentTask: task,
+		AgentIntegrationID: claims.Execution.AgentIntegrationID, AgentInstallationID: claims.Execution.AgentInstallationID,
+		AgentRepositoryID: claims.Execution.AgentRepositoryID, SourceDigest: req.SourceDigest,
+		AgentTaskContextSHA256: claims.Execution.AgentTaskContextSHA256,
+		CommitSHA:              req.CommitSHA, CorrelationID: claims.Execution.CorrelationID, Deadline: req.Deadline.UTC()},
+		state: workloadjournal.Failed, result: result, output: output, logs: []byte(message)}
+}
+
 func (b *ProcessBackend) recordFactoryManifestFailure(claims TicketClaims, req StartRequest) {
 	completed := b.config.Now().UTC()
 	output := &boundedOutput{limit: b.config.MaxOutput}
@@ -166,9 +225,10 @@ func (b *ProcessBackend) recordFactoryManifestFailure(claims TicketClaims, req S
 	result := workloadjobs.WorkloadResult{SchemaVersion: 1, TenantID: domain.TenantID(identity.TenantID),
 		WorkloadRunID: domain.WorkloadRunID(identity.WorkloadRunID), AttemptID: identity.AttemptID, Generation: identity.Generation,
 		ResourcePlaneID: domain.ResourcePlaneID(identity.ResourcePlaneID), CommitSHA: req.CommitSHA,
-		Status: domain.WorkloadFailed, ExitCode: 1, ErrorCode: "factory_manifest_invalid", CompletedAt: completed}
+		CorrelationID: claims.Execution.CorrelationID,
+		Status:        domain.WorkloadFailed, ExitCode: 1, ErrorCode: "factory_manifest_invalid", CompletedAt: completed}
 	b.attempt = &processAttempt{claims: claims, plan: ExecutionPlan{Identity: identity, SourceDigest: req.SourceDigest,
-		CommitSHA: req.CommitSHA, Deadline: req.Deadline.UTC()}, state: workloadjournal.Failed, result: result, output: output,
+		CommitSHA: req.CommitSHA, CorrelationID: claims.Execution.CorrelationID, Deadline: req.Deadline.UTC()}, state: workloadjournal.Failed, result: result, output: output,
 		logs: []byte("[Hako] factory manifest rejected for this trigger\n")}
 }
 
@@ -292,7 +352,12 @@ func (b *ProcessBackend) wait(a *processAttempt, processCtx context.Context, pro
 	result := workloadjobs.WorkloadResult{SchemaVersion: 1, TenantID: domain.TenantID(a.plan.Identity.TenantID),
 		WorkloadRunID: domain.WorkloadRunID(a.plan.Identity.WorkloadRunID), AttemptID: a.plan.Identity.AttemptID,
 		Generation: a.plan.Identity.Generation, ResourcePlaneID: domain.ResourcePlaneID(a.plan.Identity.ResourcePlaneID),
-		CommitSHA: a.plan.CommitSHA, Status: domain.WorkloadRunState(state), ExitCode: exitCode, ErrorCode: errorCode, CompletedAt: completed}
+		CommitSHA: a.plan.CommitSHA, CorrelationID: a.plan.CorrelationID, Status: domain.WorkloadRunState(state), ExitCode: exitCode, ErrorCode: errorCode, CompletedAt: completed}
+	if pipelineProcess, ok := process.(interface {
+		PipelineResults() []workloadjobs.WorkloadPipelineResult
+	}); ok {
+		result.PipelineResults = pipelineProcess.PipelineResults()
+	}
 	if workloadjobs.ValidateResult(result) != nil {
 		result.Status, result.ExitCode, result.ErrorCode, result.LogArtifact = domain.WorkloadFailed, 1, "agent_result_invalid", nil
 	}
@@ -349,6 +414,9 @@ type GoTestProcessFactory struct {
 }
 
 func (f GoTestProcessFactory) Start(ctx context.Context, plan ExecutionPlan, output io.Writer) (ManagedProcess, error) {
+	if plan.Kind == domain.WorkloadAgent {
+		return nil, ErrAgentExecutorUnavailable
+	}
 	repository, err := filepath.EvalSymlinks(plan.RepositoryPath)
 	if err != nil {
 		return nil, ErrExecutionPlan
@@ -429,15 +497,18 @@ func (f GoTestProcessFactory) startFactoryPipelines(ctx context.Context, plan Ex
 	process := &factoryPipelineProcess{done: make(chan processExit, 1)}
 	go func() {
 		var result processExit
-		for _, pipeline := range plan.FactoryPipelines {
+		pipelineResults := make([]workloadjobs.WorkloadPipelineResult, 0, len(plan.FactoryPipelines))
+		for pipelineIndex, pipeline := range plan.FactoryPipelines {
 			pipelineCtx, cancel := context.WithTimeout(ctx, time.Duration(pipeline.TimeoutSecond)*time.Second)
 			_, _ = fmt.Fprintf(output, "[Hako] pipeline %s\n", pipeline.Pipeline)
+			pipelineResult := workloadjobs.WorkloadPipelineResult{Name: pipeline.Pipeline, Status: "succeeded"}
 			for _, command := range pipeline.Commands {
 				_, _ = fmt.Fprintf(output, "[Hako] step %s\n", command.Step)
 				executable := command.Executable
 				if command.Executable == "/usr/local/go/bin/go" && f.GoBinary != "" {
 					if !filepath.IsAbs(f.GoBinary) {
 						result = processExit{code: 1, err: ErrExecutionPlan}
+						pipelineResult = workloadjobs.WorkloadPipelineResult{Name: pipeline.Pipeline, Status: "failed", ExitCode: 1, ErrorCode: "execution_plan_invalid"}
 						break
 					}
 					executable = f.GoBinary
@@ -454,11 +525,13 @@ func (f GoTestProcessFactory) startFactoryPipelines(ctx context.Context, plan Ex
 						moduleCache, err := filepath.EvalSymlinks(f.ModuleCache)
 						if err != nil {
 							result = processExit{code: 1, err: ErrExecutionPlan}
+							pipelineResult = workloadjobs.WorkloadPipelineResult{Name: pipeline.Pipeline, Status: "failed", ExitCode: 1, ErrorCode: "execution_plan_invalid"}
 							break
 						}
 						info, err := os.Stat(moduleCache)
 						if err != nil || !info.IsDir() {
 							result = processExit{code: 1, err: ErrExecutionPlan}
+							pipelineResult = workloadjobs.WorkloadPipelineResult{Name: pipeline.Pipeline, Status: "failed", ExitCode: 1, ErrorCode: "execution_plan_invalid"}
 							break
 						}
 						env = append(env, "GOMODCACHE="+moduleCache)
@@ -472,22 +545,38 @@ func (f GoTestProcessFactory) startFactoryPipelines(ctx context.Context, plan Ex
 					break
 				}
 				if err := runCatalogCommand(pipelineCtx, plan.RepositoryPath, executable, command.Args, env, output); err != nil {
-					if errors.Is(pipelineCtx.Err(), context.DeadlineExceeded) {
-						result = processExit{code: 124, err: context.DeadlineExceeded}
+					if termination, pipelineOutcome, terminated := pipelineContextExit(pipeline.Pipeline, pipelineCtx.Err()); terminated {
+						result, pipelineResult = termination, pipelineOutcome
+					} else if termination, pipelineOutcome, terminated := pipelineContextExit(pipeline.Pipeline, ctx.Err()); terminated {
+						result, pipelineResult = termination, pipelineOutcome
 					} else {
-						result = processExit{code: catalogExitCode(err), err: err}
+						code := catalogExitCode(err)
+						result = processExit{code: code, err: err}
+						pipelineResult = workloadjobs.WorkloadPipelineResult{Name: pipeline.Pipeline, Status: "failed", ExitCode: code, ErrorCode: "step_failed"}
 					}
 					break
 				}
 			}
 			cancel()
+			if result.err == nil && ctx.Err() != nil {
+				result, pipelineResult, _ = pipelineContextExit(pipeline.Pipeline, ctx.Err())
+			}
+			pipelineResults = append(pipelineResults, pipelineResult)
 			if result.err != nil || ctx.Err() != nil {
 				if ctx.Err() != nil {
-					result = processExit{code: 130, err: ctx.Err()}
+					if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+						result = processExit{code: 124, err: context.DeadlineExceeded}
+					} else {
+						result = processExit{code: 130, err: context.Canceled}
+					}
+				}
+				for _, skipped := range plan.FactoryPipelines[pipelineIndex+1:] {
+					pipelineResults = append(pipelineResults, workloadjobs.WorkloadPipelineResult{Name: skipped.Pipeline, Status: "skipped"})
 				}
 				break
 			}
 		}
+		process.setResults(pipelineResults)
 		process.done <- result
 	}()
 	return process, nil
@@ -498,7 +587,36 @@ type processExit struct {
 	err  error
 }
 
-type factoryPipelineProcess struct{ done chan processExit }
+func pipelineContextExit(name string, cause error) (processExit, workloadjobs.WorkloadPipelineResult, bool) {
+	switch {
+	case errors.Is(cause, context.DeadlineExceeded):
+		return processExit{code: 124, err: context.DeadlineExceeded},
+			workloadjobs.WorkloadPipelineResult{Name: name, Status: "timed_out", ExitCode: 124, ErrorCode: "pipeline_timeout"}, true
+	case errors.Is(cause, context.Canceled):
+		return processExit{code: 130, err: context.Canceled},
+			workloadjobs.WorkloadPipelineResult{Name: name, Status: "cancelled", ExitCode: 130, ErrorCode: "cancelled"}, true
+	default:
+		return processExit{}, workloadjobs.WorkloadPipelineResult{}, false
+	}
+}
+
+type factoryPipelineProcess struct {
+	done    chan processExit
+	mu      sync.RWMutex
+	results []workloadjobs.WorkloadPipelineResult
+}
+
+func (p *factoryPipelineProcess) setResults(results []workloadjobs.WorkloadPipelineResult) {
+	p.mu.Lock()
+	p.results = append([]workloadjobs.WorkloadPipelineResult(nil), results...)
+	p.mu.Unlock()
+}
+
+func (p *factoryPipelineProcess) PipelineResults() []workloadjobs.WorkloadPipelineResult {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return append([]workloadjobs.WorkloadPipelineResult(nil), p.results...)
+}
 
 func (p *factoryPipelineProcess) Wait() (int, error) {
 	result := <-p.done

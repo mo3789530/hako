@@ -57,6 +57,24 @@ rejects more than one runner startup queue until durable Resource Plane
 placement exists. The queue, Lambda, and dispatch route remain default-off;
 Terraform configuration does not imply that resources have been applied.
 
+The optional `workspace_service_controller_deployment` object (`null` by
+default) provisions a distinct encrypted Workspace Service command queue/DLQ,
+exact Control Plane Dispatcher send policy, and a private ARM64 Lambda MicroVM
+consumer with batch size 1 and `ReportBatchItemFailures`. Its IAM is limited to
+the configured journal object prefix, two distinct exact ticket/report Secret
+ARNs, the configured MicroVM image's `GetMicrovm` and
+`CreateMicrovmAuthToken` actions, Lambda VPC ENI operations, and its log group.
+Queue DLQ, message age, and Lambda error alarms are included. Caller-owned
+private subnets/security group and network endpoints/routes must provide
+Control Plane, S3, Secrets Manager, and Lambda MicroVM API reachability;
+Terraform does not create them. Lambda VPC ENI `ec2:*` permissions are
+infrastructure plumbing only, not an EC2 workload runtime. The config takes
+Secret ARNs but no values. The opt-in consumer may create Workspace-scoped
+generated Service credentials under a narrow Secrets Manager path; it does not
+support rotation or deletion yet. Neither plan tests nor Terraform retrieve
+Secret values or apply resources. See [generated Service credentials](workspace-service-secrets.md)
+and the [Resource Plane Terraform module](../infra/terraform/modules/resource-plane/README.md).
+
 The optional `enable_workload_result_queue` (`false` by default) provisions a
 separate encrypted Workload command queue/DLQ and result queue/DLQ, independent
 alarms, and a dedicated queue-only Workload Controller role. The Control Plane
@@ -167,6 +185,11 @@ CloudWatch but do not notify anyone. When the fake Lambda is enabled, an
 additional alarm detects Lambda invocation errors. There is not yet a
 production Gateway/Controller health dashboard, throttling alarm, or
 automated remediation.
+
+The operator decision sequence for an alarm, manual inspection, and safe
+redrive is in the [Operations Runbook](operations-runbook.md). This documents
+the procedure but does not add an automated DLQ inspector/redriver or grant
+cross-account DLQ access.
 
 When a DLQ alarm fires, first inspect the operation ID and payload, correlate
 it with the DSQL operation history and controller logs, and check whether the

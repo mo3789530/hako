@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"time"
 )
 
@@ -33,6 +34,7 @@ type WorkloadResultConsumer struct {
 	queue  ResultQueue
 	apply  WorkloadResultApplier
 	config ResultConsumerConfig
+	logger *slog.Logger
 }
 
 type ResultConsumerStats struct {
@@ -59,7 +61,7 @@ func NewWorkloadResultConsumer(queue ResultQueue, apply WorkloadResultApplier, c
 	if config.WaitTime < 0 || config.WaitTime > 20*time.Second {
 		return nil, errors.New("Workload result SQS long-poll wait time must be 0-20 seconds")
 	}
-	return &WorkloadResultConsumer{queue: queue, apply: apply, config: config}, nil
+	return &WorkloadResultConsumer{queue: queue, apply: apply, config: config, logger: slog.Default()}, nil
 }
 
 // RunOnce deletes each delivery only after the result transaction has durably
@@ -75,28 +77,33 @@ func (c *WorkloadResultConsumer) RunOnce(ctx context.Context) (ResultConsumerSta
 	for _, delivery := range deliveries {
 		if delivery.ReceiptHandle == "" {
 			stats.Failed++
+			c.logFailure(ctx, WorkloadResult{}, "missing_receipt_handle")
 			failures = append(failures, errors.New("Workload result delivery has no receipt handle"))
 			continue
 		}
 		result, err := decodeWorkloadResult(delivery.Body)
 		if err != nil {
 			stats.Failed++
+			c.logFailure(ctx, WorkloadResult{}, "decode_result")
 			failures = append(failures, fmt.Errorf("decode Workload result: %w", err))
 			continue
 		}
 		outcome, err := c.apply.Handle(ctx, result)
 		if err != nil {
 			stats.Failed++
+			c.logFailure(ctx, result, "apply_result")
 			failures = append(failures, fmt.Errorf("apply Workload result %s: %w", result.WorkloadRunID, err))
 			continue
 		}
 		if outcome != ResultApplied && outcome != ResultDuplicate && outcome != ResultStale {
 			stats.Failed++
+			c.logFailure(ctx, result, "unsupported_outcome")
 			failures = append(failures, fmt.Errorf("apply Workload result %s: unsupported outcome %q", result.WorkloadRunID, outcome))
 			continue
 		}
 		if err := c.queue.Delete(ctx, delivery.ReceiptHandle); err != nil {
 			stats.Failed++
+			c.logFailure(ctx, result, "delete_delivery")
 			failures = append(failures, fmt.Errorf("delete durably handled Workload result: %w", err))
 			continue
 		}
@@ -110,6 +117,22 @@ func (c *WorkloadResultConsumer) RunOnce(ctx context.Context) (ResultConsumerSta
 		}
 	}
 	return stats, errors.Join(failures...)
+}
+
+func (c *WorkloadResultConsumer) logFailure(ctx context.Context, result WorkloadResult, failureClass string) {
+	logger := c.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	attrs := []any{"failure_class", failureClass}
+	if result.CorrelationID != "" {
+		attrs = append(attrs, "correlation_id", result.CorrelationID)
+	}
+	if result.WorkloadRunID != "" {
+		attrs = append(attrs, "workload_run_id", result.WorkloadRunID, "attempt_id", result.AttemptID,
+			"resource_plane_id", result.ResourcePlaneID, "generation", result.Generation)
+	}
+	logger.ErrorContext(ctx, "Workload result processing failed", attrs...)
 }
 
 func decodeWorkloadResult(payload []byte) (WorkloadResult, error) {

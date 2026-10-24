@@ -14,7 +14,7 @@ import (
 // CreateWebhookRepositoryRun creates the fixed, untrusted verification Job
 // for an explicitly enabled Tenant repository. It creates the queued GitHub
 // Check and its delivery Outbox event inside the same caller transaction.
-func CreateWebhookRepositoryRun(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, integrationID, deliveryID string, now time.Time) (bool, error) {
+func CreateWebhookRepositoryRun(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, integrationID, deliveryID, correlationID string, now time.Time) (bool, error) {
 	if ctx == nil || tx == nil || tenantID == "" || now.IsZero() {
 		return false, webhookstore.ErrUnsupportedWebhookEvent
 	}
@@ -25,7 +25,7 @@ func CreateWebhookRepositoryRun(ctx context.Context, tx pgx.Tx, tenantID domain.
 	_, created, err := workloads.CreateOrGetFromWebhookDelivery(ctx, tx, integrationID, deliveryID, domain.WorkloadRun{
 		ID: domain.WorkloadRunID(runID), TenantID: tenantID, Kind: domain.WorkloadJob,
 		RuntimeClass: "standard", TrustLevel: domain.WorkloadUntrusted,
-		TimeoutSeconds: int64(workloads.DefaultTimeout / time.Second), CreatedAt: now.UTC(),
+		TimeoutSeconds: int64(workloads.DefaultTimeout / time.Second), CorrelationID: correlationID, CreatedAt: now.UTC(),
 	})
 	return created, err
 }

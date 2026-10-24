@@ -50,7 +50,7 @@ func main() {
 		go func(resourcePlaneID, queueURL string, client *sqs.Client) {
 			defer workers.Done()
 			if err := consumeQueue(ctx, client, store, resourcePlaneID, queueURL); err != nil && ctx.Err() == nil {
-				log.Printf("result consumer for Resource Plane %s stopped: %v", resourcePlaneID, err)
+				log.Printf("result consumer for Resource Plane %s stopped (failure_class=consumer_stopped)", resourcePlaneID)
 			}
 		}(resourcePlaneID, queue.URL, client)
 	}
@@ -71,7 +71,7 @@ func consumeQueue(ctx context.Context, client *sqs.Client, store operationresult
 	for ctx.Err() == nil {
 		stats, err := consumer.RunOnce(ctx)
 		if err != nil {
-			log.Printf("consume Operation results from %s: %v (received=%d applied=%d duplicate=%d failed=%d)", resourcePlaneID, err, stats.Received, stats.Applied, stats.Duplicate, stats.Failed)
+			log.Printf("Operation result batch failed (resource_plane_id=%s failure_class=consume_batch received=%d applied=%d duplicate=%d failed=%d)", resourcePlaneID, stats.Received, stats.Applied, stats.Duplicate, stats.Failed)
 		} else if stats.Received > 0 {
 			log.Printf("Operation result batch complete for %s (received=%d applied=%d duplicate=%d)", resourcePlaneID, stats.Received, stats.Applied, stats.Duplicate)
 		}

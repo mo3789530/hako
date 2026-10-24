@@ -37,6 +37,14 @@ type TenantPlacementPolicy struct {
 	UpdatedAt            *time.Time `json:"updated_at,omitempty"`
 }
 
+type TenantWorkspaceIdlePolicy struct {
+	TenantID           string     `json:"tenant_id"`
+	Enabled            bool       `json:"enabled"`
+	GracePeriodSeconds int        `json:"grace_period_seconds"`
+	Revision           int64      `json:"revision"`
+	UpdatedAt          *time.Time `json:"updated_at,omitempty"`
+}
+
 type WorkspaceCreateResult struct {
 	ID             string `json:"id"`
 	TenantID       string `json:"tenant_id"`
@@ -74,6 +82,32 @@ type WorkspaceListResult struct {
 	Offset int             `json:"offset"`
 }
 
+type TenantUsage struct {
+	WorkspacesUsed        int64 `json:"workspaces_used"`
+	WorkspacesLimit       int64 `json:"workspaces_limit"`
+	WorkloadRunsUsed      int64 `json:"workload_runs_used"`
+	WorkloadRunsLimit     int64 `json:"workload_runs_limit"`
+	PreviewRunsUsed       int64 `json:"preview_runs_used"`
+	PreviewRunsLimit      int64 `json:"preview_runs_limit"`
+	PreviewLifetimeLimit  int64 `json:"preview_lifetime_seconds_limit"`
+	ArtifactBytesUsed     int64 `json:"artifact_bytes_used"`
+	ArtifactBytesReserved int64 `json:"artifact_bytes_reserved"`
+	ArtifactBytesLimit    int64 `json:"artifact_bytes_limit"`
+}
+
+type TenantQuotaLimits struct {
+	TenantID                         string `json:"tenant_id"`
+	WorkspacesLimit                  int16  `json:"workspaces_limit"`
+	WorkloadRunsLimit                int16  `json:"workload_runs_limit"`
+	PreviewRunsLimit                 int16  `json:"preview_runs_limit"`
+	PreviewLifetimeSecondsLimit      int64  `json:"preview_lifetime_seconds_limit"`
+	ArtifactBytesLimit               int64  `json:"artifact_bytes_limit"`
+	WorkspaceServiceMemoryBytesLimit int64  `json:"service_memory_bytes_limit"`
+	WorkspaceServiceMilliCPULimit    int64  `json:"service_milli_cpu_limit"`
+	Revision                         int64  `json:"revision"`
+	UpdatedBy                        string `json:"updated_by,omitempty"`
+}
+
 type WorkspaceActionResult struct {
 	Workspace      WorkspaceView `json:"workspace"`
 	OperationID    string        `json:"operation_id"`
@@ -88,6 +122,13 @@ type ServiceCatalogResult struct {
 
 type WorkspaceServiceListResult struct {
 	Items []domain.Service `json:"items"`
+}
+
+type WorkspaceServiceResourceUsage struct {
+	MemoryBytesUsed  int64 `json:"memory_bytes_used"`
+	MemoryBytesLimit int64 `json:"memory_bytes_limit"`
+	MilliCPUUsed     int64 `json:"milli_cpu_used"`
+	MilliCPULimit    int64 `json:"milli_cpu_limit"`
 }
 
 type AddWorkspaceServiceRequest struct {
@@ -254,6 +295,74 @@ func PutTenantPlacementPolicy(ctx context.Context, baseURL, accessToken string, 
 	return result, nil
 }
 
+func GetTenantWorkspaceIdlePolicy(ctx context.Context, baseURL, accessToken, tenantID string, client *http.Client) (TenantWorkspaceIdlePolicy, error) {
+	var result TenantWorkspaceIdlePolicy
+	if !validTenantID(tenantID) {
+		return result, errors.New("tenant ID must contain only letters, numbers, underscores, or hyphens")
+	}
+	endpoint, err := apiEndpoint(baseURL, "/v1/tenants/"+url.PathEscape(tenantID)+"/workspace-idle-policy")
+	if err != nil {
+		return result, err
+	}
+	response, err := doAPIRequest(ctx, endpoint, accessToken, client)
+	if err != nil {
+		return result, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return result, readAPIError(response)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil ||
+		result.TenantID != tenantID || result.GracePeriodSeconds < 300 || result.GracePeriodSeconds > 86400 || result.Revision < 0 {
+		return TenantWorkspaceIdlePolicy{}, errors.New("Hako API returned an invalid Tenant Workspace idle policy")
+	}
+	return result, nil
+}
+
+func PutTenantWorkspaceIdlePolicy(ctx context.Context, baseURL, accessToken string, policy TenantWorkspaceIdlePolicy, client *http.Client) (TenantWorkspaceIdlePolicy, error) {
+	var result TenantWorkspaceIdlePolicy
+	if !validTenantID(policy.TenantID) || strings.TrimSpace(accessToken) == "" || policy.GracePeriodSeconds < 300 || policy.GracePeriodSeconds > 86400 {
+		return result, errors.New("Tenant Workspace idle policy requires a valid Tenant ID and a grace period between 300 and 86400 seconds")
+	}
+	endpoint, err := apiEndpoint(baseURL, "/v1/tenants/"+url.PathEscape(policy.TenantID)+"/workspace-idle-policy")
+	if err != nil {
+		return result, err
+	}
+	body, err := json.Marshal(struct {
+		Enabled            bool `json:"enabled"`
+		GracePeriodSeconds int  `json:"grace_period_seconds"`
+	}{policy.Enabled, policy.GracePeriodSeconds})
+	if err != nil {
+		return result, fmt.Errorf("encode Tenant Workspace idle policy: %w", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return result, fmt.Errorf("create Hako API request: %w", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+accessToken)
+	request.Header.Set("Content-Type", "application/json")
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	} else {
+		copy := *client
+		client = &copy
+	}
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	response, err := client.Do(request)
+	if err != nil {
+		return result, fmt.Errorf("call Hako API: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return result, readAPIError(response)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil ||
+		result.TenantID != policy.TenantID || result.GracePeriodSeconds < 300 || result.GracePeriodSeconds > 86400 || result.Revision < 1 {
+		return TenantWorkspaceIdlePolicy{}, errors.New("Hako API returned an invalid Tenant Workspace idle policy")
+	}
+	return result, nil
+}
+
 // CreateWorkspace requests asynchronous Workspace provisioning. The caller
 // must reuse idempotencyKey if retrying the same logical request.
 func CreateWorkspace(ctx context.Context, baseURL, accessToken, tenantID, name, idempotencyKey string, client *http.Client) (WorkspaceCreateResult, error) {
@@ -363,6 +472,94 @@ func ListWorkspaces(ctx context.Context, baseURL, accessToken, tenantID string, 
 	return result, nil
 }
 
+// GetTenantUsage retrieves aggregate Workspace quota use for a Tenant member.
+func GetTenantUsage(ctx context.Context, baseURL, accessToken, tenantID string, client *http.Client) (TenantUsage, error) {
+	var result TenantUsage
+	if !validTenantID(tenantID) {
+		return result, errors.New("tenant ID must contain only letters, numbers, underscores, or hyphens")
+	}
+	endpoint, err := apiEndpoint(baseURL, "/v1/tenants/"+url.PathEscape(tenantID)+"/usage")
+	if err != nil {
+		return result, err
+	}
+	response, err := doAPIRequest(ctx, endpoint, accessToken, client)
+	if err != nil {
+		return result, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return result, readAPIError(response)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil || result.WorkspacesUsed < 0 || result.WorkspacesLimit < 1 || result.WorkloadRunsUsed < 0 || result.WorkloadRunsLimit < 1 || result.PreviewRunsUsed < 0 || result.PreviewRunsLimit < 1 || result.PreviewLifetimeLimit < 300 || result.PreviewLifetimeLimit > 86400 || result.ArtifactBytesUsed < 0 || result.ArtifactBytesReserved < 0 || result.ArtifactBytesLimit < 1 {
+		return TenantUsage{}, errors.New("Hako API returned invalid Tenant quota usage")
+	}
+	return result, nil
+}
+
+func GetTenantQuotaLimits(ctx context.Context, baseURL, accessToken, tenantID string, client *http.Client) (TenantQuotaLimits, error) {
+	var result TenantQuotaLimits
+	if !validTenantID(tenantID) {
+		return result, errors.New("tenant ID must contain only letters, numbers, underscores, or hyphens")
+	}
+	endpoint, err := apiEndpoint(baseURL, "/v1/tenants/"+url.PathEscape(tenantID)+"/quotas")
+	if err != nil {
+		return result, err
+	}
+	response, err := doAPIRequest(ctx, endpoint, accessToken, client)
+	if err != nil {
+		return result, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return result, readAPIError(response)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil ||
+		result.WorkspacesLimit < 1 || result.WorkspacesLimit > 10 || result.WorkloadRunsLimit < 1 || result.WorkloadRunsLimit > 5 ||
+		result.PreviewRunsLimit < 1 || result.PreviewRunsLimit > 5 || result.PreviewLifetimeSecondsLimit < 300 || result.PreviewLifetimeSecondsLimit > 86400 ||
+		result.ArtifactBytesLimit < 1 || result.ArtifactBytesLimit > 100<<30 || result.WorkspaceServiceMemoryBytesLimit < 1 ||
+		result.WorkspaceServiceMemoryBytesLimit > 2<<30 || result.WorkspaceServiceMilliCPULimit < 1 || result.WorkspaceServiceMilliCPULimit > 1500 {
+		return TenantQuotaLimits{}, errors.New("Hako API returned invalid Tenant quota limits")
+	}
+	return result, nil
+}
+
+func SetTenantQuotaLimits(ctx context.Context, baseURL, accessToken, tenantID string, limits TenantQuotaLimits, client *http.Client) (TenantQuotaLimits, error) {
+	var result TenantQuotaLimits
+	if !validTenantID(tenantID) || limits.WorkspacesLimit < 1 || limits.WorkspacesLimit > 10 || limits.WorkloadRunsLimit < 1 || limits.WorkloadRunsLimit > 5 ||
+		limits.PreviewRunsLimit < 1 || limits.PreviewRunsLimit > 5 || limits.PreviewLifetimeSecondsLimit < 300 || limits.PreviewLifetimeSecondsLimit > 86400 ||
+		limits.ArtifactBytesLimit < 1 || limits.ArtifactBytesLimit > 100<<30 || limits.WorkspaceServiceMemoryBytesLimit < 1 ||
+		limits.WorkspaceServiceMemoryBytesLimit > 2<<30 || limits.WorkspaceServiceMilliCPULimit < 1 || limits.WorkspaceServiceMilliCPULimit > 1500 {
+		return result, errors.New("Tenant limits are out of range for Workspaces, Workloads, artifacts, or Workspace Services")
+	}
+	endpoint, err := apiEndpoint(baseURL, "/v1/tenants/"+url.PathEscape(tenantID)+"/quotas")
+	if err != nil {
+		return result, err
+	}
+	body, err := json.Marshal(map[string]any{"workspaces_limit": limits.WorkspacesLimit, "workload_runs_limit": limits.WorkloadRunsLimit,
+		"preview_runs_limit": limits.PreviewRunsLimit, "preview_lifetime_seconds_limit": limits.PreviewLifetimeSecondsLimit,
+		"artifact_bytes_limit": limits.ArtifactBytesLimit, "service_memory_bytes_limit": limits.WorkspaceServiceMemoryBytesLimit,
+		"service_milli_cpu_limit": limits.WorkspaceServiceMilliCPULimit})
+	if err != nil {
+		return result, err
+	}
+	response, err := doAPIRequestWithBody(ctx, http.MethodPut, endpoint, accessToken, body, client)
+	if err != nil {
+		return result, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return result, readAPIError(response)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil ||
+		result.WorkspacesLimit < 1 || result.WorkspacesLimit > 10 || result.WorkloadRunsLimit < 1 || result.WorkloadRunsLimit > 5 ||
+		result.PreviewRunsLimit < 1 || result.PreviewRunsLimit > 5 || result.PreviewLifetimeSecondsLimit < 300 || result.PreviewLifetimeSecondsLimit > 86400 ||
+		result.ArtifactBytesLimit < 1 || result.ArtifactBytesLimit > 100<<30 || result.WorkspaceServiceMemoryBytesLimit < 1 ||
+		result.WorkspaceServiceMemoryBytesLimit > 2<<30 || result.WorkspaceServiceMilliCPULimit < 1 || result.WorkspaceServiceMilliCPULimit > 1500 {
+		return TenantQuotaLimits{}, errors.New("Hako API returned invalid Tenant quota limits")
+	}
+	return result, nil
+}
+
 // GetWorkspace retrieves a Workspace only if Tenant membership and the
 // Workspace visibility policy permit access.
 func GetWorkspace(ctx context.Context, baseURL, accessToken, tenantID, workspaceID string, client *http.Client) (WorkspaceView, error) {
@@ -429,6 +626,33 @@ func ListWorkspaceServices(ctx context.Context, baseURL, accessToken, tenantID, 
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil {
 		return WorkspaceServiceListResult{}, errors.New("Hako API returned an invalid Workspace Service list response")
+	}
+	return result, nil
+}
+
+// GetWorkspaceServiceResourceUsage retrieves configured Service reservations
+// for a Workspace the caller is authorized to see; values are not telemetry.
+func GetWorkspaceServiceResourceUsage(ctx context.Context, baseURL, accessToken, tenantID, workspaceID string, client *http.Client) (WorkspaceServiceResourceUsage, error) {
+	var result WorkspaceServiceResourceUsage
+	if !validTenantID(tenantID) || !validOpaqueID(workspaceID) {
+		return result, errors.New("Tenant and Workspace IDs must contain only letters, numbers, underscores, or hyphens")
+	}
+	endpoint, err := apiEndpoint(baseURL, "/v1/tenants/"+url.PathEscape(tenantID)+"/workspaces/"+url.PathEscape(workspaceID)+"/services/usage")
+	if err != nil {
+		return result, err
+	}
+	response, err := doAPIRequest(ctx, endpoint, accessToken, client)
+	if err != nil {
+		return result, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return result, readAPIError(response)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil ||
+		result.MemoryBytesUsed < 0 || result.MemoryBytesLimit < 1 ||
+		result.MilliCPUUsed < 0 || result.MilliCPULimit < 1 {
+		return WorkspaceServiceResourceUsage{}, errors.New("Hako API returned invalid Workspace Service resource usage")
 	}
 	return result, nil
 }
@@ -823,15 +1047,22 @@ func apiEndpoint(rawBaseURL, path string) (string, error) {
 }
 
 func doAPIRequest(ctx context.Context, endpoint, accessToken string, client *http.Client) (*http.Response, error) {
+	return doAPIRequestWithBody(ctx, http.MethodGet, endpoint, accessToken, nil, client)
+}
+
+func doAPIRequestWithBody(ctx context.Context, method, endpoint, accessToken string, body []byte, client *http.Client) (*http.Response, error) {
 	if strings.TrimSpace(accessToken) == "" {
 		return nil, errors.New("access token is required")
 	}
 	client = safeAPIClient(client)
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	request, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create Hako API request: %w", err)
 	}
 	request.Header.Set("Authorization", "Bearer "+accessToken)
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
 	response, err := client.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("call Hako API: %w", err)

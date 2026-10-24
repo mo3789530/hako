@@ -14,26 +14,31 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/idempotency"
+	"github.com/mo3789530/hako/internal/store/quotas"
 	"github.com/mo3789530/hako/internal/store/transaction"
 )
 
 const (
-	DefaultTimeout = 30 * time.Minute
-	MaxTimeout     = 24 * time.Hour
-	MaxExpireBatch = 100
+	DefaultTimeout             = 30 * time.Minute
+	MaxTimeout                 = 24 * time.Hour
+	MaxExpireBatch             = 100
+	MaxConcurrentRunsPerTenant = int(quotas.MaxConcurrentWorkloadRuns)
 )
 
 var (
-	ErrNotFound            = errors.New("Workload Run not found")
-	ErrIdempotencyConflict = errors.New("Workload Run idempotency key conflicts with another request")
-	ErrTransitionConflict  = errors.New("Workload Run revision or state does not match")
-	ErrRepositoryInactive  = errors.New("Workload Run Repository is not registered and active for Tenant")
-	commitSHAPattern       = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
-	errorCodePattern       = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
+	ErrNotFound             = errors.New("Workload Run not found")
+	ErrIdempotencyConflict  = errors.New("Workload Run idempotency key conflicts with another request")
+	ErrTransitionConflict   = errors.New("Workload Run revision or state does not match")
+	ErrRepositoryInactive   = errors.New("Workload Run Repository is not registered and active for Tenant")
+	ErrQuotaExceeded        = errors.New("Tenant concurrent Workload Run quota exceeded")
+	ErrPreviewQuotaExceeded = quotas.ErrPreviewQuotaExceeded
+	commitSHAPattern        = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
+	correlationIDPattern    = regexp.MustCompile(`^req_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	errorCodePattern        = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 )
 
 const runColumns = `id, tenant_id, kind, COALESCE(requested_by, ''), COALESCE(github_installation_id, 0),
-COALESCE(github_repository_id, 0), COALESCE(github_integration_id, ''), COALESCE(github_config_revision, 0), COALESCE(github_credential_generation, 0), COALESCE(commit_sha, ''), ref, trigger_event, trigger_branch, runtime_class, trust_level,
+COALESCE(correlation_id, ''), COALESCE(github_repository_id, 0), COALESCE(github_integration_id, ''), COALESCE(github_config_revision, 0), COALESCE(github_credential_generation, 0), COALESCE(commit_sha, ''), ref, trigger_event, trigger_branch, runtime_class, trust_level,
 desired_state, state, COALESCE(resource_plane_id, ''), idempotency_key, request_hash, timeout_seconds,
 timeout_at, started_at, completed_at, COALESCE(error_code, ''), revision, created_at, updated_at`
 
@@ -139,9 +144,12 @@ func CreateOrGet(ctx context.Context, tx pgx.Tx, run domain.WorkloadRun) (domain
 			return domain.WorkloadRun{}, false, err
 		}
 	}
-	var requestedBy, commitSHA, resourcePlaneID any
+	var requestedBy, correlationID, commitSHA, resourcePlaneID any
 	if run.RequestedBy != "" {
 		requestedBy = run.RequestedBy
+	}
+	if run.CorrelationID != "" {
+		correlationID = run.CorrelationID
 	}
 	if run.CommitSHA != "" {
 		commitSHA = run.CommitSHA
@@ -158,12 +166,12 @@ func CreateOrGet(ctx context.Context, tx pgx.Tx, run domain.WorkloadRun) (domain
 		installationID, repositoryID = run.GitHubInstallation, run.GitHubRepository
 	}
 	tag, err := tx.Exec(ctx, `INSERT INTO workload_runs
-		(id, tenant_id, kind, requested_by, github_installation_id, github_repository_id, github_integration_id, github_config_revision, github_credential_generation, commit_sha, ref, trigger_event, trigger_branch,
+		(id, tenant_id, kind, requested_by, github_installation_id, correlation_id, github_repository_id, github_integration_id, github_config_revision, github_credential_generation, commit_sha, ref, trigger_event, trigger_branch,
 		 runtime_class, trust_level, desired_state, state, resource_plane_id, idempotency_key, request_hash,
 		 timeout_seconds, timeout_at, revision, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'running', 'pending', $16, $17, $18, $19, $20, 1, $21, $21)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'running', 'pending', $17, $18, $19, $20, $21, 1, $22, $22)
 		ON CONFLICT (tenant_id, idempotency_key) DO NOTHING`,
-		run.ID, run.TenantID, run.Kind, requestedBy, installationID, repositoryID, integrationID, configRevision, credentialGeneration, commitSHA, run.Ref,
+		run.ID, run.TenantID, run.Kind, requestedBy, installationID, correlationID, repositoryID, integrationID, configRevision, credentialGeneration, commitSHA, run.Ref,
 		run.TriggerEvent, run.TriggerBranch, run.RuntimeClass, run.TrustLevel, resourcePlaneID, run.IdempotencyKey, requestHash, run.TimeoutSeconds, run.TimeoutAt, run.CreatedAt)
 	if err != nil {
 		return domain.WorkloadRun{}, false, fmt.Errorf("create Workload Run: %w", err)
@@ -177,6 +185,12 @@ func CreateOrGet(ctx context.Context, tx pgx.Tx, run domain.WorkloadRun) (domain
 		return domain.WorkloadRun{}, false, ErrIdempotencyConflict
 	}
 	if created {
+		if err := reserveConcurrentRunSlot(ctx, tx, stored); err != nil {
+			return domain.WorkloadRun{}, false, err
+		}
+		if err := reserveArtifactQuota(ctx, tx, stored); err != nil {
+			return domain.WorkloadRun{}, false, err
+		}
 		if err := appendEvent(ctx, tx, stored, "workload.pending", run.CreatedAt); err != nil {
 			return domain.WorkloadRun{}, false, err
 		}
@@ -187,12 +201,102 @@ func CreateOrGet(ctx context.Context, tx pgx.Tx, run domain.WorkloadRun) (domain
 	return stored, created, nil
 }
 
+// reserveArtifactQuota keeps enough Tenant capacity for the bounded redacted
+// log artifact before execution can upload it. The reservation is converted
+// into actual artifact bytes when the result is persisted, or released when a
+// terminal result has no artifact.
+func reserveArtifactQuota(ctx context.Context, tx pgx.Tx, run domain.WorkloadRun) error {
+	limits, err := quotas.Read(ctx, tx, run.TenantID)
+	if err != nil {
+		return err
+	}
+	if run.Kind == domain.WorkloadPreview && run.TimeoutSeconds > limits.PreviewLifetimeSeconds {
+		return ErrPreviewQuotaExceeded
+	}
+	// Repair reservations left behind by older versions or interrupted
+	// terminal processing before counting Tenant usage. Admission already
+	// advanced the Tenant quota OCC guard, so cleanup is serialized with quota
+	// updates and other Workload admissions.
+	if _, err := tx.Exec(ctx, `DELETE FROM workload_artifact_quota_reservations q USING workload_runs r
+		WHERE q.tenant_id = r.tenant_id AND q.workload_run_id = r.id
+		AND r.tenant_id = $1 AND r.state IN ('succeeded','failed','cancelled','timed_out')`, run.TenantID); err != nil {
+		return fmt.Errorf("remove stale terminal Workload artifact reservations: %w", err)
+	}
+	var committedBytes int64
+	if err := tx.QueryRow(ctx, `SELECT
+		(SELECT COALESCE(SUM(size_bytes), 0) FROM workload_artifacts WHERE tenant_id = $1) +
+		(SELECT COALESCE(SUM(reserved_bytes), 0) FROM workload_artifact_quota_reservations WHERE tenant_id = $1)`, run.TenantID).Scan(&committedBytes); err != nil {
+		return fmt.Errorf("read Tenant artifact quota before Workload admission: %w", err)
+	}
+	if quotas.MaxArtifactBytesPerWorkloadRun > limits.ArtifactBytes-committedBytes {
+		return quotas.ErrArtifactQuotaExceeded
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO workload_artifact_quota_reservations
+		(tenant_id, workload_run_id, reserved_bytes, created_at) VALUES ($1,$2,$3,$4)`,
+		run.TenantID, run.ID, quotas.MaxArtifactBytesPerWorkloadRun, run.CreatedAt.UTC()); err != nil {
+		return fmt.Errorf("reserve Tenant artifact quota for Workload Run: %w", err)
+	}
+	return nil
+}
+
+// reserveConcurrentRunSlot atomically reserves one of the configured Tenant
+// slots. It advances the shared Tenant quota OCC guard before counting active
+// runs, and the unique slot index fences concurrent claims.
+func reserveConcurrentRunSlot(ctx context.Context, tx pgx.Tx, run domain.WorkloadRun) error {
+	if tx == nil || run.TenantID == "" || run.ID == "" {
+		return errors.New("Tenant and Workload Run are required for quota reservation")
+	}
+	limits, err := quotas.AdvanceAdmissionGuard(ctx, tx, run.TenantID, run.CreatedAt)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM workload_quota_slots q USING workload_runs r
+		WHERE q.tenant_id = r.tenant_id AND q.workload_run_id = r.id
+		AND r.tenant_id = $1 AND r.state IN ('succeeded','failed','cancelled','timed_out')`, run.TenantID); err != nil {
+		return fmt.Errorf("remove stale terminal Workload quota reservations: %w", err)
+	}
+	var active int64
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM workload_runs WHERE tenant_id = $1
+		AND state NOT IN ('succeeded','failed','cancelled','timed_out')`, run.TenantID).Scan(&active); err != nil {
+		return fmt.Errorf("count active Tenant Workload Runs: %w", err)
+	}
+	if active > int64(limits.ConcurrentWorkloadRuns) {
+		return ErrQuotaExceeded
+	}
+	if run.Kind == domain.WorkloadPreview {
+		var activePreviews int64
+		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM workload_runs WHERE tenant_id = $1 AND kind = 'preview'
+			AND state NOT IN ('succeeded','failed','cancelled','timed_out')`, run.TenantID).Scan(&activePreviews); err != nil {
+			return fmt.Errorf("count active Tenant Preview Runs: %w", err)
+		}
+		if activePreviews > int64(limits.PreviewRuns) {
+			return ErrPreviewQuotaExceeded
+		}
+	}
+	for slot := int32(1); slot <= int32(limits.ConcurrentWorkloadRuns); slot++ {
+		var reserved int32
+		err := tx.QueryRow(ctx, `INSERT INTO workload_quota_slots (tenant_id, slot, workload_run_id, created_at)
+			VALUES ($1,$2,$3,$4) ON CONFLICT (tenant_id,slot) DO NOTHING RETURNING slot`,
+			run.TenantID, slot, run.ID, run.CreatedAt).Scan(&reserved)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("reserve Tenant Workload quota slot: %w", err)
+		}
+	}
+	return ErrQuotaExceeded
+}
+
 func validateRun(run domain.WorkloadRun) error {
 	if run.ID == "" || run.TenantID == "" || run.RuntimeClass == "" || run.IdempotencyKey == "" {
 		return errors.New("Workload Run ID, Tenant, runtime class, and idempotency key are required")
 	}
 	if err := idempotency.ValidateKey(run.IdempotencyKey); err != nil {
 		return err
+	}
+	if run.CorrelationID != "" && !correlationIDPattern.MatchString(run.CorrelationID) {
+		return errors.New("Workload Run correlation ID is invalid")
 	}
 	if run.Kind != domain.WorkloadJob && run.Kind != domain.WorkloadAgent && run.Kind != domain.WorkloadPreview {
 		return errors.New("Workload Run kind must be job, agent, or preview")
@@ -204,7 +308,7 @@ func validateRun(run domain.WorkloadRun) error {
 		return errors.New("Workload Run runtime class or ref exceeds its limit")
 	}
 	if (run.TriggerEvent == "") != (run.TriggerBranch == "") ||
-		(run.TriggerEvent != "" && run.TriggerEvent != "push" && run.TriggerEvent != "pull_request") ||
+		(run.TriggerEvent != "" && run.TriggerEvent != "push" && run.TriggerEvent != "pull_request" && run.TriggerEvent != "issue_comment") ||
 		!validTriggerBranch(run.TriggerBranch) {
 		return errors.New("Workload Run trigger event or branch is invalid")
 	}
@@ -282,7 +386,36 @@ func Get(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, runID domain.
 	if err != nil {
 		return domain.WorkloadRun{}, fmt.Errorf("get Workload Run: %w", err)
 	}
+	if err := loadPipelineResults(ctx, tx, &run); err != nil {
+		return domain.WorkloadRun{}, err
+	}
 	return run, nil
+}
+
+func loadPipelineResults(ctx context.Context, tx pgx.Tx, run *domain.WorkloadRun) error {
+	if tx == nil || run == nil || run.TenantID == "" || run.ID == "" {
+		return errors.New("transaction and Workload Run are required to load pipeline results")
+	}
+	rows, err := tx.Query(ctx, `SELECT pipeline_name, status, exit_code, COALESCE(error_code,'')
+		FROM workload_pipeline_results WHERE tenant_id=$1 AND workload_run_id=$2
+		AND generation=(SELECT MAX(generation) FROM workload_pipeline_results WHERE tenant_id=$1 AND workload_run_id=$2)
+		ORDER BY pipeline_name`, run.TenantID, run.ID)
+	if err != nil {
+		return fmt.Errorf("list Workload pipeline results: %w", err)
+	}
+	defer rows.Close()
+	run.PipelineResults = make([]domain.WorkloadPipelineResult, 0)
+	for rows.Next() {
+		var result domain.WorkloadPipelineResult
+		if err := rows.Scan(&result.Name, &result.Status, &result.ExitCode, &result.ErrorCode); err != nil {
+			return fmt.Errorf("scan Workload pipeline result: %w", err)
+		}
+		run.PipelineResults = append(run.PipelineResults, result)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate Workload pipeline results: %w", err)
+	}
+	return nil
 }
 
 // List returns Tenant-scoped Workload Runs. A non-empty requestedBy restricts
@@ -328,6 +461,9 @@ func GetByIdempotencyKey(ctx context.Context, tx pgx.Tx, tenantID domain.TenantI
 	}
 	if err != nil {
 		return domain.WorkloadRun{}, fmt.Errorf("get Workload Run by idempotency key: %w", err)
+	}
+	if err := loadPipelineResults(ctx, tx, &run); err != nil {
+		return domain.WorkloadRun{}, err
 	}
 	return run, nil
 }
@@ -396,6 +532,14 @@ func Transition(ctx context.Context, tx pgx.Tx, input TransitionInput) (domain.W
 	}
 	if err := syncGitHubCheck(ctx, tx, current, input.OccurredAt); err != nil {
 		return domain.WorkloadRun{}, err
+	}
+	if terminal(input.NextState) {
+		if _, err := tx.Exec(ctx, `DELETE FROM workload_quota_slots WHERE tenant_id = $1 AND workload_run_id = $2`, input.TenantID, input.RunID); err != nil {
+			return domain.WorkloadRun{}, fmt.Errorf("release terminal Workload quota reservation: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM workload_artifact_quota_reservations WHERE tenant_id = $1 AND workload_run_id = $2`, input.TenantID, input.RunID); err != nil {
+			return domain.WorkloadRun{}, fmt.Errorf("release terminal artifact quota reservation: %w", err)
+		}
 	}
 	return current, nil
 }
@@ -556,7 +700,7 @@ type rowScanner interface{ Scan(...any) error }
 func scanRun(row rowScanner) (domain.WorkloadRun, error) {
 	var run domain.WorkloadRun
 	var requestedBy, commitSHA, resourcePlaneID string
-	err := row.Scan(&run.ID, &run.TenantID, &run.Kind, &requestedBy, &run.GitHubInstallation,
+	err := row.Scan(&run.ID, &run.TenantID, &run.Kind, &requestedBy, &run.GitHubInstallation, &run.CorrelationID,
 		&run.GitHubRepository, &run.GitHubIntegrationID, &run.GitHubConfigRevision, &run.GitHubCredentialGeneration, &commitSHA, &run.Ref, &run.TriggerEvent, &run.TriggerBranch, &run.RuntimeClass, &run.TrustLevel, &run.DesiredState,
 		&run.State, &resourcePlaneID, &run.IdempotencyKey, &run.RequestHash, &run.TimeoutSeconds, &run.TimeoutAt, &run.StartedAt,
 		&run.CompletedAt, &run.ErrorCode, &run.Revision, &run.CreatedAt, &run.UpdatedAt)

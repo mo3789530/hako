@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/store/quotas"
 )
 
 var ErrWorkspaceAccessDenied = errors.New("workspace access denied")
@@ -21,6 +22,56 @@ type ListResult struct {
 	Total  int64  `json:"total"`
 	Limit  int    `json:"limit"`
 	Offset int    `json:"offset"`
+}
+
+// QuotaUsage reports the Tenant-wide active Workspace count used by admission.
+// A pending deletion remains active until the Resource Plane confirms cleanup.
+type QuotaUsage struct {
+	WorkspacesUsed        int64 `json:"workspaces_used"`
+	WorkspacesLimit       int64 `json:"workspaces_limit"`
+	WorkloadRunsUsed      int64 `json:"workload_runs_used"`
+	WorkloadRunsLimit     int64 `json:"workload_runs_limit"`
+	PreviewRunsUsed       int64 `json:"preview_runs_used"`
+	PreviewRunsLimit      int64 `json:"preview_runs_limit"`
+	PreviewLifetimeLimit  int64 `json:"preview_lifetime_seconds_limit"`
+	ArtifactBytesUsed     int64 `json:"artifact_bytes_used"`
+	ArtifactBytesReserved int64 `json:"artifact_bytes_reserved"`
+	ArtifactBytesLimit    int64 `json:"artifact_bytes_limit"`
+}
+
+func ReadQuotaUsage(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID) (QuotaUsage, error) {
+	if tx == nil || tenantID == "" {
+		return QuotaUsage{}, errors.New("Tenant quota usage requires a transaction and Tenant ID")
+	}
+	var usage QuotaUsage
+	limits, err := quotas.Read(ctx, tx, tenantID)
+	if err != nil {
+		return QuotaUsage{}, err
+	}
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM workspaces w LEFT JOIN workspace_status s ON s.workspace_id = w.id
+		WHERE w.tenant_id = $1 AND COALESCE(s.observed_state, 'pending') <> 'deleted'`, tenantID).Scan(&usage.WorkspacesUsed); err != nil {
+		return QuotaUsage{}, fmt.Errorf("read Tenant Workspace quota usage: %w", err)
+	}
+	usage.WorkspacesLimit = int64(limits.Workspaces)
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM workload_runs WHERE tenant_id = $1
+		AND state NOT IN ('succeeded','failed','cancelled','timed_out')`, tenantID).Scan(&usage.WorkloadRunsUsed); err != nil {
+		return QuotaUsage{}, fmt.Errorf("read Tenant concurrent Workload usage: %w", err)
+	}
+	usage.WorkloadRunsLimit = int64(limits.ConcurrentWorkloadRuns)
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM workload_runs WHERE tenant_id = $1 AND kind = 'preview'
+		AND state NOT IN ('succeeded','failed','cancelled','timed_out')`, tenantID).Scan(&usage.PreviewRunsUsed); err != nil {
+		return QuotaUsage{}, fmt.Errorf("read Tenant Preview quota usage: %w", err)
+	}
+	usage.PreviewRunsLimit = int64(limits.PreviewRuns)
+	usage.PreviewLifetimeLimit = limits.PreviewLifetimeSeconds
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(SUM(size_bytes), 0) FROM workload_artifacts WHERE tenant_id = $1`, tenantID).Scan(&usage.ArtifactBytesUsed); err != nil {
+		return QuotaUsage{}, fmt.Errorf("read Tenant artifact storage usage: %w", err)
+	}
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(SUM(reserved_bytes), 0) FROM workload_artifact_quota_reservations WHERE tenant_id = $1`, tenantID).Scan(&usage.ArtifactBytesReserved); err != nil {
+		return QuotaUsage{}, fmt.Errorf("read Tenant artifact storage reservations: %w", err)
+	}
+	usage.ArtifactBytesLimit = limits.ArtifactBytes
+	return usage, nil
 }
 
 // ListVisible returns the workspaces the supplied Tenant membership may see.

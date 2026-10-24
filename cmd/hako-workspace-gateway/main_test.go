@@ -17,6 +17,7 @@ func TestLoadDeploymentConfigRequiresCompleteSecureConfiguration(t *testing.T) {
 		"HAKO_RESOURCE_PLANE_ID": "rp_a", "HAKO_GATEWAY_TLS_CERT_FILE": "/tls/cert.pem",
 		"HAKO_GATEWAY_TLS_KEY_FILE": "/tls/key.pem", "HAKO_GATEWAY_SESSION_PUBLIC_KEYS_FILE": "/keys/session.json",
 		"HAKO_GATEWAY_SESSION_LOOKUP_ENDPOINT": "https://api.hako.test", "HAKO_GATEWAY_SESSION_LOOKUP_KEY_FILE": "/keys/lookup",
+		"HAKO_GATEWAY_CONNECTION_LEASE_ENDPOINT": "https://api.hako.test", "HAKO_GATEWAY_CONNECTION_LEASE_KEY_FILE": "/keys/lease",
 		"HAKO_GATEWAY_AGENT_TICKET_KEY_ID": "agent-v1", "HAKO_GATEWAY_AGENT_TICKET_KEY_FILE": "/keys/agent.pem",
 		"HAKO_GATEWAY_PUBLIC_ORIGIN": "https://gateway.hako.test", "HAKO_GATEWAY_ALLOWED_ORIGINS": "https://app.hako.test, https://ide.hako.test",
 		"HAKO_WORKSPACE_RUNTIME_JOURNAL_BUCKET": "hako-workspace-journal", "AWS_REGION": "ap-northeast-1",

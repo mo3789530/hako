@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/factoryconfig"
 	webhookevent "github.com/mo3789530/hako/internal/githubwebhook"
 	"github.com/mo3789530/hako/internal/workloadsource"
@@ -45,17 +46,23 @@ func (r *FilesystemExecutionResolver) ResolveExecution(ctx context.Context, clai
 		return ExecutionPlan{}, ErrExecutionPlan
 	}
 	plan := ExecutionPlan{Identity: claims.Identity.Command(), RepositoryPath: r.repositoryPath,
+		Kind:               claims.Execution.Kind,
+		AgentIntegrationID: claims.Execution.AgentIntegrationID, AgentInstallationID: claims.Execution.AgentInstallationID,
+		AgentRepositoryID: claims.Execution.AgentRepositoryID, AgentTaskContextSHA256: claims.Execution.AgentTaskContextSHA256,
 		SourceDigest: claims.Execution.SourceDigest, CommitSHA: claims.Execution.CommitSHA,
-		TriggerEvent: claims.Execution.TriggerEvent, TriggerBranch: claims.Execution.TriggerBranch, Deadline: deadline}
+		TriggerEvent: claims.Execution.TriggerEvent, TriggerBranch: claims.Execution.TriggerBranch,
+		CorrelationID: claims.Execution.CorrelationID, Deadline: deadline}
 	if plan.TriggerEvent != "" {
 		if verifyInstalledExecutionSource(ctx, plan, workloadsource.DefaultMaxArchiveBytes) != nil {
 			return ExecutionPlan{}, ErrExecutionPlan
 		}
-		pipelines, err := resolveFactoryPipelines(ctx, plan)
-		if err != nil {
-			return ExecutionPlan{}, err
+		if plan.Kind != domain.WorkloadAgent {
+			pipelines, err := resolveFactoryPipelines(ctx, plan)
+			if err != nil {
+				return ExecutionPlan{}, err
+			}
+			plan.FactoryPipelines = pipelines
 		}
-		plan.FactoryPipelines = pipelines
 	}
 	return plan, nil
 }

@@ -8,12 +8,15 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"regexp"
 	"time"
 
 	"github.com/mo3789530/hako/internal/workloadjournal"
 )
 
 var ErrInvalidCommand = errors.New("invalid Workload dispatch command")
+
+var commandCorrelationIDPattern = regexp.MustCompile(`^req_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 type Command struct {
 	SchemaVersion    int    `json:"schema_version"`
@@ -23,6 +26,7 @@ type Command struct {
 	Generation       int64  `json:"generation"`
 	ResourcePlaneID  string `json:"resource_plane_id"`
 	IdempotencyToken string `json:"idempotency_token"`
+	CorrelationID    string `json:"correlation_id,omitempty"`
 }
 
 // Decode rejects execution parameters: authoritative source and runtime
@@ -39,7 +43,7 @@ func Decode(data []byte) (Command, error) {
 	if err != nil || start != json.Delim('{') {
 		return Command{}, ErrInvalidCommand
 	}
-	allowed := map[string]bool{"schema_version": true, "tenant_id": true, "workload_run_id": true, "attempt_id": true, "generation": true, "resource_plane_id": true, "idempotency_token": true}
+	allowed := map[string]bool{"schema_version": true, "tenant_id": true, "workload_run_id": true, "attempt_id": true, "generation": true, "resource_plane_id": true, "idempotency_token": true, "correlation_id": true}
 	seen := make(map[string]bool)
 	for keys.More() {
 		token, err := keys.Token()
@@ -66,6 +70,9 @@ func Decode(data []byte) (Command, error) {
 		return Command{}, ErrInvalidCommand
 	}
 	if _, err := workloadjournal.New(c.identity(), time.Now().UTC()); err != nil {
+		return Command{}, ErrInvalidCommand
+	}
+	if c.CorrelationID != "" && !commandCorrelationIDPattern.MatchString(c.CorrelationID) {
 		return Command{}, ErrInvalidCommand
 	}
 	return c, nil

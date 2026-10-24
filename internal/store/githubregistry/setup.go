@@ -18,6 +18,7 @@ var (
 	ErrInvalidSetupState         = errors.New("invalid or expired GitHub Installation setup state")
 	ErrInstallationBound         = errors.New("GitHub Installation is already bound to another Tenant")
 	ErrSetupInstallationMismatch = errors.New("GitHub setup state has a different Installation ID")
+	ErrGitHubIdentityConflict    = errors.New("GitHub identity is already linked to another Hako user")
 )
 
 type SetupState struct {
@@ -26,6 +27,11 @@ type SetupState struct {
 	InstallationID int64
 	CodeVerifier   string
 	AppPin         *SetupAppPin
+}
+
+type VerifiedGitHubUser struct {
+	ID    int64
+	Login string
 }
 
 // HashSetupState returns the irreversible database representation of an
@@ -115,6 +121,22 @@ func SetSetupInstallation(ctx context.Context, tx pgx.Tx, stateHash string, inst
 // user access token that the installation is visible to the authorizing user
 // and belongs to the configured Hako App.
 func CompleteSetupState(ctx context.Context, tx pgx.Tx, stateHash string, installationID int64, accountLogin string, now time.Time, verifiedAppID ...int64) (Installation, error) {
+	return completeSetupState(ctx, tx, stateHash, installationID, accountLogin, now, verifiedAppID, nil)
+}
+
+// CompleteSetupStateWithGitHubUser binds the GitHub numeric user identity
+// proven by the OAuth user token to the Cognito-backed user recorded in the
+// one-time setup state, in the same transaction as Installation activation.
+func CompleteSetupStateWithGitHubUser(ctx context.Context, tx pgx.Tx, stateHash string, installationID int64, accountLogin string,
+	now time.Time, verifiedAppID int64, githubUser VerifiedGitHubUser) (Installation, error) {
+	if verifiedAppID <= 0 || githubUser.ID <= 0 || !validAccountLogin(githubUser.Login) {
+		return Installation{}, ErrInvalidSetupState
+	}
+	return completeSetupState(ctx, tx, stateHash, installationID, accountLogin, now, []int64{verifiedAppID}, &githubUser)
+}
+
+func completeSetupState(ctx context.Context, tx pgx.Tx, stateHash string, installationID int64, accountLogin string, now time.Time,
+	verifiedAppID []int64, githubUser *VerifiedGitHubUser) (Installation, error) {
 	if tx == nil || len(stateHash) != 64 || installationID <= 0 || now.IsZero() {
 		return Installation{}, ErrInvalidSetupState
 	}
@@ -133,6 +155,27 @@ func CompleteSetupState(ctx context.Context, tx pgx.Tx, stateHash string, instal
 	}
 	if _, err := authz.RequireTenantRole(ctx, tx, state.UserID, state.TenantID, domain.TenantRoleOwner, domain.TenantRoleAdmin); err != nil {
 		return Installation{}, err
+	}
+	if githubUser != nil {
+		var currentID int64
+		if err := tx.QueryRow(ctx, `SELECT COALESCE(github_user_id,0) FROM users WHERE id=$1 FOR UPDATE`, state.UserID).Scan(&currentID); err != nil {
+			return Installation{}, fmt.Errorf("resolve Hako user's linked GitHub identity: %w", err)
+		}
+		if currentID != 0 && currentID != githubUser.ID {
+			return Installation{}, ErrGitHubIdentityConflict
+		}
+		var linkedUser domain.UserID
+		err := tx.QueryRow(ctx, `SELECT id FROM users WHERE github_user_id=$1 AND id<>$2`, githubUser.ID, state.UserID).Scan(&linkedUser)
+		if err == nil {
+			return Installation{}, ErrGitHubIdentityConflict
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return Installation{}, fmt.Errorf("check GitHub identity ownership: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE users SET github_user_id=$2, github_login=$3 WHERE id=$1 AND (github_user_id IS NULL OR github_user_id=$2)`,
+			state.UserID, githubUser.ID, githubUser.Login); err != nil {
+			return Installation{}, fmt.Errorf("link verified GitHub identity to Hako user: %w", err)
+		}
 	}
 	if tag, err := tx.Exec(ctx, `UPDATE github_installation_setup_states SET consumed_at = $2, code_verifier = ''
 		WHERE state_sha256 = $1 AND installation_id = $3 AND consumed_at IS NULL AND expires_at > $2`, strings.ToLower(stateHash), now, installationID); err != nil {

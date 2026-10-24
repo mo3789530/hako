@@ -330,6 +330,43 @@ func (c *TokenClient) CheckoutToken(ctx context.Context, tenant domain.TenantID,
 	return result, err
 }
 
+// AgentContextToken mints a Tenant-App-only token for resolving bounded Issue
+// context and repository refs. Unlike checkout it carries both read scopes,
+// and its distinct cache key prevents it from being returned as a contents-only
+// checkout credential. The active Tenant App and exact Repository are
+// revalidated for every use, including cache hits.
+func (c *TokenClient) AgentContextToken(ctx context.Context, tenant domain.TenantID, installationID, repositoryID int64) (InstallationToken, RepositoryAccess, error) {
+	if c == nil || ctx == nil || c.config.IntegrationID == "" || c.tenantAppAuth == nil || tenant == "" || tenant != c.config.TenantID || installationID <= 0 || repositoryID <= 0 {
+		return InstallationToken{}, RepositoryAccess{}, credentialError("invalid_request")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	select {
+	case c.gate <- struct{}{}:
+	case <-ctx.Done():
+		return InstallationToken{}, RepositoryAccess{}, ctx.Err()
+	}
+	defer func() { <-c.gate }()
+	permissions := map[string]string{"contents": "read", "issues": "read"}
+	key := tokenCacheKey{tenant: tenant, integration: c.config.IntegrationID, appID: c.config.AppID,
+		configRevision: c.config.ConfigRevision, credentialGeneration: c.config.CredentialGeneration,
+		installation: installationID, repository: repositoryID, permissionScope: "contents:read,issues:read"}
+	access, err := c.authorize(ctx, key)
+	if err != nil {
+		return InstallationToken{}, RepositoryAccess{}, err
+	}
+	token, err := c.scopedInstallationToken(ctx, key, permissions)
+	if err != nil {
+		delete(c.cache, key)
+		return InstallationToken{}, RepositoryAccess{}, err
+	}
+	if _, err := c.authorize(ctx, key); err != nil {
+		delete(c.cache, key)
+		return InstallationToken{}, RepositoryAccess{}, credentialError("repository_not_authorized")
+	}
+	return token, access, nil
+}
+
 // ChecksToken mints a repository-scoped token with only checks:write. It has a
 // distinct cache identity from checkout tokens so a writable token can never
 // be returned through the read-only checkout API.

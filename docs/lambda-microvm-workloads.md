@@ -17,6 +17,11 @@ CPの`RequestCancel`はdesired stateとcurrent attempt向け`workload_attempt.ca
 ## AWSの仕様とHakoの制約
 
 - **1 MicroVMの最大存続時間は8時間（28,800秒）、ARM64のみ。** 汎用Run APIのdeadline上限24時間と異なる。AWS adapterは元のrequest intervalが8時間を超えるSpecificationを起動前に拒否する。fake-clockの24時間テストはCP契約の検証であり、AWSで24時間実行できる証明ではない。
+- **Resource quotaとAPI throughputもPlacement/Dispatcherの前提にする。** 公開Quota表ではMicroVM baseline memory合計は通常のaccount/Regionで400 GiB、Tokyoを含む一部Regionでは1,024 GiBで、最大4倍までburst可能。MicroVM一台ごとの非調整可能な最大durationは8時間。`RunMicrovm`は5 TPS / burst 5、`GetMicrovm`は100 TPS、`CreateMicrovmAuthToken`は50 TPS、`TerminateMicrovm`は10 TPS（いずれもaccount/Region単位）。既定値は変更され得るため、運用開始時に対象account/RegionのService Quotasを確認し、Scheduler側でRun起動を平滑化、AWS throttlingはexponential backoff+jitterで再試行する。HakoはまだQuotaをAWSから同期せず、DBのResource Plane capacity設定は実quotaの証拠ではない。
+- **Runtime classは公開サイズ表に合せる。** baseline 0.5/1/2/4/8 GiBはそれぞれ0.25/0.5/1/2/4 vCPU、peakは最大4倍。最大diskは8/8/8/16/32 GiB。Hakoの`standard`案（4 GiB/2 vCPU baseline、16 GiB/8 vCPU peak、16 GiB disk）は公開サイズの一つに合致する。diskサイズはimage作成時の設定を検証するまでHako側の保証値として扱わない。
+- **接続数にも上限がある。** 公開値は1/2/4/8/16 vCPUに対して8/16/32/64/128 concurrent connections per MicroVM。HakoのSSH/VS Code/shell/port-forwardとAgent接続の合算設計に影響するため、1 Workspace/JobあたりのGateway同時stream数・並行local forwardを実PoCで測り、上限に近づく前に拒否またはbackpressureする。API上のlocal capだけではAWS側throughputの検証にならない。
+- **Lambda MicroVM imageのDockerfile buildとnested containerは別の機能。** AWSはzip内DockerfileをMicroVM build環境で実行し、アプリケーションcontainerと初期snapshotを作る。これはMicroVM内でDocker/containerd/Podman daemonを動かせる証拠ではない。公開資料では標準Linux capabilitiesに加え`additionalOsCapabilities=["ALL"]`を選べると説明されているが、Hakoはそれを付与していない。rootless containerd/Podman、Compose、namespace/cgroup/resource limits、Tenant間隔離はimage builderと実MicroVMで個別に検証する。`ALL`を使う場合もVM内権限の影響と攻撃面をレビューし、未検証のまま有効化しない。
+- Lambda管理MicroVM base imageはAmazon Linux 2023を提供し、Dockerfileのcontainer base imageとは別resource。managed base imageにはdeprecation/expiry/revocation lifecycleがある。Releaseはimage buildに使ったbase image version、Dockerfile base、artifact digestを記録し、base image更新後のbuild/validateを通してからactive versionを切り替える。
 - deadlineは作成時基準の絶対時刻。AWS maximum durationはretryで変化させず、agentも絶対deadlineを守り、controllerが期限切れを停止する。期限延長・自動Job再実行・暗黙の別基盤への変更はしない。
 - Jobのidle policyはauto-resume無効、max idleを固定maximum duration以上（最小60秒）に設定する。proxyへのinbound通信量で判定される標準idle policyにより、無通信の長時間Jobが途中suspendすることを避ける。
 - Lambda MicroVMsの標準egressはInternet。承認済みVPC egress connectorを必須とし、VPC側でdefault-denyと必要経路だけを設定する。connector ARN指定だけでネットワーク隔離済みとは扱わない。
@@ -67,3 +72,5 @@ integrationは既定のローカルPostgresまたは`HAKO_TEST_DATABASE_URL`を�
 - [CreateMicrovmAuthToken](https://docs.aws.amazon.com/lambda/latest/microvm-api/API_CreateMicrovmAuthToken.html)
 - [Security/IAM](https://docs.aws.amazon.com/lambda/latest/dg/microvms-security.html)
 - [IdlePolicy](https://docs.aws.amazon.com/lambda/latest/microvm-api/API_IdlePolicy.html)
+- [MicroVM images and supported sizes/build hooks](https://docs.aws.amazon.com/lambda/latest/dg/microvms-images.html)
+- [Lambda MicroVM quotas](https://docs.aws.amazon.com/lambda/latest/dg/gettingstarted-limits.html)

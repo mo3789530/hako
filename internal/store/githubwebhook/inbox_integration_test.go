@@ -4,6 +4,8 @@ package githubwebhook
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/githubwebhook"
 	"github.com/mo3789530/hako/internal/store/dsql"
 	"github.com/mo3789530/hako/internal/store/githubregistry"
@@ -65,6 +68,135 @@ func TestInboxRecordIsDurableAndIdempotent(t *testing.T) {
 	var normalized githubwebhook.RepositoryEvent
 	if err := json.Unmarshal([]byte(eventJSON), &normalized); err != nil || normalized.Type != "repository.pull_request.opened" || normalized.Repository == nil || normalized.Repository.GitHubID != 42 || normalized.PullRequest == nil || normalized.PullRequest.Number != 17 {
 		t.Fatalf("persisted normalized event = %+v; decode error=%v", normalized, err)
+	}
+}
+
+func TestInboxRedactsIssueCommentBodyButKeepsCommandProjection(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	inbox := Inbox{Pool: pool, Policy: transaction.DefaultPolicy()}
+	const body = `{"action":"created","installation":{"id":7701},"repository":{"id":7702,"name":"api","owner":{"login":"acme"}},"issue":{"number":7},"comment":{"id":8,"body":"/hako implement","author_association":"MEMBER"},"sender":{"id":7771,"login":"author"}}`
+	delivery := githubwebhook.VerifiedDelivery{DeliveryID: "77777777-7777-4777-8777-777777777777", Event: "issue_comment", Action: "created", Payload: []byte(body)}
+	if inserted, err := inbox.Record(ctx, delivery, time.Now().UTC()); err != nil || !inserted {
+		t.Fatalf("record issue comment = inserted %v error %v", inserted, err)
+	}
+	var storedPayload, payloadHash, eventJSON string
+	if err := pool.QueryRow(ctx, `SELECT payload_json, payload_sha256, normalized_event_json FROM github_webhook_deliveries WHERE delivery_id=$1`, delivery.DeliveryID).Scan(&storedPayload, &payloadHash, &eventJSON); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(storedPayload, "/hako implement") {
+		t.Fatalf("raw payload retained comment body: %s", storedPayload)
+	}
+	originalDigest := sha256.Sum256(delivery.Payload)
+	if payloadHash != hex.EncodeToString(originalDigest[:]) {
+		t.Fatalf("payload hash = %q, want hash of original signed bytes", payloadHash)
+	}
+	var event githubwebhook.RepositoryEvent
+	if err := json.Unmarshal([]byte(eventJSON), &event); err != nil {
+		t.Fatal(err)
+	}
+	if event.IssueComment == nil || event.IssueComment.AgentCommand != githubwebhook.AgentCommandImplement || strings.Contains(eventJSON, "/hako implement") {
+		t.Fatalf("normalized event = %s", eventJSON)
+	}
+}
+
+func TestIssueCommentCommandIsNotScheduledAsRepositoryTrigger(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	inbox := Inbox{Pool: pool, Policy: transaction.DefaultPolicy()}
+	delivery := githubwebhook.VerifiedDelivery{DeliveryID: "88888888-8888-4888-8888-888888888888", Event: "issue_comment", Action: "created",
+		Payload: []byte(`{"action":"created","installation":{"id":7801},"repository":{"id":7802,"name":"api","owner":{"login":"acme"}},"issue":{"number":7},"comment":{"id":9,"body":"/hako implement","author_association":"OWNER"},"sender":{"id":7810,"login":"owner"}}`)}
+	if inserted, err := inbox.Record(ctx, delivery, time.Now().UTC()); err != nil || !inserted {
+		t.Fatalf("record issue command = inserted %v error %v", inserted, err)
+	}
+	creatorCalled := false
+	stats, err := ProcessBatchWithRepositoryTriggers(ctx, pool, transaction.DefaultPolicy(), 10, time.Now().UTC(),
+		func(context.Context, pgx.Tx, domain.TenantID, string, string, string, time.Time) (bool, error) {
+			creatorCalled = true
+			return true, nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if creatorCalled || stats.WorkloadRunsCreated != 0 || stats.Claimed != 0 || stats.Processed != 0 {
+		t.Fatalf("Issue command entered the repository trigger scheduler: callback=%v stats=%+v", creatorCalled, stats)
+	}
+	var state string
+	if err := pool.QueryRow(ctx, `SELECT processing_status FROM github_webhook_deliveries WHERE delivery_id=$1`, delivery.DeliveryID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "received" {
+		t.Fatalf("unsupported Issue command state = %q, want received until the dedicated authorized processor is enabled", state)
+	}
+}
+
+func TestIssueCommentAgentAuthorizationRequiresVerifiedTenantMemberAndOptIn(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	for _, query := range []string{
+		`INSERT INTO tenants(id,name,created_at) VALUES ('tenant_agent_auth','Agent auth',now()),('tenant_agent_other','Other Tenant',now())`,
+		`INSERT INTO users(id,cognito_subject,email,created_at,github_user_id,github_login) VALUES ('usr_agent_member','agent-member','',now(),7001,'member'),('usr_agent_other','agent-other','',now(),7002,'other')`,
+		`INSERT INTO tenant_members(tenant_id,user_id,role,joined_at) VALUES ('tenant_agent_auth','usr_agent_member','member',now()),('tenant_agent_other','usr_agent_other','owner',now())`,
+		`INSERT INTO tenant_github_installations(tenant_id,installation_id,account_login,status,requested_by,requested_at,updated_at) VALUES ('tenant_agent_auth',8001,'acme','active','usr_agent_member',now(),now())`,
+		`INSERT INTO github_app_installation_bindings(installation_id,tenant_id,bound_at) VALUES (8001,'tenant_agent_auth',now())`,
+		`INSERT INTO tenant_github_repositories(tenant_id,installation_id,github_repository_id,owner_login,repository_name,default_branch,synchronized_at,factory_enabled,factory_enabled_at) VALUES ('tenant_agent_auth',8001,8002,'acme','api','main',now(),true,now()-interval '1 minute')`,
+	} {
+		if _, err := pool.Exec(ctx, query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inbox := Inbox{Pool: pool, Policy: transaction.DefaultPolicy()}
+	makeDelivery := func(id string, actorID int, isPR bool) githubwebhook.VerifiedDelivery {
+		pullRequest := "null"
+		if isPR {
+			pullRequest = `{"url":"https://api.github.test/pulls/17"}`
+		}
+		payload := fmt.Sprintf(`{"action":"created","installation":{"id":8001},"repository":{"id":8002,"name":"api","owner":{"login":"acme"}},"issue":{"number":17,"pull_request":%s},"comment":{"id":%d,"body":"/hako implement","author_association":"MEMBER"},"sender":{"id":%d,"login":"member"}}`, pullRequest, actorID+10, actorID)
+		return githubwebhook.VerifiedDelivery{DeliveryID: id, Event: "issue_comment", Action: "created", Payload: []byte(payload)}
+	}
+	valid := makeDelivery("a4b2c3d4-e5f6-4789-8abc-def012345678", 7001, false)
+	otherTenantMember := makeDelivery("b4b2c3d4-e5f6-4789-8abc-def012345678", 7002, false)
+	pullRequestComment := makeDelivery("c4b2c3d4-e5f6-4789-8abc-def012345678", 7001, true)
+	for _, delivery := range []githubwebhook.VerifiedDelivery{valid, otherTenantMember, pullRequestComment} {
+		if inserted, err := inbox.Record(ctx, delivery, now); err != nil || !inserted {
+			t.Fatalf("record %s: inserted=%v error=%v", delivery.DeliveryID, inserted, err)
+		}
+	}
+	for _, tc := range []struct {
+		delivery githubwebhook.VerifiedDelivery
+		want     bool
+	}{{valid, true}, {otherTenantMember, false}, {pullRequestComment, false}} {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, ok, err := AuthorizeIssueCommentAgentCommand(ctx, tx, "shared", tc.delivery.DeliveryID)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatalf("authorize %s: %v", tc.delivery.DeliveryID, err)
+		}
+		if err := tx.Rollback(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if ok != tc.want {
+			t.Fatalf("authorization for %s = %+v, %v; want allowed=%v", tc.delivery.DeliveryID, got, ok, tc.want)
+		}
+		if tc.want && (got.TenantID != "tenant_agent_auth" || got.UserID != "usr_agent_member" || got.Repository.GitHubID != 8002 || got.IssueNumber != 17 || got.CommentID != 7011) {
+			t.Fatalf("authorized identity projection = %+v", got)
+		}
 	}
 }
 
@@ -290,6 +422,7 @@ func TestActionsRunnerAdmissionRequiresSeparateRepositoryOptInAndDeduplicatesJob
 		return githubwebhook.VerifiedDelivery{DeliveryID: id, Event: "workflow_job", Action: "queued", Payload: []byte(fmt.Sprintf(`{"action":"queued","installation":{"id":8801},"repository":{"id":%d,"name":%q,"owner":{"login":"acme"}},"workflow_job":{"id":9901,"run_id":9902,"run_attempt":1,"workflow_name":"CI","name":"test","head_branch":"feature/task","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"queued","labels":["self-hosted","hako"]}}`, repositoryID, name))}
 	}
 	accepted := makeDelivery("a3b2c3d4-e5f6-4789-8abc-def012345678", 8802, "enabled")
+	accepted.CorrelationID = "req_12345678-1234-4234-8234-123456789abc"
 	duplicate := makeDelivery("b3b2c3d4-e5f6-4789-8abc-def012345678", 8802, "enabled")
 	optedOut := makeDelivery("c3b2c3d4-e5f6-4789-8abc-def012345678", 8803, "disabled")
 	preOptIn := makeDelivery("d3b2c3d4-e5f6-4789-8abc-def012345678", 8802, "enabled")
@@ -317,13 +450,19 @@ func TestActionsRunnerAdmissionRequiresSeparateRepositoryOptInAndDeduplicatesJob
 	if jobs != 1 || tenantID != "tenant_actions_admission" || string(labels) != `["self-hosted", "hako"]` || state != "admitted" {
 		t.Fatalf("admitted Actions job count=%d tenant=%q labels=%s state=%q", jobs, tenantID, labels, state)
 	}
-	var checkStatus, checkName, checkSHA string
+	var checkStatus, checkName, checkSHA, checkCorrelationID string
 	var checkRevision int64
 	var checkOutboxCount int
-	if err := pool.QueryRow(ctx, `SELECT status,check_name,commit_sha,revision FROM github_actions_runner_checks
-		WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`).Scan(&checkStatus, &checkName, &checkSHA, &checkRevision); err != nil ||
-		checkStatus != "queued" || checkName != "Hako Actions Runner" || checkSHA != strings.Repeat("a", 40) || checkRevision != 1 {
-		t.Fatalf("initial Actions Runner Check status=%q name=%q SHA=%q revision=%d error=%v", checkStatus, checkName, checkSHA, checkRevision, err)
+	if err := pool.QueryRow(ctx, `SELECT status,check_name,commit_sha,revision,COALESCE(correlation_id,'') FROM github_actions_runner_checks
+		WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`).Scan(&checkStatus, &checkName, &checkSHA, &checkRevision, &checkCorrelationID); err != nil ||
+		checkStatus != "queued" || checkName != "Hako Actions Runner" || checkSHA != strings.Repeat("a", 40) || checkRevision != 1 || checkCorrelationID != accepted.CorrelationID {
+		t.Fatalf("initial Actions Runner Check status=%q name=%q SHA=%q revision=%d correlation=%q error=%v", checkStatus, checkName, checkSHA, checkRevision, checkCorrelationID, err)
+	}
+	var checkOutboxPayload string
+	if err := pool.QueryRow(ctx, `SELECT payload_json FROM outbox_events WHERE aggregate_type='github_actions_runner_job'
+		AND aggregate_id='shared:9901:1' AND event_type='github_actions_runner_job.github_check_requested'`).Scan(&checkOutboxPayload); err != nil ||
+		!strings.Contains(checkOutboxPayload, `"correlation_id":"`+accepted.CorrelationID+`"`) {
+		t.Fatalf("Actions Runner Check outbox correlation ID not propagated: payload=%s error=%v", checkOutboxPayload, err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox_events WHERE aggregate_type='github_actions_runner_job'
 		AND event_type='github_actions_runner_job.github_check_requested' AND aggregate_id='shared:9901:1'`).Scan(&checkOutboxCount); err != nil || checkOutboxCount != 1 {

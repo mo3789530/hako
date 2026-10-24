@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"time"
 
@@ -16,26 +17,39 @@ import (
 )
 
 var (
-	ErrWorkloadResultMismatch = errors.New("Workload result does not match its Run or attempt")
-	ErrWorkloadResultInvalid  = errors.New("Workload result is invalid")
-	resultErrorCodePattern    = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
+	ErrWorkloadResultMismatch  = errors.New("Workload result does not match its Run or attempt")
+	ErrWorkloadResultInvalid   = errors.New("Workload result is invalid")
+	resultErrorCodePattern     = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
+	resultCorrelationIDPattern = regexp.MustCompile(`^req_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	pipelineNamePattern        = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,39}$`)
 )
 
 // WorkloadResult is emitted by a trusted Resource Plane result channel. It
 // contains metadata only; log bytes must already be redacted and uploaded.
 type WorkloadResult struct {
-	SchemaVersion   int                     `json:"schema_version"`
-	TenantID        domain.TenantID         `json:"tenant_id"`
-	WorkloadRunID   domain.WorkloadRunID    `json:"workload_run_id"`
-	AttemptID       string                  `json:"attempt_id"`
-	Generation      int64                   `json:"generation"`
-	ResourcePlaneID domain.ResourcePlaneID  `json:"resource_plane_id"`
-	CommitSHA       string                  `json:"commit_sha"`
-	Status          domain.WorkloadRunState `json:"status"`
-	ExitCode        int                     `json:"exit_code"`
-	ErrorCode       string                  `json:"error_code,omitempty"`
-	CompletedAt     time.Time               `json:"completed_at"`
-	LogArtifact     *WorkloadLogArtifact    `json:"log_artifact,omitempty"`
+	SchemaVersion   int                      `json:"schema_version"`
+	TenantID        domain.TenantID          `json:"tenant_id"`
+	WorkloadRunID   domain.WorkloadRunID     `json:"workload_run_id"`
+	AttemptID       string                   `json:"attempt_id"`
+	Generation      int64                    `json:"generation"`
+	ResourcePlaneID domain.ResourcePlaneID   `json:"resource_plane_id"`
+	CorrelationID   string                   `json:"correlation_id,omitempty"`
+	CommitSHA       string                   `json:"commit_sha"`
+	Status          domain.WorkloadRunState  `json:"status"`
+	ExitCode        int                      `json:"exit_code"`
+	ErrorCode       string                   `json:"error_code,omitempty"`
+	CompletedAt     time.Time                `json:"completed_at"`
+	LogArtifact     *WorkloadLogArtifact     `json:"log_artifact,omitempty"`
+	PipelineResults []WorkloadPipelineResult `json:"pipeline_results,omitempty"`
+}
+
+// WorkloadPipelineResult records only bounded, allowlisted manifest pipeline
+// metadata. It contains no command output or user-controlled error text.
+type WorkloadPipelineResult struct {
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	ExitCode  int    `json:"exit_code"`
+	ErrorCode string `json:"error_code,omitempty"`
 }
 
 type WorkloadLogArtifact struct {
@@ -85,7 +99,7 @@ func (h *ResultHandler) Handle(ctx context.Context, result WorkloadResult) (Resu
 			return "", fmt.Errorf("generate Workload artifact ID: %w", err)
 		}
 	}
-	return transaction.Within(ctx, h.Pool, h.Policy, func(ctx context.Context, tx pgx.Tx) (ResultOutcome, error) {
+	outcome, err := transaction.Within(ctx, h.Pool, h.Policy, func(ctx context.Context, tx pgx.Tx) (ResultOutcome, error) {
 		var attemptTenant domain.TenantID
 		var attemptRun domain.WorkloadRunID
 		var generation int64
@@ -119,6 +133,9 @@ func (h *ResultHandler) Handle(ctx context.Context, result WorkloadResult) (Resu
 			return "", err
 		}
 		if run.ResourcePlaneID != result.ResourcePlaneID || run.CommitSHA != result.CommitSHA {
+			return "", ErrWorkloadResultMismatch
+		}
+		if result.CorrelationID != run.CorrelationID {
 			return "", ErrWorkloadResultMismatch
 		}
 		if isTerminalWorkloadState(run.State) {
@@ -157,9 +174,27 @@ func (h *ResultHandler) Handle(ctx context.Context, result WorkloadResult) (Resu
 				return "", fmt.Errorf("record Workload log artifact: %w", err)
 			}
 		}
-		if _, err := workloads.Transition(ctx, tx, workloads.TransitionInput{TenantID: run.TenantID,
-			RunID: run.ID, ExpectedRevision: run.Revision, NextState: next, ErrorCode: errorCode, OccurredAt: completedAt}); err != nil {
+		if len(result.PipelineResults) > 0 {
+			for _, pipeline := range result.PipelineResults {
+				if _, err := tx.Exec(ctx, `INSERT INTO workload_pipeline_results
+					(tenant_id, workload_run_id, generation, pipeline_name, status, exit_code, error_code, completed_at)
+					VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8)`, result.TenantID, result.WorkloadRunID,
+					result.Generation, pipeline.Name, pipeline.Status, pipeline.ExitCode, pipeline.ErrorCode, completedAt); err != nil {
+					return "", fmt.Errorf("persist Workload pipeline result: %w", err)
+				}
+			}
+		}
+		run, err = workloads.Transition(ctx, tx, workloads.TransitionInput{TenantID: run.TenantID,
+			RunID: run.ID, ExpectedRevision: run.Revision, NextState: next, ErrorCode: errorCode, OccurredAt: completedAt})
+		if err != nil {
 			return "", err
+		}
+		for _, pipeline := range result.PipelineResults {
+			if err := workloads.SyncGitHubPipelineCheck(ctx, tx, run, domain.WorkloadPipelineResult{
+				Name: pipeline.Name, Status: pipeline.Status, ExitCode: pipeline.ExitCode, ErrorCode: pipeline.ErrorCode,
+			}, completedAt); err != nil {
+				return "", err
+			}
 		}
 		if _, err := tx.Exec(ctx, `UPDATE workload_run_attempts SET state = $1, updated_at = $2
 			WHERE id = $3 AND tenant_id = $4 AND workload_run_id = $5 AND generation = $6
@@ -169,6 +204,12 @@ func (h *ResultHandler) Handle(ctx context.Context, result WorkloadResult) (Resu
 		}
 		return ResultApplied, nil
 	})
+	if err == nil && outcome == ResultApplied {
+		slog.InfoContext(ctx, "applied Hako Workload result", "correlation_id", result.CorrelationID,
+			"tenant_id", result.TenantID, "workload_run_id", result.WorkloadRunID,
+			"attempt_id", result.AttemptID, "generation", result.Generation, "status", result.Status)
+	}
+	return outcome, err
 }
 
 // ValidateResult checks metadata before a trusted RP publisher persists/sends it.
@@ -182,6 +223,9 @@ func validateWorkloadResult(result WorkloadResult) error {
 		result.CompletedAt.IsZero() {
 		return fmt.Errorf("%w: identity, version, generation, and completion time are required", ErrWorkloadResultInvalid)
 	}
+	if result.CorrelationID != "" && !resultCorrelationIDPattern.MatchString(result.CorrelationID) {
+		return fmt.Errorf("%w: correlation ID is invalid", ErrWorkloadResultInvalid)
+	}
 	if result.Status != domain.WorkloadSucceeded && result.Status != domain.WorkloadFailed &&
 		result.Status != domain.WorkloadCancelled && result.Status != domain.WorkloadTimedOut {
 		return fmt.Errorf("%w: status must be terminal", ErrWorkloadResultInvalid)
@@ -194,6 +238,36 @@ func validateWorkloadResult(result WorkloadResult) error {
 	}
 	if result.ErrorCode != "" && !resultErrorCodePattern.MatchString(result.ErrorCode) {
 		return fmt.Errorf("%w: error code is not a safe identifier", ErrWorkloadResultInvalid)
+	}
+	if len(result.PipelineResults) > 16 {
+		return fmt.Errorf("%w: pipeline result count exceeds its bound", ErrWorkloadResultInvalid)
+	}
+	previousPipeline := ""
+	for _, pipeline := range result.PipelineResults {
+		if !pipelineNamePattern.MatchString(pipeline.Name) || pipeline.Name <= previousPipeline || pipeline.ExitCode < 0 || pipeline.ExitCode > 255 {
+			return fmt.Errorf("%w: pipeline results must have unique sorted names and bounded exit codes", ErrWorkloadResultInvalid)
+		}
+		switch pipeline.Status {
+		case "succeeded":
+			if pipeline.ExitCode != 0 || pipeline.ErrorCode != "" {
+				return fmt.Errorf("%w: successful pipeline result must have zero exit code and no error", ErrWorkloadResultInvalid)
+			}
+		case "failed":
+			if pipeline.ExitCode == 0 || pipeline.ErrorCode != "" && !resultErrorCodePattern.MatchString(pipeline.ErrorCode) {
+				return fmt.Errorf("%w: failed pipeline result requires a bounded failure", ErrWorkloadResultInvalid)
+			}
+		case "cancelled", "timed_out":
+			if pipeline.ExitCode == 0 || pipeline.ErrorCode != "" && !resultErrorCodePattern.MatchString(pipeline.ErrorCode) {
+				return fmt.Errorf("%w: pipeline error code is invalid", ErrWorkloadResultInvalid)
+			}
+		case "skipped":
+			if pipeline.ExitCode != 0 || pipeline.ErrorCode != "" {
+				return fmt.Errorf("%w: skipped pipeline result cannot carry an exit failure", ErrWorkloadResultInvalid)
+			}
+		default:
+			return fmt.Errorf("%w: unsupported pipeline result status", ErrWorkloadResultInvalid)
+		}
+		previousPipeline = pipeline.Name
 	}
 	if result.LogArtifact != nil {
 		if result.LogArtifact.SizeBytes < 0 || result.LogArtifact.SizeBytes > 100<<20 ||

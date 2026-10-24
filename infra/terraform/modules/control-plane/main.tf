@@ -120,6 +120,74 @@ resource "aws_dsql_cluster" "control_plane" {
   tags = local.common_tags
 }
 
+# HTTP API stage metrics are emitted by API Gateway without route-level detailed
+# metrics. Keep alarms at API/stage granularity to avoid cardinality and cost.
+resource "aws_cloudwatch_metric_alarm" "api_5xx" {
+  alarm_name          = "${var.api_name}-api-5xx"
+  alarm_description   = "HTTP API returned more than five server errors in one minute. Inspect API and Lambda logs using X-Hako-Request-ID."
+  namespace           = "AWS/ApiGateway"
+  metric_name         = "5xx"
+  statistic           = "Sum"
+  period              = 60
+  evaluation_periods  = 1
+  threshold           = 5
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  dimensions = {
+    ApiId = aws_apigatewayv2_api.control_plane.id
+    Stage = aws_apigatewayv2_stage.default.name
+  }
+  tags = local.common_tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "api_latency_p95" {
+  alarm_name          = "${var.api_name}-api-latency-p95"
+  alarm_description   = "HTTP API p95 end-to-end latency exceeded two seconds for five consecutive minutes."
+  namespace           = "AWS/ApiGateway"
+  metric_name         = "Latency"
+  extended_statistic  = "p95"
+  period              = 60
+  evaluation_periods  = 5
+  threshold           = 2000
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  dimensions = {
+    ApiId = aws_apigatewayv2_api.control_plane.id
+    Stage = aws_apigatewayv2_stage.default.name
+  }
+  tags = local.common_tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "dsql_query_timeouts" {
+  alarm_name          = "${var.api_name}-dsql-query-timeouts"
+  alarm_description   = "Aurora DSQL recorded a query timeout. Inspect database load and correlated Control Plane requests."
+  namespace           = "AWS/AuroraDSQL"
+  metric_name         = "QueryTimeouts"
+  statistic           = "Sum"
+  period              = 60
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  dimensions          = { ClusterId = aws_dsql_cluster.control_plane.identifier }
+  tags                = local.common_tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "dsql_occ_conflicts" {
+  alarm_name          = "${var.api_name}-dsql-occ-conflicts"
+  alarm_description   = "Aurora DSQL recorded sustained OCC conflicts. Review hot-key transactions and retry behavior."
+  namespace           = "AWS/AuroraDSQL"
+  metric_name         = "OccConflicts"
+  statistic           = "Sum"
+  period              = 60
+  evaluation_periods  = 5
+  threshold           = 10
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  dimensions          = { ClusterId = aws_dsql_cluster.control_plane.identifier }
+  tags                = local.common_tags
+}
+
 resource "aws_sqs_queue" "workload_scheduler_dlq" {
   count = var.enable_outbox_dispatcher ? 1 : 0
 
@@ -591,8 +659,22 @@ resource "aws_iam_role_policy" "api_lambda" {
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
         Resource = sort(values(var.resource_plane_workload_spec_secret_arns))
+        }], length(var.resource_plane_artifact_cleanup_secret_arns) == 0 ? [] : [{
+        Sid      = "ReadConfiguredResourcePlaneArtifactCleanupSecrets"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = sort(values(var.resource_plane_artifact_cleanup_secret_arns))
     }])
   })
+}
+
+module "github_broker_tenant_iam" {
+  source = "../github-broker-tenant-iam"
+
+  broker_role_name                    = var.github_broker_role_name
+  policy_name_prefix                  = var.api_name
+  tenant_private_key_reader_role_arns = var.tenant_github_private_key_reader_role_arns
+  tenant_webhook_reader_role_arns     = var.tenant_github_webhook_reader_role_arns
 }
 
 resource "aws_lambda_function" "api" {
@@ -608,25 +690,26 @@ resource "aws_lambda_function" "api" {
 
   environment {
     variables = {
-      HAKO_COGNITO_ISSUER                           = var.cognito_issuer_url
-      HAKO_COGNITO_CLIENT_ID                        = aws_cognito_user_pool_client.cli.id
-      HAKO_DSQL_HOST                                = "${aws_dsql_cluster.control_plane.identifier}.dsql.${var.aws_region}.on.aws"
-      HAKO_DSQL_USER                                = "hako_api"
-      HAKO_DSQL_DATABASE                            = "postgres"
-      HAKO_DEFAULT_WORKSPACE_IMAGE                  = var.default_workspace_image
-      HAKO_DEFAULT_WORKSPACE_RUNTIME_CLASS          = var.default_workspace_runtime_class
-      HAKO_WORKLOAD_RUNS_ENABLED                    = tostring(var.enable_workload_run_creation)
-      HAKO_WEBHOOK_WORKLOAD_TRIGGERS_ENABLED        = tostring(var.enable_webhook_workload_triggers)
-      HAKO_GITHUB_APP_MANAGEMENT_ENABLED            = tostring(var.enable_webhook_workload_triggers)
-      HAKO_GITHUB_WEBHOOK_SECRET_ARN                = var.github_webhook_secret_arn
-      HAKO_TENANT_GITHUB_WEBHOOK_ENABLED            = tostring(var.tenant_github_webhook_enabled)
-      HAKO_GITHUB_APP_SLUG                          = var.github_app_setup_enabled ? var.github_app_slug : ""
-      HAKO_GITHUB_APP_ID                            = var.github_app_setup_enabled ? tostring(var.github_app_id) : ""
-      HAKO_GITHUB_APP_CLIENT_ID                     = var.github_app_setup_enabled ? var.github_app_client_id : ""
-      HAKO_GITHUB_APP_CLIENT_SECRET_ARN             = var.github_app_setup_enabled ? var.github_app_client_secret_arn : ""
-      HAKO_GITHUB_APP_CALLBACK_URL                  = var.github_app_setup_enabled ? var.github_app_callback_url : ""
-      HAKO_RESOURCE_PLANE_HEALTH_REPORT_SECRET_ARNS = jsonencode(var.resource_plane_health_report_secret_arns)
-      HAKO_RESOURCE_PLANE_WORKLOAD_SPEC_SECRET_ARNS = jsonencode(var.resource_plane_workload_spec_secret_arns)
+      HAKO_COGNITO_ISSUER                              = var.cognito_issuer_url
+      HAKO_COGNITO_CLIENT_ID                           = aws_cognito_user_pool_client.cli.id
+      HAKO_DSQL_HOST                                   = "${aws_dsql_cluster.control_plane.identifier}.dsql.${var.aws_region}.on.aws"
+      HAKO_DSQL_USER                                   = "hako_api"
+      HAKO_DSQL_DATABASE                               = "postgres"
+      HAKO_DEFAULT_WORKSPACE_IMAGE                     = var.default_workspace_image
+      HAKO_DEFAULT_WORKSPACE_RUNTIME_CLASS             = var.default_workspace_runtime_class
+      HAKO_WORKLOAD_RUNS_ENABLED                       = tostring(var.enable_workload_run_creation)
+      HAKO_WEBHOOK_WORKLOAD_TRIGGERS_ENABLED           = tostring(var.enable_webhook_workload_triggers)
+      HAKO_GITHUB_APP_MANAGEMENT_ENABLED               = tostring(var.enable_webhook_workload_triggers)
+      HAKO_GITHUB_WEBHOOK_SECRET_ARN                   = var.github_webhook_secret_arn
+      HAKO_TENANT_GITHUB_WEBHOOK_ENABLED               = tostring(var.tenant_github_webhook_enabled)
+      HAKO_GITHUB_APP_SLUG                             = var.github_app_setup_enabled ? var.github_app_slug : ""
+      HAKO_GITHUB_APP_ID                               = var.github_app_setup_enabled ? tostring(var.github_app_id) : ""
+      HAKO_GITHUB_APP_CLIENT_ID                        = var.github_app_setup_enabled ? var.github_app_client_id : ""
+      HAKO_GITHUB_APP_CLIENT_SECRET_ARN                = var.github_app_setup_enabled ? var.github_app_client_secret_arn : ""
+      HAKO_GITHUB_APP_CALLBACK_URL                     = var.github_app_setup_enabled ? var.github_app_callback_url : ""
+      HAKO_RESOURCE_PLANE_HEALTH_REPORT_SECRET_ARNS    = jsonencode(var.resource_plane_health_report_secret_arns)
+      HAKO_RESOURCE_PLANE_WORKLOAD_SPEC_SECRET_ARNS    = jsonencode(var.resource_plane_workload_spec_secret_arns)
+      HAKO_RESOURCE_PLANE_ARTIFACT_CLEANUP_SECRET_ARNS = jsonencode(var.resource_plane_artifact_cleanup_secret_arns)
     }
   }
 
@@ -652,26 +735,27 @@ resource "aws_lambda_function" "api_image" {
 
   environment {
     variables = {
-      HAKO_COGNITO_ISSUER                           = var.cognito_issuer_url
-      HAKO_COGNITO_CLIENT_ID                        = aws_cognito_user_pool_client.cli.id
-      HAKO_DSQL_HOST                                = "${aws_dsql_cluster.control_plane.identifier}.dsql.${var.aws_region}.on.aws"
-      HAKO_DSQL_USER                                = "hako_api"
-      HAKO_DSQL_DATABASE                            = "postgres"
-      HAKO_DEFAULT_WORKSPACE_IMAGE                  = var.default_workspace_image
-      HAKO_DEFAULT_WORKSPACE_RUNTIME_CLASS          = var.default_workspace_runtime_class
-      HAKO_WORKLOAD_RUNS_ENABLED                    = tostring(var.enable_workload_run_creation)
-      HAKO_WEBHOOK_WORKLOAD_TRIGGERS_ENABLED        = tostring(var.enable_webhook_workload_triggers)
-      HAKO_GITHUB_APP_MANAGEMENT_ENABLED            = tostring(var.enable_webhook_workload_triggers)
-      HAKO_API_HTTP_MODE                            = "true"
-      HAKO_GITHUB_WEBHOOK_SECRET_ARN                = var.github_webhook_secret_arn
-      HAKO_TENANT_GITHUB_WEBHOOK_ENABLED            = tostring(var.tenant_github_webhook_enabled)
-      HAKO_GITHUB_APP_SLUG                          = var.github_app_setup_enabled ? var.github_app_slug : ""
-      HAKO_GITHUB_APP_ID                            = var.github_app_setup_enabled ? tostring(var.github_app_id) : ""
-      HAKO_GITHUB_APP_CLIENT_ID                     = var.github_app_setup_enabled ? var.github_app_client_id : ""
-      HAKO_GITHUB_APP_CLIENT_SECRET_ARN             = var.github_app_setup_enabled ? var.github_app_client_secret_arn : ""
-      HAKO_GITHUB_APP_CALLBACK_URL                  = var.github_app_setup_enabled ? var.github_app_callback_url : ""
-      HAKO_RESOURCE_PLANE_HEALTH_REPORT_SECRET_ARNS = jsonencode(var.resource_plane_health_report_secret_arns)
-      HAKO_RESOURCE_PLANE_WORKLOAD_SPEC_SECRET_ARNS = jsonencode(var.resource_plane_workload_spec_secret_arns)
+      HAKO_COGNITO_ISSUER                              = var.cognito_issuer_url
+      HAKO_COGNITO_CLIENT_ID                           = aws_cognito_user_pool_client.cli.id
+      HAKO_DSQL_HOST                                   = "${aws_dsql_cluster.control_plane.identifier}.dsql.${var.aws_region}.on.aws"
+      HAKO_DSQL_USER                                   = "hako_api"
+      HAKO_DSQL_DATABASE                               = "postgres"
+      HAKO_DEFAULT_WORKSPACE_IMAGE                     = var.default_workspace_image
+      HAKO_DEFAULT_WORKSPACE_RUNTIME_CLASS             = var.default_workspace_runtime_class
+      HAKO_WORKLOAD_RUNS_ENABLED                       = tostring(var.enable_workload_run_creation)
+      HAKO_WEBHOOK_WORKLOAD_TRIGGERS_ENABLED           = tostring(var.enable_webhook_workload_triggers)
+      HAKO_GITHUB_APP_MANAGEMENT_ENABLED               = tostring(var.enable_webhook_workload_triggers)
+      HAKO_API_HTTP_MODE                               = "true"
+      HAKO_GITHUB_WEBHOOK_SECRET_ARN                   = var.github_webhook_secret_arn
+      HAKO_TENANT_GITHUB_WEBHOOK_ENABLED               = tostring(var.tenant_github_webhook_enabled)
+      HAKO_GITHUB_APP_SLUG                             = var.github_app_setup_enabled ? var.github_app_slug : ""
+      HAKO_GITHUB_APP_ID                               = var.github_app_setup_enabled ? tostring(var.github_app_id) : ""
+      HAKO_GITHUB_APP_CLIENT_ID                        = var.github_app_setup_enabled ? var.github_app_client_id : ""
+      HAKO_GITHUB_APP_CLIENT_SECRET_ARN                = var.github_app_setup_enabled ? var.github_app_client_secret_arn : ""
+      HAKO_GITHUB_APP_CALLBACK_URL                     = var.github_app_setup_enabled ? var.github_app_callback_url : ""
+      HAKO_RESOURCE_PLANE_HEALTH_REPORT_SECRET_ARNS    = jsonencode(var.resource_plane_health_report_secret_arns)
+      HAKO_RESOURCE_PLANE_WORKLOAD_SPEC_SECRET_ARNS    = jsonencode(var.resource_plane_workload_spec_secret_arns)
+      HAKO_RESOURCE_PLANE_ARTIFACT_CLEANUP_SECRET_ARNS = jsonencode(var.resource_plane_artifact_cleanup_secret_arns)
     }
   }
 
@@ -815,6 +899,23 @@ resource "aws_cloudwatch_metric_alarm" "outbox_dispatcher_errors" {
   tags                = local.common_tags
 }
 
+resource "aws_cloudwatch_metric_alarm" "outbox_oldest_unpublished_age" {
+  count = var.enable_outbox_dispatcher ? 1 : 0
+
+  alarm_name          = "${var.api_name}-outbox-oldest-unpublished-age"
+  alarm_description   = "The oldest unpublished Control Plane Outbox event is over five minutes old for two consecutive periods. Check Dispatcher logs and durable leases."
+  namespace           = "Hako/ControlPlane"
+  metric_name         = "OutboxOldestUnpublishedAgeSeconds"
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 2
+  threshold           = 300
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  dimensions          = { Service = "OutboxDispatcher" }
+  tags                = local.common_tags
+}
+
 resource "aws_iam_role" "github_webhook_processor" {
   name = "${var.api_name}-github-webhook-processor"
   assume_role_policy = jsonencode({
@@ -937,6 +1038,131 @@ resource "aws_cloudwatch_metric_alarm" "github_webhook_processor_errors" {
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
   dimensions          = { FunctionName = aws_lambda_function.github_webhook_processor[0].function_name }
+  tags                = local.common_tags
+}
+
+resource "aws_iam_role" "workspace_idle_reconciler" {
+  name = "${var.api_name}-workspace-idle-reconciler"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+  tags = local.common_tags
+}
+
+resource "aws_iam_role_policy" "workspace_idle_reconciler" {
+  count = var.enable_workspace_idle_reconciler ? 1 : 0
+
+  name = "${var.api_name}-workspace-idle-reconciler-runtime"
+  role = aws_iam_role.workspace_idle_reconciler.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "WriteFunctionLogs"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "${aws_cloudwatch_log_group.workspace_idle_reconciler[0].arn}:*"
+      },
+      {
+        Sid      = "ConnectAsWorkspaceIdleReconciler"
+        Effect   = "Allow"
+        Action   = ["dsql:DbConnect"]
+        Resource = aws_dsql_cluster.control_plane.arn
+      }
+    ]
+  })
+}
+
+resource "aws_cloudwatch_log_group" "workspace_idle_reconciler" {
+  count = var.enable_workspace_idle_reconciler ? 1 : 0
+
+  name              = "/aws/lambda/${var.api_name}-workspace-idle-reconciler"
+  retention_in_days = var.lambda_log_retention_days
+  tags              = local.common_tags
+}
+
+resource "aws_lambda_function" "workspace_idle_reconciler" {
+  count = var.enable_workspace_idle_reconciler ? 1 : 0
+
+  function_name    = "${var.api_name}-workspace-idle-reconciler"
+  role             = aws_iam_role.workspace_idle_reconciler.arn
+  runtime          = "provided.al2023"
+  handler          = "bootstrap"
+  architectures    = ["arm64"]
+  filename         = var.workspace_idle_reconciler_lambda_zip_path
+  source_code_hash = filebase64sha256(var.workspace_idle_reconciler_lambda_zip_path)
+  memory_size      = 256
+  timeout          = 60
+
+  environment {
+    variables = {
+      HAKO_DSQL_HOST                            = "${aws_dsql_cluster.control_plane.identifier}.dsql.${var.aws_region}.on.aws"
+      HAKO_DSQL_USER                            = "hako_workspace_idle_reconciler"
+      HAKO_DSQL_DATABASE                        = "postgres"
+      HAKO_WORKSPACE_IDLE_RECONCILER_BATCH_SIZE = tostring(var.workspace_idle_reconciler_batch_size)
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.workspace_idle_reconciler,
+    aws_iam_role_policy.workspace_idle_reconciler,
+  ]
+
+  tags = local.common_tags
+}
+
+resource "aws_cloudwatch_event_rule" "workspace_idle_reconciler" {
+  count = var.enable_workspace_idle_reconciler ? 1 : 0
+
+  name                = "${var.api_name}-workspace-idle-reconciler"
+  description         = "Find opt-in Workspaces past their connection grace period and request fenced suspension."
+  schedule_expression = var.workspace_idle_reconciler_schedule_expression
+  state               = "ENABLED"
+  tags                = local.common_tags
+}
+
+resource "aws_cloudwatch_event_target" "workspace_idle_reconciler" {
+  count = var.enable_workspace_idle_reconciler ? 1 : 0
+
+  rule      = aws_cloudwatch_event_rule.workspace_idle_reconciler[0].name
+  target_id = "hako-workspace-idle-reconciler"
+  arn       = aws_lambda_function.workspace_idle_reconciler[0].arn
+
+  retry_policy {
+    maximum_event_age_in_seconds = 3600
+    maximum_retry_attempts       = 2
+  }
+}
+
+resource "aws_lambda_permission" "workspace_idle_reconciler_eventbridge" {
+  count = var.enable_workspace_idle_reconciler ? 1 : 0
+
+  statement_id  = "AllowWorkspaceIdleReconcilerSchedule"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.workspace_idle_reconciler[0].function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.workspace_idle_reconciler[0].arn
+}
+
+resource "aws_cloudwatch_metric_alarm" "workspace_idle_reconciler_errors" {
+  count = var.enable_workspace_idle_reconciler ? 1 : 0
+
+  alarm_name          = "${var.api_name}-workspace-idle-reconciler-errors"
+  alarm_description   = "The Workspace idle reconciler Lambda failed. Check its logs and pending Outbox Operations."
+  namespace           = "AWS/Lambda"
+  metric_name         = "Errors"
+  statistic           = "Sum"
+  period              = 60
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  dimensions          = { FunctionName = aws_lambda_function.workspace_idle_reconciler[0].function_name }
   tags                = local.common_tags
 }
 

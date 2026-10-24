@@ -10,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	efsapi "github.com/aws/aws-sdk-go-v2/service/efs"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/aws/aws-sdk-go-v2/service/lambdamicrovms"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/mo3789530/hako/internal/resourcecontroller"
@@ -47,9 +48,21 @@ func configuredRuntime(implementation string, awsCfg aws.Config, getenv func(str
 		if err != nil {
 			return nil, errors.New("configure trusted Workspace launch profile")
 		}
-		storage, err := workspacestorage.NewEFS(efsapi.NewFromConfig(awsCfg), config.FileSystemID, awsCfg.Region)
+		accessPoints, err := workspacestorage.NewEFS(efsapi.NewFromConfig(awsCfg), config.FileSystemID, awsCfg.Region)
 		if err != nil {
 			return nil, errors.New("configure Workspace EFS Access Point manager")
+		}
+		roleParts := strings.SplitN(config.Spec.ExecutionRoleARN, ":", 6)
+		if len(roleParts) != 6 || roleParts[2] != "iam" || roleParts[4] == "" {
+			return nil, errors.New("Workspace launch profile must identify its Resource Plane account")
+		}
+		roles, err := workspacestorage.NewExecutionRoleProvider(iam.NewFromConfig(awsCfg), roleParts[1], roleParts[4])
+		if err != nil {
+			return nil, errors.New("configure Workspace-scoped Lambda execution roles")
+		}
+		storage, err := workspacestorage.NewWorkspaceStorage(accessPoints, roles)
+		if err != nil {
+			return nil, errors.New("configure combined Workspace EFS and IAM storage lifecycle")
 		}
 		runtime, err := workspaceruntime.NewLambdaMicroVMWithStorage(lambdamicrovms.NewFromConfig(awsCfg), journal, resolver, storage,
 			workspaceruntime.Config{SupportedRuntimeClasses: map[string]bool{config.Spec.RuntimeClass: true},

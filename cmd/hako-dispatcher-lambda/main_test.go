@@ -2,12 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/mo3789530/hako/internal/actionsrunner"
 	"github.com/mo3789530/hako/internal/dispatcher"
+	"github.com/mo3789530/hako/internal/store/outbox"
 )
 
 func TestHandlerForReturnsSuccessfulBatch(t *testing.T) {
@@ -24,13 +28,43 @@ func TestHandlerForReturnsSuccessfulBatch(t *testing.T) {
 	}
 }
 
+func TestMarshalOutboxMetricUsesBoundedDimensions(t *testing.T) {
+	payload, err := marshalOutboxMetric(outbox.PendingMetrics{OldestUnpublishedAgeSeconds: 42.5, HasUnpublished: true}, time.Date(2026, 10, 24, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(payload, &document); err != nil {
+		t.Fatal(err)
+	}
+	if document["Service"] != "OutboxDispatcher" || document["OutboxOldestUnpublishedAgeSeconds"] != 42.5 || document["OutboxHasUnpublishedEvents"] != float64(1) {
+		t.Fatalf("unexpected Outbox metric payload: %s", payload)
+	}
+	if strings.Contains(string(payload), "tenant") || strings.Contains(string(payload), "event_id") {
+		t.Fatalf("Outbox metric contains high-cardinality identity: %s", payload)
+	}
+}
+
+func TestHandlerForReadsOutboxLagWithoutFailingInvocation(t *testing.T) {
+	read := false
+	handler := handlerFor(func(context.Context) (dispatcher.Stats, error) {
+		return dispatcher.Stats{}, nil
+	}, func(context.Context, time.Time) (outbox.PendingMetrics, error) {
+		read = true
+		return outbox.PendingMetrics{}, errors.New("database details must not escape")
+	})
+	if err := handler(context.Background(), events.CloudWatchEvent{}); err != nil || !read {
+		t.Fatalf("metric failure should not fail dispatch invocation: read=%v err=%v", read, err)
+	}
+}
+
 func TestHandlerForReturnsBatchFailureForEventBridgeRetry(t *testing.T) {
-	wantErr := errors.New("SQS unavailable")
+	wantErr := errors.New("SQS unavailable at https://sensitive.example/private-queue")
 	handler := handlerFor(func(context.Context) (dispatcher.Stats, error) {
 		return dispatcher.Stats{Claimed: 1, Failed: 1}, wantErr
 	})
-	if err := handler(context.Background(), events.CloudWatchEvent{}); !errors.Is(err, wantErr) {
-		t.Fatalf("handler error = %v, want wrapped SQS error", err)
+	if err := handler(context.Background(), events.CloudWatchEvent{}); err == nil || errors.Is(err, wantErr) || strings.Contains(err.Error(), "sensitive.example") {
+		t.Fatalf("handler should return a bounded retry error, got %v", err)
 	}
 }
 

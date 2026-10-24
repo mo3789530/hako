@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -19,6 +20,7 @@ import (
 	"github.com/mo3789530/hako/internal/resourceplane"
 	"github.com/mo3789530/hako/internal/store/dsql"
 	"github.com/mo3789530/hako/internal/store/githubwebhook"
+	"github.com/mo3789530/hako/internal/store/outbox"
 	"github.com/mo3789530/hako/internal/store/transaction"
 )
 
@@ -32,6 +34,8 @@ func main() {
 }
 
 type runOnce func(context.Context) (dispatcher.Stats, error)
+
+type pendingMetricsRead func(context.Context, time.Time) (outbox.PendingMetrics, error)
 
 type runnerDispatchOnce func(context.Context) (actionsrunner.RunnerStartupDispatchStats, error)
 
@@ -53,15 +57,50 @@ func runWithActionsRunner(outboxRun runOnce, runnerRun runnerDispatchOnce) runOn
 	}
 }
 
-func handlerFor(run runOnce) func(context.Context, events.CloudWatchEvent) error {
+func handlerFor(run runOnce, readPendingMetrics ...pendingMetricsRead) func(context.Context, events.CloudWatchEvent) error {
 	return func(ctx context.Context, _ events.CloudWatchEvent) error {
 		stats, err := run(ctx)
+		if len(readPendingMetrics) > 0 && readPendingMetrics[0] != nil {
+			metrics, metricErr := readPendingMetrics[0](ctx, time.Now().UTC())
+			if metricErr != nil {
+				log.Print("Outbox lag metric unavailable")
+			} else if payload, marshalErr := marshalOutboxMetric(metrics, time.Now().UTC()); marshalErr == nil {
+				log.Print(string(payload))
+			}
+		}
 		if err != nil {
-			return fmt.Errorf("dispatch Outbox batch (claimed=%d published=%d failed=%d): %w", stats.Claimed, stats.Published, stats.Failed, err)
+			log.Printf("Outbox dispatch batch failed (failure_class=dispatch_batch claimed=%d published=%d failed=%d)", stats.Claimed, stats.Published, stats.Failed)
+			return errors.New("Outbox dispatch batch failed")
 		}
 		log.Printf("Outbox batch complete (claimed=%d published=%d failed=%d)", stats.Claimed, stats.Published, stats.Failed)
 		return nil
 	}
+}
+
+func marshalOutboxMetric(metrics outbox.PendingMetrics, timestamp time.Time) ([]byte, error) {
+	if timestamp.IsZero() {
+		timestamp = time.Now().UTC()
+	}
+	var present float64
+	if metrics.HasUnpublished {
+		present = 1
+	}
+	return json.Marshal(map[string]any{
+		"_aws": map[string]any{
+			"Timestamp": timestamp.UnixMilli(),
+			"CloudWatchMetrics": []any{map[string]any{
+				"Namespace":  "Hako/ControlPlane",
+				"Dimensions": [][]string{{"Service"}},
+				"Metrics": []any{
+					map[string]any{"Name": "OutboxOldestUnpublishedAgeSeconds", "Unit": "Seconds"},
+					map[string]any{"Name": "OutboxHasUnpublishedEvents", "Unit": "Count"},
+				},
+			}},
+		},
+		"Service":                           "OutboxDispatcher",
+		"OutboxOldestUnpublishedAgeSeconds": metrics.OldestUnpublishedAgeSeconds,
+		"OutboxHasUnpublishedEvents":        present,
+	})
 }
 
 func buildHandler(ctx context.Context) (func(context.Context, events.CloudWatchEvent) error, error) {
@@ -133,7 +172,8 @@ func buildHandler(ctx context.Context) (func(context.Context, events.CloudWatchE
 		}
 		run = runWithActionsRunner(engine.RunOnce, runnerDispatcher.DispatchOnce)
 	}
-	return handlerFor(run), nil
+	store := dispatcher.StoreAdapter{Pool: pool, Policy: transaction.DefaultPolicy()}
+	return handlerFor(run, store.ReadPendingMetrics), nil
 }
 
 func configuredActionsRunnerQueue() (resourceplane.Registration, bool, error) {

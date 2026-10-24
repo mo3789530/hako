@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/workloadjournal"
 )
 
@@ -26,12 +27,18 @@ type RuntimeBinding struct {
 }
 
 type runtimeHookPayload struct {
-	Identity      workloadjournal.Command `json:"identity"`
-	SourceDigest  string                  `json:"source_digest"`
-	CommitSHA     string                  `json:"commit_sha"`
-	TriggerEvent  string                  `json:"trigger_event,omitempty"`
-	TriggerBranch string                  `json:"trigger_branch,omitempty"`
-	Deadline      time.Time               `json:"deadline"`
+	Identity               workloadjournal.Command `json:"identity"`
+	Kind                   domain.WorkloadKind     `json:"kind,omitempty"`
+	AgentIntegrationID     string                  `json:"agent_integration_id,omitempty"`
+	AgentInstallationID    int64                   `json:"agent_installation_id,omitempty"`
+	AgentRepositoryID      int64                   `json:"agent_repository_id,omitempty"`
+	AgentTaskContextSHA256 string                  `json:"agent_task_context_sha256,omitempty"`
+	SourceDigest           string                  `json:"source_digest"`
+	CommitSHA              string                  `json:"commit_sha"`
+	TriggerEvent           string                  `json:"trigger_event,omitempty"`
+	TriggerBranch          string                  `json:"trigger_branch,omitempty"`
+	CorrelationID          string                  `json:"correlation_id,omitempty"`
+	Deadline               time.Time               `json:"deadline"`
 }
 
 type runtimeHookRequest struct {
@@ -77,7 +84,9 @@ func sameRuntimeBinding(left, right RuntimeBinding) bool {
 
 func sameExecutionBinding(left, right ExecutionBinding) bool {
 	return left.SourceDigest == right.SourceDigest && left.CommitSHA == right.CommitSHA && left.TriggerEvent == right.TriggerEvent &&
-		left.TriggerBranch == right.TriggerBranch && left.Deadline.Equal(right.Deadline)
+		left.Kind == right.Kind && left.AgentIntegrationID == right.AgentIntegrationID && left.AgentInstallationID == right.AgentInstallationID &&
+		left.AgentRepositoryID == right.AgentRepositoryID && left.AgentTaskContextSHA256 == right.AgentTaskContextSHA256 &&
+		left.TriggerBranch == right.TriggerBranch && left.CorrelationID == right.CorrelationID && left.Deadline.Equal(right.Deadline)
 }
 
 // NewMicroVMLifecycleHandler exposes the documented Lambda MicroVM image and
@@ -140,8 +149,11 @@ func lifecycleRun(w http.ResponseWriter, r *http.Request, binder interface {
 		http.Error(w, "invalid MicroVM lifecycle request", http.StatusBadRequest)
 		return
 	}
-	execution := ExecutionBinding{SourceDigest: payload.SourceDigest, CommitSHA: payload.CommitSHA,
-		TriggerEvent: payload.TriggerEvent, TriggerBranch: payload.TriggerBranch, Deadline: payload.Deadline}
+	execution := ExecutionBinding{Kind: payload.Kind, AgentIntegrationID: payload.AgentIntegrationID,
+		AgentInstallationID: payload.AgentInstallationID, AgentRepositoryID: payload.AgentRepositoryID,
+		AgentTaskContextSHA256: payload.AgentTaskContextSHA256,
+		SourceDigest:           payload.SourceDigest, CommitSHA: payload.CommitSHA,
+		TriggerEvent: payload.TriggerEvent, TriggerBranch: payload.TriggerBranch, CorrelationID: payload.CorrelationID, Deadline: payload.Deadline}
 	if !validExecutionBinding(execution) {
 		http.Error(w, "invalid MicroVM lifecycle request", http.StatusBadRequest)
 		return

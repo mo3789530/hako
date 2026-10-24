@@ -31,6 +31,23 @@ func TestWorkloadResultFencesAttemptsAndPersistsTerminalMetadata(t *testing.T) {
 	if _, err := pool.Exec(ctx, `INSERT INTO resource_planes (id,provider,region,capabilities_json) VALUES ('rp_result','aws','ap-northeast-1','{}')`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := pool.Exec(ctx, `INSERT INTO users (id,cognito_subject,email,created_at) VALUES ('user_result','subject_result','',now())`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO tenant_github_installations
+		(tenant_id,installation_id,account_login,status,requested_by,requested_at,updated_at)
+		VALUES ('tenant_result',901,'result-owner','active','user_result',now(),now())`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO github_app_installation_bindings (installation_id,tenant_id,bound_at)
+		VALUES (901,'tenant_result',now())`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO tenant_github_repositories
+		(tenant_id,installation_id,github_repository_id,owner_login,repository_name,default_branch,synchronized_at)
+		VALUES ('tenant_result',901,902,'result-owner','result-repo','main',now())`); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now().UTC().Truncate(time.Second)
 	commit := strings.Repeat("a", 40)
 	create := func(runID, attemptID string, desired string, timeoutAt time.Time) {
@@ -46,21 +63,89 @@ func TestWorkloadResultFencesAttemptsAndPersistsTerminalMetadata(t *testing.T) {
 		}
 	}
 	create("run_result_ok", "attempt_result_ok", "running", now.Add(10*time.Minute))
+	if _, err := pool.Exec(ctx, `UPDATE workload_runs SET correlation_id='req_dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+		WHERE tenant_id='tenant_result' AND id='run_result_ok'`); err != nil {
+		t.Fatal(err)
+	}
 	create("run_result_cancel", "attempt_result_cancel", "cancelled", now.Add(10*time.Minute))
 	create("run_result_timeout", "attempt_result_timeout", "running", now.Add(time.Minute))
+	if _, err := pool.Exec(ctx, `UPDATE workload_runs SET github_installation_id=901,github_repository_id=902
+		WHERE tenant_id='tenant_result' AND id='run_result_ok'`); err != nil {
+		t.Fatal(err)
+	}
 
 	handler := ResultHandler{Pool: pool, Policy: transaction.DefaultPolicy(), Now: func() time.Time { return now.Add(2 * time.Minute) }}
 	result := WorkloadResult{SchemaVersion: 1, TenantID: "tenant_result", WorkloadRunID: "run_result_ok",
 		AttemptID: "attempt_result_ok", Generation: 1, ResourcePlaneID: "rp_result", CommitSHA: commit,
-		Status: domain.WorkloadSucceeded, CompletedAt: now.Add(20 * time.Second), LogArtifact: &WorkloadLogArtifact{
+		CorrelationID:   "req_dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+		PipelineResults: []WorkloadPipelineResult{{Name: "build", Status: "succeeded"}, {Name: "test", Status: "succeeded"}},
+		Status:          domain.WorkloadSucceeded, CompletedAt: now.Add(20 * time.Second), LogArtifact: &WorkloadLogArtifact{
 			StorageRef: "s3://hako-results/run_result_ok/logs", SizeBytes: 12, SHA256: strings.Repeat("b", 64), Redacted: true}}
+	spoofedCorrelation := result
+	spoofedCorrelation.CorrelationID = "req_99999999-9999-4999-8999-999999999999"
+	if _, err := handler.Handle(ctx, spoofedCorrelation); !errors.Is(err, ErrWorkloadResultMismatch) {
+		t.Fatalf("result with a foreign correlation ID was accepted: %v", err)
+	}
 	outcome, err := handler.Handle(ctx, result)
 	if err != nil || outcome != ResultApplied {
 		t.Fatalf("Handle() = %q, %v", outcome, err)
 	}
 	run, err := getResultRun(ctx, pool, "run_result_ok")
-	if err != nil || run.State != domain.WorkloadSucceeded || run.StartedAt == nil || run.CompletedAt == nil {
+	if err != nil || run.State != domain.WorkloadSucceeded || run.StartedAt == nil || run.CompletedAt == nil ||
+		len(run.PipelineResults) != 2 || run.PipelineResults[0].Name != "build" || run.PipelineResults[0].Status != "succeeded" ||
+		run.PipelineResults[1].Name != "test" || run.PipelineResults[1].Status != "succeeded" {
 		t.Fatalf("result did not persist terminal Run: %+v, %v", run, err)
+	}
+	var pipelineCheckCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM workload_github_checks
+		WHERE tenant_id='tenant_result' AND workload_run_id='run_result_ok' AND pipeline_name <> ''`).Scan(&pipelineCheckCount); err != nil || pipelineCheckCount != 2 {
+		t.Fatalf("per-pipeline GitHub Check rows = %d, want 2: %v", pipelineCheckCount, err)
+	}
+	checkRows, err := pool.Query(ctx, `SELECT pipeline_name,check_name,conclusion FROM workload_github_checks
+		WHERE tenant_id='tenant_result' AND workload_run_id='run_result_ok' AND pipeline_name <> '' ORDER BY pipeline_name`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var checks []struct{ pipeline, name, conclusion string }
+	for checkRows.Next() {
+		var check struct{ pipeline, name, conclusion string }
+		if err := checkRows.Scan(&check.pipeline, &check.name, &check.conclusion); err != nil {
+			checkRows.Close()
+			t.Fatal(err)
+		}
+		checks = append(checks, check)
+	}
+	if err := checkRows.Err(); err != nil {
+		checkRows.Close()
+		t.Fatal(err)
+	}
+	checkRows.Close()
+	if len(checks) != 2 || checks[0].pipeline != "build" || checks[0].name != "hako/job/build" || checks[0].conclusion != "success" ||
+		checks[1].pipeline != "test" || checks[1].name != "hako/job/test" || checks[1].conclusion != "success" {
+		t.Fatalf("pipeline-specific durable GitHub Checks = %+v", checks)
+	}
+	pipelineCheck, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (workloads.GitHubCheck, error) {
+		return workloads.GetGitHubPipelineCheck(ctx, tx, "tenant_result", "run_result_ok", "test")
+	})
+	if err != nil || pipelineCheck.PipelineName != "test" || pipelineCheck.Name != "hako/job/test" || pipelineCheck.Conclusion != "success" {
+		t.Fatalf("load pipeline-scoped durable Check = %+v, %v", pipelineCheck, err)
+	}
+	if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (struct{}, error) {
+		return struct{}{}, workloads.SaveGitHubPipelineCheckRunID(ctx, tx, "tenant_result", "run_result_ok", "test", commit, 991, now.Add(time.Second))
+	}); err != nil {
+		t.Fatalf("persist pipeline-scoped GitHub Check ID: %v", err)
+	}
+	var pipelineCheckOutboxCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox_events
+		WHERE aggregate_id='run_result_ok' AND event_type='workload_run.github_check_requested'
+		AND payload_json::jsonb ? 'pipeline_name'`).Scan(&pipelineCheckOutboxCount); err != nil || pipelineCheckOutboxCount != 2 {
+		t.Fatalf("per-pipeline GitHub Check Outbox rows = %d, want 2: %v", pipelineCheckOutboxCount, err)
+	}
+	var correlatedCheckOutboxCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox_events
+		WHERE aggregate_id='run_result_ok' AND event_type='workload_run.github_check_requested'
+		AND payload_json::jsonb->>'correlation_id'='req_dddddddd-dddd-4ddd-8ddd-dddddddddddd'`).Scan(&correlatedCheckOutboxCount); err != nil || correlatedCheckOutboxCount != 4 {
+		t.Fatalf("correlated GitHub Check Outbox rows = %d, want 4: %v", correlatedCheckOutboxCount, err)
 	}
 	outcome, err = handler.Handle(ctx, result)
 	if err != nil || outcome != ResultDuplicate {
@@ -104,6 +189,9 @@ func TestWorkloadResultFencesAttemptsAndPersistsTerminalMetadata(t *testing.T) {
 	})
 	if err != nil || len(artifacts) != 1 || !artifacts[0].Redacted {
 		t.Fatalf("persisted log metadata = %+v, %v", artifacts, err)
+	}
+	if artifacts[0].CorrelationID != result.CorrelationID {
+		t.Fatalf("artifact correlation ID=%q, want %q", artifacts[0].CorrelationID, result.CorrelationID)
 	}
 }
 

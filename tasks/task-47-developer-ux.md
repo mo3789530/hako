@@ -1,6 +1,6 @@
 # Task 47: Developer CLI and Service Catalog
 
-Status: In Progress. `hako shell <tenant-id> <workspace-id>` requests a short-lived RBAC-authorized shell ticket, connects directly to the TLS WSS Gateway, streams terminal input/output, and attempts session revocation on exit. On Linux terminals it uses character mode, sends the initial size, forwards resize signals, and restores terminal settings; framed stream decoding tolerates Gateway fragmentation. Cancellation closes the stream cleanly and revokes the session. `hako open <tenant-id> <workspace-id> [local-port]` starts a loopback-only browser tunnel with a dedicated `vscode` Session per TCP stream. The Lambda adapter and Guest Agent bridge only to fixed `127.0.0.1:8081`; the Workspace image starts a pinned ARM64 code-server process as the EFS UID/GID, checks `/healthz`, and stops it with the Agent. It disables code-server auth only because the authenticated Hako Gateway is the sole ingress; no guest TCP port is exposed. `hako ssh-proxy <tenant-id> <workspace-id>` provides an OpenSSH ProxyCommand over a dedicated TLS/WSS permission to fixed private loopback port 22. `hako cp`/`hako cp --from` use OpenSSH `scp`/SFTP through that proxy with per-Workspace host-key aliasing and paths restricted to `/workspace`. `hako forward <tenant-id> <workspace-id> <remote-port> [local-port]` binds loopback only, issues/revokes one short-lived ticket per TCP connection, and supports up to 16 concurrent local connections. `hako wait` polls an authorized Workspace GET until an observed stable state or timeout and prints state transitions. The versioned PostgreSQL/Redis Service Catalog is wired to authenticated catalog/list/add/action APIs and `hako add`, `hako services`, `hako service start|stop|remove`; changes persist desired state as pending and do not claim to start or physically remove containers. Tasks 44–46 remain partially open; actual ARM64 image build/MicroVM validation, MicroVM SFTP/host-key provisioning, runtime reconciliation/health reporting, and production runtime routing remain. Priority: P1.
+Status: In Progress. `hako shell <tenant-id> <workspace-id>` requests a short-lived RBAC-authorized shell ticket, connects directly to the TLS WSS Gateway, streams terminal input/output, and attempts session revocation on exit. On Linux terminals it uses character mode, sends the initial size, forwards resize signals, and restores terminal settings; framed stream decoding tolerates Gateway fragmentation. The Guest PTY now survives a socket drop within the same MicroVM; the CLI reauthorizes and reattaches with a fresh Hako Session and Agent ticket, while the Guest restricts attachment to the original user and one active stream and buffers up to 1 MiB of output. Cancellation closes the stream cleanly and revokes the session. `hako open <tenant-id> <workspace-id> [local-port]` starts a loopback-only browser tunnel with a dedicated `vscode` Session per TCP stream. The Lambda adapter and Guest Agent bridge only to fixed `127.0.0.1:8081`; the Workspace image starts a pinned ARM64 code-server process as the EFS UID/GID, checks `/healthz`, and stops it with the Agent. It disables code-server auth only because the authenticated Hako Gateway is the sole ingress; no guest TCP port is exposed. `hako ssh-proxy <tenant-id> <workspace-id>` provides an OpenSSH ProxyCommand over a dedicated TLS/WSS permission to fixed private loopback port 22. `hako cp`/`hako cp --from` use a separate signed `file-transfer` Agent route over TLS/WSS; they do not require SSH/SFTP or guest host-key provisioning and restrict paths to `/workspace`. `hako forward <tenant-id> <workspace-id> <remote-port> [local-port]` binds loopback only, issues/revokes one short-lived ticket per TCP connection, and supports up to 16 concurrent local connections. `hako wait` polls an authorized Workspace GET until an observed stable state or timeout and prints state transitions. The versioned PostgreSQL/Redis Service Catalog is wired to authenticated catalog/list/add/action APIs and `hako add`, `hako services`, `hako service start|stop|remove`; `hako services` reports desired/observed revisions and runtime generation, and only presents health from a report matching the active MicroVM binding and current desired revision. Local service reconciliation, health reporting, and cleanup are tested; deployed Lambda MicroVM behavior remains unverified. Tasks 44–46 remain partially open; actual ARM64 image build/MicroVM validation and production runtime routing remain. Priority: P1.
 
 ## Goal
 
@@ -8,7 +8,7 @@ Complete the basic interactive development flow and reproducible local-service t
 
 ## Work
 
-- Add CLI shell/SSH proxy, browser IDE open, port forward, file transfer, service list/add/remove, and clear lifecycle progress output. (`hako open` plus fixed VS Code Guest bridge are local; Workspace image code-server startup, MicroVM SFTP/host-key provisioning, and production router remain.)
+- Add CLI shell/SSH proxy, browser IDE open, port forward, file transfer, service list/add/remove, and clear lifecycle progress output. (`hako cp` uses its own one-use signed Agent capability and is independent of SSH/SFTP; production Lambda MicroVM image/router validation remains.)
 - Preserve current OAuth PKCE/keyring behavior; never request AWS access keys. Use the Gateway Session protocol, not public SSH.
 - Define a versioned Service Catalog schema and initial PostgreSQL/Redis templates with pinned images, resources, volume mounts, health checks, and safe default networks. (Catalog contract and built-ins implemented.)
 - Add authenticated Workspace-scoped catalog/list/add/action APIs and CLI with Tenant/Workspace visibility checks, idempotent state transitions, conflict handling, tombstones, and audit records. (Implemented locally; runtime execution remains.)
@@ -34,14 +34,18 @@ Complete the basic interactive development flow and reproducible local-service t
   one-use capability to Guest port 8080 and the unprivileged Guest Agent then
   dials only `127.0.0.1:22`; arbitrary port values and `port-forward`-only
   tickets are rejected. Local WSS tests cover byte relay, ticket identity,
-  and replay rejection. The image still has no configured `sshd` or SFTP
-  subsystem, and trusted per-Workspace host-key provisioning remains open.
-- Added `hako cp` upload and `hako cp --from` download through OpenSSH 9+
-  `scp`/SFTP, using the same ticketed ProxyCommand, a Tenant/Workspace
-  `HostKeyAlias`, normal host-key validation, and lexical `/workspace` path
-  restrictions. Tests verify argument direction, identifier/path validation,
-  command quoting, and failure propagation. The guest SFTP subsystem and
-  trusted host-key provisioning remain unverified runtime prerequisites.
+  and replay rejection. The image still has no configured `sshd`, and trusted
+  per-Workspace SSH host-key provisioning remains open; file transfer does not
+  depend on this SSH endpoint.
+- Added `hako cp` upload and `hako cp --from` download as a dedicated
+  `file-transfer` Session and signed, one-use Agent Ticket over TLS/WSS. The
+  binary control frame is bounded and validates absolute `/workspace` paths;
+  the Linux Agent pins the mounted root, traverses with `openat` and
+  `O_NOFOLLOW`, rejects symlinks/non-regular files, caps files at 1 GiB, and
+  uploads via fsync plus atomic rename. The CLI downloads through a private
+  mode-0600 temporary sibling and commits only after the full stream arrives.
+  This removes the sshd/SFTP and host-key dependency; production image and
+  Gateway-to-MicroVM routing still need validation.
 - Added a local TLS API/Gateway integration test for ticket issuance, shell
   byte streaming, cancellation, authorization denial, TCP forwarding, and
   session revocation, plus configuration and invalid-port tests. Race tests
@@ -68,16 +72,17 @@ Complete the basic interactive development flow and reproducible local-service t
   read/mutation transaction. Identical additions return the same instance;
   another template cannot take over its name. Creation is audited. CLI commands
   are `hako add` and `hako services`.
-- The current Service endpoint stores desired-running metadata and returns
-  `observed_state=pending`. It is not yet connected to the MicroVM agent, so
-  start/health/stop/remove execution, image pulls, generated-secret
-  provisioning, and persistent-volume behavior remain incomplete. The start,
-  stop, and remove API actions update desired state only. Removal retains a
-  name-reserving tombstone and must not be confused with physical cleanup.
-  Public ingress is absent.
-- This is a first interactive transport, not the complete developer UX:
-  reconnectable PTY, actual ARM64 image build/MicroVM validation, and production
-  SSH/SFTP routing are still open.
+- Service endpoints persist desired state and the Resource Plane executor
+  reconciles fixed catalog templates, reports health, and confirms cleanup.
+  `hako services` exposes revisions and the active runtime generation; its
+  health result stays pending until a matching report exists. These paths are
+  locally tested but not verified in a deployed Lambda MicroVM. Removal keeps
+  a name-reserving tombstone until runtime cleanup is confirmed. Public ingress
+  is absent.
+- Service desired state writes a revision-fenced Outbox command and routes only through an optional dedicated queue pinned by the Workspace Placement. Task 84 adds the signed Guest endpoint, Catalog reconciler, rootless `nerdctl` engine adapter, root-init durable child-restart fence, HMAC-authenticated revision/binding-fenced health report API, and an SQS consumer/Lambda executable that resolves the durable MicroVM binding and issues port-scoped AWS auth plus one-use Guest capability. PostgreSQL integration, consumer/report unit tests, Resource Plane Terraform mock plans, and dev-root validation cover the local path. The Workspace init image now has caller-pinned `nerdctl-full` inputs and a default-off root-init-supervised rootless containerd opt-in; generated PostgreSQL credential delivery and cross-MicroVM cleanup fencing are also implemented locally. Terraform remains default-off and unapplied; ARM64 image build and real Lambda MicroVM container/network/resource-limit verification remain open.
+- The interactive shell transport now reconnects within the same running
+  MicroVM. Remaining gates include recovery after Agent/MicroVM replacement,
+  actual ARM64 image build/MicroVM validation, and production Gateway routing.
 
 ## Acceptance criteria
 

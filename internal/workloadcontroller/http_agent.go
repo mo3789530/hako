@@ -3,11 +3,19 @@ package workloadcontroller
 import (
 	"context"
 
+	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/workloadagent"
 	"github.com/mo3789530/hako/internal/workloadjobs"
 	"github.com/mo3789530/hako/internal/workloadjournal"
 	"github.com/mo3789530/hako/internal/workloadsource"
 )
+
+// AgentTaskProvider resolves the untrusted, bounded Issue context for one
+// exact current attempt. Implementations must use the Resource Plane mTLS
+// broker; task text must never be logged or persisted in the execution journal.
+type AgentTaskProvider interface {
+	ResolveAgentTask(context.Context, workloadjournal.Command) (workloadagent.AgentTask, error)
+}
 
 // HTTPAgentRunner implements the controller's AgentRunner contract using the
 // private, versioned protocol. It deliberately has no logging hook for the
@@ -16,13 +24,18 @@ type HTTPAgentRunner struct {
 	client  *workloadagent.Client
 	sources workloadsource.SourceArchiveReader
 	logs    workloadagent.AttemptLogWriter
+	tasks   AgentTaskProvider
 }
 
-func NewHTTPAgentRunner(client *workloadagent.Client, sources workloadsource.SourceArchiveReader, logs workloadagent.AttemptLogWriter) *HTTPAgentRunner {
+func NewHTTPAgentRunner(client *workloadagent.Client, sources workloadsource.SourceArchiveReader, logs workloadagent.AttemptLogWriter, tasks ...AgentTaskProvider) *HTTPAgentRunner {
 	if client == nil {
 		client = workloadagent.NewClient(nil)
 	}
-	return &HTTPAgentRunner{client: client, sources: sources, logs: logs}
+	var taskProvider AgentTaskProvider
+	if len(tasks) == 1 {
+		taskProvider = tasks[0]
+	}
+	return &HTTPAgentRunner{client: client, sources: sources, logs: logs, tasks: taskProvider}
 }
 
 func (r *HTTPAgentRunner) Start(ctx context.Context, conn AgentConnection, spec Specification) error {
@@ -32,6 +45,24 @@ func (r *HTTPAgentRunner) Start(ctx context.Context, conn AgentConnection, spec 
 	if conn.SourceTicket == "" || spec.ArtifactPrefix == "" {
 		return ErrMicroVMNotReady
 	}
+	start := workloadagent.StartRequest{
+		Identity: workloadagent.IdentityFromCommand(spec.Identity), Kind: spec.Kind, SourceDigest: spec.SourceDigest, CommitSHA: spec.CommitSHA, Deadline: spec.Deadline.UTC(),
+	}
+	if spec.Kind == domain.WorkloadAgent {
+		if r.tasks == nil {
+			return ErrExecutionMaterialization
+		}
+		task, err := r.tasks.ResolveAgentTask(ctx, spec.Identity)
+		if err != nil || !workloadagent.ValidateAgentTask(task, start.Identity, spec.CommitSHA) ||
+			task.DefaultBranch != spec.TriggerBranch || task.IntegrationID != spec.GitHubIntegrationID ||
+			task.InstallationID != spec.GitHubInstallationID || task.RepositoryID != spec.GitHubRepositoryID ||
+			task.ContextSHA256 != spec.AgentTaskContextSHA256 {
+			return ErrExecutionMaterialization
+		}
+		start.AgentTask = &task
+	} else if spec.Kind != "" && spec.Kind != domain.WorkloadJob {
+		return ErrExecutionMaterialization
+	}
 	archive, err := r.sources.OpenSourceArchive(ctx, spec.Identity, spec.ArtifactPrefix, spec.SourceDigest)
 	if err != nil || archive.Body == nil {
 		return ErrExecutionMaterialization
@@ -40,9 +71,7 @@ func (r *HTTPAgentRunner) Start(ctx context.Context, conn AgentConnection, spec 
 	if err := r.client.UploadSource(ctx, conn.Endpoint, conn.AuthToken, conn.SourceTicket, spec.Identity, spec.SourceDigest, spec.CommitSHA, archive.Size, archive.Body); err != nil {
 		return err
 	}
-	return r.client.Start(ctx, conn.Endpoint, conn.AuthToken, conn.AgentTicket, workloadagent.StartRequest{
-		Identity: workloadagent.IdentityFromCommand(spec.Identity), SourceDigest: spec.SourceDigest, CommitSHA: spec.CommitSHA, Deadline: spec.Deadline.UTC(),
-	})
+	return r.client.Start(ctx, conn.Endpoint, conn.AuthToken, conn.AgentTicket, start)
 }
 
 func (r *HTTPAgentRunner) GetStatus(ctx context.Context, conn AgentConnection, id workloadjournal.Command) (workloadjournal.ExecutionState, error) {

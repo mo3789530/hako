@@ -30,3 +30,27 @@ pulled the Lambda MicroVM base images but failed at `dnf` with `exec format
 error` because the local x86 host has no ARM64 emulation. This does not satisfy
 the Lambda image/container/network PoC; use Lambda's image builder or an ARM64
 host for the image validation step. No AWS resources were created or changed.
+
+## Local verification refresh (2026-10-24)
+
+Rebuilt the ARM64 artifact from current source and confirmed the ZIP contains
+only the Agent Dockerfile, statically linked AArch64 executable, and synthetic
+public verification key. Re-ran the Task 40 Workload runtime/PostgreSQL
+integration and Task 42 Podman Software Factory E2E successfully. The local
+x86_64 host still has no ARM64 binfmt/QEMU runtime, so image build/execution,
+container support inside the Lambda MicroVM, cold-start/network/isolation, and
+real lifecycle/cost/quota behavior remain unverified. No AWS resources were
+created or changed.
+
+## Documentation refresh (2026-10-24)
+
+Reviewed the current official Lambda MicroVM sizing and quota documentation.
+Recorded the published baseline/peak/disk classes, account/Region aggregate
+memory quotas, fixed 8-hour maximum, per-MicroVM connection ceilings, and API
+TPS/burst values in [`docs/lambda-microvm-workloads.md`](../docs/lambda-microvm-workloads.md).
+The Hako `standard` image proposal (4 GiB/2 vCPU baseline, 16 GiB/8 vCPU peak,
+16 GiB disk) matches a published size. It remains unproven as an Hako image:
+Dockerfile snapshot build is not evidence for nested Docker/containerd/Podman,
+Compose, cgroup limits, Tenant isolation, cold-start, cost, or network policy.
+No image build, AWS API call, or infrastructure change was performed in this
+refresh.

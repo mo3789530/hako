@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"time"
 
 	"github.com/mo3789530/hako/internal/domain"
@@ -16,7 +17,10 @@ type ScheduleRequest struct {
 	SchemaVersion int                  `json:"schema_version"`
 	TenantID      domain.TenantID      `json:"tenant_id"`
 	WorkloadRunID domain.WorkloadRunID `json:"workload_run_id"`
+	CorrelationID string               `json:"correlation_id,omitempty"`
 }
+
+var scheduleCorrelationIDPattern = regexp.MustCompile(`^req_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 type ScheduleDelivery struct {
 	Body          []byte
@@ -180,7 +184,8 @@ func decodeScheduleRequest(payload []byte) (ScheduleRequest, error) {
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return ScheduleRequest{}, errors.New("Workload schedule envelope must contain exactly one JSON object")
 	}
-	if request.SchemaVersion != 1 || request.TenantID == "" || request.WorkloadRunID == "" {
+	if request.SchemaVersion != 1 || request.TenantID == "" || request.WorkloadRunID == "" ||
+		request.CorrelationID != "" && !scheduleCorrelationIDPattern.MatchString(request.CorrelationID) {
 		return ScheduleRequest{}, errors.New("Workload schedule envelope is unsupported or incomplete")
 	}
 	return request, nil

@@ -112,8 +112,8 @@ func TestSoftwareFactoryPodmanPostgresAndGitHubCheck(t *testing.T) {
 	if response := submitFactoryWebhook(webhookHandler, deliveryID, changedPayload, factoryE2EWebhookSecret); response.Code != http.StatusConflict {
 		t.Fatalf("reject Delivery ID reuse with different payload: HTTP %d %s", response.Code, response.Body.String())
 	}
-	creator := func(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, integrationID, deliveryID string, createdAt time.Time) (bool, error) {
-		return CreateWebhookRepositoryRun(ctx, tx, tenantID, integrationID, deliveryID, createdAt)
+	creator := func(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, integrationID, deliveryID, correlationID string, createdAt time.Time) (bool, error) {
+		return CreateWebhookRepositoryRun(ctx, tx, tenantID, integrationID, deliveryID, correlationID, createdAt)
 	}
 	batch, err := webhookstore.ProcessBatchWithRepositoryTriggers(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(time.Second), creator)
 	if err != nil || batch.Processed != 1 || batch.WorkloadRunsCreated != 1 {

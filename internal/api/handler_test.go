@@ -92,6 +92,22 @@ func TestHealthRequiresValidAccessTokenAndHakoScope(t *testing.T) {
 	}
 }
 
+func TestRequestIDIsGeneratedReturnedAndAddedToRequestContext(t *testing.T) {
+	handler := NewHandler(nil, nil)
+	handler.GET("/test/request-id", func(c *echo.Context) error {
+		return c.String(http.StatusOK, RequestIDFromContext(c.Request().Context()))
+	})
+	request := httptest.NewRequest(http.MethodGet, "/test/request-id", nil)
+	request.Header.Set(requestIDHeader, "client-controlled-id")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	requestID := recorder.Header().Get(requestIDHeader)
+	if recorder.Code != http.StatusOK || requestID == "" || requestID == "client-controlled-id" || recorder.Body.String() != requestID ||
+		!strings.HasPrefix(requestID, "req_") {
+		t.Fatalf("API request ID was not generated and propagated: status=%d header=%q body=%q", recorder.Code, requestID, recorder.Body.String())
+	}
+}
+
 func TestGitHubWebhookRouteIsPublicOnlyWhenConfigured(t *testing.T) {
 	called := false
 	webhookHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

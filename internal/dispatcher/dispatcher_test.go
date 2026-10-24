@@ -19,6 +19,9 @@ type fakeStore struct {
 func (s *fakeStore) Claim(context.Context, int, time.Duration, time.Time) ([]outbox.Event, error) {
 	return s.events, nil
 }
+func (*fakeStore) ReadPendingMetrics(context.Context, time.Time) (outbox.PendingMetrics, error) {
+	return outbox.PendingMetrics{}, nil
+}
 func (s *fakeStore) MarkPublished(_ context.Context, event outbox.Event, _ time.Time) error {
 	s.published = append(s.published, event.ID)
 	return nil
@@ -62,7 +65,7 @@ func TestRunOnceRoutesRevisionFencedSchemaV2WorkspaceCommand(t *testing.T) {
 	now := time.Date(2026, 10, 17, 0, 0, 0, 0, time.UTC)
 	store := &fakeStore{events: []outbox.Event{{
 		ID: "evt_v2", AggregateType: "operation", AggregateID: "op_v2", EventType: "operation.requested", Attempt: 1,
-		Payload: []byte(`{"schema_version":2,"workspace_revision":3,"operation_id":"op_v2","resource_plane_id":"rp_tokyo"}`),
+		Payload: []byte(`{"schema_version":2,"workspace_revision":3,"operation_id":"op_v2","resource_plane_id":"rp_tokyo","correlation_id":"req_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}`),
 	}}}
 	publisher := &fakePublisher{}
 	dispatcher, err := New(store, publisher, map[string]string{"rp_tokyo": "queue-v2"}, Config{Now: func() time.Time { return now }})
@@ -79,6 +82,7 @@ func TestValidateCommandRejectsRevisionVersionMismatch(t *testing.T) {
 	for _, payload := range []string{
 		`{"schema_version":1,"workspace_revision":1,"operation_id":"op_1","resource_plane_id":"rp_1"}`,
 		`{"schema_version":2,"operation_id":"op_1","resource_plane_id":"rp_1"}`,
+		`{"schema_version":2,"workspace_revision":1,"operation_id":"op_1","resource_plane_id":"rp_1","correlation_id":"spoofed"}`,
 	} {
 		_, err := validateCommand(outbox.Event{AggregateType: "operation", AggregateID: "op_1", EventType: "operation.requested", Payload: []byte(payload)})
 		if err == nil {
@@ -130,7 +134,7 @@ func TestRunOnceRoutesWorkloadScheduleRequestToDedicatedQueue(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	store := &fakeStore{events: []outbox.Event{{
 		ID: "evt_workload", AggregateType: "workload_run", AggregateID: "run_1", EventType: "workload_run.schedule_requested", Attempt: 1,
-		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_1"}`),
+		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_1","correlation_id":"req_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}`),
 	}}}
 	publisher := &fakePublisher{}
 	dispatcher, err := New(store, publisher, map[string]string{"rp_tokyo": "rp-queue"}, Config{
@@ -224,6 +228,61 @@ func TestRunOnceRoutesWorkloadCancellationToPinnedResourcePlane(t *testing.T) {
 	stats, err := d.RunOnce(context.Background())
 	if err != nil || stats.Published != 1 || len(publisher.queueURLs) != 1 || publisher.queueURLs[0] != "rp-workload-queue" {
 		t.Fatal("cancel command was not routed", stats, err)
+	}
+}
+
+func TestRunOnceRoutesWorkspaceServiceToDedicatedPinnedPlaneQueue(t *testing.T) {
+	store := &fakeStore{events: []outbox.Event{{
+		ID: "evt_service", AggregateType: "workspace_service", AggregateID: "svc_1",
+		EventType: "workspace_service.reconcile_requested", Attempt: 1,
+		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workspace_id":"ws_1","resource_plane_id":"rp_tokyo","service_id":"svc_1","revision":4,"desired_state":"running","catalog_version":"postgres/1","config":{"image":"postgres:18"}}`),
+	}}}
+	publisher := &fakePublisher{}
+	d, err := New(store, publisher, map[string]string{"rp_tokyo": "workspace-queue"}, Config{
+		WorkspaceServiceQueueURLs: map[string]string{"rp_tokyo": "service-queue"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := d.RunOnce(context.Background())
+	if err != nil || stats != (Stats{Claimed: 1, Published: 1}) || len(publisher.queueURLs) != 1 || publisher.queueURLs[0] != "service-queue" {
+		t.Fatalf("Workspace Service command was not sent to its dedicated queue: stats=%+v queues=%v err=%v", stats, publisher.queueURLs, err)
+	}
+}
+
+func TestRunOnceDefersWorkspaceServiceWhenDedicatedQueueIsNotConfigured(t *testing.T) {
+	store := &fakeStore{events: []outbox.Event{{
+		ID: "evt_service", AggregateType: "workspace_service", AggregateID: "svc_1",
+		EventType: "workspace_service.reconcile_requested", Attempt: 1,
+		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workspace_id":"ws_1","resource_plane_id":"rp_tokyo","service_id":"svc_1","revision":1,"desired_state":"running","catalog_version":"postgres/1","config":{"image":"postgres:18"}}`),
+	}}}
+	publisher := &fakePublisher{}
+	d, err := New(store, publisher, map[string]string{"rp_tokyo": "workspace-queue"}, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := d.RunOnce(context.Background())
+	if err == nil || stats != (Stats{Claimed: 1, Failed: 1}) || len(store.retryTimes) != 1 || len(store.published) != 0 || len(publisher.queueURLs) != 0 {
+		t.Fatalf("unconfigured Service queue must leave the Outbox event pending: stats=%+v err=%v", stats, err)
+	}
+}
+
+func TestRunOnceRejectsInvalidWorkspaceServiceEnvelope(t *testing.T) {
+	store := &fakeStore{events: []outbox.Event{{
+		ID: "evt_service", AggregateType: "workspace_service", AggregateID: "svc_1",
+		EventType: "workspace_service.reconcile_requested", Attempt: 1,
+		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workspace_id":"ws_1","resource_plane_id":"rp_tokyo","service_id":"svc_other","revision":0,"desired_state":"running","catalog_version":"postgres/1","config":{"image":"postgres:18"}}`),
+	}}}
+	publisher := &fakePublisher{}
+	d, err := New(store, publisher, map[string]string{"rp_tokyo": "workspace-queue"}, Config{
+		WorkspaceServiceQueueURLs: map[string]string{"rp_tokyo": "service-queue"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := d.RunOnce(context.Background())
+	if err == nil || stats != (Stats{Claimed: 1, Failed: 1}) || len(store.retryTimes) != 1 || len(store.published) != 0 || len(publisher.queueURLs) != 0 {
+		t.Fatalf("invalid Workspace Service command must remain unpublished: stats=%+v err=%v", stats, err)
 	}
 }
 

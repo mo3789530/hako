@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -25,6 +26,8 @@ var ErrUnsupportedRepositoryEvent = ErrUnsupportedWebhookEvent
 var ErrStaleTenantWebhook = errors.New("Tenant GitHub webhook integration changed before processing")
 
 const RawPayloadRetention = 7 * 24 * time.Hour
+
+var webhookCorrelationIDPattern = regexp.MustCompile(`^req_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 type Inbox struct {
 	Pool   transaction.Beginner
@@ -204,7 +207,97 @@ func ProcessInstallationLifecycleDeliveryForIntegration(ctx context.Context, tx 
 	return true, nil
 }
 
-type RepositoryRunCreator func(context.Context, pgx.Tx, domain.TenantID, string, string, time.Time) (bool, error)
+type RepositoryRunCreator func(context.Context, pgx.Tx, domain.TenantID, string, string, string, time.Time) (bool, error)
+
+// IssueCommentAgentAuthorization is the Hako identity and Tenant scope
+// established for a recognized Issue command. It is not itself permission to
+// create a Run: callers must still resolve and pin an immutable commit before
+// persisting any work.
+type IssueCommentAgentAuthorization struct {
+	TenantID     domain.TenantID
+	UserID       string
+	Installation int64
+	Repository   githubwebhook.RepositoryRef
+	IssueNumber  int64
+	CommentID    int64
+}
+
+// AuthorizeIssueCommentAgentCommand revalidates the current installation,
+// repository opt-in, verified GitHub identity, and Tenant membership for a
+// normalized /hako implement Issue comment. It intentionally does not mark
+// the delivery processed or create a Run, allowing the caller to resolve a
+// server-trusted immutable SHA before doing either atomically.
+func AuthorizeIssueCommentAgentCommand(ctx context.Context, tx pgx.Tx, integrationID, deliveryID string) (IssueCommentAgentAuthorization, bool, error) {
+	if tx == nil || !validStoredIntegrationID(integrationID) || !coreValidDeliveryID(deliveryID) {
+		return IssueCommentAgentAuthorization{}, false, errors.New("transaction and valid GitHub Delivery ID are required")
+	}
+	var status, eventJSON string
+	var schemaVersion int
+	var generation int64
+	var receivedAt time.Time
+	err := tx.QueryRow(ctx, `SELECT processing_status,event_schema_version,normalized_event_json,credential_generation,received_at
+		FROM github_webhook_deliveries WHERE integration_id=$1 AND delivery_id=$2 FOR UPDATE`, integrationID, deliveryID).
+		Scan(&status, &schemaVersion, &eventJSON, &generation, &receivedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return IssueCommentAgentAuthorization{}, false, pgx.ErrNoRows
+	}
+	if err != nil {
+		return IssueCommentAgentAuthorization{}, false, fmt.Errorf("lock Issue command delivery: %w", err)
+	}
+	if status != "received" || schemaVersion != githubwebhook.RepositoryEventSchemaVersion {
+		return IssueCommentAgentAuthorization{}, false, nil
+	}
+	var event githubwebhook.RepositoryEvent
+	if err := json.Unmarshal([]byte(eventJSON), &event); err != nil || event.DeliveryID != deliveryID || event.GitHubEvent != "issue_comment" ||
+		event.Action != "created" || event.InstallationID <= 0 || event.Repository == nil || event.ActorGitHubID <= 0 || event.IssueComment == nil ||
+		event.IssueComment.IsPullRequest || event.IssueComment.IssueNumber <= 0 || event.IssueComment.CommentID <= 0 ||
+		event.IssueComment.AgentCommand != githubwebhook.AgentCommandImplement || !allowedIssueCommentAssociation(event.IssueComment.AuthorAssociation) {
+		return IssueCommentAgentAuthorization{}, false, nil
+	}
+	allowed, err := authorizeStoredTenantEvent(ctx, tx, integrationID, generation, event)
+	if err != nil || !allowed {
+		return IssueCommentAgentAuthorization{}, false, err
+	}
+	tenantID, err := resolveRepositoryEventTenant(ctx, tx, integrationID, event.InstallationID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return IssueCommentAgentAuthorization{}, false, nil
+	}
+	if err != nil {
+		return IssueCommentAgentAuthorization{}, false, fmt.Errorf("resolve Tenant for Issue command: %w", err)
+	}
+	var userID string
+	err = tx.QueryRow(ctx, `SELECT u.id FROM users u JOIN tenant_members m ON m.user_id=u.id AND m.tenant_id=$1
+		WHERE u.github_user_id=$2`, tenantID, event.ActorGitHubID).Scan(&userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return IssueCommentAgentAuthorization{}, false, nil
+	}
+	if err != nil {
+		return IssueCommentAgentAuthorization{}, false, fmt.Errorf("authorize Issue command Tenant member: %w", err)
+	}
+	var enabled bool
+	var enabledAt *time.Time
+	var ownerLogin, repositoryName string
+	err = tx.QueryRow(ctx, `SELECT factory_enabled,factory_enabled_at,owner_login,repository_name FROM tenant_github_repositories
+		WHERE tenant_id=$1 AND installation_id=$2 AND github_repository_id=$3`, tenantID, event.InstallationID, event.Repository.GitHubID).
+		Scan(&enabled, &enabledAt, &ownerLogin, &repositoryName)
+	if errors.Is(err, pgx.ErrNoRows) || !enabled || enabledAt == nil || receivedAt.Before(*enabledAt) || ownerLogin != event.Repository.Owner || repositoryName != event.Repository.Name {
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return IssueCommentAgentAuthorization{}, false, fmt.Errorf("load Tenant Issue command policy: %w", err)
+		}
+		return IssueCommentAgentAuthorization{}, false, nil
+	}
+	return IssueCommentAgentAuthorization{TenantID: domain.TenantID(tenantID), UserID: userID, Installation: event.InstallationID,
+		Repository: *event.Repository, IssueNumber: event.IssueComment.IssueNumber, CommentID: event.IssueComment.CommentID}, true, nil
+}
+
+func allowedIssueCommentAssociation(association string) bool {
+	switch association {
+	case "OWNER", "MEMBER", "COLLABORATOR":
+		return true
+	default:
+		return false
+	}
+}
 
 // ProcessRepositoryTriggerDelivery applies one authenticated push or pull
 // request delivery. Trigger execution is opt-in on the synchronized
@@ -221,11 +314,12 @@ func ProcessRepositoryTriggerDelivery(ctx context.Context, tx pgx.Tx, integratio
 	var status string
 	var schemaVersion int
 	var eventJSON string
+	var correlationID string
 	var generation int64
 	var receivedAt time.Time
-	err := tx.QueryRow(ctx, `SELECT processing_status,event_schema_version,normalized_event_json,credential_generation,received_at
+	err := tx.QueryRow(ctx, `SELECT processing_status,event_schema_version,normalized_event_json,credential_generation,received_at,COALESCE(correlation_id,'')
 		FROM github_webhook_deliveries WHERE integration_id=$1 AND delivery_id=$2 FOR UPDATE`, integrationID, deliveryID).
-		Scan(&status, &schemaVersion, &eventJSON, &generation, &receivedAt)
+		Scan(&status, &schemaVersion, &eventJSON, &generation, &receivedAt, &correlationID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, false, pgx.ErrNoRows
 	}
@@ -283,7 +377,7 @@ func ProcessRepositoryTriggerDelivery(ctx context.Context, tx pgx.Tx, integratio
 	// The enabled timestamp is cleared on disable and reset on the next enable.
 	optedInBeforeDelivery := factoryEnabledAt != nil && !receivedAt.Before(*factoryEnabledAt)
 	if factoryEnabled && optedInBeforeDelivery && eligibleRepositoryTrigger(event) {
-		runCreated, err = createRun(ctx, tx, domain.TenantID(tenantID), integrationID, deliveryID, processedAt)
+		runCreated, err = createRun(ctx, tx, domain.TenantID(tenantID), integrationID, deliveryID, correlationID, processedAt)
 		if err != nil {
 			return false, false, fmt.Errorf("create Workload Run from repository delivery: %w", err)
 		}
@@ -399,7 +493,8 @@ func (i Inbox) Record(ctx context.Context, delivery githubwebhook.VerifiedDelive
 	if i.Pool == nil {
 		return false, errors.New("GitHub webhook inbox database is required")
 	}
-	if delivery.DeliveryID == "" || delivery.Event == "" || len(delivery.Payload) == 0 {
+	if delivery.DeliveryID == "" || delivery.Event == "" || len(delivery.Payload) == 0 ||
+		delivery.CorrelationID != "" && !webhookCorrelationIDPattern.MatchString(delivery.CorrelationID) {
 		return false, errors.New("verified GitHub webhook delivery is incomplete")
 	}
 	normalized, err := githubwebhook.Normalize(delivery)
@@ -429,11 +524,15 @@ func (i Inbox) Record(ctx context.Context, delivery githubwebhook.VerifiedDelive
 	}
 	digest := sha256.Sum256(delivery.Payload)
 	payloadHash := hex.EncodeToString(digest[:])
+	storedPayload, err := redactedStoredPayload(delivery.Event, delivery.Payload)
+	if err != nil {
+		return false, fmt.Errorf("redact GitHub webhook payload for storage: %w", err)
+	}
 	return transaction.Within(ctx, i.Pool, i.Policy, func(ctx context.Context, tx pgx.Tx) (bool, error) {
 		tag, err := tx.Exec(ctx, `INSERT INTO github_webhook_deliveries
-			(integration_id, delivery_id, event_type, action, payload_json, payload_sha256, received_at, processing_status, event_schema_version, normalized_event_json, installation_id, credential_generation, actor_login, payload_expires_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, 'received', $8, $9, $10, $11, $12, $13)
-			ON CONFLICT (integration_id, delivery_id) DO NOTHING`, integrationID, delivery.DeliveryID, delivery.Event, delivery.Action, string(delivery.Payload), payloadHash, receivedAt, githubwebhook.RepositoryEventSchemaVersion, string(normalizedJSON), installationID, delivery.CredentialGeneration, normalized.Actor, receivedAt.Add(RawPayloadRetention))
+			(integration_id, delivery_id, event_type, action, payload_json, payload_sha256, received_at, processing_status, event_schema_version, normalized_event_json, installation_id, credential_generation, actor_login, payload_expires_at, correlation_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, 'received', $8, $9, $10, $11, $12, $13, NULLIF($14,''))
+			ON CONFLICT (integration_id, delivery_id) DO NOTHING`, integrationID, delivery.DeliveryID, delivery.Event, delivery.Action, string(storedPayload), payloadHash, receivedAt, githubwebhook.RepositoryEventSchemaVersion, string(normalizedJSON), installationID, delivery.CredentialGeneration, normalized.Actor, receivedAt.Add(RawPayloadRetention), delivery.CorrelationID)
 		if err != nil {
 			return false, fmt.Errorf("insert GitHub webhook delivery: %w", err)
 		}
@@ -458,6 +557,31 @@ func (i Inbox) Record(ctx context.Context, delivery githubwebhook.VerifiedDelive
 		}
 		return false, nil
 	})
+}
+
+// redactedStoredPayload removes free-form Issue comment text from the
+// short-lived raw-payload column. The delivery hash is always computed from
+// the exact authenticated bytes before this function is called, so duplicate
+// and Delivery-ID conflict detection remain byte-accurate.
+func redactedStoredPayload(event string, payload []byte) ([]byte, error) {
+	if event != "issue_comment" {
+		return append([]byte(nil), payload...), nil
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &object); err != nil {
+		return nil, err
+	}
+	var comment map[string]json.RawMessage
+	if raw, ok := object["comment"]; !ok || json.Unmarshal(raw, &comment) != nil || comment == nil {
+		return nil, errors.New("issue comment object is missing or invalid")
+	}
+	delete(comment, "body")
+	redacted, err := json.Marshal(comment)
+	if err != nil {
+		return nil, err
+	}
+	object["comment"] = redacted
+	return json.Marshal(object)
 }
 
 func validStoredIntegrationID(value string) bool {

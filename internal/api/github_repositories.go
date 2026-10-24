@@ -8,9 +8,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 
+	"github.com/mo3789530/hako/internal/agenttask"
 	"github.com/mo3789530/hako/internal/store/githubregistry"
 )
 
@@ -24,6 +26,50 @@ type GitHubRepositoryActionsRunnerResult struct {
 
 type GitHubRepositoryActionsRunnerWorkflowPolicyResult struct {
 	Policy githubregistry.ActionsRunnerWorkflowPolicy `json:"workflow_policy"`
+}
+
+type GitHubRepositoryAgentWritePolicyResult struct {
+	Policy           agenttask.WritePolicy `json:"write_policy"`
+	ExecutionEnabled bool                  `json:"execution_enabled"`
+}
+
+// SetGitHubRepositoryAgentWritePolicy stores an Owner/Admin-approved
+// repository branch/PR write ceiling. It does not enable Agent execution.
+func SetGitHubRepositoryAgentWritePolicy(ctx context.Context, baseURL, accessToken, tenantID string, installationID, repositoryID int64,
+	policy agenttask.WritePolicy, client *http.Client) (GitHubRepositoryAgentWritePolicyResult, error) {
+	var result GitHubRepositoryAgentWritePolicyResult
+	if !validTenantID(tenantID) || strings.TrimSpace(accessToken) == "" || installationID <= 0 || repositoryID <= 0 || policy.Validate() != nil {
+		return result, errors.New("valid Tenant, Installation, Repository, access token, and Agent write policy are required")
+	}
+	path := "/v1/tenants/" + url.PathEscape(tenantID) + "/github/installations/" + strconv.FormatInt(installationID, 10) +
+		"/repositories/" + strconv.FormatInt(repositoryID, 10) + "/agent-write-policy"
+	endpoint, err := apiEndpoint(baseURL, path)
+	if err != nil {
+		return result, err
+	}
+	body, err := json.Marshal(policy)
+	if err != nil {
+		return result, errors.New("encode GitHub Repository Agent write policy")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return result, errors.New("create GitHub Repository Agent write policy request")
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	response, err := safeAPIClient(client).Do(req)
+	if err != nil {
+		return result, errors.New("GitHub Repository Agent write policy request failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return result, readAPIError(response)
+	}
+	if json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result) != nil ||
+		result.ExecutionEnabled || !reflect.DeepEqual(result.Policy, policy) {
+		return GitHubRepositoryAgentWritePolicyResult{}, errors.New("invalid GitHub Repository Agent write policy response")
+	}
+	return result, nil
 }
 
 // SetGitHubRepositoryFactoryEnabled configures the opt-in default webhook

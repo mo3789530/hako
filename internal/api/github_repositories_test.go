@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/mo3789530/hako/internal/agenttask"
 
 	"github.com/mo3789530/hako/internal/store/githubregistry"
 )
@@ -29,6 +32,28 @@ func TestSetGitHubRepositoryFactoryEnabledUsesTenantScopedPut(t *testing.T) {
 	result, err := SetGitHubRepositoryFactoryEnabled(context.Background(), server.URL, "test-token", "tenant_factory_api", 7001, 7002, true, server.Client())
 	if err != nil || !result.Repository.FactoryEnabled || result.Repository.GitHubRepositoryID != 7002 {
 		t.Fatalf("SetGitHubRepositoryFactoryEnabled() = %+v, error = %v", result, err)
+	}
+}
+
+func TestSetGitHubRepositoryAgentWritePolicyUsesTenantScopedDormantEndpoint(t *testing.T) {
+	policy := agenttask.WritePolicy{Enabled: true, BranchPrefixes: []string{"hako/agent/"}, AllowPullRequests: true,
+		RequiredChecks: []string{"hako/lint", "hako/test"}, RequireChecksToPass: true}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/v1/tenants/tenant_factory_api/github/installations/7001/repositories/7002/agent-write-policy" ||
+			r.Header.Get("Authorization") != "Bearer test-token" {
+			t.Errorf("unexpected Agent write policy request: %s %s", r.Method, r.URL.Path)
+		}
+		var got agenttask.WritePolicy
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil || got.Validate() != nil || got.Enabled != policy.Enabled {
+			t.Errorf("invalid Agent write policy request: %+v error=%v", got, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"write_policy": policy, "execution_enabled": false})
+	}))
+	defer server.Close()
+	result, err := SetGitHubRepositoryAgentWritePolicy(context.Background(), server.URL, "test-token", "tenant_factory_api", 7001, 7002, policy, server.Client())
+	if err != nil || result.ExecutionEnabled || !reflect.DeepEqual(result.Policy, policy) {
+		t.Fatalf("SetGitHubRepositoryAgentWritePolicy() = %+v, error=%v", result, err)
 	}
 }
 

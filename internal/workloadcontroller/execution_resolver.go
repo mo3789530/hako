@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/workloadagent"
 	"github.com/mo3789530/hako/internal/workloadjournal"
 	"github.com/mo3789530/hako/internal/workloadsource"
 )
@@ -51,16 +52,18 @@ type MetadataSpecificationResolverConfig struct {
 	ResourcePlaneID domain.ResourcePlaneID
 	Metadata        ExecutionMetadataResolver
 	Sources         SourceMaterializer
+	AgentTasks      AgentTaskProvider
 	Profiles        map[RuntimeProfileKey]RuntimeProfile
 	Now             func() time.Time
 }
 
 type MetadataSpecificationResolver struct {
-	planeID  domain.ResourcePlaneID
-	metadata ExecutionMetadataResolver
-	sources  SourceMaterializer
-	profiles map[RuntimeProfileKey]RuntimeProfile
-	now      func() time.Time
+	planeID    domain.ResourcePlaneID
+	metadata   ExecutionMetadataResolver
+	sources    SourceMaterializer
+	agentTasks AgentTaskProvider
+	profiles   map[RuntimeProfileKey]RuntimeProfile
+	now        func() time.Time
 }
 
 func NewMetadataSpecificationResolver(config MetadataSpecificationResolverConfig) (*MetadataSpecificationResolver, error) {
@@ -82,7 +85,8 @@ func NewMetadataSpecificationResolver(config MetadataSpecificationResolverConfig
 	if now == nil {
 		now = time.Now
 	}
-	return &MetadataSpecificationResolver{planeID: config.ResourcePlaneID, metadata: config.Metadata, sources: config.Sources, profiles: profiles, now: now}, nil
+	return &MetadataSpecificationResolver{planeID: config.ResourcePlaneID, metadata: config.Metadata, sources: config.Sources,
+		agentTasks: config.AgentTasks, profiles: profiles, now: now}, nil
 }
 
 func (r *MetadataSpecificationResolver) Resolve(ctx context.Context, id workloadjournal.Command) (Specification, error) {
@@ -97,16 +101,36 @@ func (r *MetadataSpecificationResolver) Resolve(ctx context.Context, id workload
 	if !ok {
 		return Specification{}, ErrExecutionMaterialization
 	}
+	agentTaskDigest := ""
+	if effectiveWorkloadKind(metadata) == domain.WorkloadAgent {
+		if r.agentTasks == nil {
+			return Specification{}, ErrExecutionMaterialization
+		}
+		task, taskErr := r.agentTasks.ResolveAgentTask(ctx, id)
+		if taskErr != nil || !workloadagent.ValidateAgentTask(task, workloadagent.IdentityFromCommand(id), metadata.CommitSHA) ||
+			task.DefaultBranch != metadata.TriggerBranch || task.IntegrationID != metadata.GitHubIntegrationID ||
+			task.InstallationID != metadata.GitHubInstallationID || task.RepositoryID != metadata.GitHubRepositoryID {
+			return Specification{}, ErrExecutionMaterialization
+		}
+		agentTaskDigest = task.ContextSHA256
+	}
 	source, err := r.sources.Materialize(ctx, metadata)
 	if err != nil || !digestPattern.MatchString(source.Digest) || !validArtifactPrefix(source.ArtifactPrefix, id) {
 		return Specification{}, ErrExecutionMaterialization
 	}
 	spec := Specification{Identity: id, ImageDigest: profile.ImageDigest, SourceDigest: source.Digest,
-		CommitSHA: metadata.CommitSHA, TriggerEvent: metadata.TriggerEvent, TriggerBranch: metadata.TriggerBranch,
+		Kind:      effectiveWorkloadKind(metadata),
+		CommitSHA: metadata.CommitSHA, TriggerEvent: metadata.TriggerEvent, TriggerBranch: metadata.TriggerBranch, CorrelationID: metadata.CorrelationID,
 		RequestedAt: metadata.RequestedAt.UTC(), Deadline: metadata.Deadline.UTC(),
 		ArtifactPrefix: source.ArtifactPrefix, ImageIdentifier: profile.ImageIdentifier, ImageVersion: profile.ImageVersion,
 		IngressNetworkConnectors: append([]string(nil), profile.IngressNetworkConnectors...),
 		EgressNetworkConnectors:  append([]string(nil), profile.EgressNetworkConnectors...)}
+	if spec.Kind == domain.WorkloadAgent {
+		spec.GitHubIntegrationID = metadata.GitHubIntegrationID
+		spec.GitHubInstallationID = metadata.GitHubInstallationID
+		spec.GitHubRepositoryID = metadata.GitHubRepositoryID
+		spec.AgentTaskContextSHA256 = agentTaskDigest
+	}
 	if _, err := specificationHash(spec, id); err != nil {
 		return Specification{}, ErrExecutionMaterialization
 	}

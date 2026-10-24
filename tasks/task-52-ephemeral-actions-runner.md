@@ -1,6 +1,6 @@
 # Task 52: GitHub Actions Ephemeral Runner Mode
 
-Status: In Progress (2026-10-18: signed `workflow_job.queued` deliveries are retained but excluded from the generic push/PR Go-test trigger. Normalized events preserve run attempt, workflow name, bounded labels, and optional assigned runner/group identity. Tenant Owner/Admin repository opt-in is stored via API/CLI and audited. A separate default-off admission flag revalidates Tenant/Installation/Repository policy and persists deduplicated queued job admissions; worker claims use expiring leases with recovery. A Control Plane-only mTLS broker endpoint consumes a claim, while a new Resource Plane-only bootstrap-token mTLS endpoint requires the exact live Plane+MicroVM binding and a transactionally consumed one-token issuance timestamp. GitHub-observed runner assignment and completion are persisted against the exact admitted job. The starting claim pins the Lambda MicroVM and Resource Plane identities; terminal cleanup outbox records preserve both, cleanup leases are Resource Plane-scoped, and a locally tested cleanup worker/transactional queue adapter handles termination→deregistration→fenced acknowledgement with bounded retry. An AWS SDK Lambda MicroVM terminator is implemented with exact Plane fencing, identity verification, idempotent state handling, and bounded polling. A separate Plane-allowlisted mTLS broker endpoint resolves deregistration coordinates only from an unexpired cleanup claim. The Lambda MicroVM launch adapter validates trusted image/network/role profiles, uses a deterministic claim-scoped idempotency token, and sends only non-secret job metadata in the Run Hook. A Resource Plane-allowlisted mTLS binding endpoint persists the launched VM ID against the exact live starting claim, and startup-failure cleanup preserves both Plane and VM identity. A local signed bootstrap protocol delivers the short-lived runner token only to the exact HTTPS MicroVM endpoint using an AWS auth token limited to port 8080 and at most five minutes; a guest-side verifier rejects tampering, wrong-VM binding, and expiry. A default-off SQS publisher claims durable admissions and publishes only job/attempt/claim identity; the Control Plane Outbox Dispatcher can run it on its existing schedule. The Resource Plane Lambda composition and partial-batch consumer are locally fake-tested. Durable queued/in-progress/completed Check state is now correlated to the exact integration/job/attempt and delivered through the existing Checks Outbox/queue/consumer; a Control Plane-only mTLS endpoint issues repository-scoped Checks credentials, and startup failure produces a terminal failure Check. Local PostgreSQL webhook-admission, outbox-dispatcher→fake-GitHub delivery, Check-ID persistence, broker mTLS and unit tests pass. Resource Plane Terraform remains default-off; AWS apply/review, multi-Plane placement, guest listener/image wiring, final composed runner→cleanup E2E and live AWS/GitHub verification remain. Priority: P3.
+Status: In Progress (2026-10-24: signed `workflow_job.queued` deliveries are retained but excluded from the generic push/PR Go-test trigger. Normalized events preserve run attempt, workflow name, bounded labels, and optional assigned runner/group identity. Tenant Owner/Admin repository opt-in is stored via API/CLI and audited. A separate default-off admission flag revalidates Tenant/Installation/Repository policy and persists deduplicated queued job admissions; worker claims use expiring leases with recovery. A Control Plane-only mTLS broker endpoint consumes a claim, while a Resource Plane-only bootstrap-token mTLS endpoint requires the exact live Plane+MicroVM binding and a transactionally consumed one-token issuance timestamp. GitHub-observed runner assignment and completion are persisted against the exact admitted job. The starting claim pins the Lambda MicroVM and Resource Plane identities; terminal cleanup outbox records preserve both, cleanup leases are Resource Plane-scoped, and a locally tested cleanup worker/transactional queue adapter handles termination→deregistration→fenced acknowledgement with bounded retry. An AWS SDK Lambda MicroVM terminator is implemented with exact Plane fencing, identity verification, idempotent state handling, and bounded polling. A separate Plane-allowlisted mTLS broker endpoint resolves deregistration coordinates only from an unexpired cleanup claim. The Lambda MicroVM launch adapter validates trusted image/network/role profiles, uses a deterministic claim-scoped idempotency token, and sends only non-secret job metadata in the Run Hook. A Resource Plane-allowlisted mTLS binding endpoint persists the launched VM ID against the exact live starting claim, and startup-failure cleanup preserves both Plane and VM identity. A local signed bootstrap protocol delivers the short-lived runner token only to the exact HTTPS MicroVM endpoint using an AWS auth token limited to port 8080 and at most five minutes; a guest-side verifier rejects tampering, wrong-VM binding, and expiry. A default-off SQS publisher claims durable admissions and publishes only job/attempt/claim identity; the Control Plane Outbox Dispatcher can run it on its existing schedule. The Resource Plane Lambda composition and partial-batch consumer are locally fake-tested. Durable queued/in-progress/completed Check state is correlated to the exact integration/job/attempt and delivered through the Checks Outbox/queue/consumer; a Control Plane-only mTLS endpoint issues repository-scoped Checks credentials, and startup failure produces a terminal failure Check. The composed PostgreSQL lifecycle covers signed queued→in-progress→completed webhook, admission/claim, fenced startup, signed Guest bootstrap, fake runner success/failure/cancel/timeout, durable Check publication, and termination/deregistration retry after worker restart. `make test-actions-runner-lifecycle-integration` passed on 2026-10-24. The ARM64 guest image now builds from the official digest-pinned Runner 2.338.1 base; it is inspected locally but not executed. Resource Plane Terraform remains default-off; deployed listener/network, AWS apply/review, multi-Plane placement, and live AWS/GitHub verification remain. Priority: P3.
 
 Claude Code Action support is tracked separately in [Task 73](task-73-claude-code-action.md), including Tenant-scoped model credentials, untrusted PR denial, and action-specific E2E.
 
@@ -191,9 +191,11 @@ Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Action
   `--ephemeral`, passes `ANTHROPIC_API_KEY` only to the runner process (not its
   registration/configuration command), supplies no inherited AWS environment,
   and removes runner credential files, diagnostics, temp files and checkout
-  state after exit. The ARM64 image recipe requires a reviewed runner archive,
-  exact version/hash and a public bootstrap key. The image has not been built
-  or published; no real GitHub/AWS calls were made.
+  state after exit. The ARM64 image builds from the official Runner 2.338.1
+  image pinned by platform digest and adds only the Hako guest executable and a
+  public bootstrap key. The local x86_64 host can build and inspect the image
+  but cannot execute it without ARM emulation. No real GitHub/AWS calls were
+  made.
 
 - `cmd/hako-actions-runner-lambda` now provides the Resource Plane Lambda
   runtime entrypoint for the SQS startup handler. It requires an HTTPS broker,
@@ -208,16 +210,22 @@ Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Action
   `make build-actions-runner-lambda` packages the ARM64 custom-runtime ZIP.
   The Terraform deployment, queue/DLQ, cross-account policy, exact worker IAM,
   and event-source mapping are default-off and have not been applied. Guest
-  listener/image, full runner cleanup E2E, and live AWS/GitHub verification
-  remain acceptance gaps. Durable GitHub Check delivery is locally implemented
+  listener packaging and live AWS/GitHub verification remain acceptance gaps.
+  Durable GitHub Check delivery is locally implemented
   and PostgreSQL/fake-GitHub tested; Runner admission stays default-off. The dispatch
   queue contract and its single-Plane limitation are recorded in
   [Actions Runner startup queue](../docs/actions-runner-startup-queue.md).
+- Local verification refresh (2026-10-18): `GOCACHE=/tmp/hako-go-cache make
+  test-actions-runner-lifecycle-integration` passed for the full signed webhook,
+  PostgreSQL admission, Guest fake-runner, Checks, and cleanup-recovery lifecycle.
+  It uses synthetic credentials, fake providers, and isolated DB schemas; no
+  real GitHub, AWS, or Secrets Manager endpoint is contacted.
 - `RunnerBootstrapReceiver` adds the guest-side receiver primitive: it accepts
   only bounded strict JSON, verifies the signed envelope against the exact
   MicroVM ID and expiry, marks a single delivery consumed before invoking a
   synchronous consumer, and clears the model-key byte buffer afterward. Tests
   cover wrong-VM signed envelopes, malformed bodies, duplicate requests,
-  consumer failure and buffer erasure. This handler is not yet wired into an
-  Actions runner image or official runner process; execution and image
-  composition remain Task 76/77 work.
+  consumer failure and buffer erasure. The receiver is included in the pinned
+  runner image; the broker→Worker→guest→process path and cleanup are composed
+  in Task 77's fake-provider PostgreSQL lifecycle. The ARM64 image itself has
+  not been executed on this x86_64 host or in a Lambda MicroVM.

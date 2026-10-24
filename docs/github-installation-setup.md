@@ -28,18 +28,24 @@ rechecks Hako Tenant authorization before binding it.
    redirects to GitHub OAuth authorization with the same state.
 3. GitHub redirects to the App OAuth callback URL with `code` and `state`.
    Hako exchanges the one-time code using the App OAuth client secret and PKCE
-   verifier, then
-   calls `GET /user/installations` with the transient user token. It paginates
-   the user-visible Installations and checks the candidate ID and configured
-   App ID; it does not trust the setup redirect's ID or account name.
+   verifier, calls `GET /user` to obtain the authorizing GitHub account's
+   numeric ID/login, then calls `GET /user/installations` with the transient
+   user token. It paginates the user-visible Installations and checks the
+   candidate ID and configured App ID; it does not trust the setup redirect's
+   ID or account name.
 4. In one DSQL transaction, Hako consumes the state, rechecks that the Hako
-   user is still a Tenant Owner/Admin, creates the active Installation claim,
-   and inserts the globally unique Tenant binding. A state replay, expired
-   state, removed Hako membership, or Installation already bound to another
-   Tenant cannot activate a binding.
+   user is still a Tenant Owner/Admin, links the verified numeric GitHub user
+   ID/login to that Cognito-backed Hako user, creates the active Installation
+   claim, and inserts the globally unique Tenant binding. One GitHub identity
+   cannot be linked to multiple Hako users, and a Hako user's link cannot be
+   silently replaced. A state replay, expired state, removed Hako membership,
+   conflicting identity, or Installation already bound to another Tenant
+   cannot activate a binding.
 
-The user access token is used only for the GitHub verification request and is
-never returned to the browser, logged, or persisted. App installation tokens
+The user access token is used only for the GitHub verification requests and is
+never returned to the browser, logged, or persisted. The verified numeric GitHub
+user ID and login are persisted as an identity link; the transient token is not.
+App installation tokens
 and App private-key management are provided by a separate internal library;
 the worker integration/deployment is not yet implemented. See
 [GitHub App credentials](github-app-credentials.md) for the read-only token

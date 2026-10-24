@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/mo3789530/hako/internal/agenttask"
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/githubwebhook"
 )
@@ -151,6 +152,7 @@ func SetRepositoryFactoryEnabled(ctx context.Context, tx pgx.Tx, tenantID domain
 	var repository Repository
 	err := tx.QueryRow(ctx, `UPDATE tenant_github_repositories r
 		SET factory_enabled = $4,
+		    agent_write_policy = CASE WHEN $4 THEN r.agent_write_policy ELSE NULL END,
 		    factory_enabled_at = CASE WHEN $4 THEN COALESCE(r.factory_enabled_at, $5) ELSE NULL END
 		FROM github_app_installation_bindings b
 		JOIN tenant_github_installations i ON i.tenant_id = b.tenant_id AND i.installation_id = b.installation_id
@@ -180,6 +182,40 @@ func SetRepositoryFactoryEnabled(ctx context.Context, tx pgx.Tx, tenantID domain
 		return Repository{}, fmt.Errorf("update Tenant repository factory setting: %w", err)
 	}
 	return repository, nil
+}
+
+// SetRepositoryAgentWritePolicy stores a narrow, dormant policy for future
+// Issue-to-Agent GitHub writes. It requires the Tenant's verified Repository
+// and active Factory opt-in; callers must still audit the configuration.
+func SetRepositoryAgentWritePolicy(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, installationID, repositoryID int64,
+	policy agenttask.WritePolicy) (agenttask.WritePolicy, error) {
+	if ctx == nil || tx == nil || tenantID == "" || installationID <= 0 || repositoryID <= 0 || policy.Validate() != nil {
+		return agenttask.WritePolicy{}, ErrRepositoryNotFound
+	}
+	encoded, err := json.Marshal(policy)
+	if err != nil {
+		return agenttask.WritePolicy{}, errors.New("encode Agent repository write policy")
+	}
+	var stored []byte
+	err = tx.QueryRow(ctx, `UPDATE tenant_github_repositories r
+		SET agent_write_policy=$4::jsonb
+		FROM github_app_installation_bindings b
+		JOIN tenant_github_installations i ON i.tenant_id=b.tenant_id AND i.installation_id=b.installation_id
+		WHERE r.tenant_id=$1 AND r.installation_id=$2 AND r.github_repository_id=$3
+		AND r.factory_enabled=TRUE AND r.factory_enabled_at IS NOT NULL
+		AND b.tenant_id=r.tenant_id AND b.installation_id=r.installation_id AND i.status='active' AND i.suspended_at IS NULL
+		RETURNING r.agent_write_policy`, tenantID, installationID, repositoryID, encoded).Scan(&stored)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return agenttask.WritePolicy{}, ErrRepositoryNotFound
+	}
+	if err != nil {
+		return agenttask.WritePolicy{}, fmt.Errorf("store Agent repository write policy: %w", err)
+	}
+	var result agenttask.WritePolicy
+	if json.Unmarshal(stored, &result) != nil || result.Validate() != nil {
+		return agenttask.WritePolicy{}, errors.New("decode stored Agent repository write policy")
+	}
+	return result, nil
 }
 
 // SetRepositoryActionsRunnerEnabled is a separate, explicit opt-in from the

@@ -26,6 +26,16 @@ func (d *routedDialer) OpenShell(_ context.Context, claims workspacesession.Clai
 	return nil, nil
 }
 
+func (d *routedDialer) OpenExec(_ context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
+	d.record(claims, 0)
+	return nil, nil
+}
+
+func (d *routedDialer) OpenFileTransfer(_ context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
+	d.record(claims, 0)
+	return nil, nil
+}
+
 func (d *routedDialer) OpenVSCode(_ context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
 	d.record(claims, 0)
 	return nil, nil

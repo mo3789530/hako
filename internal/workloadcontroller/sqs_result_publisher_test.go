@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -40,7 +41,7 @@ func TestSQSResultPublisherValidatesAndPublishesStandardQueueMessage(t *testing.
 		t.Fatalf("standard queue message = %+v", client.input)
 	}
 	var sent workloadjobs.WorkloadResult
-	if err := json.Unmarshal([]byte(*client.input.MessageBody), &sent); err != nil || sent != result {
+	if err := json.Unmarshal([]byte(*client.input.MessageBody), &sent); err != nil || !reflect.DeepEqual(sent, result) {
 		t.Fatalf("published result = %+v err=%v", sent, err)
 	}
 }

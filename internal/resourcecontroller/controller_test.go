@@ -26,8 +26,8 @@ type delayedRuntime struct{ delay time.Duration }
 
 type bindingTestRuntime struct{ testRuntime }
 
-func (*bindingTestRuntime) ResourceBinding(context.Context, Command) (string, string, error) {
-	return "lambda_microvm", "microvm-test-1", nil
+func (*bindingTestRuntime) ResourceBinding(context.Context, Command) (string, string, int64, error) {
+	return "lambda_microvm", "microvm-test-1", 1, nil
 }
 
 func (r delayedRuntime) Execute(ctx context.Context, _ Command) (domain.ObservedWorkspaceState, error) {
@@ -80,7 +80,7 @@ func encodedCommandAt(t *testing.T, resourcePlaneID domain.ResourcePlaneID, crea
 	t.Helper()
 	command := Command{
 		SchemaVersion: 2, WorkspaceRevision: 1, OperationID: "op_1", TenantID: "tenant_1", WorkspaceID: "ws_1",
-		ResourcePlaneID: resourcePlaneID, Type: domain.OperationEnsureRunning, CreatedAt: createdAt,
+		ResourcePlaneID: resourcePlaneID, Type: domain.OperationEnsureRunning, CorrelationID: "req_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", CreatedAt: createdAt,
 	}
 	encoded, err := json.Marshal(command)
 	if err != nil {
@@ -107,7 +107,7 @@ func TestControllerHandlesDuplicateAndReportsResultAtLeastOnce(t *testing.T) {
 	if runtime.calls != 1 || len(sink.results) != 2 {
 		t.Fatalf("duplicate delivery should be applied once but report may be repeated: calls=%d results=%d", runtime.calls, len(sink.results))
 	}
-	if sink.results[0].OperationID != sink.results[1].OperationID || sink.results[0].WorkspaceRevision != 1 || sink.results[0].ObservedState != domain.ObservedWorkspaceRunning || sink.results[0].Status != domain.OperationSucceeded {
+	if sink.results[0].OperationID != sink.results[1].OperationID || sink.results[0].WorkspaceRevision != 1 || sink.results[0].ObservedState != domain.ObservedWorkspaceRunning || sink.results[0].Status != domain.OperationSucceeded || sink.results[0].CorrelationID != "req_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" {
 		t.Fatalf("unexpected reported result: %+v %+v", sink.results[0], sink.results[1])
 	}
 }

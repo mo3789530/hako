@@ -36,12 +36,12 @@ func (s DBStore) SaveActionsRunnerID(ctx context.Context, check githubwebhook.Ac
 	return err
 }
 
-func (s DBStore) Load(ctx context.Context, tenantID domain.TenantID, runID domain.WorkloadRunID) (DesiredCheck, error) {
+func (s DBStore) Load(ctx context.Context, tenantID domain.TenantID, runID domain.WorkloadRunID, pipelineName string) (DesiredCheck, error) {
 	if s.Pool == nil || ctx == nil {
 		return DesiredCheck{}, errors.New("context and GitHub Check database are required")
 	}
 	return transaction.Within(ctx, s.Pool, s.Policy, func(ctx context.Context, tx pgx.Tx) (DesiredCheck, error) {
-		check, err := workloads.GetGitHubCheck(ctx, tx, tenantID, runID)
+		check, err := workloads.GetGitHubPipelineCheck(ctx, tx, tenantID, runID, pipelineName)
 		if err != nil {
 			return DesiredCheck{}, err
 		}
@@ -53,12 +53,12 @@ func (s DBStore) Load(ctx context.Context, tenantID domain.TenantID, runID domai
 	})
 }
 
-func (s DBStore) SaveID(ctx context.Context, tenantID domain.TenantID, runID domain.WorkloadRunID, commitSHA string, checkRunID int64, now time.Time) error {
+func (s DBStore) SaveID(ctx context.Context, tenantID domain.TenantID, runID domain.WorkloadRunID, pipelineName, commitSHA string, checkRunID int64, now time.Time) error {
 	if s.Pool == nil || ctx == nil {
 		return errors.New("context and GitHub Check database are required")
 	}
 	_, err := transaction.Within(ctx, s.Pool, s.Policy, func(ctx context.Context, tx pgx.Tx) (struct{}, error) {
-		return struct{}{}, workloads.SaveGitHubCheckRunID(ctx, tx, tenantID, runID, commitSHA, checkRunID, now)
+		return struct{}{}, workloads.SaveGitHubPipelineCheckRunID(ctx, tx, tenantID, runID, pipelineName, commitSHA, checkRunID, now)
 	})
 	return err
 }

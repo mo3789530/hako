@@ -36,16 +36,16 @@ type failFirstSaveStore struct {
 	failed   bool
 }
 
-func (s *failFirstSaveStore) Load(ctx context.Context, tenant domain.TenantID, run domain.WorkloadRunID) (DesiredCheck, error) {
-	return s.delegate.Load(ctx, tenant, run)
+func (s *failFirstSaveStore) Load(ctx context.Context, tenant domain.TenantID, run domain.WorkloadRunID, pipelineName string) (DesiredCheck, error) {
+	return s.delegate.Load(ctx, tenant, run, pipelineName)
 }
 
-func (s *failFirstSaveStore) SaveID(ctx context.Context, tenant domain.TenantID, run domain.WorkloadRunID, sha string, id int64, now time.Time) error {
+func (s *failFirstSaveStore) SaveID(ctx context.Context, tenant domain.TenantID, run domain.WorkloadRunID, pipelineName, sha string, id int64, now time.Time) error {
 	if !s.failed {
 		s.failed = true
 		return errors.New("simulated database failure after remote Check create")
 	}
-	return s.delegate.SaveID(ctx, tenant, run, sha, id, now)
+	return s.delegate.SaveID(ctx, tenant, run, pipelineName, sha, id, now)
 }
 
 func (s *failFirstSaveStore) LoadActionsRunner(ctx context.Context, integrationID string, workflowJobID, runAttempt int64) (githubwebhook.ActionsRunnerCheck, error) {
@@ -194,12 +194,13 @@ func TestPostgresActionsRunnerCheckOutboxToGitHubEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	externalID := "hako-actions-runner/integration_runner_e2e/7815/1"
+	correlationID := "req_87654321-4321-4321-8321-cba987654321"
 	if _, err := pool.Exec(ctx, `INSERT INTO github_actions_runner_checks
-		(integration_id,workflow_job_id,run_attempt,tenant_id,installation_id,repository_id,workflow_run_id,commit_sha,check_name,external_id,status,conclusion,started_at,completed_at,output_title,output_summary,revision,updated_at)
-		VALUES ('integration_runner_e2e',7815,1,'tenant_runner_check_e2e',7813,7814,7816,$1,'Hako Actions Runner',$2,'completed','success',$3,$3,'Hako Actions Runner','GitHub reported this workflow job completed with conclusion: success.',3,$3)`, sha, externalID, now); err != nil {
+		(integration_id,workflow_job_id,run_attempt,tenant_id,installation_id,repository_id,workflow_run_id,commit_sha,check_name,external_id,status,conclusion,started_at,completed_at,output_title,output_summary,revision,updated_at,correlation_id)
+		VALUES ('integration_runner_e2e',7815,1,'tenant_runner_check_e2e',7813,7814,7816,$1,'Hako Actions Runner',$2,'completed','success',$3,$3,'Hako Actions Runner','GitHub reported this workflow job completed with conclusion: success.',3,$3,$4)`, sha, externalID, now, correlationID); err != nil {
 		t.Fatal(err)
 	}
-	payload := `{"schema_version":1,"integration_id":"integration_runner_e2e","workflow_job_id":7815,"run_attempt":1,"revision":3}`
+	payload := `{"schema_version":1,"integration_id":"integration_runner_e2e","workflow_job_id":7815,"run_attempt":1,"correlation_id":"` + correlationID + `","revision":3}`
 	if _, err := pool.Exec(ctx, `INSERT INTO outbox_events (id,aggregate_type,aggregate_id,event_type,payload_json,created_at,published_at,attempt)
 		VALUES ('evt_runner_check_e2e','github_actions_runner_job','integration_runner_e2e:7815:1','github_actions_runner_job.github_check_requested',$1,$2,NULL,0)`, payload, now); err != nil {
 		t.Fatal(err)
@@ -254,12 +255,12 @@ func TestPostgresActionsRunnerCheckOutboxToGitHubEndToEnd(t *testing.T) {
 		t.Fatalf("deliver runner Check: stats=%+v deleted=%v err=%v", result, queue.deleted, err)
 	}
 	var checkRunID int64
-	var status, conclusion string
-	if err := pool.QueryRow(ctx, `SELECT check_run_id,status,conclusion FROM github_actions_runner_checks
-		WHERE integration_id='integration_runner_e2e' AND workflow_job_id=7815 AND run_attempt=1`).Scan(&checkRunID, &status, &conclusion); err != nil {
+	var status, conclusion, storedCorrelationID string
+	if err := pool.QueryRow(ctx, `SELECT check_run_id,status,conclusion,COALESCE(correlation_id,'') FROM github_actions_runner_checks
+		WHERE integration_id='integration_runner_e2e' AND workflow_job_id=7815 AND run_attempt=1`).Scan(&checkRunID, &status, &conclusion, &storedCorrelationID); err != nil {
 		t.Fatal(err)
 	}
-	if checkRunID != 9815 || status != "completed" || conclusion != "success" {
-		t.Fatalf("durable runner Check = (%d,%s,%s), want (9815,completed,success)", checkRunID, status, conclusion)
+	if checkRunID != 9815 || status != "completed" || conclusion != "success" || storedCorrelationID != correlationID {
+		t.Fatalf("durable runner Check = (%d,%s,%s,%s), want (9815,completed,success,%s)", checkRunID, status, conclusion, storedCorrelationID, correlationID)
 	}
 }

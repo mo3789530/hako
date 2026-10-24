@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/workloadjournal"
 )
 
@@ -64,7 +65,7 @@ func TestEd25519TicketIsShortLivedAndBoundToVMIdentityAndOperation(t *testing.T)
 	}
 }
 
-func TestAgentTicketV2SignsPipelineTriggerContextAndRetainsV1ForLegacy(t *testing.T) {
+func TestAgentTicketV2SignsPipelineTriggerAndCorrelationContext(t *testing.T) {
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -73,7 +74,7 @@ func TestAgentTicketV2SignsPipelineTriggerContextAndRetainsV1ForLegacy(t *testin
 	issuer := &Ed25519TicketIssuer{KeyID: "rp-key-v2", PrivateKey: privateKey, Now: func() time.Time { return now }}
 	id := testIdentity()
 	binding := ExecutionBinding{SourceDigest: strings.Repeat("a", 64), CommitSHA: strings.Repeat("b", 40),
-		TriggerEvent: "pull_request", TriggerBranch: "release/2026.10", Deadline: now.Add(time.Hour)}
+		TriggerEvent: "pull_request", TriggerBranch: "release/2026.10", CorrelationID: "req_cccccccc-cccc-4ccc-8ccc-cccccccccccc", Deadline: now.Add(time.Hour)}
 	ticket, err := issuer.IssueExecution("microvm_1", id, OperationStart, binding)
 	if err != nil {
 		t.Fatal(err)
@@ -90,6 +91,24 @@ func TestAgentTicketV2SignsPipelineTriggerContextAndRetainsV1ForLegacy(t *testin
 	legacyClaims, err := VerifyTicketClaims(legacy, map[string]ed25519.PublicKey{"rp-key-v2": publicKey}, id, OperationStart, now)
 	if err != nil || legacyClaims.Version != 1 {
 		t.Fatalf("legacy ticket compatibility = %+v, error=%v", legacyClaims, err)
+	}
+
+	agentBinding := ExecutionBinding{Kind: domain.WorkloadAgent, AgentIntegrationID: "integration_1", AgentInstallationID: 71, AgentRepositoryID: 81,
+		AgentTaskContextSHA256: strings.Repeat("c", 64),
+		SourceDigest:           binding.SourceDigest, CommitSHA: binding.CommitSHA,
+		TriggerEvent: "issue_comment", TriggerBranch: "main", CorrelationID: binding.CorrelationID, Deadline: binding.Deadline}
+	agentTicket, err := issuer.IssueExecution("microvm_1", id, OperationStart, agentBinding)
+	if err != nil {
+		t.Fatalf("issue Agent ticket: %v", err)
+	}
+	agentClaims, err := VerifyTicketClaims(agentTicket, map[string]ed25519.PublicKey{"rp-key-v2": publicKey}, id, OperationStart, now)
+	if err != nil || agentClaims.Version != 3 || agentClaims.Execution == nil || *agentClaims.Execution != agentBinding {
+		t.Fatalf("Issue Agent ticket claims = %+v, error=%v", agentClaims, err)
+	}
+	if _, err := issuer.IssueExecution("microvm_1", id, OperationStart, ExecutionBinding{Kind: domain.WorkloadAgent,
+		AgentIntegrationID: "integration_1", AgentInstallationID: 71, AgentRepositoryID: 81,
+		SourceDigest: binding.SourceDigest, CommitSHA: binding.CommitSHA, TriggerEvent: "push", TriggerBranch: "main", Deadline: binding.Deadline}); err == nil {
+		t.Fatal("Agent ticket accepted a Job trigger")
 	}
 }
 

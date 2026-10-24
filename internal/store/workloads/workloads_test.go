@@ -102,3 +102,20 @@ func TestValidateArtifactStorageAndRedaction(t *testing.T) {
 		t.Fatalf("redacted logs rejected: %v", err)
 	}
 }
+
+func TestExpiredArtifactStoreOperationsRequireBoundedInputs(t *testing.T) {
+	if _, err := ListExpiredArtifacts(t.Context(), nil, time.Now(), 1); err == nil {
+		t.Fatal("expired artifact listing accepted a nil transaction")
+	}
+	for _, limit := range []int{0, MaxExpiredArtifactBatchSize + 1} {
+		if _, err := ListExpiredArtifacts(t.Context(), nil, time.Now(), limit); err == nil {
+			t.Errorf("expired artifact listing accepted invalid batch size %d", limit)
+		}
+	}
+	if _, err := ListExpiredArtifacts(t.Context(), nil, time.Time{}, 1); err == nil {
+		t.Fatal("expired artifact listing accepted a zero time")
+	}
+	if _, err := DeleteExpiredArtifact(t.Context(), nil, domain.WorkloadArtifact{}, time.Now()); err == nil {
+		t.Fatal("expired artifact deletion accepted incomplete identity")
+	}
+}

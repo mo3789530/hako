@@ -138,6 +138,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	agentTaskCallers, err := configuredResourcePlaneCallers(os.Getenv("HAKO_GITHUB_BROKER_AGENT_TASK_RESOURCE_PLANE_IDS"), "HAKO_GITHUB_BROKER_AGENT_TASK_RESOURCE_PLANE_IDS")
+	if err != nil {
+		return err
+	}
 	runnerDeregistrator, err := githubbroker.NewAWSActionsRunnerDeregistrator(awsConfig, pool, policy, nil)
 	if err != nil {
 		return errors.New("configure GitHub Actions runner deregistration broker")
@@ -197,6 +201,14 @@ func run() error {
 			return errors.New("configure Tenant model credential broker")
 		}
 	}
+	agentIssueReader, err := githubbroker.NewAWSAgentIssueContextReader(awsConfig, pool, policy, nil)
+	if err != nil {
+		return errors.New("configure GitHub Agent Issue context reader")
+	}
+	agentIssueContext, err := githubbroker.NewAgentIssueContextService(githubbroker.NewPostgresAgentIssueContextResolver(pool, policy), agentIssueReader)
+	if err != nil {
+		return errors.New("configure GitHub Agent Issue context service")
+	}
 	tlsConfig, err := serverTLSConfigFromEnv()
 	if err != nil {
 		return err
@@ -206,6 +218,18 @@ func run() error {
 		addr = defaultListenAddr
 	}
 	handler := githubbroker.HandlerWithActionsRunnerChecksLifecycle(oauth, checkout, checks, checkoutCallers, actionsRunner, runnerCleanup, runnerCleanupCallers, runnerBinding, runnerCleanupCallers, runnerBootstrapToken, runnerCleanupCallers, runnerLaunch, runnerCleanupCallers, runnerStartupFailure, runnerCleanupCallers, runnerModelCredential, runnerChecks)
+	handler = githubbroker.WithAgentIssueContext(handler, agentIssueContext)
+	if len(agentTaskCallers) > 0 {
+		planeIDs := make([]string, 0, len(agentTaskCallers))
+		for _, caller := range agentTaskCallers {
+			planeIDs = append(planeIDs, strings.TrimPrefix(caller, "spiffe://hako/resource-plane/"))
+		}
+		service, serviceErr := githubbroker.NewAgentTaskService(planeIDs, githubbroker.NewPostgresAgentTaskResolver(pool, policy, nil))
+		if serviceErr != nil {
+			return errors.New("configure Agent task resolver")
+		}
+		handler = githubbroker.WithAgentTask(handler, service)
+	}
 	if len(runnerBindingIDs) > 0 {
 		cleanupQueue, err := githubbroker.NewActionsRunnerCleanupQueueService(pool, policy, runnerBindingIDs)
 		if err != nil {
@@ -229,6 +253,10 @@ func run() error {
 }
 
 func configuredRunnerCleanupCallers(raw string) ([]string, error) {
+	return configuredResourcePlaneCallers(raw, "HAKO_GITHUB_BROKER_ACTIONS_RUNNER_RESOURCE_PLANE_IDS")
+}
+
+func configuredResourcePlaneCallers(raw, variable string) ([]string, error) {
 	if strings.TrimSpace(raw) == "" {
 		return nil, nil
 	}
@@ -238,10 +266,10 @@ func configuredRunnerCleanupCallers(raw string) ([]string, error) {
 		id := strings.TrimSpace(rawID)
 		caller, err := githubbroker.ResourcePlaneCallerID(id)
 		if err != nil {
-			return nil, errors.New("HAKO_GITHUB_BROKER_ACTIONS_RUNNER_RESOURCE_PLANE_IDS contains an invalid Resource Plane ID")
+			return nil, fmt.Errorf("%s contains an invalid Resource Plane ID", variable)
 		}
 		if _, exists := seen[caller]; exists {
-			return nil, errors.New("HAKO_GITHUB_BROKER_ACTIONS_RUNNER_RESOURCE_PLANE_IDS contains duplicates")
+			return nil, fmt.Errorf("%s contains duplicates", variable)
 		}
 		seen[caller] = struct{}{}
 		callers = append(callers, caller)

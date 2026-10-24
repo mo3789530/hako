@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mo3789530/hako/internal/agenttask"
 	"github.com/mo3789530/hako/internal/api"
 	"github.com/mo3789530/hako/internal/auth"
 	"github.com/mo3789530/hako/internal/store/githubregistry"
@@ -140,5 +141,54 @@ func manageGitHubRepositoryActionsRunnerWorkflowPolicyCLI(args []string) (api.Gi
 		return api.GitHubRepositoryActionsRunnerWorkflowPolicyResult{}, err
 	}
 	return api.SetGitHubRepositoryActionsRunnerWorkflowPolicy(context.Background(), strings.TrimSpace(os.Getenv("HAKO_API_URL")), token,
+		input.tenantID, input.installationID, input.repositoryID, policy, nil)
+}
+
+type githubRepositoryAgentWritePolicyCLIInput struct {
+	tenantID       string
+	installationID int64
+	repositoryID   int64
+	policyFile     string
+}
+
+func parseGitHubRepositoryAgentWritePolicyCLI(args []string) (githubRepositoryAgentWritePolicyCLIInput, error) {
+	var input githubRepositoryAgentWritePolicyCLIInput
+	if len(args) == 0 || args[0] != "set" {
+		return input, errors.New("action must be set")
+	}
+	flags := flag.NewFlagSet("github repository agent-policy set", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&input.tenantID, "tenant", "", "Tenant ID")
+	flags.Int64Var(&input.installationID, "installation", 0, "GitHub Installation ID")
+	flags.Int64Var(&input.repositoryID, "repository", 0, "GitHub Repository ID")
+	flags.StringVar(&input.policyFile, "policy-file", "", "Path to JSON Agent write policy")
+	if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 || strings.TrimSpace(input.tenantID) == "" || input.installationID <= 0 || input.repositoryID <= 0 || strings.TrimSpace(input.policyFile) == "" {
+		return githubRepositoryAgentWritePolicyCLIInput{}, errors.New("--tenant, positive --installation, positive --repository, and --policy-file are required")
+	}
+	input.tenantID = strings.TrimSpace(input.tenantID)
+	input.policyFile = strings.TrimSpace(input.policyFile)
+	return input, nil
+}
+
+func manageGitHubRepositoryAgentWritePolicyCLI(args []string) (api.GitHubRepositoryAgentWritePolicyResult, error) {
+	input, err := parseGitHubRepositoryAgentWritePolicyCLI(args)
+	if err != nil {
+		return api.GitHubRepositoryAgentWritePolicyResult{}, err
+	}
+	data, err := os.ReadFile(input.policyFile)
+	if err != nil || len(data) == 0 || len(data) > 16<<10 {
+		return api.GitHubRepositoryAgentWritePolicyResult{}, errors.New("read Agent write policy file")
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	var policy agenttask.WritePolicy
+	if decoder.Decode(&policy) != nil || decoder.Decode(new(any)) != io.EOF || policy.Validate() != nil {
+		return api.GitHubRepositoryAgentWritePolicyResult{}, errors.New("Agent write policy file is invalid")
+	}
+	token, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
+	if err != nil {
+		return api.GitHubRepositoryAgentWritePolicyResult{}, err
+	}
+	return api.SetGitHubRepositoryAgentWritePolicy(context.Background(), strings.TrimSpace(os.Getenv("HAKO_API_URL")), token,
 		input.tenantID, input.installationID, input.repositoryID, policy, nil)
 }

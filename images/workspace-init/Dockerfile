@@ -16,13 +16,32 @@ RUN test -n "${CODE_SERVER_VERSION}" \
     && rm -f /tmp/code-server.tar.gz \
     && dnf clean all
 
+FROM public.ecr.aws/lambda/microvms:al2023-minimal AS nerdctl
+ARG NERDCTL_FULL_VERSION
+ARG NERDCTL_FULL_SHA256
+COPY nerdctl-full-linux-arm64.tar.gz /tmp/nerdctl-full-linux-arm64.tar.gz
+RUN case "${NERDCTL_FULL_VERSION}" in ''|*[!0-9.]* ) exit 1 ;; esac \
+    && echo "${NERDCTL_FULL_SHA256}" | grep -Eq '^[[:xdigit:]]{64}$' \
+    && echo "${NERDCTL_FULL_SHA256}  /tmp/nerdctl-full-linux-arm64.tar.gz" | sha256sum --check \
+    && mkdir -p /opt/hako-nerdctl \
+    && tar -xzf /tmp/nerdctl-full-linux-arm64.tar.gz --no-same-owner --no-same-permissions -C /opt/hako-nerdctl \
+    && test -x /opt/hako-nerdctl/bin/nerdctl \
+    && test -x /opt/hako-nerdctl/bin/containerd \
+    && test -x /opt/hako-nerdctl/bin/containerd-rootless.sh \
+    && test -x /opt/hako-nerdctl/bin/rootlesskit \
+    && test -x /opt/hako-nerdctl/bin/slirp4netns \
+    && /opt/hako-nerdctl/bin/nerdctl --version | grep -Fx "nerdctl version ${NERDCTL_FULL_VERSION}" \
+    && rm -f /tmp/nerdctl-full-linux-arm64.tar.gz
+
 FROM public.ecr.aws/lambda/microvms:al2023-minimal
+ARG HAKO_WORKSPACE_SERVICES_ENABLED=false
 
 # Pin the helper RPM version at image build time. The build fails closed if a
 # version is omitted, so the produced image can be reproduced and audited.
 ARG EFS_UTILS_RPM_VERSION
 RUN test -n "${EFS_UTILS_RPM_VERSION}" \
-    && dnf install -y --setopt=install_weak_deps=False "amazon-efs-utils-${EFS_UTILS_RPM_VERSION}" \
+    && case "${HAKO_WORKSPACE_SERVICES_ENABLED}" in true|false) ;; *) exit 1 ;; esac \
+    && dnf install -y --setopt=install_weak_deps=False "amazon-efs-utils-${EFS_UTILS_RPM_VERSION}" shadow-utils \
     && dnf clean all \
     && test -x /sbin/mount.efs \
     && mkdir -p /run/hako /workspace \
@@ -34,12 +53,20 @@ COPY hako-workspace-init /usr/local/bin/hako-workspace-init
 COPY hako-workspace-agent /usr/local/bin/hako-workspace-agent
 COPY trusted-keys.json /etc/hako/workspace-agent-public-keys.json
 COPY --from=code-server /opt/hako-code-server/ /opt/hako-code-server/
+COPY --from=nerdctl /opt/hako-nerdctl/ /usr/local/
 
 RUN ln -s /opt/hako-code-server/bin/code-server /usr/local/bin/code-server \
     && chmod 0755 /usr/local/bin/hako-workspace-init /usr/local/bin/hako-workspace-agent \
-    && chmod 0444 /etc/hako/workspace-agent-public-keys.json
+    && chmod 0444 /etc/hako/workspace-agent-public-keys.json \
+    && test -x /usr/local/bin/nerdctl \
+    && test -x /usr/local/bin/containerd-rootless.sh \
+    && test -x /usr/bin/newuidmap \
+    && test -x /usr/bin/newgidmap \
+    && test -u /usr/bin/newuidmap \
+    && test -u /usr/bin/newgidmap
 
 EXPOSE 8080
 ENV HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE=/etc/hako/workspace-agent-public-keys.json
+ENV HAKO_WORKSPACE_SERVICES_ENABLED=${HAKO_WORKSPACE_SERVICES_ENABLED}
 USER 0:0
 ENTRYPOINT ["/usr/local/bin/hako-workspace-init"]

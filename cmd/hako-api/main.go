@@ -22,6 +22,7 @@ import (
 	"github.com/mo3789530/hako/internal/api"
 	"github.com/mo3789530/hako/internal/apigwlambda"
 	"github.com/mo3789530/hako/internal/auth"
+	"github.com/mo3789530/hako/internal/deploypolicy"
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/githubapp"
 	"github.com/mo3789530/hako/internal/githubwebhook"
@@ -58,17 +59,28 @@ func main() {
 		WorkloadRunsEnabled:            strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_WORKLOAD_RUNS_ENABLED")), "true"),
 		WebhookWorkloadTriggersEnabled: strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_WEBHOOK_WORKLOAD_TRIGGERS_ENABLED")), "true"),
 		GitHubAppManagementEnabled:     strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_GITHUB_APP_MANAGEMENT_ENABLED")), "true"),
+		GitHubOIDCPolicyVerifier:       deploypolicy.NewGitHubVerifier(nil),
 	}
 	healthReportKeyResolver, err := resourcePlaneHealthReportKeyResolverFromEnv(ctx)
 	if err != nil {
 		log.Fatal("configure Resource Plane health report credentials")
 	}
 	createConfig.ResourcePlaneHealthReportKeyResolver = healthReportKeyResolver
+	serviceReportKeyResolver, err := resourcePlaneServiceReportKeyResolverFromEnv(ctx)
+	if err != nil {
+		log.Fatal("configure Resource Plane Workspace Service report credentials")
+	}
+	createConfig.ResourcePlaneServiceReportKeyResolver = serviceReportKeyResolver
 	workloadSpecKeyResolver, err := resourcePlaneWorkloadSpecKeyResolverFromEnv(ctx)
 	if err != nil {
 		log.Fatal("configure Resource Plane Workload specification credentials")
 	}
 	createConfig.ResourcePlaneWorkloadSpecKeyResolver = workloadSpecKeyResolver
+	artifactCleanupKeyResolver, err := resourcePlaneArtifactCleanupKeyResolverFromEnv(ctx)
+	if err != nil {
+		log.Fatal("configure Resource Plane Artifact cleanup credentials")
+	}
+	createConfig.ResourcePlaneArtifactCleanupKeyResolver = artifactCleanupKeyResolver
 	workspaceSessionKeyResolver, err := resourcePlaneWorkspaceSessionKeyResolverFromEnv(ctx)
 	if err != nil {
 		log.Fatal("configure Resource Plane Workspace Session credentials")
@@ -214,6 +226,36 @@ func resourcePlaneHealthReportKeyResolverFromEnv(ctx context.Context) (api.Resou
 	}, nil
 }
 
+func resourcePlaneServiceReportKeyResolverFromEnv(ctx context.Context) (api.ResourcePlaneServiceReportKeyResolver, error) {
+	raw := strings.TrimSpace(os.Getenv("HAKO_RESOURCE_PLANE_SERVICE_REPORT_SECRET_ARNS"))
+	if raw == "" {
+		return nil, nil
+	}
+	secretARNs, err := parseResourcePlaneSecretARNMap(raw)
+	if err != nil {
+		return nil, errors.New("Resource Plane Workspace Service report Secret map is invalid")
+	}
+	if len(secretARNs) == 0 {
+		return nil, nil
+	}
+	awsConfig, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
+		return nil, errors.New("configure Workspace Service report Secret reader")
+	}
+	secretClient := secretsmanager.NewFromConfig(awsConfig)
+	return func(ctx context.Context, resourcePlaneID domain.ResourcePlaneID) ([]byte, error) {
+		secretARN, ok := secretARNs[string(resourcePlaneID)]
+		if !ok {
+			return nil, errors.New("Workspace Service report identity is not configured")
+		}
+		output, err := secretClient.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: &secretARN})
+		if err != nil || output.SecretString == nil || len(*output.SecretString) < 32 {
+			return nil, errors.New("Workspace Service report key is unavailable")
+		}
+		return []byte(*output.SecretString), nil
+	}, nil
+}
+
 func parseResourcePlaneHealthSecretARNMap(raw string) (map[string]string, error) {
 	return parseResourcePlaneSecretARNMap(raw)
 }
@@ -261,6 +303,36 @@ func resourcePlaneWorkloadSpecKeyResolverFromEnv(ctx context.Context) (api.Resou
 		output, err := secretClient.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: &secretARN})
 		if err != nil || output == nil || output.SecretString == nil || len(*output.SecretString) < 32 {
 			return nil, errors.New("Workload specification key is unavailable")
+		}
+		return []byte(*output.SecretString), nil
+	}, nil
+}
+
+func resourcePlaneArtifactCleanupKeyResolverFromEnv(ctx context.Context) (api.ResourcePlaneArtifactCleanupKeyResolver, error) {
+	raw := strings.TrimSpace(os.Getenv("HAKO_RESOURCE_PLANE_ARTIFACT_CLEANUP_SECRET_ARNS"))
+	if raw == "" {
+		return nil, nil
+	}
+	secretARNs, err := parseResourcePlaneSecretARNMap(raw)
+	if err != nil {
+		return nil, errors.New("Resource Plane Artifact cleanup Secret map is invalid")
+	}
+	if len(secretARNs) == 0 {
+		return nil, nil
+	}
+	awsConfig, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
+		return nil, errors.New("configure Resource Plane Artifact cleanup Secret reader")
+	}
+	secretClient := secretsmanager.NewFromConfig(awsConfig)
+	return func(ctx context.Context, resourcePlaneID domain.ResourcePlaneID) ([]byte, error) {
+		secretARN, ok := secretARNs[string(resourcePlaneID)]
+		if !ok {
+			return nil, errors.New("Artifact cleanup identity is not configured")
+		}
+		output, err := secretClient.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: &secretARN})
+		if err != nil || output == nil || output.SecretString == nil || len(*output.SecretString) < 32 || len(*output.SecretString) > 4096 {
+			return nil, errors.New("Artifact cleanup key is unavailable")
 		}
 		return []byte(*output.SecretString), nil
 	}, nil

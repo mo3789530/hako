@@ -38,8 +38,8 @@ func TestResourcePlaneWorkloadSpecRouteAuthenticatesAndRevalidatesCurrentAttempt
 		{`INSERT INTO tenant_github_installations(tenant_id,installation_id,account_login,status,requested_by,requested_at,updated_at) VALUES ('tenant_spec_api',171,'acme','active','usr_spec_api',$1,$1)`, []any{now}},
 		{`INSERT INTO github_app_installation_bindings(installation_id,tenant_id,bound_at) VALUES (171,'tenant_spec_api',$1)`, []any{now}},
 		{`INSERT INTO tenant_github_repositories(tenant_id,installation_id,github_repository_id,owner_login,repository_name,default_branch,synchronized_at) VALUES ('tenant_spec_api',171,181,'acme','api','main',$1)`, []any{now}},
-		{`INSERT INTO workload_runs(id,tenant_id,kind,github_installation_id,github_repository_id,commit_sha,ref,runtime_class,trust_level,desired_state,state,resource_plane_id,idempotency_key,request_hash,timeout_seconds,timeout_at,revision,created_at,updated_at)
-		 VALUES ('run_spec_api','tenant_spec_api','job',171,181,$1,'refs/heads/main','standard','untrusted','running','provisioning','rp_spec_api','key_spec_api','hash_spec_api',600,$2,2,$3,$3)`, []any{strings.Repeat("b", 40), now.Add(10 * time.Minute), now}},
+		{`INSERT INTO workload_runs(id,tenant_id,kind,github_installation_id,github_repository_id,correlation_id,commit_sha,ref,runtime_class,trust_level,desired_state,state,resource_plane_id,idempotency_key,request_hash,timeout_seconds,timeout_at,revision,created_at,updated_at)
+		 VALUES ('run_spec_api','tenant_spec_api','job',171,181,'req_22222222-2222-4222-8222-222222222222',$1,'refs/heads/main','standard','untrusted','running','provisioning','rp_spec_api','key_spec_api','hash_spec_api',600,$2,2,$3,$3)`, []any{strings.Repeat("b", 40), now.Add(10 * time.Minute), now}},
 		{`INSERT INTO workload_run_attempts(id,tenant_id,workload_run_id,generation,attempt_number,resource_plane_id,idempotency_token,state,created_at,updated_at)
 		 VALUES ('attempt_spec_api','tenant_spec_api','run_spec_api',1,1,'rp_spec_api','token_spec_api','dispatch_pending',$1,$1)`, []any{now}},
 	}
@@ -86,8 +86,9 @@ func TestResourcePlaneWorkloadSpecRouteAuthenticatesAndRevalidatesCurrentAttempt
 	if err := json.Unmarshal(valid.Body.Bytes(), &metadata); err != nil {
 		t.Fatal(err)
 	}
-	if metadata.SchemaVersion != 2 || metadata.TenantID != "tenant_spec_api" || metadata.WorkloadRunID != "run_spec_api" ||
+	if metadata.SchemaVersion != 3 || metadata.Kind != domain.WorkloadJob || metadata.TenantID != "tenant_spec_api" || metadata.WorkloadRunID != "run_spec_api" ||
 		metadata.AttemptID != "attempt_spec_api" || metadata.Generation != 1 || metadata.ResourcePlaneID != "rp_spec_api" ||
+		metadata.CorrelationID != "req_22222222-2222-4222-8222-222222222222" ||
 		metadata.GitHubOwner != "acme" || metadata.GitHubRepository != "api" || metadata.CommitSHA != strings.Repeat("b", 40) ||
 		metadata.RuntimeClass != "standard" || !metadata.RequestedAt.Equal(now) || !metadata.Deadline.Equal(now.Add(10*time.Minute)) {
 		t.Fatalf("unexpected API execution metadata: %+v", metadata)

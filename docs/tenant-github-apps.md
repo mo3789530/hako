@@ -1,6 +1,6 @@
 # Tenant別GitHub App設計
 
-Status: **Tasks 56–59、66–71のlocal実装/E2Eを確認中。Tenant Appのproduction有効化は未完了でdefault-off**。Draft proof、OAuth setup/API/CLI adapter、Webhook resolver/authorization/generation再検証、Installation/Run identity pin、Run-pinned checkout broker、revision/generation-fenced dry-run/backfillとlegacy Run drain guard、二Tenantのsetup→Webhook→Run→checkout E2Eを実装。API binaryはprivate-key reader roleを直接assumeせず、broker未設定時はowned setup/verifyをfail closedにする。Tenant Webhook routeは専用flagでopt-in可能だが、real role trust/Secret provisioningは未実施。broker certificate lifecycle、worker wiringとproduction rolloutは残る。現行共通App方式は維持する。
+Status: **Tasks 56–59、66–71のlocal実装/E2E済み。Tenant Appのproduction有効化は未完了でdefault-off**。Draft proof、OAuth setup/API/CLI adapter、Webhook resolver/authorization/generation再検証、Installation/Run identity pin、Run-pinned checkout broker、Resource Plane Worker checkout composition、revision/generation-fenced dry-run/backfillとlegacy Run drain guard、二Tenantのsetup→Webhook→Run→checkout E2Eを実装。API binaryはprivate-key reader roleを直接assumeせず、broker未設定時はowned setup/verifyをfail closedにする。Control Plane Terraformはbroker roleにだけexact private-key reader ARNへの`sts:AssumeRole`を付与し、Webhook-purpose Roleとの重複を拒否する。Tenant Webhook routeは専用flagでopt-in可能だが、cross-account Role trust/Secret/KMS provisioningは未実施。broker certificate lifecycleとproduction rolloutは残る。現行共通App方式は維持する。
 決定事項は[ADR 0007](adr/0007-tenant-github-apps.md)、既存資格情報実装は
 [GitHub App credentials](github-app-credentials.md)を参照。
 

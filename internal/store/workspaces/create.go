@@ -16,6 +16,7 @@ import (
 	"github.com/mo3789530/hako/internal/scheduler"
 	"github.com/mo3789530/hako/internal/store/audit"
 	"github.com/mo3789530/hako/internal/store/operations"
+	"github.com/mo3789530/hako/internal/store/quotas"
 	"github.com/mo3789530/hako/internal/store/resourcecapacity"
 	"github.com/mo3789530/hako/internal/store/transaction"
 )
@@ -28,7 +29,7 @@ var ErrWorkspaceQuotaExceeded = errors.New("tenant workspace quota exceeded")
 
 const maxCreateRaceRetries = 5
 
-const MaxWorkspacesPerTenant = 10
+const MaxWorkspacesPerTenant = int(quotas.MaxWorkspaces)
 
 type CreateInput struct {
 	TenantID             domain.TenantID
@@ -42,6 +43,7 @@ type CreateInput struct {
 	// API requests leave it empty so the scheduler chooses an eligible plane.
 	ResourcePlaneID domain.ResourcePlaneID
 	IdempotencyKey  string
+	CorrelationID   string
 }
 
 type CreateResult struct {
@@ -66,6 +68,7 @@ type operationCommand struct {
 	WorkspaceID       domain.WorkspaceID     `json:"workspace_id"`
 	ResourcePlaneID   domain.ResourcePlaneID `json:"resource_plane_id"`
 	Type              domain.OperationType   `json:"type"`
+	CorrelationID     string                 `json:"correlation_id,omitempty"`
 	CreatedAt         time.Time              `json:"created_at"`
 }
 
@@ -161,12 +164,13 @@ func Create(ctx context.Context, pool transaction.Beginner, input CreateInput, p
 			command, err := json.Marshal(operationCommand{
 				SchemaVersion: 2, WorkspaceRevision: 1, OperationID: selectedOperation.ID, TenantID: selectedOperation.TenantID,
 				WorkspaceID: selectedOperation.WorkspaceID, ResourcePlaneID: selectedOperation.ResourcePlaneID,
-				Type: selectedOperation.Type, CreatedAt: selectedOperation.CreatedAt,
+				Type: selectedOperation.Type, CorrelationID: input.CorrelationID, CreatedAt: selectedOperation.CreatedAt,
 			})
 			if err != nil {
 				return CreateResult{}, fmt.Errorf("encode initial operation command: %w", err)
 			}
-			if err := prepareQuotaSlots(ctx, tx, input.TenantID); err != nil {
+			workspaceLimit, err := prepareQuotaSlots(ctx, tx, input.TenantID, createdAt)
+			if err != nil {
 				return CreateResult{}, err
 			}
 
@@ -201,7 +205,7 @@ func Create(ctx context.Context, pool transaction.Beginner, input CreateInput, p
 			if insertedWorkspaceID != workspace.ID {
 				return CreateResult{}, errors.New("database returned an unexpected Workspace ID")
 			}
-			if err := reserveQuotaSlot(ctx, tx, input.TenantID, workspace.ID); err != nil {
+			if err := reserveQuotaSlot(ctx, tx, input.TenantID, workspace.ID, workspaceLimit); err != nil {
 				return CreateResult{}, err
 			}
 			if _, err := tx.Exec(ctx, `INSERT INTO workspace_status (workspace_id, desired_state, observed_state, updated_at, reconcile_revision) VALUES ($1, $2, $3, $4, 1)`,
@@ -262,10 +266,10 @@ func Create(ctx context.Context, pool transaction.Beginner, input CreateInput, p
 	return CreateResult{}, errors.New("unreachable Workspace create retry state")
 }
 
-// reserveQuotaSlot atomically claims one of a Tenant's fixed quota slots.
+// reserveQuotaSlot atomically claims one of a Tenant's configured quota slots.
 // The unique (tenant_id, slot) key serializes competing creates without relying
 // on SELECT FOR UPDATE, which is not available in Aurora DSQL.
-func reserveQuotaSlot(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, workspaceID domain.WorkspaceID) error {
+func reserveQuotaSlot(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, workspaceID domain.WorkspaceID, limit int16) error {
 	var existing int16
 	err := tx.QueryRow(ctx, `SELECT slot FROM workspace_quota_slots WHERE workspace_id = $1`, workspaceID).Scan(&existing)
 	if err == nil {
@@ -274,7 +278,7 @@ func reserveQuotaSlot(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, 
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("check existing Tenant Workspace quota slot: %w", err)
 	}
-	for slot := int16(1); slot <= MaxWorkspacesPerTenant; slot++ {
+	for slot := int16(1); slot <= limit; slot++ {
 		var claimed int16
 		err := tx.QueryRow(ctx, `INSERT INTO workspace_quota_slots (tenant_id, slot, workspace_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING slot`, tenantID, slot, workspaceID).Scan(&claimed)
 		if err == nil {
@@ -299,61 +303,65 @@ func reserveQuotaSlot(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, 
 // prepareQuotaSlots backfills claims for active Workspaces created before the
 // quota migration. It commits as part of a successful create transaction, and
 // the active Workspace count prevents legacy tenants from exceeding the limit.
-func prepareQuotaSlots(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID) error {
+func prepareQuotaSlots(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, now time.Time) (int16, error) {
+	limits, err := quotas.AdvanceAdmissionGuard(ctx, tx, tenantID, now)
+	if err != nil {
+		return 0, err
+	}
 	var activeCount int
 	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM workspaces w LEFT JOIN workspace_status s ON s.workspace_id = w.id WHERE w.tenant_id = $1 AND COALESCE(s.observed_state, 'pending') <> 'deleted'`, tenantID).Scan(&activeCount); err != nil {
-		return fmt.Errorf("count active Tenant Workspaces: %w", err)
+		return 0, fmt.Errorf("count active Tenant Workspaces: %w", err)
 	}
-	if activeCount >= MaxWorkspacesPerTenant {
-		return ErrWorkspaceQuotaExceeded
+	if activeCount >= int(limits.Workspaces) {
+		return 0, ErrWorkspaceQuotaExceeded
 	}
 	staleRows, err := tx.Query(ctx, `SELECT q.workspace_id FROM workspace_quota_slots q JOIN workspace_status s ON s.workspace_id = q.workspace_id WHERE q.tenant_id = $1 AND s.observed_state = 'deleted'`, tenantID)
 	if err != nil {
-		return fmt.Errorf("find stale Tenant Workspace quota slots: %w", err)
+		return 0, fmt.Errorf("find stale Tenant Workspace quota slots: %w", err)
 	}
 	var staleIDs []domain.WorkspaceID
 	for staleRows.Next() {
 		var id domain.WorkspaceID
 		if err := staleRows.Scan(&id); err != nil {
 			staleRows.Close()
-			return fmt.Errorf("scan stale Workspace quota slot: %w", err)
+			return 0, fmt.Errorf("scan stale Workspace quota slot: %w", err)
 		}
 		staleIDs = append(staleIDs, id)
 	}
 	if err := staleRows.Err(); err != nil {
 		staleRows.Close()
-		return fmt.Errorf("iterate stale Workspace quota slots: %w", err)
+		return 0, fmt.Errorf("iterate stale Workspace quota slots: %w", err)
 	}
 	staleRows.Close()
 	for _, id := range staleIDs {
 		if _, err := tx.Exec(ctx, `DELETE FROM workspace_quota_slots WHERE workspace_id = $1`, id); err != nil {
-			return fmt.Errorf("release stale Workspace quota slot: %w", err)
+			return 0, fmt.Errorf("release stale Workspace quota slot: %w", err)
 		}
 	}
 	rows, err := tx.Query(ctx, `SELECT w.id FROM workspaces w LEFT JOIN workspace_status s ON s.workspace_id = w.id LEFT JOIN workspace_quota_slots q ON q.workspace_id = w.id WHERE w.tenant_id = $1 AND COALESCE(s.observed_state, 'pending') <> 'deleted' AND q.workspace_id IS NULL ORDER BY w.created_at, w.id`, tenantID)
 	if err != nil {
-		return fmt.Errorf("find legacy Tenant Workspaces without quota slots: %w", err)
+		return 0, fmt.Errorf("find legacy Tenant Workspaces without quota slots: %w", err)
 	}
 	var legacyIDs []domain.WorkspaceID
 	for rows.Next() {
 		var id domain.WorkspaceID
 		if err := rows.Scan(&id); err != nil {
 			rows.Close()
-			return fmt.Errorf("scan legacy Workspace quota candidate: %w", err)
+			return 0, fmt.Errorf("scan legacy Workspace quota candidate: %w", err)
 		}
 		legacyIDs = append(legacyIDs, id)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return fmt.Errorf("iterate legacy Workspace quota candidates: %w", err)
+		return 0, fmt.Errorf("iterate legacy Workspace quota candidates: %w", err)
 	}
 	rows.Close()
 	for _, id := range legacyIDs {
-		if err := reserveQuotaSlot(ctx, tx, tenantID, id); err != nil {
-			return err
+		if err := reserveQuotaSlot(ctx, tx, tenantID, id, limits.Workspaces); err != nil {
+			return 0, err
 		}
 	}
-	return nil
+	return limits.Workspaces, nil
 }
 
 func loadCreateResult(ctx context.Context, tx pgx.Tx, operation domain.Operation) (CreateResult, error) {

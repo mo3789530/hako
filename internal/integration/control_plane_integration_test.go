@@ -40,6 +40,7 @@ func TestWorkspaceCreateOutboxAndOperationLifecycle(t *testing.T) {
 		Image:           "hako/go:latest",
 		ResourcePlaneID: "rp_test",
 		IdempotencyKey:  "create-api-dev-001",
+		CorrelationID:   "req_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 	}
 
 	created, err := workspaces.Create(ctx, pool, input, policy)
@@ -68,11 +69,20 @@ func TestWorkspaceCreateOutboxAndOperationLifecycle(t *testing.T) {
 		t.Fatalf("load initial fenced command: %v", err)
 	}
 	var commandFence struct {
-		SchemaVersion     int   `json:"schema_version"`
-		WorkspaceRevision int64 `json:"workspace_revision"`
+		SchemaVersion     int    `json:"schema_version"`
+		WorkspaceRevision int64  `json:"workspace_revision"`
+		CorrelationID     string `json:"correlation_id"`
 	}
-	if err := json.Unmarshal([]byte(commandPayload), &commandFence); err != nil || commandFence.SchemaVersion != 2 || commandFence.WorkspaceRevision != 1 {
+	if err := json.Unmarshal([]byte(commandPayload), &commandFence); err != nil || commandFence.SchemaVersion != 2 || commandFence.WorkspaceRevision != 1 || commandFence.CorrelationID != input.CorrelationID {
 		t.Fatalf("initial command should carry Workspace revision 1: %+v error=%v", commandFence, err)
+	}
+	if _, err := operations.ApplyResult(ctx, pool, policy, operations.ResultInput{
+		OperationID: created.Operation.ID, CorrelationID: "req_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+		WorkspaceRevision: 1, TenantID: created.Workspace.TenantID, WorkspaceID: created.Workspace.ID,
+		ResourcePlaneID: created.Placement.ResourcePlaneID, Type: domain.OperationEnsureRunning,
+		Status: domain.OperationSucceeded, ObservedState: domain.ObservedWorkspaceRunning, CompletedAt: time.Now().UTC(),
+	}); err == nil {
+		t.Fatal("result with a different valid correlation ID must not be attributed to this Operation")
 	}
 
 	replayed, err := workspaces.Create(ctx, pool, input, policy)

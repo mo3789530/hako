@@ -19,10 +19,11 @@ import (
 )
 
 var (
-	idPattern          = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
-	fileSystemPattern  = regexp.MustCompile(`^fs-[0-9a-f]{8,40}$`)
-	accessPointPattern = regexp.MustCompile(`^fsap-[0-9a-f]{8,40}$`)
-	regionPattern      = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)+$`)
+	idPattern               = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+	fileSystemPattern       = regexp.MustCompile(`^fs-[0-9a-f]{8,40}$`)
+	accessPointPattern      = regexp.MustCompile(`^fsap-[0-9a-f]{8,40}$`)
+	regionPattern           = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)+$`)
+	workspaceRoleARNPattern = regexp.MustCompile(`^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:role/hako/workspaces/(hako-ws-[a-f0-9]{32})$`)
 )
 
 type EFSAPI interface {
@@ -40,12 +41,13 @@ type Identity struct {
 // Binding is safe to retain in the Resource Plane journal: it identifies the
 // AP and mountpoint but contains no credentials or AWS secret material.
 type Binding struct {
-	FileSystemID  string `json:"file_system_id"`
-	Region        string `json:"region"`
-	AccessPointID string `json:"access_point_id"`
-	RootPath      string `json:"root_path"`
-	UID           uint32 `json:"uid"`
-	GID           uint32 `json:"gid"`
+	FileSystemID     string `json:"file_system_id"`
+	Region           string `json:"region"`
+	AccessPointID    string `json:"access_point_id"`
+	ExecutionRoleARN string `json:"execution_role_arn,omitempty"`
+	RootPath         string `json:"root_path"`
+	UID              uint32 `json:"uid"`
+	GID              uint32 `json:"gid"`
 }
 
 type ManagedAccessPoint struct {
@@ -68,6 +70,9 @@ func (b Binding) Validate() error {
 		b.UID < 100000 || b.GID != b.UID {
 		return errors.New("Workspace EFS binding is invalid")
 	}
+	if b.ExecutionRoleARN != "" && !workspaceRoleARNPattern.MatchString(b.ExecutionRoleARN) {
+		return errors.New("Workspace execution role binding is invalid")
+	}
 	return nil
 }
 
@@ -81,6 +86,13 @@ func (b Binding) ValidateFor(identity Identity) error {
 	expectedUID := stablePOSIXID(string(identity.TenantID) + ":" + string(identity.WorkspaceID))
 	if b.RootPath != expectedRoot || b.UID != expectedUID || b.GID != expectedUID {
 		return errors.New("Workspace EFS binding does not belong to the requested identity")
+	}
+	if b.ExecutionRoleARN != "" {
+		name, err := ExecutionRoleName(identity)
+		matches := workspaceRoleARNPattern.FindStringSubmatch(b.ExecutionRoleARN)
+		if err != nil || matches == nil || matches[2] != name {
+			return errors.New("Workspace execution role binding does not belong to the requested identity")
+		}
 	}
 	return nil
 }

@@ -51,3 +51,15 @@ func TestResourcePlaneWorkspaceSessionKeyResolverIsOptionalAndValidatesARNMap(t 
 		t.Fatal("invalid Resource Plane session Secret map was accepted")
 	}
 }
+
+func TestResourcePlaneArtifactCleanupKeyResolverIsOptionalAndValidatesARNMap(t *testing.T) {
+	t.Setenv("HAKO_RESOURCE_PLANE_ARTIFACT_CLEANUP_SECRET_ARNS", "")
+	resolver, err := resourcePlaneArtifactCleanupKeyResolverFromEnv(context.Background())
+	if err != nil || resolver != nil {
+		t.Fatalf("unset cleanup key map resolver=%v err=%v", resolver, err)
+	}
+	t.Setenv("HAKO_RESOURCE_PLANE_ARTIFACT_CLEANUP_SECRET_ARNS", `{"rp_a":"not-an-arn"}`)
+	if _, err := resourcePlaneArtifactCleanupKeyResolverFromEnv(context.Background()); err == nil {
+		t.Fatal("invalid Resource Plane Artifact cleanup Secret map was accepted")
+	}
+}

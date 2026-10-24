@@ -110,7 +110,7 @@ func materializeRepositorySource(ctx context.Context, metadata ControlPlaneExecu
 		return MaterializedSource{}, ErrExecutionMetadata
 	}
 	interval := metadata.Deadline.Sub(metadata.RequestedAt)
-	run := domain.WorkloadRun{ID: metadata.WorkloadRunID, TenantID: metadata.TenantID, Kind: domain.WorkloadJob,
+	run := domain.WorkloadRun{ID: metadata.WorkloadRunID, TenantID: metadata.TenantID, Kind: effectiveWorkloadKind(metadata),
 		GitHubInstallation: metadata.GitHubInstallationID, GitHubRepository: metadata.GitHubRepositoryID,
 		GitHubIntegrationID: metadata.GitHubIntegrationID, GitHubConfigRevision: metadata.GitHubConfigRevision,
 		GitHubCredentialGeneration: metadata.GitHubCredentialGen, CommitSHA: metadata.CommitSHA, Ref: metadata.Ref,

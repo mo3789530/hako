@@ -165,6 +165,21 @@ func TestWorkspaceSessionAPIEnforcesRBACPersistsAndRevokesTickets(t *testing.T) 
 	if err != nil || workspacesession.AuthorizeChannel(sshClaims, workspacesession.PermissionSSHProxy) != nil || workspacesession.AuthorizeChannel(sshClaims, workspacesession.PermissionPortForward) == nil {
 		t.Fatalf("SSH proxy ticket must be narrowly scoped: claims=%+v error=%v", sshClaims, err)
 	}
+	execCreated := request("session-owner", http.MethodPost, basePath, `{"permissions":["exec"]}`)
+	var execResponse createWorkspaceSessionResponse
+	if execCreated.Code != http.StatusCreated || json.Unmarshal(execCreated.Body.Bytes(), &execResponse) != nil ||
+		len(execResponse.Permissions) != 1 || execResponse.Permissions[0] != workspacesession.PermissionExec {
+		t.Fatalf("create dedicated exec session = HTTP %d %s", execCreated.Code, execCreated.Body.String())
+	}
+	execClaims, err := workspacesession.Verify(execResponse.Ticket, map[string]ed25519.PublicKey{"session-key-v1": ticketPublic}, workspacesession.AudienceGateway, time.Now())
+	if err != nil || workspacesession.AuthorizeChannel(execClaims, workspacesession.PermissionExec) != nil ||
+		workspacesession.AuthorizeChannel(execClaims, workspacesession.PermissionShell) == nil {
+		t.Fatalf("exec ticket must be narrowly scoped: claims=%+v error=%v", execClaims, err)
+	}
+	var execPermissions string
+	if err := pool.QueryRow(ctx, `SELECT permissions_json::text FROM sessions WHERE id = $1`, execResponse.SessionID).Scan(&execPermissions); err != nil || execPermissions != `["exec"]` {
+		t.Fatalf("exec permission was not persisted canonically: permissions=%q error=%v", execPermissions, err)
+	}
 	var expiredCount int
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM sessions WHERE id = $1`, "000000000000000000000000000000000000000000000000").Scan(&expiredCount); err != nil || expiredCount != 0 {
 		t.Fatalf("expired sessions were not pruned: count=%d error=%v", expiredCount, err)

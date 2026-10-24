@@ -165,6 +165,15 @@ func (r *LambdaMicroVM) Execute(ctx context.Context, command resourcecontroller.
 			if r.storage != nil && snapshot.Journal.StorageBinding == nil {
 				return domain.ObservedWorkspaceFailed, errors.New("Workspace runtime journal has no durable EFS binding; refusing data-loss replacement")
 			}
+			if r.storage != nil {
+				binding, storageErr := r.storage.Ensure(ctx, storageIdentity(command))
+				if storageErr != nil {
+					return domain.ObservedWorkspaceFailed, storageErr
+				}
+				if snapshot.Journal.StorageBinding == nil || binding != *snapshot.Journal.StorageBinding {
+					return domain.ObservedWorkspaceFailed, workspacejournal.ErrConflict
+				}
+			}
 			var spec LaunchSpec
 			spec, err = r.resolver.Resolve(ctx, command)
 			if err == nil {
@@ -196,17 +205,17 @@ func (r *LambdaMicroVM) Execute(ctx context.Context, command resourcecontroller.
 	return r.reconcile(ctx, snapshot)
 }
 
-func (r *LambdaMicroVM) ResourceBinding(ctx context.Context, command resourcecontroller.Command) (string, string, error) {
+func (r *LambdaMicroVM) ResourceBinding(ctx context.Context, command resourcecontroller.Command) (string, string, int64, error) {
 	snapshot, err := r.store.Get(ctx, command.TenantID, command.WorkspaceID, command.ResourcePlaneID)
 	if err != nil {
-		return "", "", err
+		return "", "", 0, err
 	}
 	j := snapshot.Journal
 	if snapshot.ETag == "" || j.Validate() != nil || j.TenantID != command.TenantID || j.WorkspaceID != command.WorkspaceID ||
 		j.ResourcePlaneID != command.ResourcePlaneID || j.WorkspaceRevision != command.WorkspaceRevision || j.OperationID != command.OperationID || j.OperationType != command.Type || j.ProviderID == "" || j.Tombstone {
-		return "", "", workspacejournal.ErrConflict
+		return "", "", 0, workspacejournal.ErrConflict
 	}
-	return "lambda_microvm", j.ProviderID, nil
+	return "lambda_microvm", j.ProviderID, j.AllocationGeneration, nil
 }
 
 func (r *LambdaMicroVM) reconcile(ctx context.Context, snapshot workspacejournal.Snapshot) (domain.ObservedWorkspaceState, error) {
@@ -478,6 +487,12 @@ func (r *LambdaMicroVM) launchRequestForSpec(spec LaunchSpec, command resourceco
 	if storageBinding != nil {
 		if err := storageBinding.ValidateFor(storageIdentity(command)); err != nil {
 			return nil, "", err
+		}
+		if storageBinding.ExecutionRoleARN != "" {
+			spec.ExecutionRoleARN = storageBinding.ExecutionRoleARN
+			if ValidateLaunchSpec(spec) != nil {
+				return nil, "", ErrSpecification
+			}
 		}
 		spec.RunHookPayload, err = workspaceMountHook(spec.RunHookPayload, *storageBinding, storageIdentity(command))
 		if err != nil {

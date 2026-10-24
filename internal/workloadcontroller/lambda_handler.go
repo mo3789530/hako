@@ -3,6 +3,7 @@ package workloadcontroller
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	"github.com/aws/aws-lambda-go/events"
 )
@@ -12,13 +13,14 @@ import (
 // command checkpoint and completed the requested reconcile step.
 type LambdaHandler struct {
 	controller *Controller
+	logger     *slog.Logger
 }
 
 func NewLambdaHandler(controller *Controller) (*LambdaHandler, error) {
 	if controller == nil {
 		return nil, errors.New("Workload Controller is required")
 	}
-	return &LambdaHandler{controller: controller}, nil
+	return &LambdaHandler{controller: controller, logger: slog.Default()}, nil
 }
 
 // Handle returns partial batch failures so one transient provider/journal
@@ -39,6 +41,17 @@ func (h *LambdaHandler) Handle(ctx context.Context, event events.SQSEvent) (even
 			eventType = *attribute.StringValue
 		}
 		if _, err := h.controller.HandleEvent(ctx, eventType, []byte(record.Body)); err != nil {
+			command, decodeErr := Decode([]byte(record.Body))
+			logger := h.logger
+			if logger == nil {
+				logger = slog.Default()
+			}
+			attrs := []any{"sqs_message_id", record.MessageId, "event_type", eventType, "failure_class", "workload_record_processing"}
+			if decodeErr == nil {
+				attrs = append(attrs, "correlation_id", command.CorrelationID, "workload_run_id", command.WorkloadRunID,
+					"attempt_id", command.AttemptID, "resource_plane_id", command.ResourcePlaneID)
+			}
+			logger.ErrorContext(ctx, "Workload command processing failed", attrs...)
 			response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: record.MessageId})
 		}
 	}

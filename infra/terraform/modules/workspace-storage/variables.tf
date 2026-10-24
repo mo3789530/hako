@@ -47,15 +47,16 @@ variable "microvm_security_group_ids" {
 }
 
 variable "workspace_access_point_role_bindings" {
-  description = "Exact one-to-one Workspace IAM role to EFS Access Point ARN bindings. A shared role or wildcard Access Point is forbidden."
+  description = "Optional exact one-to-one Workspace IAM role to EFS Access Point ARN bindings for static mode."
   type = list(object({
     role_arn         = string
     access_point_arn = string
   }))
+  default = []
 
   validation {
     condition = (
-      length(var.workspace_access_point_role_bindings) > 0 &&
+      (length(var.workspace_access_point_role_bindings) > 0 || var.enable_dynamic_workspace_roles) &&
       length(var.workspace_access_point_role_bindings) == length(distinct([for binding in var.workspace_access_point_role_bindings : binding.role_arn])) &&
       length(var.workspace_access_point_role_bindings) == length(distinct([for binding in var.workspace_access_point_role_bindings : binding.access_point_arn])) &&
       alltrue([for binding in var.workspace_access_point_role_bindings :
@@ -63,8 +64,14 @@ variable "workspace_access_point_role_bindings" {
         can(regex("^arn:[^:]+:elasticfilesystem:[^:]+:[0-9]{12}:access-point/fsap-[A-Za-z0-9]+$", binding.access_point_arn))
       ])
     )
-    error_message = "workspace_access_point_role_bindings must contain unique exact IAM role and EFS Access Point ARN pairs."
+    error_message = "Supply unique exact static role/AP bindings or enable dynamic Workspace roles."
   }
+}
+
+variable "enable_dynamic_workspace_roles" {
+  description = "Allow only IAM roles under /hako/workspaces/ through EFS resource policy; each role must carry the exact-AP IAM policy with explicit denies."
+  type        = bool
+  default     = false
 }
 
 variable "backup_schedule" {

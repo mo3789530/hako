@@ -28,9 +28,11 @@ type httpStatusError struct{ status int }
 func (e httpStatusError) Error() string { return fmt.Sprintf("GitHub returned HTTP %d", e.status) }
 
 type InstallationIdentity struct {
-	ID           int64
-	AppID        int64
-	AccountLogin string
+	ID              int64
+	AppID           int64
+	AccountLogin    string
+	GitHubUserID    int64
+	GitHubUserLogin string
 }
 
 type SetupVerifier interface {
@@ -124,6 +126,25 @@ func (c *SetupClient) VerifyInstallation(ctx context.Context, code string, insta
 	if token.AccessToken == "" || token.Error != "" || !strings.EqualFold(token.TokenType, "bearer") {
 		return InstallationIdentity{}, ErrAuthorizationRejected
 	}
+	userEndpoint := c.apiURL + "/user"
+	userRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, userEndpoint, nil)
+	if err != nil {
+		return InstallationIdentity{}, fmt.Errorf("create GitHub user identity request: %w", err)
+	}
+	userRequest.Header.Set("Accept", "application/vnd.github+json")
+	userRequest.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	userRequest.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	userResponse, err := c.httpClient.Do(userRequest)
+	if err != nil {
+		return InstallationIdentity{}, fmt.Errorf("verify GitHub OAuth user identity: %w", err)
+	}
+	var githubUser struct {
+		ID    int64  `json:"id"`
+		Login string `json:"login"`
+	}
+	if err := decodeGitHubJSON(userResponse, &githubUser); err != nil || githubUser.ID <= 0 || !validLogin(githubUser.Login) {
+		return InstallationIdentity{}, ErrAuthorizationRejected
+	}
 	for page := 1; page <= 100; page++ {
 		endpoint := c.apiURL + "/user/installations?per_page=100&page=" + strconv.Itoa(page)
 		req, err = http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -161,7 +182,8 @@ func (c *SetupClient) VerifyInstallation(ctx context.Context, code string, insta
 			if installation.AppID != c.appID || !validLogin(installation.Account.Login) {
 				return InstallationIdentity{}, ErrAuthorizationRejected
 			}
-			return InstallationIdentity{ID: installation.ID, AppID: installation.AppID, AccountLogin: installation.Account.Login}, nil
+			return InstallationIdentity{ID: installation.ID, AppID: installation.AppID, AccountLogin: installation.Account.Login,
+				GitHubUserID: githubUser.ID, GitHubUserLogin: githubUser.Login}, nil
 		}
 		if page*100 >= installations.TotalCount || len(installations.Installations) == 0 {
 			break

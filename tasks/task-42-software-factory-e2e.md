@@ -23,6 +23,8 @@ Prove one Tenant-owned GitHub Repository can go from installation through one is
 
 ## Progress (2026-10-12)
 
+- Re-verified on 2026-10-18 with `GOCACHE=/tmp/hako-go-cache make test-software-factory-e2e`; the required Podman/PostgreSQL end-to-end test passed without AWS or public GitHub credentials.
+
 - Added `TestSoftwareFactoryPodmanPostgresAndGitHubCheck` under the `integration` build tag. It uses an isolated schema in the existing PostgreSQL service, receives raw signed webhooks through the production Tenant-specific HTTP handler and live DB Installation-binding authorizer (with a synthetic in-memory webhook credential resolver), checks duplicate and changed-body Delivery ID behavior, invalid-HMAC and unbound-Installation rejection, and creates both successful and deliberately failing immutable-commit untrusted Runs. Both execute in network-disabled read-only Podman containers; test output containing a synthetic credential is redacted before artifact persistence. The production Check consumer then publishes success and failure conclusions to a fake GitHub API. Full cross-Tenant/repository API matrix is covered separately and is not fully composed in this Factory E2E.
 - CI installs Podman and pulls `golang:1.27.2-alpine`; `HAKO_E2E_REQUIRE_PODMAN=1` prevents the test from silently skipping in CI. No real GitHub credential, AWS resource, or Secret is used.
 - The test exposed and fixed PostgreSQL timestamp precision handling in `workloadjobs.Service` and Podman SELinux/user namespace access for the read-only checkout. The checkout is privately relabeled and remains read-only; the process stays UID/GID 65532.

@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/lambdamicrovms"
 	"github.com/aws/aws-sdk-go-v2/service/lambdamicrovms/types"
+	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/workloadagent"
 	"github.com/mo3789530/hako/internal/workloadjobs"
 	"github.com/mo3789530/hako/internal/workloadjournal"
@@ -121,13 +122,20 @@ func (r *LambdaMicroVM) input(spec Specification) (*lambdamicrovms.RunMicrovmInp
 	}
 	// Initialization contains immutable identifiers/digests/deadline only.
 	payload, err := json.Marshal(struct {
-		Identity      workloadjournal.Command `json:"identity"`
-		SourceDigest  string                  `json:"source_digest"`
-		CommitSHA     string                  `json:"commit_sha"`
-		TriggerEvent  string                  `json:"trigger_event,omitempty"`
-		TriggerBranch string                  `json:"trigger_branch,omitempty"`
-		Deadline      time.Time               `json:"deadline"`
-	}{spec.Identity, spec.SourceDigest, spec.CommitSHA, spec.TriggerEvent, spec.TriggerBranch, spec.Deadline.UTC()})
+		Identity               workloadjournal.Command `json:"identity"`
+		Kind                   domain.WorkloadKind     `json:"kind,omitempty"`
+		AgentIntegrationID     string                  `json:"agent_integration_id,omitempty"`
+		AgentInstallationID    int64                   `json:"agent_installation_id,omitempty"`
+		AgentRepositoryID      int64                   `json:"agent_repository_id,omitempty"`
+		AgentTaskContextSHA256 string                  `json:"agent_task_context_sha256,omitempty"`
+		SourceDigest           string                  `json:"source_digest"`
+		CommitSHA              string                  `json:"commit_sha"`
+		TriggerEvent           string                  `json:"trigger_event,omitempty"`
+		TriggerBranch          string                  `json:"trigger_branch,omitempty"`
+		CorrelationID          string                  `json:"correlation_id,omitempty"`
+		Deadline               time.Time               `json:"deadline"`
+	}{spec.Identity, spec.Kind, spec.GitHubIntegrationID, spec.GitHubInstallationID, spec.GitHubRepositoryID, spec.AgentTaskContextSHA256,
+		spec.SourceDigest, spec.CommitSHA, spec.TriggerEvent, spec.TriggerBranch, spec.CorrelationID, spec.Deadline.UTC()})
 	if err != nil {
 		return nil, err
 	}
@@ -286,7 +294,10 @@ func (r *LambdaMicroVM) agentConnection(ctx context.Context, spec Specification,
 	var agentTicket string
 	if operation == workloadagent.OperationStart || operation == workloadagent.OperationSource {
 		agentTicket, err = r.config.AgentTicketIssuer.IssueExecution(handle, spec.Identity, operation, workloadagent.ExecutionBinding{
-			SourceDigest: spec.SourceDigest, CommitSHA: spec.CommitSHA, TriggerEvent: spec.TriggerEvent, TriggerBranch: spec.TriggerBranch, Deadline: spec.Deadline.UTC(),
+			Kind: spec.Kind, AgentIntegrationID: spec.GitHubIntegrationID, AgentInstallationID: spec.GitHubInstallationID,
+			AgentRepositoryID: spec.GitHubRepositoryID, AgentTaskContextSHA256: spec.AgentTaskContextSHA256,
+			SourceDigest: spec.SourceDigest, CommitSHA: spec.CommitSHA, TriggerEvent: spec.TriggerEvent, TriggerBranch: spec.TriggerBranch,
+			CorrelationID: spec.CorrelationID, Deadline: spec.Deadline.UTC(),
 		})
 	} else {
 		agentTicket, err = r.config.AgentTicketIssuer.Issue(handle, spec.Identity, operation)
@@ -298,7 +309,10 @@ func (r *LambdaMicroVM) agentConnection(ctx context.Context, spec Specification,
 	logTicket := ""
 	if operation == workloadagent.OperationStart {
 		sourceTicket, err = r.config.AgentTicketIssuer.IssueExecution(handle, spec.Identity, workloadagent.OperationSource, workloadagent.ExecutionBinding{
-			SourceDigest: spec.SourceDigest, CommitSHA: spec.CommitSHA, TriggerEvent: spec.TriggerEvent, TriggerBranch: spec.TriggerBranch, Deadline: spec.Deadline.UTC(),
+			Kind: spec.Kind, AgentIntegrationID: spec.GitHubIntegrationID, AgentInstallationID: spec.GitHubInstallationID,
+			AgentRepositoryID: spec.GitHubRepositoryID, AgentTaskContextSHA256: spec.AgentTaskContextSHA256,
+			SourceDigest: spec.SourceDigest, CommitSHA: spec.CommitSHA, TriggerEvent: spec.TriggerEvent, TriggerBranch: spec.TriggerBranch,
+			CorrelationID: spec.CorrelationID, Deadline: spec.Deadline.UTC(),
 		})
 		if err != nil || sourceTicket == "" || strings.ContainsAny(sourceTicket, " \t\r\n") {
 			return AgentConnection{}, ErrMicroVMNotReady

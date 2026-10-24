@@ -64,11 +64,11 @@ func (workspaceBindingRuntime) Execute(_ context.Context, command resourcecontro
 	return domain.ObservedWorkspaceRunning, nil
 }
 
-func (workspaceBindingRuntime) ResourceBinding(_ context.Context, command resourcecontroller.Command) (string, string, error) {
+func (workspaceBindingRuntime) ResourceBinding(_ context.Context, command resourcecontroller.Command) (string, string, int64, error) {
 	if command.Type == domain.OperationDelete {
-		return "", "", nil
+		return "", "", 0, nil
 	}
-	return "lambda_microvm", "microvm-e2e-1", nil
+	return "lambda_microvm", "microvm-e2e-1", 1, nil
 }
 
 func TestWorkspaceRuntimeBindingResultAndDeleteAreAtomic(t *testing.T) {
@@ -91,14 +91,70 @@ func TestWorkspaceRuntimeBindingResultAndDeleteAreAtomic(t *testing.T) {
 		OperationID: created.Operation.ID, TenantID: created.Workspace.TenantID, WorkspaceID: created.Workspace.ID,
 		ResourcePlaneID: created.Placement.ResourcePlaneID, Type: domain.OperationEnsureRunning,
 		Status: domain.OperationSucceeded, ObservedState: domain.ObservedWorkspaceRunning,
-		ResourceKind: "lambda_microvm", ExternalResourceID: "microvm-binding-e2e", CompletedAt: completedAt,
+		ResourceKind: "lambda_microvm", ExternalResourceID: "microvm-binding-e2e", AllocationGeneration: 1, CompletedAt: completedAt,
 	})
 	if err != nil || !applied {
 		t.Fatalf("apply runtime result: applied=%v error=%v", applied, err)
 	}
 	var externalID string
-	if err := pool.QueryRow(ctx, `SELECT external_id FROM resource_bindings WHERE workspace_id = $1 AND resource_plane_id = $2 AND kind = 'lambda_microvm'`, created.Workspace.ID, created.Placement.ResourcePlaneID).Scan(&externalID); err != nil || externalID != "microvm-binding-e2e" {
-		t.Fatalf("Workspace provider binding = %q, %v", externalID, err)
+	var generation int64
+	if err := pool.QueryRow(ctx, `SELECT external_id, allocation_generation FROM resource_bindings WHERE workspace_id = $1 AND resource_plane_id = $2 AND kind = 'lambda_microvm'`, created.Workspace.ID, created.Placement.ResourcePlaneID).Scan(&externalID, &generation); err != nil || externalID != "microvm-binding-e2e" || generation != 1 {
+		t.Fatalf("Workspace provider binding = %q generation=%d, %v", externalID, generation, err)
+	}
+	serviceTime := time.Now().UTC()
+	if _, err := pool.Exec(ctx, `INSERT INTO services (id, workspace_id, name, catalog_version, config_json, desired_state, observed_state, desired_revision, observed_revision, created_at, updated_at)
+		VALUES ('svc_generation_test', $1, 'postgres', 'postgres/1.0.0', '{}', 'running', 'healthy', 1, 1, $2, $2)`, created.Workspace.ID, serviceTime); err != nil {
+		t.Fatalf("seed Service runtime generation: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO workspace_service_runtime_generations
+		(service_id, workspace_id, resource_plane_id, allocation_generation, microvm_id, desired_revision, observed_state, updated_at)
+		VALUES ('svc_generation_test', $1, $2, 1, 'microvm-binding-e2e', 1, 'healthy', $3)`,
+		created.Workspace.ID, created.Placement.ResourcePlaneID, serviceTime); err != nil {
+		t.Fatalf("seed Service generation ledger: %v", err)
+	}
+
+	suspended, err := workspaces.RequestAction(ctx, pool, workspaces.ActionInput{
+		TenantID: created.Workspace.TenantID, WorkspaceID: created.Workspace.ID, UserID: "user_test",
+		Action: domain.OperationSuspend, IdempotencyKey: "runtime-binding-suspend",
+	}, transaction.DefaultPolicy())
+	if err != nil {
+		t.Fatalf("request Workspace suspension: %v", err)
+	}
+	if applied, err := operations.ApplyResult(ctx, pool, transaction.DefaultPolicy(), operations.ResultInput{
+		OperationID: suspended.Operation.ID, TenantID: suspended.Operation.TenantID, WorkspaceID: suspended.Operation.WorkspaceID,
+		ResourcePlaneID: suspended.Operation.ResourcePlaneID, Type: domain.OperationSuspend,
+		Status: domain.OperationSucceeded, ObservedState: domain.ObservedWorkspaceSuspended, CompletedAt: time.Now().UTC(),
+	}); err != nil || !applied {
+		t.Fatalf("apply Workspace suspend result: applied=%v error=%v", applied, err)
+	}
+	resumed, err := workspaces.RequestAction(ctx, pool, workspaces.ActionInput{
+		TenantID: created.Workspace.TenantID, WorkspaceID: created.Workspace.ID, UserID: "user_test",
+		Action: domain.OperationResume, IdempotencyKey: "runtime-binding-resume",
+	}, transaction.DefaultPolicy())
+	if err != nil {
+		t.Fatalf("request Workspace resume: %v", err)
+	}
+	if applied, err := operations.ApplyResult(ctx, pool, transaction.DefaultPolicy(), operations.ResultInput{
+		OperationID: resumed.Operation.ID, TenantID: resumed.Operation.TenantID, WorkspaceID: resumed.Operation.WorkspaceID,
+		ResourcePlaneID: resumed.Operation.ResourcePlaneID, Type: domain.OperationResume,
+		Status: domain.OperationSucceeded, ObservedState: domain.ObservedWorkspaceRunning,
+		ResourceKind: "lambda_microvm", ExternalResourceID: "microvm-binding-e2e-2", AllocationGeneration: 2,
+		CompletedAt: time.Now().UTC(),
+	}); err != nil || !applied {
+		t.Fatalf("apply Workspace resume result: applied=%v error=%v", applied, err)
+	}
+	var retired bool
+	if err := pool.QueryRow(ctx, `SELECT retired FROM workspace_service_runtime_generations WHERE service_id = 'svc_generation_test' AND allocation_generation = 1`).Scan(&retired); err != nil || !retired {
+		t.Fatalf("prior MicroVM Service generation was not retired after replacement: retired=%v error=%v", retired, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT external_id, allocation_generation FROM resource_bindings WHERE workspace_id = $1 AND resource_plane_id = $2 AND kind = 'lambda_microvm'`, created.Workspace.ID, created.Placement.ResourcePlaneID).Scan(&externalID, &generation); err != nil || externalID != "microvm-binding-e2e-2" || generation != 2 {
+		t.Fatalf("replacement Workspace provider binding = %q generation=%d, %v", externalID, generation, err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO workspace_service_runtime_generations
+		(service_id, workspace_id, resource_plane_id, allocation_generation, microvm_id, desired_revision, observed_state, updated_at)
+		VALUES ('svc_generation_test', $1, $2, 2, 'microvm-binding-e2e-2', 1, 'healthy', $3)`,
+		created.Workspace.ID, created.Placement.ResourcePlaneID, time.Now().UTC()); err != nil {
+		t.Fatalf("seed current Service runtime generation: %v", err)
 	}
 
 	deleted, err := workspaces.RequestAction(ctx, pool, workspaces.ActionInput{
@@ -115,6 +171,9 @@ func TestWorkspaceRuntimeBindingResultAndDeleteAreAtomic(t *testing.T) {
 	})
 	if err != nil || !applied {
 		t.Fatalf("apply Workspace delete result: applied=%v error=%v", applied, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT retired FROM workspace_service_runtime_generations WHERE service_id = 'svc_generation_test' AND allocation_generation = 2`).Scan(&retired); err != nil || !retired {
+		t.Fatalf("Workspace deletion did not retire its current Service runtime generation: retired=%v error=%v", retired, err)
 	}
 	var bindings int
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM resource_bindings WHERE workspace_id = $1 AND kind = 'lambda_microvm'`, created.Workspace.ID).Scan(&bindings); err != nil || bindings != 0 {

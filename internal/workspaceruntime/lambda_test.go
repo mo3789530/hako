@@ -140,9 +140,13 @@ func (a *apiStub) GetMicrovm(_ context.Context, input *lambdamicrovms.GetMicrovm
 	if a.getErr != nil {
 		return nil, a.getErr
 	}
+	executionRoleARN := aws.String("arn:aws:iam::123456789012:role/hako-workspace")
+	if a.lastRun != nil && a.lastRun.ExecutionRoleArn != nil {
+		executionRoleARN = a.lastRun.ExecutionRoleArn
+	}
 	return &lambdamicrovms.GetMicrovmOutput{MicrovmId: input.MicrovmIdentifier, State: a.state,
 		ImageArn: aws.String("arn:aws:lambda:us-east-1:123456789012:microvm-image:hako-standard"), ImageVersion: aws.String("3"),
-		ExecutionRoleArn:         aws.String("arn:aws:iam::123456789012:role/hako-workspace"),
+		ExecutionRoleArn:         executionRoleARN,
 		EgressNetworkConnectors:  []string{"arn:aws:lambda:us-east-1:123456789012:network-connector:egress"},
 		IngressNetworkConnectors: []string{"arn:aws:lambda:us-east-1:123456789012:network-connector:ingress"}}, nil
 }
@@ -270,6 +274,35 @@ func TestEnsureJournalsEFSBindingAndPassesOnlyMountMetadata(t *testing.T) {
 	}
 	if _, err := runtime.Execute(context.Background(), command); err != nil || storage.ensureCalls != 1 {
 		t.Fatalf("duplicate operation reprovisioned storage: calls=%d err=%v", storage.ensureCalls, err)
+	}
+}
+
+func TestLambdaMicroVMUsesJournaledWorkspaceExecutionRole(t *testing.T) {
+	api, store := &apiStub{state: types.MicrovmStateRunning}, newMemoryStore()
+	command := testCommand(domain.OperationEnsureRunning, 1, "op_efs_role")
+	binding := runtimeTestBinding(command)
+	identity := workspacestorage.Identity{TenantID: command.TenantID, WorkspaceID: command.WorkspaceID, ResourcePlaneID: command.ResourcePlaneID}
+	name, err := workspacestorage.ExecutionRoleName(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding.ExecutionRoleARN = "arn:aws:iam::123456789012:role/hako/workspaces/" + name
+	storage := &storageStub{binding: binding}
+	resolver := resolverFunc(func(context.Context, resourcecontroller.Command) (LaunchSpec, error) { return validSpec(), nil })
+	runtime, err := NewLambdaMicroVMWithStorage(api, store, resolver, storage,
+		Config{SupportedRuntimeClasses: map[string]bool{"standard": true}, PollInterval: 10 * time.Millisecond, PollTimeout: time.Second}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Execute(context.Background(), command); err != nil {
+		t.Fatal(err)
+	}
+	if got := aws.ToString(api.lastRun.ExecutionRoleArn); got != binding.ExecutionRoleARN {
+		t.Fatalf("MicroVM used static/unpinned role %q, want Workspace role %q", got, binding.ExecutionRoleARN)
+	}
+	snapshot, err := store.Get(context.Background(), command.TenantID, command.WorkspaceID, command.ResourcePlaneID)
+	if err != nil || snapshot.Journal.StorageBinding == nil || snapshot.Journal.StorageBinding.ExecutionRoleARN != binding.ExecutionRoleARN {
+		t.Fatalf("journal did not pin Workspace role with EFS: binding=%+v err=%v", snapshot.Journal.StorageBinding, err)
 	}
 }
 

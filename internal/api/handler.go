@@ -15,10 +15,13 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/labstack/echo/v5"
+	"github.com/mo3789530/hako/internal/agenttask"
 	"github.com/mo3789530/hako/internal/auth"
 	"github.com/mo3789530/hako/internal/authz"
+	"github.com/mo3789530/hako/internal/deploypolicy"
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/githubapp"
+	githubwebhookcore "github.com/mo3789530/hako/internal/githubwebhook"
 	"github.com/mo3789530/hako/internal/idempotency"
 	"github.com/mo3789530/hako/internal/idgen"
 	"github.com/mo3789530/hako/internal/scheduler"
@@ -26,6 +29,7 @@ import (
 	"github.com/mo3789530/hako/internal/store/githubregistry"
 	"github.com/mo3789530/hako/internal/store/operations"
 	"github.com/mo3789530/hako/internal/store/placementpolicies"
+	"github.com/mo3789530/hako/internal/store/quotas"
 	"github.com/mo3789530/hako/internal/store/resourceplanehealth"
 	"github.com/mo3789530/hako/internal/store/transaction"
 	"github.com/mo3789530/hako/internal/store/users"
@@ -62,9 +66,14 @@ type WorkspaceCreateConfig struct {
 	TenantGitHubWebhookHandler               http.Handler
 	TenantGitHubSetupResolver                TenantGitHubSetupVerifierResolver
 	ResourcePlaneHealthReportKeyResolver     ResourcePlaneHealthReportKeyResolver
+	ResourcePlaneServiceReportKeyResolver    ResourcePlaneServiceReportKeyResolver
 	ResourcePlaneWorkloadSpecKeyResolver     ResourcePlaneWorkloadSpecKeyResolver
+	ResourcePlaneArtifactCleanupKeyResolver  ResourcePlaneArtifactCleanupKeyResolver
 	ResourcePlaneWorkspaceSessionKeyResolver ResourcePlaneWorkspaceSessionKeyResolver
 	WorkspaceSessionTicketIssuer             workspacesession.Issuer
+	GitHubOIDCPolicyVerifier                 interface {
+		Verify(context.Context, string, deploypolicy.Policy, string, int64) (deploypolicy.Claims, error)
+	}
 }
 
 type workspaceCreateRequest struct {
@@ -151,25 +160,43 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 	}
 	e := echo.New()
 	e.HTTPErrorHandler = apiErrorHandler
+	e.Use(requestIDMiddleware)
 	e.GET("/healthz", publicHealth)
 	if webhookHandler != nil {
 		e.POST("/v1/integrations/github/webhook", func(c *echo.Context) error {
-			webhookHandler.ServeHTTP(c.Response(), c.Request())
+			request := c.Request().WithContext(githubwebhookcore.WithCorrelationID(c.Request().Context(), RequestIDFromContext(c.Request().Context())))
+			webhookHandler.ServeHTTP(c.Response(), request)
 			return nil
 		})
 	}
 	if workspaceConfig.TenantGitHubWebhookHandler != nil {
 		e.POST("/v1/integrations/github/apps/:integration_id/webhook", func(c *echo.Context) error {
-			workspaceConfig.TenantGitHubWebhookHandler.ServeHTTP(c.Response(), c.Request())
+			request := c.Request().WithContext(githubwebhookcore.WithCorrelationID(c.Request().Context(), RequestIDFromContext(c.Request().Context())))
+			workspaceConfig.TenantGitHubWebhookHandler.ServeHTTP(c.Response(), request)
 			return nil
 		})
 	}
 	if workspaceConfig.ResourcePlaneHealthReportKeyResolver != nil {
 		e.POST("/v1/internal/resource-planes/:resource_plane_id/health", putAutomatedResourcePlaneHealth(pool, workspaceConfig.ResourcePlaneHealthReportKeyResolver))
 	}
+	if workspaceConfig.ResourcePlaneServiceReportKeyResolver != nil {
+		e.POST("/v1/internal/resource-planes/:resource_plane_id/workspace-services/:service_id/reports",
+			putResourcePlaneWorkspaceServiceReport(pool, workspaceConfig.ResourcePlaneServiceReportKeyResolver))
+		e.POST("/v1/internal/resource-planes/:resource_plane_id/workspace-services/:service_id/desired-state",
+			resolveResourcePlaneWorkspaceServiceDesiredState(pool, workspaceConfig.ResourcePlaneServiceReportKeyResolver))
+		e.PUT("/v1/internal/resource-planes/:resource_plane_id/workspace-connection-leases/:lease_id",
+			workspaceConnectionLeaseHandler(pool, workspaceConfig.ResourcePlaneServiceReportKeyResolver, false))
+		e.POST("/v1/internal/resource-planes/:resource_plane_id/workspace-connection-leases/:lease_id/release",
+			workspaceConnectionLeaseHandler(pool, workspaceConfig.ResourcePlaneServiceReportKeyResolver, true))
+	}
 	if workspaceConfig.ResourcePlaneWorkloadSpecKeyResolver != nil {
 		e.GET("/v1/internal/resource-planes/:resource_plane_id/tenants/:tenant_id/workloads/:workload_run_id/attempts/:attempt_id/generations/:generation/specification",
 			getResourcePlaneWorkloadSpecification(pool, workspaceConfig.ResourcePlaneWorkloadSpecKeyResolver))
+	}
+	if workspaceConfig.ResourcePlaneArtifactCleanupKeyResolver != nil {
+		group := e.Group("/v1/internal/resource-planes/:resource_plane_id/workload-artifacts")
+		group.GET("/expired", listResourcePlaneExpiredArtifacts(pool, workspaceConfig.ResourcePlaneArtifactCleanupKeyResolver))
+		group.POST("/:artifact_id/deleted", acknowledgeResourcePlaneArtifactDeletion(pool, workspaceConfig.ResourcePlaneArtifactCleanupKeyResolver))
 	}
 	if workspaceConfig.ResourcePlaneWorkspaceSessionKeyResolver != nil {
 		e.POST("/v1/internal/resource-planes/:resource_plane_id/workspace-sessions/active",
@@ -199,6 +226,8 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 			RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
 		protected.PUT("/v1/tenants/:tenant_id/github/installations/:installation_id/repositories/:repository_id/actions-runner/workflow-policy", configureGitHubRepositoryActionsRunnerWorkflowPolicy(pool),
 			RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+		protected.PUT("/v1/tenants/:tenant_id/github/installations/:installation_id/repositories/:repository_id/agent-write-policy", configureGitHubRepositoryAgentWritePolicy(pool),
+			RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
 	}
 	if setupVerifier != nil {
 		protected.POST("/v1/tenants/:tenant_id/github/installations/setup", beginGitHubInstallationSetup(pool, setupVerifier),
@@ -225,6 +254,25 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 	protected.PUT("/v1/tenants/:tenant_id/placement-policy", putTenantPlacementPolicy(pool),
 		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool),
 	)
+	protected.GET("/v1/tenants/:tenant_id/workspace-idle-policy", getTenantWorkspaceIdlePolicy(pool),
+		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+	protected.PUT("/v1/tenants/:tenant_id/workspace-idle-policy", putTenantWorkspaceIdlePolicy(pool),
+		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+	protected.GET("/v1/tenants/:tenant_id/quotas", getTenantQuotas(pool),
+		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+	protected.PUT("/v1/tenants/:tenant_id/quotas", putTenantQuotas(pool),
+		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+	protected.GET("/v1/tenants/:tenant_id/software-catalog", listTenantSoftwareCatalog(pool),
+		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+	protected.PUT("/v1/tenants/:tenant_id/software-catalog/:service_id", upsertTenantSoftwareCatalogService(pool),
+		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+	protected.GET("/v1/tenants/:tenant_id/software-catalog/:service_id/deploy-policy", getSoftwareCatalogDeployPolicy(pool),
+		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+	protected.PUT("/v1/tenants/:tenant_id/software-catalog/:service_id/deploy-policy", setSoftwareCatalogDeployPolicy(pool),
+		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+	protected.POST("/v1/tenants/:tenant_id/software-catalog/:service_id/deploy-policy/verify",
+		verifySoftwareCatalogDeployPolicy(pool, workspaceConfig.GitHubOIDCPolicyVerifier),
+		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
 	protected.GET("/v1/tenants/:tenant_id/github/installations", listGitHubInstallations(pool),
 		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool),
 	)
@@ -256,6 +304,11 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 		HakoUserMiddleware(pool),
 		TenantMembershipMiddleware(pool),
 	)
+	protected.GET("/v1/tenants/:tenant_id/usage", getTenantUsage(pool),
+		RequireScopes(auth.HakoAPIScope),
+		HakoUserMiddleware(pool),
+		TenantMembershipMiddleware(pool),
+	)
 	protected.GET("/v1/tenants/:tenant_id/workspaces/:workspace_id", getWorkspace(pool),
 		RequireScopes(auth.HakoAPIScope),
 		HakoUserMiddleware(pool),
@@ -267,6 +320,8 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 		TenantMembershipMiddleware(pool),
 	)
 	protected.GET("/v1/tenants/:tenant_id/workspaces/:workspace_id/services", listWorkspaceServices(pool),
+		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+	protected.GET("/v1/tenants/:tenant_id/workspaces/:workspace_id/services/usage", getWorkspaceServiceUsage(pool),
 		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
 	protected.POST("/v1/tenants/:tenant_id/workspaces/:workspace_id/services", addWorkspaceService(pool),
 		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
@@ -335,7 +390,8 @@ func createWorkloadRun(pool transaction.Beginner, config WorkspaceCreateConfig) 
 		}
 		run := domain.WorkloadRun{ID: domain.WorkloadRunID(runID), TenantID: tenantID, Kind: domain.WorkloadJob,
 			RequestedBy: user.ID, GitHubInstallation: request.GitHubInstallationID, GitHubRepository: request.GitHubRepositoryID,
-			CommitSHA: request.CommitSHA, Ref: request.Ref, RuntimeClass: "standard", TrustLevel: domain.WorkloadUntrusted,
+			CorrelationID: RequestIDFromContext(c.Request().Context()),
+			CommitSHA:     request.CommitSHA, Ref: request.Ref, RuntimeClass: "standard", TrustLevel: domain.WorkloadUntrusted,
 			IdempotencyKey: idempotencyKey, TimeoutSeconds: request.TimeoutSeconds, CreatedAt: now}
 		stored, err := transaction.Within(c.Request().Context(), pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (domain.WorkloadRun, error) {
 			if _, err := authz.RequireTenantMembership(ctx, tx, user.ID, tenantID); err != nil {
@@ -345,7 +401,8 @@ func createWorkloadRun(pool transaction.Beginner, config WorkspaceCreateConfig) 
 			if err != nil || !created {
 				return stored, err
 			}
-			payload, err := json.Marshal(map[string]any{"schema_version": 1, "tenant_id": tenantID, "workload_run_id": stored.ID})
+			payload, err := json.Marshal(map[string]any{"schema_version": 1, "tenant_id": tenantID, "workload_run_id": stored.ID,
+				"correlation_id": stored.CorrelationID})
 			if err != nil {
 				return domain.WorkloadRun{}, err
 			}
@@ -373,6 +430,15 @@ func createWorkloadRun(pool transaction.Beginner, config WorkspaceCreateConfig) 
 		}
 		if errors.Is(err, workloads.ErrIdempotencyConflict) {
 			return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "idempotency_conflict", Message: "Idempotency-Key was already used for a different request"}})
+		}
+		if errors.Is(err, workloads.ErrQuotaExceeded) {
+			return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "workload_quota_exceeded", Message: "Tenant concurrent Workload Run limit reached (5)"}})
+		}
+		if errors.Is(err, workloads.ErrPreviewQuotaExceeded) {
+			return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "preview_quota_exceeded", Message: "Tenant Preview count or lifetime limit exceeded"}})
+		}
+		if errors.Is(err, quotas.ErrArtifactQuotaExceeded) {
+			return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "artifact_quota_exceeded", Message: "Tenant artifact storage quota has no capacity for another Workload Run"}})
 		}
 		if err != nil {
 			return databaseUnavailable(c)
@@ -632,6 +698,59 @@ func listGitHubRepositories(pool transaction.Beginner) echo.HandlerFunc {
 
 type repositoryFactoryRequest struct {
 	Enabled *bool `json:"enabled"`
+}
+
+func configureGitHubRepositoryAgentWritePolicy(pool transaction.Beginner) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		user, ok := HakoUserFromContext(c)
+		if !ok || pool == nil {
+			return databaseUnavailable(c)
+		}
+		tenantID := domain.TenantID(strings.TrimSpace(c.Param("tenant_id")))
+		installationID, installationErr := strconv.ParseInt(strings.TrimSpace(c.Param("installation_id")), 10, 64)
+		repositoryID, repositoryErr := strconv.ParseInt(strings.TrimSpace(c.Param("repository_id")), 10, 64)
+		if tenantID == "" || installationErr != nil || installationID <= 0 || repositoryErr != nil || repositoryID <= 0 {
+			return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_repository", Message: "Valid Installation and Repository IDs are required"}})
+		}
+		var policy agenttask.WritePolicy
+		if err := decodeJSONRequest(c, &policy); err != nil || policy.Validate() != nil {
+			return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_agent_write_policy", Message: "Agent write policy is invalid or exceeds its bounds"}})
+		}
+		now := time.Now().UTC()
+		stored, err := transaction.Within(c.Request().Context(), pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (agenttask.WritePolicy, error) {
+			if _, err := authz.RequireTenantRole(ctx, tx, user.ID, tenantID, domain.TenantRoleOwner, domain.TenantRoleAdmin); err != nil {
+				return agenttask.WritePolicy{}, err
+			}
+			updated, err := githubregistry.SetRepositoryAgentWritePolicy(ctx, tx, tenantID, installationID, repositoryID, policy)
+			if err != nil {
+				return agenttask.WritePolicy{}, err
+			}
+			details, err := json.Marshal(map[string]any{
+				"installation_id": installationID, "repository_id": repositoryID, "enabled": updated.Enabled,
+				"allow_pull_requests": updated.AllowPullRequests, "branch_prefix_count": len(updated.BranchPrefixes),
+				"required_check_count": len(updated.RequiredChecks),
+			})
+			if err != nil {
+				return agenttask.WritePolicy{}, fmt.Errorf("encode Agent write policy audit details: %w", err)
+			}
+			if err := audit.Append(ctx, tx, audit.Event{TenantID: tenantID, ActorID: user.ID,
+				Action: "tenant.github_repository.agent_write_policy.configure", TargetType: "github_repository",
+				TargetID: fmt.Sprint(repositoryID), Details: details, OccurredAt: now}); err != nil {
+				return agenttask.WritePolicy{}, err
+			}
+			return updated, nil
+		})
+		if errors.Is(err, authz.ErrTenantAccessDenied) {
+			return tenantNotFound(c)
+		}
+		if errors.Is(err, githubregistry.ErrInstallationNotActive) || errors.Is(err, githubregistry.ErrRepositoryNotFound) {
+			return c.JSON(http.StatusNotFound, errorResponse{Error: errorBody{Code: "not_found", Message: "Active Factory-enabled GitHub Repository not found"}})
+		}
+		if err != nil {
+			return databaseUnavailable(c)
+		}
+		return c.JSON(http.StatusOK, map[string]any{"write_policy": stored, "execution_enabled": false})
+	}
 }
 
 func configureGitHubRepositoryFactory(pool transaction.Beginner, workloadRunsEnabled bool) echo.HandlerFunc {
@@ -969,6 +1088,7 @@ func requestWorkspaceAction(pool transaction.Beginner) echo.HandlerFunc {
 			TenantID:    domain.TenantID(strings.TrimSpace(c.Param("tenant_id"))),
 			WorkspaceID: domain.WorkspaceID(strings.TrimSpace(c.Param("workspace_id"))),
 			UserID:      user.ID, Action: request.Action, IdempotencyKey: idempotencyKey,
+			CorrelationID: RequestIDFromContext(c.Request().Context()),
 		}, transaction.DefaultPolicy())
 		if errors.Is(err, authz.ErrTenantAccessDenied) {
 			return tenantNotFound(c)
@@ -1024,6 +1144,29 @@ func listWorkspaces(pool transaction.Beginner) echo.HandlerFunc {
 			return databaseUnavailable(c)
 		}
 		return c.JSON(http.StatusOK, result)
+	}
+}
+
+func getTenantUsage(pool transaction.Beginner) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		user, ok := HakoUserFromContext(c)
+		if !ok || pool == nil {
+			return databaseUnavailable(c)
+		}
+		tenantID := domain.TenantID(strings.TrimSpace(c.Param("tenant_id")))
+		usage, err := transaction.Within(c.Request().Context(), pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (workspaces.QuotaUsage, error) {
+			if _, err := authz.RequireTenantMembership(ctx, tx, user.ID, tenantID); err != nil {
+				return workspaces.QuotaUsage{}, err
+			}
+			return workspaces.ReadQuotaUsage(ctx, tx, tenantID)
+		})
+		if errors.Is(err, authz.ErrTenantAccessDenied) {
+			return tenantNotFound(c)
+		}
+		if err != nil {
+			return databaseUnavailable(c)
+		}
+		return c.JSON(http.StatusOK, usage)
 	}
 }
 
@@ -1122,6 +1265,7 @@ func createWorkspace(pool transaction.Beginner, config WorkspaceCreateConfig) ec
 			Region:               strings.TrimSpace(config.Region),
 			RequiredCapabilities: config.RequiredCapabilities,
 			IdempotencyKey:       idempotencyKey,
+			CorrelationID:        RequestIDFromContext(c.Request().Context()),
 		}, transaction.DefaultPolicy())
 		if errors.Is(err, scheduler.ErrNoEligibleResourcePlane) {
 			return c.JSON(http.StatusServiceUnavailable, errorResponse{Error: errorBody{Code: "resource_plane_unavailable", Message: "No active Resource Plane satisfies the Workspace requirements"}})

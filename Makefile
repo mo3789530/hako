@@ -1,4 +1,6 @@
-.PHONY: fmt lint test test-integration test-integration-local test-webhook-lifecycle-integration test-actions-runner-lifecycle-integration test-software-factory-e2e test-workload-runtime test-workload-runtime-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-health-reporter-lambda build-workload-controller-lambda build-actions-runner-lambda build-actions-runner-microvm-image build-workload-microvm-artifact build-workspace-microvm-image build-github-checks-consumer-image build-workspace-gateway-image terraform-fmt terraform-validate terraform-test
+.PHONY: fmt lint test test-integration test-integration-local test-webhook-lifecycle-integration test-actions-runner-lifecycle-integration test-software-factory-e2e test-workload-runtime test-workload-runtime-integration test-artifact-retention-integration test-workspace-idle-lifecycle-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-workspace-service-controller-lambda build-health-reporter-lambda build-workspace-idle-reconciler-lambda build-workload-controller-lambda build-actions-runner-lambda build-actions-runner-microvm-image build-workload-microvm-artifact build-workspace-microvm-image build-github-checks-consumer-image build-workspace-gateway-image terraform-fmt terraform-validate terraform-test
+
+HAKO_WORKSPACE_SERVICES_ENABLED ?= false
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -not -path './.git/*')
@@ -33,6 +35,14 @@ test-workload-runtime:
 
 test-workload-runtime-integration:
 	HAKO_TEST_DATABASE_URL="$${HAKO_TEST_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" go test -tags=integration ./internal/workloadcontroller ./internal/workloadjobs ./internal/store/workloads -count=1
+
+# Exercises the signed Resource Plane cleanup API and cross-Plane metadata fence against local PostgreSQL.
+test-artifact-retention-integration:
+	HAKO_TEST_DATABASE_URL="$${HAKO_TEST_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" go test -tags=integration ./internal/api -run '^TestResourcePlaneArtifactCleanupIsSignedPlaneScopedAndIdempotent$$' -count=1
+
+# Composes Gateway WSS, signed connection lease API, PostgreSQL idle sweep, and CLI resume option tests.
+test-workspace-idle-lifecycle-integration:
+	HAKO_TEST_DATABASE_URL="$${HAKO_TEST_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" go test -tags=integration ./internal/api ./cmd/hako -run 'TestWorkspaceGatewayDisconnectReconnectFencesIdleSuspendEndToEnd|TestParseWorkspaceActionOptions' -count=1
 
 test-coverage:
 	@test -n "$${HAKO_TEST_DATABASE_URL:-}" || (echo "set HAKO_TEST_DATABASE_URL to a disposable PostgreSQL database" >&2; exit 1)
@@ -69,10 +79,20 @@ build-resource-controller-lambda:
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o build/resource-controller-lambda/bootstrap ./cmd/hako-resource-controller-lambda
 	cd build/resource-controller-lambda && zip -q ../resource-controller-lambda.zip bootstrap
 
+build-workspace-service-controller-lambda:
+	mkdir -p build/workspace-service-controller-lambda
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o build/workspace-service-controller-lambda/bootstrap ./cmd/hako-workspace-service-controller-lambda
+	cd build/workspace-service-controller-lambda && zip -q ../workspace-service-controller-lambda.zip bootstrap
+
 build-health-reporter-lambda:
 	mkdir -p build/health-reporter-lambda
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o build/health-reporter-lambda/bootstrap ./cmd/hako-health-reporter-lambda
 	cd build/health-reporter-lambda && zip -q ../hako-health-reporter.zip bootstrap
+
+build-workspace-idle-reconciler-lambda:
+	mkdir -p build/workspace-idle-reconciler
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o build/workspace-idle-reconciler/bootstrap ./cmd/hako-workspace-idle-reconciler-lambda
+	cd build/workspace-idle-reconciler && zip -q ../hako-workspace-idle-reconciler.zip bootstrap
 
 build-workload-controller-lambda:
 	mkdir -p build/workload-controller-lambda
@@ -84,19 +104,17 @@ build-actions-runner-lambda:
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o build/actions-runner-lambda/bootstrap ./cmd/hako-actions-runner-lambda
 	cd build/actions-runner-lambda && zip -q ../hako-actions-runner.zip bootstrap
 
-# Builds the non-root Lambda MicroVM guest image from a caller-provided, version-pinned GitHub Runner archive and public bootstrap key. It neither downloads runner artifacts nor publishes/applies infrastructure.
+# Builds the non-root ARM64 Lambda MicroVM guest image on top of the official, digest-pinned GitHub Runner image. The only caller-provided key is public.
 build-actions-runner-microvm-image:
-	@test -n "$(HAKO_ACTIONS_RUNNER_ARCHIVE)" || (echo "set HAKO_ACTIONS_RUNNER_ARCHIVE to the reviewed Linux ARM64 runner tarball" >&2; exit 1)
-	@test -n "$(HAKO_ACTIONS_RUNNER_VERSION)" || (echo "set HAKO_ACTIONS_RUNNER_VERSION to the exact runner release" >&2; exit 1)
-	@test -n "$(HAKO_ACTIONS_RUNNER_SHA256)" || (echo "set HAKO_ACTIONS_RUNNER_SHA256 to the reviewed archive digest" >&2; exit 1)
 	@test -n "$(HAKO_ACTIONS_RUNNER_BOOTSTRAP_PUBLIC_KEY_FILE)" || (echo "set HAKO_ACTIONS_RUNNER_BOOTSTRAP_PUBLIC_KEY_FILE to a PUBLIC KEY PEM" >&2; exit 1)
-	@test -s "$(HAKO_ACTIONS_RUNNER_ARCHIVE)" && test -s "$(HAKO_ACTIONS_RUNNER_BOOTSTRAP_PUBLIC_KEY_FILE)"
+	@test -s "$(HAKO_ACTIONS_RUNNER_BOOTSTRAP_PUBLIC_KEY_FILE)"
+	@grep -q '^-----BEGIN PUBLIC KEY-----$$' "$(HAKO_ACTIONS_RUNNER_BOOTSTRAP_PUBLIC_KEY_FILE)"
+	@! grep -q 'PRIVATE KEY' "$(HAKO_ACTIONS_RUNNER_BOOTSTRAP_PUBLIC_KEY_FILE)"
 	mkdir -p build/actions-runner-microvm
-	cp "$(HAKO_ACTIONS_RUNNER_ARCHIVE)" build/actions-runner-microvm/actions-runner-linux-arm64.tar.gz
 	cp "$(HAKO_ACTIONS_RUNNER_BOOTSTRAP_PUBLIC_KEY_FILE)" build/actions-runner-microvm/actions-runner-bootstrap.pub
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o build/actions-runner-microvm/hako-actions-runner-guest ./cmd/hako-actions-runner-guest
 	cp images/actions-runner/Dockerfile build/actions-runner-microvm/Dockerfile
-	podman build --arch arm64 --build-arg ACTIONS_RUNNER_VERSION="$(HAKO_ACTIONS_RUNNER_VERSION)" --build-arg ACTIONS_RUNNER_SHA256="$(HAKO_ACTIONS_RUNNER_SHA256)" --tag hako-actions-runner:local -f build/actions-runner-microvm/Dockerfile build/actions-runner-microvm
+	podman build --arch arm64 --tag hako-actions-runner:local -f build/actions-runner-microvm/Dockerfile build/actions-runner-microvm
 
 # Packages a Lambda MicroVM code artifact; the supplied file must contain public verification keys only.
 build-workload-microvm-artifact:
@@ -108,19 +126,29 @@ build-workload-microvm-artifact:
 	install -m 0644 "$(HAKO_AGENT_TRUSTED_KEYS_FILE)" build/workload-microvm/trusted-keys.json
 	zip -q -j -FS build/hako-workload-microvm.zip build/workload-microvm/Dockerfile build/workload-microvm/hako-agent build/workload-microvm/trusted-keys.json
 
-# Builds a distinct root-owned Workspace init image with a separate unprivileged shell Agent. Both the EFS helper RPM and public verification keys are pinned inputs.
+# Builds a distinct root-owned Workspace init image with a separate unprivileged shell Agent. EFS RPM, nerdctl-full artifact, and public verification keys are pinned inputs.
 build-workspace-microvm-image:
+	@test "$(HAKO_WORKSPACE_SERVICES_ENABLED)" = true -o "$(HAKO_WORKSPACE_SERVICES_ENABLED)" = false || (echo "set HAKO_WORKSPACE_SERVICES_ENABLED to true or false" >&2; exit 1)
 	@test -n "$(HAKO_EFS_UTILS_RPM_VERSION)" || (echo "set HAKO_EFS_UTILS_RPM_VERSION to the pinned amazon-efs-utils RPM version" >&2; exit 1)
+	@test -n "$(HAKO_NERDCTL_FULL_ARCHIVE)" || (echo "set HAKO_NERDCTL_FULL_ARCHIVE to a reviewed nerdctl-full Linux ARM64 archive" >&2; exit 1)
+	@test -n "$(HAKO_NERDCTL_FULL_VERSION)" || (echo "set HAKO_NERDCTL_FULL_VERSION to the exact nerdctl release" >&2; exit 1)
+	@test -n "$(HAKO_NERDCTL_FULL_SHA256)" || (echo "set HAKO_NERDCTL_FULL_SHA256 to the reviewed archive digest" >&2; exit 1)
 	@test -n "$(HAKO_CODE_SERVER_VERSION)" || (echo "set HAKO_CODE_SERVER_VERSION to the pinned code-server version" >&2; exit 1)
 	@test -n "$(HAKO_CODE_SERVER_SHA256)" || (echo "set HAKO_CODE_SERVER_SHA256 to the pinned ARM64 archive SHA-256" >&2; exit 1)
 	@test -n "$(HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE)" || (echo "set HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE to a public-key JSON file" >&2; exit 1)
 	@test -s "$(HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE)" || (echo "Workspace Agent public-key JSON file is missing or empty" >&2; exit 1)
+	@test -s "$(HAKO_NERDCTL_FULL_ARCHIVE)" || (echo "nerdctl-full archive is missing or empty" >&2; exit 1)
+	@set -e; archive_entries=$$(tar -tzf "$(HAKO_NERDCTL_FULL_ARCHIVE)"); \
+	for required in bin/nerdctl bin/containerd bin/containerd-rootless.sh bin/rootlesskit bin/slirp4netns; do \
+		printf '%s\n' "$$archive_entries" | grep -Fxq "$$required" || { echo "nerdctl-full archive is missing $$required" >&2; exit 1; }; \
+	done
 	mkdir -p build/workspace-init
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o build/workspace-init/hako-workspace-init ./cmd/hako-workspace-init
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o build/workspace-init/hako-workspace-agent ./cmd/hako-workspace-agent
 	install -m 0644 "$(HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE)" build/workspace-init/trusted-keys.json
+	install -m 0644 "$(HAKO_NERDCTL_FULL_ARCHIVE)" build/workspace-init/nerdctl-full-linux-arm64.tar.gz
 	install -m 0644 images/workspace-init/Dockerfile build/workspace-init/Dockerfile
-	podman build --arch arm64 --build-arg EFS_UTILS_RPM_VERSION="$(HAKO_EFS_UTILS_RPM_VERSION)" --build-arg CODE_SERVER_VERSION="$(HAKO_CODE_SERVER_VERSION)" --build-arg CODE_SERVER_SHA256="$(HAKO_CODE_SERVER_SHA256)" --tag hako-workspace-init:local -f build/workspace-init/Dockerfile build/workspace-init
+	podman build --arch arm64 --build-arg EFS_UTILS_RPM_VERSION="$(HAKO_EFS_UTILS_RPM_VERSION)" --build-arg NERDCTL_FULL_VERSION="$(HAKO_NERDCTL_FULL_VERSION)" --build-arg NERDCTL_FULL_SHA256="$(HAKO_NERDCTL_FULL_SHA256)" --build-arg CODE_SERVER_VERSION="$(HAKO_CODE_SERVER_VERSION)" --build-arg CODE_SERVER_SHA256="$(HAKO_CODE_SERVER_SHA256)" --build-arg HAKO_WORKSPACE_SERVICES_ENABLED="$(HAKO_WORKSPACE_SERVICES_ENABLED)" --tag hako-workspace-init:local -f build/workspace-init/Dockerfile build/workspace-init
 
 # Builds an ARM64 ECS/Fargate image locally; publishing to ECR is a separate authorized step.
 build-github-checks-consumer-image:
@@ -145,3 +173,5 @@ terraform-test:
 	terraform -chdir=infra/terraform/modules/resource-plane test
 	terraform -chdir=infra/terraform/modules/workspace-storage init -backend=false -input=false
 	terraform -chdir=infra/terraform/modules/workspace-storage test
+	terraform -chdir=infra/terraform/modules/github-broker-tenant-iam init -backend=false -input=false
+	terraform -chdir=infra/terraform/modules/github-broker-tenant-iam test

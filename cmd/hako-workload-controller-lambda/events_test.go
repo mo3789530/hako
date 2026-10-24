@@ -8,8 +8,8 @@ import (
 	"github.com/aws/aws-lambda-go/events"
 )
 
-func TestEventMuxRoutesOnlyCommandAndRecoveryEnvelopes(t *testing.T) {
-	commandCalls, recoveryCalls := 0, 0
+func TestEventMuxRoutesOnlyCommandRecoveryAndArtifactCleanupEnvelopes(t *testing.T) {
+	commandCalls, recoveryCalls, cleanupCalls := 0, 0, 0
 	mux := newEventMux(func(_ context.Context, event events.SQSEvent) (events.SQSEventResponse, error) {
 		commandCalls++
 		if len(event.Records) != 1 || event.Records[0].MessageId != "message-1" {
@@ -22,6 +22,9 @@ func TestEventMuxRoutesOnlyCommandAndRecoveryEnvelopes(t *testing.T) {
 			t.Fatalf("unexpected recovery event: %+v", event)
 		}
 		return map[string]string{"status": "ok"}, nil
+	}, func(_ context.Context) (any, error) {
+		cleanupCalls++
+		return map[string]string{"status": "cleaned"}, nil
 	})
 
 	commandPayload := json.RawMessage(`{"Records":[{"messageId":"message-1","body":"{}"}]}`)
@@ -41,8 +44,15 @@ func TestEventMuxRoutesOnlyCommandAndRecoveryEnvelopes(t *testing.T) {
 	if _, ok := result.(map[string]string); !ok {
 		t.Fatalf("recovery event returned unexpected result type %T", result)
 	}
-	if commandCalls != 1 || recoveryCalls != 1 {
-		t.Fatalf("event handlers called command=%d recovery=%d", commandCalls, recoveryCalls)
+	result, err = mux(context.Background(), json.RawMessage(`{"source":"aws.events","hako_task":"artifact-cleanup"}`))
+	if err != nil {
+		t.Fatalf("route artifact cleanup event: %v", err)
+	}
+	if _, ok := result.(map[string]string); !ok {
+		t.Fatalf("cleanup event returned unexpected result type %T", result)
+	}
+	if commandCalls != 1 || recoveryCalls != 1 || cleanupCalls != 1 {
+		t.Fatalf("event handlers called command=%d recovery=%d cleanup=%d", commandCalls, recoveryCalls, cleanupCalls)
 	}
 }
 
@@ -64,6 +74,7 @@ func TestEventMuxRejectsInvalidAmbiguousAndUnknownEvents(t *testing.T) {
 		{name: "ambiguous", ctx: context.Background(), payload: json.RawMessage(`{"source":"aws.events","Records":[]}`)},
 		{name: "null records", ctx: context.Background(), payload: json.RawMessage(`{"Records":null}`)},
 		{name: "non-scheduled EventBridge event", ctx: context.Background(), payload: json.RawMessage(`{"source":"aws.events","detail-type":"AWS API Call via CloudTrail"}`)},
+		{name: "unknown scheduled task", ctx: context.Background(), payload: json.RawMessage(`{"source":"aws.events","hako_task":"delete-everything"}`)},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

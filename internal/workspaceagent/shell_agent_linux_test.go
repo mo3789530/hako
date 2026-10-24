@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -35,6 +36,7 @@ func TestWorkspaceShellAgentRequiresPinnedTicketAndRelaysToPTY(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindWorkspaceTestExecRoot(agent, root)
 	spec := testMountSpec()
 	if err := agent.BindWorkspaceRuntime("microvm-1", spec); err != nil {
 		t.Fatal(err)
@@ -53,6 +55,18 @@ func TestWorkspaceShellAgentRequiresPinnedTicketAndRelaysToPTY(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect with valid single-use Agent ticket: %v", err)
 	}
+	attach, err := workspaceprotocol.EncodeAttach("")
+	if err != nil || websocket.Message.Send(client, attach) != nil {
+		t.Fatalf("send terminal attach: %v", err)
+	}
+	var sessionFrame []byte
+	if err := websocket.Message.Receive(client, &sessionFrame); err != nil {
+		t.Fatalf("receive terminal session ID: %v", err)
+	}
+	sessionAck, err := workspaceprotocol.Decode(sessionFrame)
+	if err != nil || sessionAck.Session == "" {
+		t.Fatalf("terminal session acknowledgement = %+v, %v", sessionAck, err)
+	}
 	resizeFrame, err := workspaceprotocol.EncodeResize(100, 32)
 	if err != nil {
 		t.Fatal(err)
@@ -60,40 +74,141 @@ func TestWorkspaceShellAgentRequiresPinnedTicketAndRelaysToPTY(t *testing.T) {
 	if err := websocket.Message.Send(client, resizeFrame); err != nil {
 		t.Fatal(err)
 	}
-	dataFrame, err := workspaceprotocol.EncodeData([]byte("stty size; printf 'hako-agent-pty-ok\\n'; exit\n"))
+	dataFrame, err := workspaceprotocol.EncodeData([]byte("stty size; sleep 0.3; printf 'hako-agent-pty-ok\\n'; exit\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := websocket.Message.Send(client, dataFrame); err != nil {
 		t.Fatal(err)
 	}
+	_ = client.Close()
+	resumedTicket, _, err := issuer.Issue(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err = dialWorkspaceAgent(server.URL, origin, resumedTicket)
+	if err != nil {
+		t.Fatalf("reconnect with a fresh single-use ticket: %v", err)
+	}
+	defer client.Close()
+	resumeFrame, err := workspaceprotocol.EncodeAttach(sessionAck.Session)
+	if err != nil || websocket.Message.Send(client, resumeFrame) != nil {
+		t.Fatalf("send terminal resume: %v", err)
+	}
+	var resumedAck []byte
+	if err := websocket.Message.Receive(client, &resumedAck); err != nil {
+		t.Fatalf("receive terminal resume acknowledgement: %v", err)
+	}
+	ack, err := workspaceprotocol.Decode(resumedAck)
+	if err != nil || ack.Session != sessionAck.Session {
+		t.Fatalf("resumed terminal session = %+v, %v", ack, err)
+	}
 	var output strings.Builder
 	deadline := time.After(3 * time.Second)
-	for !strings.Contains(output.String(), "32 100\r\n") {
+	for !strings.Contains(output.String(), "hako-agent-pty-ok") {
 		select {
 		case <-deadline:
-			t.Fatalf("timed out waiting for PTY output: %q", output.String())
+			t.Fatalf("timed out waiting for detached PTY output: %q", output.String())
 		default:
 		}
 		var frame []byte
 		if err := websocket.Message.Receive(client, &frame); err != nil {
-			t.Fatalf("receive PTY frame: %v output=%q", err, output.String())
+			t.Fatalf("receive resumed PTY frame: %v output=%q", err, output.String())
 		}
 		frames, err := new(workspaceprotocol.Decoder).Feed(frame)
 		if err != nil {
-			t.Fatalf("decode PTY frame: %v", err)
+			t.Fatalf("decode resumed PTY frame: %v", err)
 		}
 		for _, decoded := range frames {
 			output.Write(decoded.Data)
 		}
 	}
 	if !strings.Contains(output.String(), "hako-agent-pty-ok") {
-		t.Fatalf("PTY command did not complete after resize: %q", output.String())
+		t.Fatalf("detached shell output was not retained: %q", output.String())
 	}
-	_ = client.Close()
 	if replay, err := dialWorkspaceAgent(server.URL, origin, ticket); err == nil {
 		_ = replay.Close()
 		t.Fatal("replayed Agent ticket was accepted")
+	}
+}
+
+func TestWorkspaceShellAgentExecRequiresDedicatedOneUseTicket(t *testing.T) {
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := "https://gateway.hako.test"
+	root := t.TempDir()
+	uid, gid := testShellIdentity(t, root)
+	agent, err := newWorkspaceShellAgent(map[string]ed25519.PublicKey{"rp-key-exec": public}, origin,
+		func(spec WorkspaceMountSpec) (*ShellManager, error) {
+			return NewShellManager(ShellConfig{WorkspaceRoot: root, RunAsUID: uid, RunAsGID: gid})
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindWorkspaceTestExecRoot(agent, root)
+	if err := agent.BindWorkspaceRuntime("microvm-exec", testMountSpec()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = agent.Close() })
+	heartbeat := httptest.NewRecorder()
+	agent.ServeHTTP(heartbeat, httptest.NewRequest(http.MethodGet, "http://agent/internal/heartbeat", nil))
+	var heartbeatPayload workspaceAgentHeartbeat
+	if heartbeat.Code != http.StatusOK || json.Unmarshal(heartbeat.Body.Bytes(), &heartbeatPayload) != nil ||
+		heartbeatPayload.ProtocolVersion != workspaceAgentProtocolVersion || heartbeatPayload.TenantID != "tenant-1" ||
+		heartbeatPayload.WorkspaceID != "workspace-1" || heartbeatPayload.ResourcePlaneID != "rp-1" || heartbeatPayload.MicroVMID != "microvm-exec" {
+		t.Fatalf("Guest Agent heartbeat did not report its pinned identity: status=%d body=%q heartbeat=%+v", heartbeat.Code, heartbeat.Body.String(), heartbeatPayload)
+	}
+	server := httptest.NewServer(agent)
+	defer server.Close()
+	issuer := &AgentTicketIssuer{KeyID: "rp-key-exec", PrivateKey: private, TTL: time.Minute}
+	issue := func(permission workspacesession.Permission) string {
+		t.Helper()
+		ticket, _, err := issuer.Issue(AgentTicket{UserID: "user-exec", TenantID: "tenant-1", WorkspaceID: "workspace-1",
+			ResourcePlane: "rp-1", MicroVMID: "microvm-exec", Permission: permission})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ticket
+	}
+	connection, err := dialWorkspaceAgentChannel(server.URL, origin, issue(workspacesession.PermissionExec), "exec")
+	if err != nil {
+		t.Fatalf("connect with dedicated exec ticket: %v", err)
+	}
+	request, err := json.Marshal(workspaceprotocol.ExecRequest{Argv: []string{"/usr/bin/printf", "guest-exec-ok"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := websocket.Message.Send(connection, request); err != nil {
+		t.Fatalf("send exec request: %v", err)
+	}
+	var payload []byte
+	if err := websocket.Message.Receive(connection, &payload); err != nil {
+		t.Fatalf("receive exec result: %v", err)
+	}
+	var result workspaceprotocol.ExecResult
+	if err := json.Unmarshal(payload, &result); err != nil {
+		t.Fatalf("decode exec result: %v", err)
+	}
+	if result.ExitCode != 0 || string(result.Stdout) != "guest-exec-ok" || len(result.Stderr) != 0 || result.Code != "" {
+		t.Fatalf("unexpected exec result: %+v stdout=%q stderr=%q", result, result.Stdout, result.Stderr)
+	}
+	_ = connection.Close()
+
+	if unauthorized, err := dialWorkspaceAgentChannel(server.URL, origin, issue(workspacesession.PermissionShell), "exec"); err == nil {
+		_ = unauthorized.Close()
+		t.Fatal("shell ticket was accepted on the exec route")
+	}
+	replayTicket := issue(workspacesession.PermissionExec)
+	first, err := dialWorkspaceAgentChannel(server.URL, origin, replayTicket, "exec")
+	if err != nil {
+		t.Fatalf("first use of exec ticket: %v", err)
+	}
+	_ = first.Close()
+	if replay, err := dialWorkspaceAgentChannel(server.URL, origin, replayTicket, "exec"); err == nil {
+		_ = replay.Close()
+		t.Fatal("replayed exec ticket was accepted")
 	}
 }
 
@@ -111,6 +226,7 @@ func TestWorkspaceShellAgentSSHBridgeRequiresSSHProxyTicketAndRelaysRawBytes(t *
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindWorkspaceTestExecRoot(agent, root)
 	if err := agent.BindWorkspaceRuntime("microvm-1", testMountSpec()); err != nil {
 		t.Fatal(err)
 	}
@@ -179,6 +295,7 @@ func TestWorkspaceShellAgentPortForwardTicketPinsLoopbackPort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindWorkspaceTestExecRoot(agent, root)
 	if err := agent.BindWorkspaceRuntime("microvm-1", testMountSpec()); err != nil {
 		t.Fatal(err)
 	}
@@ -252,6 +369,7 @@ func TestWorkspaceShellAgentRejectsForeignIdentityAndOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindWorkspaceTestExecRoot(agent, root)
 	if err := agent.BindWorkspaceRuntime("microvm-1", testMountSpec()); err != nil {
 		t.Fatal(err)
 	}
@@ -299,6 +417,7 @@ func TestWorkspaceAgentVSCodeRouteUsesDedicatedTicketAndFixedLoopbackBridge(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindWorkspaceTestExecRoot(agent, root)
 	if err := agent.BindWorkspaceRuntime("microvm-vscode", testMountSpec()); err != nil {
 		t.Fatal(err)
 	}
@@ -369,6 +488,7 @@ func TestWorkspaceShellAgentBindsOnlyOnceAndOnlyAfterMount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindWorkspaceTestExecRoot(agent, root)
 	if err := agent.BindWorkspaceRuntime("microvm-1", testMountSpec()); err != nil {
 		t.Fatal(err)
 	}
@@ -382,6 +502,12 @@ func TestWorkspaceShellAgentBindsOnlyOnceAndOnlyAfterMount(t *testing.T) {
 	}
 	if err := agent.shells.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func bindWorkspaceTestExecRoot(agent *WorkspaceShellAgent, root string) {
+	agent.execFactory = func(WorkspaceMountSpec) (*ExecManager, error) {
+		return NewExecManager(root)
 	}
 }
 

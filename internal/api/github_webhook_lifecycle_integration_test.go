@@ -260,6 +260,13 @@ func TestWebhookLifecycleE2E(t *testing.T) {
 	}
 
 	ownerRun := assertWebhookRun(t, ctx, pool, "tenant_lifecycle_a", "integration_lifecycle_a", ownerDeliveryID, 8101, 8201, strings.Repeat("a", 40), "refs/heads/main", 4)
+	if !strings.HasPrefix(ownerRun.CorrelationID, "req_") || ownerRun.CorrelationID == "req_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" {
+		t.Fatalf("Webhook Workload Run correlation must come from the server, not the caller: %q", ownerRun.CorrelationID)
+	}
+	var deliveryCorrelationID string
+	if err := pool.QueryRow(ctx, `SELECT correlation_id FROM github_webhook_deliveries WHERE integration_id=$1 AND delivery_id=$2`, "integration_lifecycle_a", ownerDeliveryID).Scan(&deliveryCorrelationID); err != nil || ownerRun.CorrelationID != deliveryCorrelationID {
+		t.Fatalf("Webhook Run correlation %q must match persisted delivery correlation %q (error=%v)", ownerRun.CorrelationID, deliveryCorrelationID, err)
+	}
 	platformRun := assertWebhookRun(t, ctx, pool, "tenant_lifecycle_b", "integration_lifecycle_b", platformDeliveryID, 8102, 8204, strings.Repeat("e", 40), "refs/heads/main", 7)
 	_ = assertWebhookRun(t, ctx, pool, "tenant_lifecycle_a", "integration_lifecycle_a", adminDeliveryID, 8101, 8201, strings.Repeat("5", 40), "refs/heads/main", 4)
 	_ = assertWebhookRun(t, ctx, pool, "tenant_lifecycle_a", "integration_lifecycle_a", pullRequestID, 8101, 8201, pullRequestSHA, "review-branch", 4)
@@ -298,6 +305,11 @@ func TestWebhookLifecycleE2E(t *testing.T) {
 	}
 	if runCount != 1 || checkCount != 1 || outboxCount != 5 {
 		t.Fatalf("duplicate/concurrent processing created runs=%d checks=%d Check outbox=%d", runCount, checkCount, outboxCount)
+	}
+	var correlatedCheckOutboxCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox_events WHERE aggregate_id=$1 AND event_type='workload_run.github_check_requested'
+		AND payload_json::jsonb->>'correlation_id'=$2`, ownerRun.ID, ownerRun.CorrelationID).Scan(&correlatedCheckOutboxCount); err != nil || correlatedCheckOutboxCount != outboxCount {
+		t.Fatalf("all Workload Check Outbox revisions must retain webhook correlation: matched=%d total=%d error=%v", correlatedCheckOutboxCount, outboxCount, err)
 	}
 	_ = platformRun
 
@@ -437,6 +449,7 @@ func sendLifecycleWebhook(handler http.Handler, integrationID, secret, event, de
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitHub-Event", event)
 	req.Header.Set("X-GitHub-Delivery", deliveryID)
+	req.Header.Set("X-Hako-Request-ID", "req_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 	req.Header.Set("X-Hub-Signature-256", "sha256="+signature)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
@@ -493,8 +506,8 @@ func assertWebhookRun(t *testing.T, ctx context.Context, pool *pgxpool.Pool, ten
 	key := workloads.WebhookDeliveryIdempotencyKey(integrationID, deliveryID)
 	var run domain.WorkloadRun
 	var trust string
-	err := pool.QueryRow(ctx, `SELECT id,tenant_id,kind,github_installation_id,github_repository_id,github_integration_id,github_credential_generation,commit_sha,ref,runtime_class,trust_level,state,idempotency_key FROM workload_runs WHERE idempotency_key=$1`, key).
-		Scan(&run.ID, &run.TenantID, &run.Kind, &run.GitHubInstallation, &run.GitHubRepository, &run.GitHubIntegrationID, &run.GitHubCredentialGeneration, &run.CommitSHA, &run.Ref, &run.RuntimeClass, &trust, &run.State, &run.IdempotencyKey)
+	err := pool.QueryRow(ctx, `SELECT id,tenant_id,kind,github_installation_id,github_repository_id,github_integration_id,github_credential_generation,commit_sha,ref,runtime_class,trust_level,state,idempotency_key,COALESCE(correlation_id,'') FROM workload_runs WHERE idempotency_key=$1`, key).
+		Scan(&run.ID, &run.TenantID, &run.Kind, &run.GitHubInstallation, &run.GitHubRepository, &run.GitHubIntegrationID, &run.GitHubCredentialGeneration, &run.CommitSHA, &run.Ref, &run.RuntimeClass, &trust, &run.State, &run.IdempotencyKey, &run.CorrelationID)
 	if err != nil {
 		t.Fatalf("load webhook Run from verified inbox: %v", err)
 	}

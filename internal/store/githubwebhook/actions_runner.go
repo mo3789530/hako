@@ -25,13 +25,13 @@ func ProcessActionsRunnerDelivery(ctx context.Context, tx pgx.Tx, integrationID,
 	if admittedAt.IsZero() {
 		admittedAt = time.Now().UTC()
 	}
-	var status, eventType, action, eventJSON string
+	var status, eventType, action, eventJSON, correlationID string
 	var schemaVersion int
 	var generation int64
 	var receivedAt time.Time
-	err := tx.QueryRow(ctx, `SELECT processing_status,event_type,action,event_schema_version,normalized_event_json,credential_generation,received_at
+	err := tx.QueryRow(ctx, `SELECT processing_status,event_type,action,event_schema_version,normalized_event_json,credential_generation,received_at,COALESCE(correlation_id,'')
 		FROM github_webhook_deliveries WHERE integration_id=$1 AND delivery_id=$2 FOR UPDATE`, integrationID, deliveryID).
-		Scan(&status, &eventType, &action, &schemaVersion, &eventJSON, &generation, &receivedAt)
+		Scan(&status, &eventType, &action, &schemaVersion, &eventJSON, &generation, &receivedAt, &correlationID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, false, pgx.ErrNoRows
 	}
@@ -123,7 +123,7 @@ func ProcessActionsRunnerDelivery(ctx context.Context, tx pgx.Tx, integrationID,
 			return false, false, ErrWorkflowJobIdentityConflict
 		}
 	} else if err := createActionsRunnerCheck(ctx, tx, integrationID, domain.TenantID(tenantID), event.InstallationID, event.Repository.GitHubID,
-		job.ID, job.RunID, job.RunAttempt, job.HeadSHA, admittedAt); err != nil {
+		job.ID, job.RunID, job.RunAttempt, job.HeadSHA, correlationID, admittedAt); err != nil {
 		return false, false, fmt.Errorf("create Actions Runner GitHub Check: %w", err)
 	}
 	updated, err := tx.Exec(ctx, `UPDATE github_webhook_deliveries SET processing_status='processed'

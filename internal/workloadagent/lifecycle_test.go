@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/workloadjournal"
 )
 
@@ -20,7 +21,10 @@ func TestMicroVMLifecycleRunPinsTicketToProviderAndAttemptIdentity(t *testing.T)
 	}
 	now := time.Date(2026, 10, 12, 1, 2, 3, 0, time.UTC)
 	id := testIdentity()
-	execution := ExecutionBinding{SourceDigest: strings.Repeat("a", 64), CommitSHA: strings.Repeat("b", 40), Deadline: now.Add(time.Hour)}
+	execution := ExecutionBinding{Kind: domain.WorkloadAgent, AgentIntegrationID: "integration_1", AgentInstallationID: 71, AgentRepositoryID: 81,
+		AgentTaskContextSHA256: strings.Repeat("d", 64),
+		SourceDigest:           strings.Repeat("a", 64), CommitSHA: strings.Repeat("b", 40), TriggerEvent: "issue_comment", TriggerBranch: "main",
+		CorrelationID: "req_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Deadline: now.Add(time.Hour)}
 	backend := &memoryAgentBackend{}
 	server, err := newServer(backend, &memorySourceInstaller{}, map[string]ed25519.PublicKey{"rp-v1": publicKey}, func() time.Time { return now }, true)
 	if err != nil {
@@ -58,8 +62,11 @@ func TestMicroVMLifecycleRunPinsTicketToProviderAndAttemptIdentity(t *testing.T)
 
 	postRun := func(microVMID string, runtimeIdentity workloadjournal.Command) *httptest.ResponseRecorder {
 		t.Helper()
-		payload, err := json.Marshal(runtimeHookPayload{Identity: runtimeIdentity, SourceDigest: execution.SourceDigest,
-			CommitSHA: execution.CommitSHA, Deadline: execution.Deadline})
+		payload, err := json.Marshal(runtimeHookPayload{Identity: runtimeIdentity, Kind: execution.Kind,
+			AgentIntegrationID: execution.AgentIntegrationID, AgentInstallationID: execution.AgentInstallationID,
+			AgentRepositoryID: execution.AgentRepositoryID, AgentTaskContextSHA256: execution.AgentTaskContextSHA256,
+			SourceDigest: execution.SourceDigest, TriggerEvent: execution.TriggerEvent,
+			TriggerBranch: execution.TriggerBranch, CommitSHA: execution.CommitSHA, CorrelationID: execution.CorrelationID, Deadline: execution.Deadline})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -76,6 +83,9 @@ func TestMicroVMLifecycleRunPinsTicketToProviderAndAttemptIdentity(t *testing.T)
 	}
 	if got := postRun("microvm_1", id).Code; got != http.StatusOK {
 		t.Fatalf("idempotent /run hook retry status = %d, want 200", got)
+	}
+	if binding := server.currentRuntimeBinding(); binding == nil || binding.Execution != execution {
+		t.Fatalf("run hook lost correlation ID: %+v", binding)
 	}
 	if got := statusRequest("microvm_1", id).Code; got != http.StatusNotFound {
 		t.Fatalf("matching VM/attempt ticket should reach backend, status = %d, want 404", got)

@@ -29,7 +29,7 @@ func TestControlPlaneMetadataClientSignsBoundRequestAndValidatesResponse(t *test
 	transport := metadataRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		gotRequest = request
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{
-			"schema_version":2,"tenant_id":"tenant_1","workload_run_id":"run_1","attempt_id":"attempt_1","generation":2,
+			"schema_version":3,"kind":"job","tenant_id":"tenant_1","workload_run_id":"run_1","attempt_id":"attempt_1","generation":2,
 			"resource_plane_id":"rp_1","github_installation_id":71,"github_repository_id":81,"github_owner":"acme","github_repository":"api",
 			"github_integration_id":"integration_1","github_config_revision":3,"github_credential_generation":5,
 			"commit_sha":"` + strings.Repeat("a", 40) + `","ref":"refs/heads/main","trigger_event":"push","trigger_branch":"main","runtime_class":"standard","trust_level":"untrusted",
@@ -118,6 +118,21 @@ func TestValidExecutionMetadataRequiresImmutableRunInterval(t *testing.T) {
 		RuntimeClass: "standard", TrustLevel: domain.WorkloadUntrusted, RequestedAt: now.Add(-time.Minute), Deadline: now.Add(time.Hour)}
 	if !validExecutionMetadata(valid, now) {
 		t.Fatal("valid immutable Run interval was rejected")
+	}
+	agent := valid
+	agent.SchemaVersion, agent.Kind, agent.TriggerEvent, agent.TriggerBranch = workloadSpecSchemaV3, domain.WorkloadAgent, "issue_comment", "main"
+	if !validExecutionMetadata(agent, now) {
+		t.Fatal("valid Issue Agent metadata was rejected")
+	}
+	for _, mutate := range []func(*ControlPlaneExecutionMetadata){
+		func(m *ControlPlaneExecutionMetadata) { m.TriggerEvent = "push" },
+		func(m *ControlPlaneExecutionMetadata) { m.Kind = domain.WorkloadPreview },
+	} {
+		candidate := agent
+		mutate(&candidate)
+		if validExecutionMetadata(candidate, now) {
+			t.Fatalf("invalid Agent execution metadata was accepted: %+v", candidate)
+		}
 	}
 	for _, mutate := range []func(*ControlPlaneExecutionMetadata){
 		func(m *ControlPlaneExecutionMetadata) { m.RequestedAt = time.Time{} },

@@ -19,11 +19,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/workloadjobs"
 	"github.com/mo3789530/hako/internal/workloadjournal"
 )
 
-const maxProtocolBody = 64 << 10
+const maxProtocolBody = 128 << 10
 const sourceUploadTimeout = 10 * time.Minute
 
 var protocolID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
@@ -268,7 +269,15 @@ func endpointURL(endpoint string) (*url.URL, error) {
 }
 
 func validateStart(in StartRequest) error {
-	if !validIdentity(in.Identity.Command()) || !protocolDigest.MatchString(in.SourceDigest) || !protocolCommit.MatchString(in.CommitSHA) || in.Deadline.IsZero() {
+	if !validIdentity(in.Identity.Command()) || in.Kind != "" && in.Kind != domain.WorkloadJob && in.Kind != domain.WorkloadAgent ||
+		!protocolDigest.MatchString(in.SourceDigest) || !protocolCommit.MatchString(in.CommitSHA) || in.Deadline.IsZero() {
+		return ErrProtocolRequest
+	}
+	if in.Kind == domain.WorkloadAgent {
+		if in.AgentTask == nil || !ValidateAgentTask(*in.AgentTask, in.Identity, in.CommitSHA) {
+			return ErrProtocolRequest
+		}
+	} else if in.AgentTask != nil {
 		return ErrProtocolRequest
 	}
 	return nil

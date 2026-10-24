@@ -49,7 +49,10 @@ identity have been bound.
 `internal/workspaceagent`'s Linux executor invokes `/bin/mount` without a
 shell, with fixed `-t efs` arguments, TLS, IAM authorization, the exact Access
 Point, and the Resource Plane region; it writes a root-only idempotency marker before the
-side effect and verifies `/workspace` appears as an NFS mount. A pre-existing
+side effect, bounds the EFS helper to 50 seconds by default, and waits for
+`/workspace` to appear as an NFS mount before acknowledging the run hook. A
+helper timeout or successful helper exit without a healthy mount fails closed
+and retains the marker for retry. A pre-existing
 unowned mount fails closed. The process must run as root in the guest init
 layer, while the interactive Agent should run unprivileged after mount. The
 image build requires `HAKO_EFS_UTILS_RPM_VERSION`,
@@ -59,10 +62,17 @@ AL2023 publishes the helper in its package repositories ([AWS AL2023 EFS
 instructions](https://docs.aws.amazon.com/linux/al2023/ug/efs.html)). Build
 locally with `make build-workspace-microvm-image`. The image
 build has not yet been executed and runtime hook behavior inside an actual
-Lambda MicroVM remains unverified. Do not use the existing
+Lambda MicroVM remains unverified. AWS documents that `RUNNING` is reached
+only after the `/run` hook completes; this hook returns success only after the
+mount health check. The provider's documented state contract therefore fences
+Workspace-ready reporting behind mount completion, but the image/hook/state
+integration has not been verified in a real MicroVM. Configure the image's
+`runTimeoutInSeconds` to at most 60 seconds (AWS maximum); the local mount
+helper uses a 50-second deadline to leave response margin. Do not use the existing
 `images/workload-agent` for Workspace storage: its lifecycle hook accepts a
 different, Workload-specific schema. Therefore the current Runtime adapter
-confirms MicroVM `RUNNING`, not that `/workspace` is mounted, and this is not
+confirms MicroVM `RUNNING`; by the documented lifecycle this is after `/run`
+completion, but real mount-to-state behavior remains unverified and this is not
 production-ready. A failed startup before the
 runtime journal is created may leave a tagged AP; `DiscoverManaged` exposes it
 for reconciliation but no automated orphan deletion exists.
@@ -94,6 +104,32 @@ module can express a distinct role/AP pair for each Workspace, but
 per-Workspace role provisioning and policy attachment are not yet implemented;
 a shared role must not be treated as sufficient Tenant isolation.
 
+`internal/workspacestorage` now provisions an opaque deterministic execution
+role through an injectable IAM API. It verifies the exact path, ownership
+tags, Lambda MicroVM trust, and sole inline EFS policy; refuses foreign roles
+or drift; and performs ownership-checked cleanup. The Resource Plane runtime
+uses and journals that role ARN. The identity policy permits
+`ClientMount`/`ClientWrite` only on the exact filesystem through the exact
+Access Point with TLS required; explicit denies block root, non-TLS, and other
+Access Points. Fake IAM tests cover ensure/retry/drift/compensation/delete.
+The default-off Terraform dynamic mode permits the generated role path through
+EFS Access Points over TLS. No real IAM calls were made and the EFS policy has
+not been applied. The Resource Plane Terraform module now has a separate
+default-off `workspace_storage_runtime` IAM contract. The dev root supplies it
+only when dynamic Workspace roles are enabled and passes the exact EFS ID/ARN
+from the storage module. Access Point lifecycle is constrained to that
+filesystem and Hako/Resource Plane tags. Role creation uses request-tag
+conditions; operations on existing roles use resource-tag conditions;
+PassRole is limited to `/hako/workspaces/*` and Lambda. The policy does not
+grant trust-policy updates or managed-policy attachment. Local fake IAM and
+Terraform mock-plan tests cover this contract, but production remains disabled
+until the live EFS policy and Resource Controller IAM lifecycle are reviewed.
+The explicit identity-policy deny for any other Access Point is intentional:
+same-account identity and resource policies can contribute allows by union,
+while an explicit deny overrides either policy's allow. A future dynamic EFS
+resource policy must preserve that deny boundary rather than treating an
+identity policy's missing allow as a restriction.
+
 ## Mount and network requirements
 
 The Lambda MicroVM `RunMicrovm` request has no EFS mount field. The Workspace
@@ -113,14 +149,21 @@ At-rest encryption must be enabled on the filesystem. An opt-in Terraform
 module describes encrypted EFS, exact role-to-Access-Point IAM/TLS resource
 policy statements, private mount targets, and connector-SG-scoped NFS. The dev
 Resource Plane root exposes it through the nullable `workspace_storage` object;
-the default `null` creates no storage resources. Role/AP bindings must be
-unique and exact. Explicit Deny statements reject unconfigured principals and
-prevent a configured role from using another AP, even if an identity policy is
-broader.
-The Resource Controller still creates APs dynamically, so role provisioning
-and AP binding lifecycle are not automated. The module has not been applied;
-caller-provided subnet privacy, Lambda MicroVM connector compatibility, IAM
-Access Point isolation, and live mount behavior are not verified. See the
+the default `null` creates no storage resources. Static role/AP bindings must
+be unique and exact. Explicit Deny statements reject unconfigured principals
+and prevent a configured role from using another AP, even if an identity
+policy is broader. The Resource Controller composes its EFS Access Point
+provisioner with a deterministic, ownership-checked Workspace IAM role
+provider, and the Lambda MicroVM runtime journals and uses that per-Workspace
+role. Dynamic resource-policy mode is opt-in and restricted to the generated
+role path and same-account/Region APs; each generated role permits only its
+own AP.
+
+The IAM contract is now represented in Terraform and enabled only together
+with explicit dynamic Workspace-role mode; it remains unapplied. Caller-
+provided subnet privacy, Lambda MicroVM connector compatibility, EFS Access
+Point isolation, and live mount behavior are not verified. Keep dynamic mode
+disabled until the IAM policy, networking, and live behavior are reviewed. See the
 [`workspace-storage` Terraform module](../infra/terraform/modules/workspace-storage/README.md).
 
 ## Backup, restore, quota, and deletion
@@ -161,10 +204,15 @@ build was attempted: cross-compilation succeeded, but the host cannot execute
 the ARM64 AL2023 RPM-install layer, and the MicroVM base image has no amd64
 manifest. No final image was produced; use an ARM64 or explicitly configured
 binfmt/QEMU builder. The real Lambda `/run` hook remains unverified. Test
-suspend/restart/replacement recovery plus orderly unmount. Dynamic per-
-Workspace runtime-role provisioning and AP IAM binding lifecycle, mount failure
-compensation and orphan reconciliation, and backup/restore, retention, and
-quota verification remain open.
+suspend/restart/replacement recovery plus orderly unmount. Live EFS IAM policy
+and mount validation, mount failure compensation and orphan reconciliation,
+and backup/restore, retention, and quota verification remain open.
 Live AWS validation remains subject to explicit approval.
 
-Authoritative references: [EFS Access Point IAM condition key](https://docs.aws.amazon.com/efs/latest/ug/access-points-iam-policy.html), [AWS Backup for EFS](https://docs.aws.amazon.com/efs/latest/ug/awsbackup.html), and [EFS lifecycle management](https://docs.aws.amazon.com/efs/latest/ug/enable-lifecycle-management.html).
+Authoritative references: [EFS Access Point IAM condition key](https://docs.aws.amazon.com/efs/latest/ug/access-points-iam-policy.html), [EFS resource policy example](https://docs.aws.amazon.com/efs/latest/ug/security_iam_resource-based-policy-examples.html), [AWS Backup for EFS](https://docs.aws.amazon.com/efs/latest/ug/awsbackup.html), and [EFS lifecycle management](https://docs.aws.amazon.com/efs/latest/ug/enable-lifecycle-management.html).
+
+Lambda MicroVM documents that the `/run` hook completes before the MicroVM
+enters `RUNNING`, and that hook timeouts are capped at 60 seconds. See [MicroVM
+runtime lifecycle](https://docs.aws.amazon.com/lambda/latest/dg/microvms-how-it-works.html)
+and [MicroVM hook configuration](https://docs.aws.amazon.com/lambda/latest/microvm-api/API_MicrovmHooks.html).
+See also [IAM identity/resource policy evaluation](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_evaluation-logic.html).

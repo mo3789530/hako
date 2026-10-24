@@ -44,6 +44,9 @@ type Registration struct {
 	// keep Workload attempt messages/results away from Workspace Operations.
 	WorkloadCommandQueueURL string `json:"workload_command_queue_url,omitempty"`
 	WorkloadResultQueueURL  string `json:"workload_result_queue_url,omitempty"`
+	// WorkspaceServiceCommandQueueURL is optional until the Service runtime
+	// consumer is deployed in this Resource Plane.
+	WorkspaceServiceCommandQueueURL string `json:"workspace_service_command_queue_url,omitempty"`
 	// ActionsRunnerStartupQueueURL is optional and remains single-plane until
 	// runner placement can select a Resource Plane from capacity/policy.
 	ActionsRunnerStartupQueueURL string `json:"actions_runner_startup_queue_url,omitempty"`
@@ -123,6 +126,17 @@ func (manifest Manifest) WorkloadCommandQueueURLs() map[string]string {
 	for _, registration := range manifest.ResourcePlanes {
 		if registration.WorkloadCommandQueueURL != "" {
 			queueURLs[registration.ID] = registration.WorkloadCommandQueueURL
+		}
+	}
+	return queueURLs
+}
+
+// WorkspaceServiceCommandQueueURLs returns the optional Service dispatch table.
+func (manifest Manifest) WorkspaceServiceCommandQueueURLs() map[string]string {
+	queueURLs := make(map[string]string, len(manifest.ResourcePlanes))
+	for _, registration := range manifest.ResourcePlanes {
+		if registration.WorkspaceServiceCommandQueueURL != "" {
+			queueURLs[registration.ID] = registration.WorkspaceServiceCommandQueueURL
 		}
 	}
 	return queueURLs
@@ -222,6 +236,12 @@ func (manifest *Manifest) Validate() error {
 		queues := []struct{ role, url string }{
 			{role: "command", url: registration.CommandQueueURL},
 			{role: "result", url: registration.ResultQueueURL},
+		}
+		if registration.WorkspaceServiceCommandQueueURL != "" {
+			if err := validateQueueURL(registration.WorkspaceServiceCommandQueueURL, registration.Region, registration.AccountID); err != nil {
+				return fmt.Errorf("resource_planes[%d].workspace_service_command_queue_url: %w", i, err)
+			}
+			queues = append(queues, struct{ role, url string }{role: "Workspace Service command", url: registration.WorkspaceServiceCommandQueueURL})
 		}
 		if registration.WorkloadCommandQueueURL != "" {
 			if err := validateQueueURL(registration.WorkloadCommandQueueURL, registration.Region, registration.AccountID); err != nil {

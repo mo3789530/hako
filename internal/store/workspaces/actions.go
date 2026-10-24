@@ -26,6 +26,7 @@ type ActionInput struct {
 	UserID         domain.UserID
 	Action         domain.OperationType
 	IdempotencyKey string
+	CorrelationID  string
 }
 
 type ActionResult struct {
@@ -46,6 +47,7 @@ type actionCommand struct {
 	WorkspaceID       domain.WorkspaceID     `json:"workspace_id"`
 	ResourcePlaneID   domain.ResourcePlaneID `json:"resource_plane_id"`
 	Type              domain.OperationType   `json:"type"`
+	CorrelationID     string                 `json:"correlation_id,omitempty"`
 	CreatedAt         time.Time              `json:"created_at"`
 }
 
@@ -164,7 +166,7 @@ func RequestAction(ctx context.Context, pool transaction.Beginner, input ActionI
 		command, err := json.Marshal(actionCommand{
 			SchemaVersion: 2, WorkspaceRevision: workspaceRevision, OperationID: operation.ID, TenantID: operation.TenantID,
 			WorkspaceID: operation.WorkspaceID, ResourcePlaneID: operation.ResourcePlaneID,
-			Type: operation.Type, CreatedAt: operation.CreatedAt,
+			Type: operation.Type, CorrelationID: input.CorrelationID, CreatedAt: operation.CreatedAt,
 		})
 		if err != nil {
 			return ActionResult{}, fmt.Errorf("encode Workspace action command: %w", err)

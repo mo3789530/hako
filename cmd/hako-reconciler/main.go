@@ -39,7 +39,7 @@ func main() {
 	for {
 		stats, err := worker.RunOnce(ctx)
 		if err != nil {
-			log.Printf("reconcile batch: %v (timed_out=%d checked=%d created=%d skipped=%d failed=%d)", err, stats.TimedOut, stats.Checked, stats.Created, stats.Skipped, stats.Failed)
+			log.Printf("Reconcile batch failed (failure_class=reconcile_batch timed_out=%d checked=%d created=%d skipped=%d failed=%d)", stats.TimedOut, stats.Checked, stats.Created, stats.Skipped, stats.Failed)
 		} else if stats.Checked > 0 || stats.TimedOut > 0 {
 			log.Printf("reconcile batch complete (timed_out=%d checked=%d created=%d skipped=%d)", stats.TimedOut, stats.Checked, stats.Created, stats.Skipped)
 		}

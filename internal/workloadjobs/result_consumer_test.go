@@ -1,9 +1,11 @@
 package workloadjobs
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -96,6 +98,34 @@ func TestWorkloadResultConsumerDefaultsToBatchOne(t *testing.T) {
 	}
 	if queue.limit != 1 {
 		t.Fatalf("default result batch size = %d, want 1", queue.limit)
+	}
+}
+
+func TestWorkloadResultConsumerFailureLogIncludesCorrelationWithoutRawError(t *testing.T) {
+	const correlationID = "req_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	body, err := json.Marshal(WorkloadResult{SchemaVersion: 1, TenantID: "tenant_1", WorkloadRunID: "run_1", AttemptID: "attempt_1",
+		Generation: 1, ResourcePlaneID: "rp_1", CorrelationID: correlationID, CommitSHA: strings.Repeat("a", 40),
+		Status: domain.WorkloadFailed, ExitCode: 1, CompletedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue := &fakeResultQueue{deliveries: []ResultDelivery{{ReceiptHandle: "retry", Body: body}}}
+	var logs bytes.Buffer
+	consumer, err := NewWorkloadResultConsumer(queue, &fakeResultApplier{err: errors.New("database secret detail")}, ResultConsumerConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	if _, err := consumer.RunOnce(context.Background()); err == nil {
+		t.Fatal("transient result application failure was acknowledged")
+	}
+	logged := logs.String()
+	if !strings.Contains(logged, "correlation_id="+correlationID) || !strings.Contains(logged, "failure_class=apply_result") ||
+		!strings.Contains(logged, "workload_run_id=run_1") {
+		t.Fatalf("failure log lacks safe correlation fields: %s", logged)
+	}
+	if strings.Contains(logged, "database secret detail") {
+		t.Fatalf("raw error leaked into structured log: %s", logged)
 	}
 }
 

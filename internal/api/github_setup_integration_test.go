@@ -53,7 +53,7 @@ func (v *integrationGitHubSetupVerifier) VerifyInstallation(_ context.Context, c
 	if appID == 0 {
 		appID = 123
 	}
-	return githubapp.InstallationIdentity{ID: installationID, AppID: appID, AccountLogin: "acme"}, nil
+	return githubapp.InstallationIdentity{ID: installationID, AppID: appID, AccountLogin: "acme", GitHubUserID: 5678, GitHubUserLogin: "hako-user"}, nil
 }
 
 type integrationSetupResolver func(context.Context, githubregistry.SetupAppPin) (githubapp.SetupVerifier, error)
@@ -141,11 +141,58 @@ func TestGitHubInstallationSetupUsesOneTimeStateAndVerifiedCallback(t *testing.T
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM github_app_installation_bindings WHERE installation_id = 7743 AND tenant_id = 'tenant_github_setup_api'`).Scan(&bindings); err != nil || bindings != 1 {
 		t.Fatalf("Tenant binding count = %d err=%v", bindings, err)
 	}
+	var githubUserID int64
+	var githubLogin string
+	if err := pool.QueryRow(ctx, `SELECT github_user_id,github_login FROM users WHERE id='usr_github_setup_api'`).Scan(&githubUserID, &githubLogin); err != nil || githubUserID != 5678 || githubLogin != "hako-user" {
+		t.Fatalf("verified GitHub identity link = %d/%q err=%v", githubUserID, githubLogin, err)
+	}
 	replay := httptest.NewRequest(http.MethodGet, "/v1/integrations/github/setup/callback?code=valid-code&state="+url.QueryEscape(state), nil)
 	replayResponse := httptest.NewRecorder()
 	handler.ServeHTTP(replayResponse, replay)
 	if replayResponse.Code != http.StatusBadRequest {
 		t.Fatalf("replayed setup callback = HTTP %d %s, want 400", replayResponse.Code, replayResponse.Body.String())
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO tenants (id,name,created_at) VALUES ('tenant_github_setup_other','Other GitHub setup',$1)`, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO users (id,cognito_subject,email,created_at) VALUES ('usr_github_setup_other','github-setup-other-sub','',$1)`, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO tenant_members (tenant_id,user_id,role,joined_at) VALUES ('tenant_github_setup_other','usr_github_setup_other','owner',$1)`, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	otherToken := signTenantAPIToken(t, privateKey, issuer, "github-setup-other-sub", "openid hako/api")
+	otherStart := httptest.NewRequest(http.MethodPost, "/v1/tenants/tenant_github_setup_other/github/installations/setup", strings.NewReader(`{}`))
+	otherStart.Header.Set("Authorization", "Bearer "+otherToken)
+	otherStart.Header.Set("Content-Type", "application/json")
+	otherStartResponse := httptest.NewRecorder()
+	handler.ServeHTTP(otherStartResponse, otherStart)
+	if otherStartResponse.Code != http.StatusCreated {
+		t.Fatalf("other user setup start = HTTP %d %s", otherStartResponse.Code, otherStartResponse.Body.String())
+	}
+	if err := json.Unmarshal(otherStartResponse.Body.Bytes(), &setup); err != nil {
+		t.Fatal(err)
+	}
+	otherURL, err := url.Parse(setup.SetupURL)
+	if err != nil || otherURL.Query().Get("state") == "" {
+		t.Fatalf("other setup URL = %q err=%v", setup.SetupURL, err)
+	}
+	otherState := otherURL.Query().Get("state")
+	otherInstall := httptest.NewRequest(http.MethodGet, "/v1/integrations/github/setup/callback?installation_id=7744&setup_action=install&state="+url.QueryEscape(otherState), nil)
+	otherInstallResponse := httptest.NewRecorder()
+	handler.ServeHTTP(otherInstallResponse, otherInstall)
+	if otherInstallResponse.Code != http.StatusFound {
+		t.Fatalf("other Installation callback = HTTP %d %s", otherInstallResponse.Code, otherInstallResponse.Body.String())
+	}
+	otherOAuth := httptest.NewRequest(http.MethodGet, "/v1/integrations/github/setup/callback?code=valid-code&state="+url.QueryEscape(otherState), nil)
+	otherOAuthResponse := httptest.NewRecorder()
+	handler.ServeHTTP(otherOAuthResponse, otherOAuth)
+	if otherOAuthResponse.Code != http.StatusConflict || !strings.Contains(otherOAuthResponse.Body.String(), "github_identity_conflict") {
+		t.Fatalf("cross-user GitHub identity link = HTTP %d %s", otherOAuthResponse.Code, otherOAuthResponse.Body.String())
+	}
+	var otherBindingCount int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM github_app_installation_bindings WHERE installation_id=7744`).Scan(&otherBindingCount); err != nil || otherBindingCount != 0 {
+		t.Fatalf("conflicting identity activated an Installation binding: count=%d err=%v", otherBindingCount, err)
 	}
 	for _, statement := range []string{
 		`INSERT INTO github_credential_bindings (id,tenant_id,github_app_id,status,private_key_secret_ref,oauth_secret_ref,webhook_secret_ref,approved_at) VALUES ('api_setup_binding','tenant_github_setup_api',911,'approved','private','oauth','webhook',now())`,

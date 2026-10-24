@@ -25,6 +25,10 @@ func TestClaimLeaseRetryAndPublishAcknowledgement(t *testing.T) {
 		t.Fatalf("insert test Outbox event: %v", err)
 	}
 	policy := transaction.DefaultPolicy()
+	metrics, err := ReadPendingMetrics(ctx, pool, policy, now.Add(90*time.Second))
+	if err != nil || !metrics.HasUnpublished || metrics.OldestUnpublishedAgeSeconds != 90 {
+		t.Fatalf("read pending Outbox age: metrics=%+v error=%v", metrics, err)
+	}
 	claimed, err := Claim(ctx, pool, policy, 10, time.Minute, now)
 	if err != nil || len(claimed) != 1 || claimed[0].Attempt != 1 {
 		t.Fatalf("claim Outbox event: claimed=%+v error=%v", claimed, err)
@@ -54,5 +58,9 @@ func TestClaimLeaseRetryAndPublishAcknowledgement(t *testing.T) {
 	remaining, err := Claim(ctx, pool, policy, 10, time.Minute, retryAt.Add(2*time.Minute))
 	if err != nil || len(remaining) != 0 {
 		t.Fatalf("published event must not be claimed again: claimed=%+v error=%v", remaining, err)
+	}
+	metrics, err = ReadPendingMetrics(ctx, pool, policy, retryAt.Add(2*time.Minute))
+	if err != nil || metrics.HasUnpublished || metrics.OldestUnpublishedAgeSeconds != 0 {
+		t.Fatalf("published Outbox event must clear age metric: metrics=%+v error=%v", metrics, err)
 	}
 }

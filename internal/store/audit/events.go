@@ -16,6 +16,8 @@ import (
 type Event struct {
 	TenantID   domain.TenantID
 	ActorID    domain.UserID
+	ActorType  string
+	ActorName  string
 	Action     string
 	TargetType string
 	TargetID   string
@@ -27,9 +29,26 @@ type Event struct {
 // the same transaction as the user-visible mutation so a failed audit write
 // rolls back the mutation instead of silently losing evidence.
 func Append(ctx context.Context, tx pgx.Tx, event Event) error {
-	if tx == nil || event.TenantID == "" || event.ActorID == "" || event.Action == "" || event.TargetType == "" || event.TargetID == "" {
+	if event.ActorType == "" {
+		event.ActorType = "user"
+	}
+	if tx == nil || event.TenantID == "" || event.ActorType != "user" || event.ActorID == "" || event.ActorName != "" || event.Action == "" || event.TargetType == "" || event.TargetID == "" {
 		return errors.New("transaction, tenant, actor, action, and target are required")
 	}
+	return append(ctx, tx, event)
+}
+
+// AppendSystem records an explicit non-user actor in the same transaction as
+// its system action. It never attributes automation to a Tenant member.
+func AppendSystem(ctx context.Context, tx pgx.Tx, event Event) error {
+	if tx == nil || event.TenantID == "" || event.ActorID != "" || event.ActorType != "system" || event.ActorName == "" ||
+		event.Action == "" || event.TargetType == "" || event.TargetID == "" {
+		return errors.New("transaction, tenant, named system actor, action, and target are required")
+	}
+	return append(ctx, tx, event)
+}
+
+func append(ctx context.Context, tx pgx.Tx, event Event) error {
 	if len(event.Details) == 0 {
 		event.Details = json.RawMessage(`{}`)
 	}
@@ -43,10 +62,19 @@ func Append(ctx context.Context, tx pgx.Tx, event Event) error {
 	if err != nil {
 		return fmt.Errorf("generate audit event ID: %w", err)
 	}
+	var actorID *string
+	if event.ActorID != "" {
+		value := string(event.ActorID)
+		actorID = &value
+	}
+	var actorName *string
+	if event.ActorName != "" {
+		actorName = &event.ActorName
+	}
 	if _, err := tx.Exec(ctx, `INSERT INTO audit_events
-		(id, tenant_id, actor_user_id, action, target_type, target_id, details_json, occurred_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		id, event.TenantID, event.ActorID, event.Action, event.TargetType, event.TargetID, string(event.Details), event.OccurredAt); err != nil {
+		(id, tenant_id, actor_user_id, actor_type, actor_name, action, target_type, target_id, details_json, occurred_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		id, event.TenantID, actorID, event.ActorType, actorName, event.Action, event.TargetType, event.TargetID, string(event.Details), event.OccurredAt); err != nil {
 		return fmt.Errorf("append audit event %s: %w", event.Action, err)
 	}
 	return nil

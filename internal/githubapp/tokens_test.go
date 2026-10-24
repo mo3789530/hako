@@ -196,6 +196,129 @@ func TestCheckoutTokenSignsScopesCachesAndRefreshes(t *testing.T) {
 	}
 }
 
+func TestAgentContextTokenIsTenantPinnedAndUsesSeparateReadOnlyScopes(t *testing.T) {
+	var mintCount atomic.Int32
+	now := time.Date(2026, 10, 24, 0, 0, 0, 0, time.UTC)
+	client, _ := newTestTokenClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/app/installations/77", "/repos/acme/api/installation":
+			_, _ = io.WriteString(w, `{"id":77,"app_id":12,"suspended_at":null}`)
+		case "/app/installations/77/access_tokens":
+			mintCount.Add(1)
+			var body struct {
+				RepositoryIDs []int64           `json:"repository_ids"`
+				Permissions   map[string]string `json:"permissions"`
+			}
+			if json.NewDecoder(r.Body).Decode(&body) != nil || len(body.RepositoryIDs) != 1 || body.RepositoryIDs[0] != 88 || len(body.Permissions) != 2 ||
+				body.Permissions["contents"] != "read" || body.Permissions["issues"] != "read" {
+				t.Error("Agent context token was not restricted to one repository and the two read permissions")
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"token": testTokenValue, "expires_at": now.Add(time.Hour),
+				"permissions": map[string]string{"contents": "read", "issues": "read", "metadata": "read"}, "repositories": []map[string]int{{"id": 88}}})
+		default:
+			t.Errorf("unexpected GitHub endpoint %s", r.URL.Path)
+		}
+	}))
+	client.config.TenantID = "tenant_one"
+	client.config.IntegrationID = "integration_one"
+	client.config.ConfigRevision = 2
+	client.config.CredentialGeneration = 3
+	client.now = func() time.Time { return now }
+	checkAuth := func(_ context.Context, identity TenantAppIdentity) error {
+		if identity.TenantID != "tenant_one" || identity.IntegrationID != "integration_one" || identity.ConfigRevision != 2 || identity.CredentialGeneration != 3 {
+			return errors.New("wrong pinned Tenant App")
+		}
+		return nil
+	}
+	authorizer := scopedRepositoryAuthorizer{repositoryAuthorizerFunc: repositoryAuthorizerFunc(func(_ context.Context, tenant domain.TenantID, installation, repository int64) (RepositoryAccess, error) {
+		if tenant != "tenant_one" || installation != 77 || repository != 88 {
+			return RepositoryAccess{}, errors.New("repository denied")
+		}
+		return RepositoryAccess{Owner: "acme", Name: "api"}, nil
+	}), check: checkAuth}
+	client.tenantAppAuth = authorizer
+	client.authorizer = authorizer
+
+	if _, _, err := client.AgentContextToken(context.Background(), "tenant_other", 77, 88); err == nil {
+		t.Fatal("cross-Tenant Agent context token was issued")
+	}
+	token, access, err := client.AgentContextToken(context.Background(), "tenant_one", 77, 88)
+	if err != nil || token.Value() != testTokenValue || access != (RepositoryAccess{Owner: "acme", Name: "api"}) {
+		t.Fatalf("Agent context token = redacted token, %+v, error=%v", access, err)
+	}
+	if _, _, err := client.AgentContextToken(context.Background(), "tenant_one", 77, 88); err != nil || mintCount.Load() != 1 {
+		t.Fatalf("Agent token cache failed or mixed scope: mint count=%d error=%v", mintCount.Load(), err)
+	}
+}
+
+func TestResolveAgentIssueContextReturnsImmutableDefaultBranchCommit(t *testing.T) {
+	now := time.Date(2026, 10, 24, 0, 0, 0, 0, time.UTC)
+	commit := strings.Repeat("a", 40)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer "+testTokenValue {
+			t.Errorf("unexpected Agent context request method/auth: %s %q", r.Method, r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		switch r.URL.Path {
+		case "/repos/acme/api/issues/17":
+			_, _ = io.WriteString(w, `{"number":17,"title":"Fix parser","body":"Please fix safely","state":"open"}`)
+		case "/repos/acme/api":
+			_, _ = io.WriteString(w, `{"default_branch":"main"}`)
+		case "/repos/acme/api/commits":
+			if r.URL.Query().Get("sha") != "main" || r.URL.Query().Get("per_page") != "1" {
+				t.Errorf("commit lookup is not pinned to the default branch: %s", r.URL.RawQuery)
+			}
+			_, _ = fmt.Fprintf(w, `[{"sha":%q}]`, commit)
+		default:
+			t.Errorf("unexpected Agent context path %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := &TokenClient{http: server.Client(), apiURL: server.URL, now: func() time.Time { return now }}
+	token := InstallationToken{value: testTokenValue, expiresAt: now.Add(time.Hour)}
+	got, err := client.ResolveAgentIssueContext(context.Background(), token, RepositoryAccess{Owner: "acme", Name: "api"}, 17)
+	if err != nil || got.IssueNumber != 17 || got.Title != "Fix parser" || got.Body != "Please fix safely" || got.DefaultRef != "main" || got.CommitSHA != commit {
+		t.Fatalf("resolved Agent issue context = %+v error=%v", got, err)
+	}
+}
+
+func TestResolveAgentIssueContextRejectsPullRequestsAndInvalidSHAs(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		issue      string
+		commitJSON string
+	}{
+		{name: "pull request", issue: `{"number":17,"title":"PR","body":"","state":"open","pull_request":{"url":"https://github.test/pulls/17"}}`, commitJSON: `[{"sha":"` + strings.Repeat("b", 40) + `"}]`},
+		{name: "malformed sha", issue: `{"number":17,"title":"Issue","body":"","state":"open"}`, commitJSON: `[{"sha":"not-a-commit"}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Date(2026, 10, 24, 0, 0, 0, 0, time.UTC)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/repos/acme/api/issues/17":
+					_, _ = io.WriteString(w, tc.issue)
+				case "/repos/acme/api":
+					_, _ = io.WriteString(w, `{"default_branch":"main"}`)
+				case "/repos/acme/api/commits":
+					_, _ = io.WriteString(w, tc.commitJSON)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			client := &TokenClient{http: server.Client(), apiURL: server.URL, now: func() time.Time { return now }}
+			token := InstallationToken{value: testTokenValue, expiresAt: now.Add(time.Hour)}
+			if _, err := client.ResolveAgentIssueContext(context.Background(), token, RepositoryAccess{Owner: "acme", Name: "api"}, 17); err == nil {
+				t.Fatal("untrusted Issue context accepted")
+			}
+		})
+	}
+}
+
 func TestChecksTokenIsRepositoryScopedAndNeverReusesCheckoutToken(t *testing.T) {
 	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
 	var minted []string

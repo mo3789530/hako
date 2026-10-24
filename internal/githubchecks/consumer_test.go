@@ -51,23 +51,26 @@ type fakeStore struct {
 	saveCalls     int
 	loadTenant    domain.TenantID
 	loadRun       domain.WorkloadRunID
+	loadPipeline  string
+	savedPipeline string
 	runnerCheck   githubwebhook.ActionsRunnerCheck
 	runnerCheckID int64
 }
 
-func (s *fakeStore) Load(_ context.Context, tenant domain.TenantID, run domain.WorkloadRunID) (DesiredCheck, error) {
-	s.loadTenant, s.loadRun = tenant, run
+func (s *fakeStore) Load(_ context.Context, tenant domain.TenantID, run domain.WorkloadRunID, pipelineName string) (DesiredCheck, error) {
+	s.loadTenant, s.loadRun, s.loadPipeline = tenant, run, pipelineName
 	return s.desired, nil
 }
-func (s *fakeStore) SaveID(_ context.Context, tenant domain.TenantID, run domain.WorkloadRunID, sha string, id int64, _ time.Time) error {
+func (s *fakeStore) SaveID(_ context.Context, tenant domain.TenantID, run domain.WorkloadRunID, pipelineName, sha string, id int64, _ time.Time) error {
 	s.saveCalls++
 	if s.saveErr != nil {
 		return s.saveErr
 	}
-	if tenant != s.desired.Check.TenantID || run != s.desired.Check.WorkloadRunID || sha != s.desired.Check.CommitSHA {
+	if tenant != s.desired.Check.TenantID || run != s.desired.Check.WorkloadRunID || pipelineName != s.desired.Check.PipelineName || sha != s.desired.Check.CommitSHA {
 		return errors.New("identity mismatch")
 	}
 	s.savedID = id
+	s.savedPipeline = pipelineName
 	s.desired.Check.CheckRunID = id
 	return nil
 }
@@ -125,7 +128,8 @@ func (t handlerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 
 func deliveryBody(t *testing.T, tenant string, run string, revision int64) []byte {
 	t.Helper()
-	body, err := json.Marshal(request{SchemaVersion: 1, TenantID: tenant, WorkloadRunID: run, Revision: revision})
+	body, err := json.Marshal(request{SchemaVersion: 1, TenantID: tenant, WorkloadRunID: run,
+		CorrelationID: "req_12121212-1212-4212-8212-121212121212", Revision: revision})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +190,8 @@ func testDesiredCheck(now time.Time, id int64) DesiredCheck {
 	check.CompletedAt = &completed
 	run := domain.WorkloadRun{ID: "run_check", TenantID: "tenant_check", Kind: domain.WorkloadJob,
 		GitHubInstallation: 77, GitHubRepository: 88, CommitSHA: strings.Repeat("a", 40),
-		State: domain.WorkloadFailed, GitHubIntegrationID: "integration_check", GitHubConfigRevision: 4,
+		CorrelationID: "req_12121212-1212-4212-8212-121212121212",
+		State:         domain.WorkloadFailed, GitHubIntegrationID: "integration_check", GitHubConfigRevision: 4,
 		GitHubCredentialGeneration: 5}
 	return DesiredCheck{Check: check, Run: run}
 }
@@ -234,6 +239,46 @@ func TestConsumerPublishesLatestDurableStateAndPersistsCheckID(t *testing.T) {
 	if created != 1 || store.savedID != 456 || creds.calls != 1 || creds.run.GitHubConfigRevision != 4 ||
 		store.loadTenant != "tenant_check" || store.loadRun != "run_check" {
 		t.Fatalf("durable Check identity was not respected: creates=%d saved=%d provider=%+v store=%+v", created, store.savedID, creds, store)
+	}
+}
+
+func TestConsumerPublishesNamedPipelineCheckIndependently(t *testing.T) {
+	now := time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC)
+	desired := testDesiredCheck(now, 0)
+	desired.Check.PipelineName = "verify"
+	desired.Check.Name = "hako/job/verify"
+	desired.Check.Conclusion = "success"
+	desired.Check.OutputTitle = "Hako pipeline verify"
+	desired.Check.OutputSummary = "Pipeline verify completed with status succeeded and exit code 0."
+	desired.Run.State = domain.WorkloadSucceeded
+	store := &fakeStore{desired: desired}
+	body, err := json.Marshal(request{SchemaVersion: 1, TenantID: string(desired.Run.TenantID),
+		WorkloadRunID: string(desired.Run.ID), PipelineName: "verify", CorrelationID: desired.Run.CorrelationID, Revision: desired.Check.Revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue := &fakeQueue{deliveries: []Delivery{{Body: body, ReceiptHandle: "pipeline-check"}}}
+	creds := &fakeCredentials{token: fakeCheckToken{value: "synthetic-check-token", expiresAt: time.Now().Add(time.Hour)},
+		repository: githubapp.RepositoryAccess{Owner: "acme", Name: "api"}}
+	var requestName string
+	consumer, _ := newTestConsumer(t, store, queue, creds, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"check_runs":[]}`))
+			return
+		}
+		var check githubapp.CheckRunRequest
+		if err := json.NewDecoder(r.Body).Decode(&check); err != nil {
+			t.Errorf("decode pipeline Check: %v", err)
+		}
+		requestName = check.Name
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(githubapp.CheckRun{ID: 919, Name: check.Name, ExternalID: check.ExternalID,
+			HeadSHA: check.HeadSHA, Status: check.Status, Conclusion: check.Conclusion})
+	})
+	stats, err := consumer.RunOnce(context.Background())
+	if err != nil || stats != (Stats{Received: 1, Applied: 1}) || requestName != "hako/job/verify" ||
+		store.loadPipeline != "verify" || store.savedPipeline != "verify" || store.savedID != 919 {
+		t.Fatalf("pipeline Check was not delivered independently: stats=%+v name=%q store=%+v err=%v", stats, requestName, store, err)
 	}
 }
 

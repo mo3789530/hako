@@ -55,7 +55,8 @@ func (c *Controller) Poll(ctx context.Context, data []byte, publisher ResultPubl
 			}
 			result = workloadjobs.WorkloadResult{SchemaVersion: 1, TenantID: domain.TenantID(id.TenantID), WorkloadRunID: domain.WorkloadRunID(id.WorkloadRunID),
 				AttemptID: id.AttemptID, Generation: id.Generation, ResourcePlaneID: domain.ResourcePlaneID(id.ResourcePlaneID), CommitSHA: spec.CommitSHA,
-				Status: domain.WorkloadRunState(s.Journal.ExecutionState), CompletedAt: c.acceptor.now().UTC(), ErrorCode: string(s.Journal.ExecutionState)}
+				CorrelationID: spec.CorrelationID,
+				Status:        domain.WorkloadRunState(s.Journal.ExecutionState), CompletedAt: c.acceptor.now().UTC(), ErrorCode: string(s.Journal.ExecutionState)}
 		} else {
 			state, err := c.runtime.GetStatus(ctx, id)
 			if err != nil {
@@ -115,7 +116,8 @@ func (c *Controller) Poll(ctx context.Context, data []byte, publisher ResultPubl
 func validateResult(r workloadjobs.WorkloadResult, s Specification) error {
 	id := s.Identity
 	if workloadjobs.ValidateResult(r) != nil || string(r.TenantID) != id.TenantID || string(r.WorkloadRunID) != id.WorkloadRunID ||
-		r.AttemptID != id.AttemptID || r.Generation != id.Generation || string(r.ResourcePlaneID) != id.ResourcePlaneID || r.CommitSHA != s.CommitSHA {
+		r.AttemptID != id.AttemptID || r.Generation != id.Generation || string(r.ResourcePlaneID) != id.ResourcePlaneID ||
+		r.CommitSHA != s.CommitSHA || r.CorrelationID != s.CorrelationID {
 		return ErrSpecification
 	}
 	if r.LogArtifact != nil {
