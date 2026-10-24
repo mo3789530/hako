@@ -1,6 +1,6 @@
 # Task 53: Native Pipeline and Issue-to-Agent Workflow
 
-Status: In Progress (versioned manifest selection, fixed-catalog execution, durable per-pipeline results, and independent pipeline Checks through the existing Checks consumer are implemented and locally verified. Issue command authorization requires a verified GitHub identity that is a member of the resolved Tenant, an active Installation binding, exact repository identity, and a pre-existing Factory opt-in. A Tenant-App-only read scope, bounded Issue/default-branch SHA reader, Control Plane-only mTLS broker, and an atomic Issue inbox processor that creates one immutable Agent Run plus a bounded task record are locally composed and PostgreSQL-tested. The Resource Plane Worker now retrieves the bounded task over mTLS and validates current attempt and immutable Run/App/Repository/branch/commit pins. A context digest is bound from launch specification through signed Start/Source tickets and guest `/run`; guest checks it before exposing task text in memory to a process factory. Scheduling remains disabled (dispatcher/batch are Job-only), and the default guest process factory rejects Agent Runs until an isolated model-backed executor, Tenant credential policy, and runtime resource/network enforcement exist. Service container orchestration and live Agent write execution remain; branch/PR policy is implemented as dormant configuration). Priority: P3.
+Status: In Progress (versioned manifest selection, fixed-catalog execution, durable per-pipeline results, and independent pipeline Checks through the existing Checks consumer are implemented and locally verified. Issue command authorization requires a verified GitHub identity that is a member of the resolved Tenant, an active Installation binding, exact repository identity, and a pre-existing Factory opt-in. A Tenant-App-only read scope, bounded Issue/default-branch SHA reader, Control Plane-only mTLS broker, and an atomic Issue inbox processor that creates one immutable Agent Run plus a bounded task record are locally composed and PostgreSQL-tested. The Resource Plane Worker now retrieves the bounded task over mTLS and validates current attempt and immutable Run/App/Repository/branch/commit pins. A context digest is bound from launch specification through signed Start/Source tickets and guest `/run`; guest checks it before exposing task text in memory to a process factory. Purpose-scoped `native_agent` model credential metadata/API/CLI is implemented, but it has no Broker reader or runtime delivery path. Scheduling remains disabled (dispatcher/batch are Job-only), and the default guest process factory rejects Agent Runs until an isolated model-backed executor, Tenant credential authorization, and runtime resource/network enforcement exist. Service container orchestration and live Agent write execution remain; branch/PR policy is implemented as dormant configuration). Priority: P3.
 
 Runtime profile follow-up: profiles are now keyed by Workload kind, Runtime Class,
 and trust level. A Job profile cannot be implicitly reused by Agent or Preview;
@@ -182,6 +182,17 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   `agent_executor_unavailable` failure for Agent Runs.
 
 ## Local verification refresh (2026-10-24)
+
+- Tenant model credentials now have an explicit `claude_action` or
+  `native_agent` purpose in both the operator-approved binding and Tenant
+  credential row. The Owner/Admin API and CLI create, list, rotate, and disable
+  credentials independently by purpose; migrations 000148–000153 preserve
+  existing rows as `claude_action`. PostgreSQL integration verifies
+  cross-purpose binding rejection and that rotating/disabling one purpose does
+  not change the other. Native Agent credential metadata remains inert: its
+  existing Actions Runner broker resolver is purpose-pinned to `claude_action`,
+  and Agent scheduling remains disabled until its independent runtime policy
+  and executor are implemented.
 
 - Added a shared `internal/agenttask` canonical digest implementation used by
   Control Plane persistence, Broker validation, Resource Plane Worker, and

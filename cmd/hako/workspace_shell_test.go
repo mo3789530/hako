@@ -97,6 +97,7 @@ func (d shellTestDialer) OpenShell(context.Context, workspacesession.Claims) (io
 		defer runtime.Close()
 		buffer := make([]byte, 64*1024)
 		var decoder workspaceprotocol.Decoder
+		var pendingInput []byte
 		for {
 			n, err := runtime.Read(buffer)
 			if n > 0 {
@@ -118,16 +119,18 @@ func (d shellTestDialer) OpenShell(context.Context, workspacesession.Claims) (io
 					if decoded.Resize {
 						continue
 					}
-					frame, encodeErr := workspaceprotocol.EncodeData(decoded.Data)
+					pendingInput = append(pendingInput, decoded.Data...)
+					if !strings.Contains(string(decoded.Data), string([]byte{4})) {
+						continue
+					}
+					frame, encodeErr := workspaceprotocol.EncodeData(pendingInput)
 					if encodeErr != nil {
 						return
 					}
 					if _, writeErr := runtime.Write(frame); writeErr != nil {
 						return
 					}
-					if strings.Contains(string(decoded.Data), string([]byte{4})) {
-						return
-					}
+					return
 				}
 			}
 			if err != nil {

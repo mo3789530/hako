@@ -20,17 +20,20 @@ import (
 
 type ModelCredentialRequest struct {
 	Provider        string `json:"provider"`
+	Purpose         string `json:"purpose"`
 	BindingID       string `json:"binding_id"`
 	SecretVersionID string `json:"secret_version_id"`
 }
 
 type ModelCredentialRotateRequest struct {
+	Purpose            string `json:"purpose"`
 	SecretVersionID    string `json:"secret_version_id"`
 	ExpectedGeneration int64  `json:"expected_generation"`
 }
 
 type ModelCredentialDisableRequest struct {
-	ExpectedGeneration int64 `json:"expected_generation"`
+	Purpose            string `json:"purpose"`
+	ExpectedGeneration int64  `json:"expected_generation"`
 }
 
 type ModelCredentialResult struct {
@@ -73,14 +76,26 @@ func modelCredentialHandler(pool transaction.Beginner, action string) echo.Handl
 				!modelcredentials.ValidSecretVersionID(strings.TrimSpace(request.SecretVersionID)) {
 				return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_model_credential", Message: "A supported provider, approved binding ID, and Secret version ID are required"}})
 			}
+			request.Purpose = normalizeModelCredentialPurpose(request.Purpose)
+			if !modelcredentials.ValidPurpose(request.Purpose) {
+				return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_model_credential_purpose", Message: "A supported credential purpose is required"}})
+			}
 		case "rotate":
 			if err := decodeJSONRequest(c, &rotation); err != nil || rotation.ExpectedGeneration <= 0 ||
 				!modelcredentials.ValidSecretVersionID(strings.TrimSpace(rotation.SecretVersionID)) {
 				return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_rotation", Message: "A Secret version ID and positive expected generation are required"}})
 			}
+			rotation.Purpose = normalizeModelCredentialPurpose(rotation.Purpose)
+			if !modelcredentials.ValidPurpose(rotation.Purpose) {
+				return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_model_credential_purpose", Message: "A supported credential purpose is required"}})
+			}
 		case "disable":
 			if err := decodeJSONRequest(c, &disable); err != nil || disable.ExpectedGeneration <= 0 {
 				return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_disable", Message: "A positive expected generation is required"}})
+			}
+			disable.Purpose = normalizeModelCredentialPurpose(disable.Purpose)
+			if !modelcredentials.ValidPurpose(disable.Purpose) {
+				return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_model_credential_purpose", Message: "A supported credential purpose is required"}})
 			}
 		}
 		provider := request.Provider
@@ -108,7 +123,7 @@ func modelCredentialHandler(pool transaction.Beginner, action string) echo.Handl
 				items, err := modelcredentials.List(ctx, tx, tenantID)
 				return ModelCredentialResult{Items: items}, err
 			case "create":
-				created, err := modelcredentials.Create(ctx, tx, modelcredentials.Credential{ID: credentialID, TenantID: tenantID, Provider: request.Provider,
+				created, err := modelcredentials.Create(ctx, tx, modelcredentials.Credential{ID: credentialID, TenantID: tenantID, Provider: request.Provider, Purpose: request.Purpose,
 					BindingID: strings.TrimSpace(request.BindingID), SecretVersionID: strings.TrimSpace(request.SecretVersionID)}, user.ID, now)
 				if err != nil {
 					return ModelCredentialResult{}, err
@@ -118,7 +133,7 @@ func modelCredentialHandler(pool transaction.Beginner, action string) echo.Handl
 				}
 				return ModelCredentialResult{Credential: &created}, nil
 			case "rotate":
-				updated, err := modelcredentials.Rotate(ctx, tx, tenantID, provider, strings.TrimSpace(rotation.SecretVersionID), rotation.ExpectedGeneration, user.ID, now)
+				updated, err := modelcredentials.Rotate(ctx, tx, tenantID, provider, rotation.Purpose, strings.TrimSpace(rotation.SecretVersionID), rotation.ExpectedGeneration, user.ID, now)
 				if err != nil {
 					return ModelCredentialResult{}, err
 				}
@@ -127,7 +142,7 @@ func modelCredentialHandler(pool transaction.Beginner, action string) echo.Handl
 				}
 				return ModelCredentialResult{Credential: &updated}, nil
 			case "disable":
-				updated, err := modelcredentials.Disable(ctx, tx, tenantID, provider, disable.ExpectedGeneration, user.ID, now)
+				updated, err := modelcredentials.Disable(ctx, tx, tenantID, provider, disable.Purpose, disable.ExpectedGeneration, user.ID, now)
 				if err != nil {
 					return ModelCredentialResult{}, err
 				}
@@ -156,9 +171,16 @@ func modelCredentialHandler(pool transaction.Beginner, action string) echo.Handl
 	}
 }
 
+func normalizeModelCredentialPurpose(purpose string) string {
+	if strings.TrimSpace(purpose) == "" {
+		return modelcredentials.PurposeClaudeAction
+	}
+	return strings.TrimSpace(purpose)
+}
+
 func appendModelCredentialAudit(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, actor domain.UserID, action string,
 	credential modelcredentials.Credential, now time.Time) error {
-	details, err := json.Marshal(map[string]any{"provider": credential.Provider, "binding_id": credential.BindingID,
+	details, err := json.Marshal(map[string]any{"provider": credential.Provider, "purpose": credential.Purpose, "binding_id": credential.BindingID,
 		"credential_generation": credential.CredentialGeneration, "status": credential.Status})
 	if err != nil {
 		return errors.New("encode model credential audit details")

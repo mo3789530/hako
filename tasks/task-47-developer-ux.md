@@ -17,6 +17,13 @@ Complete the basic interactive development flow and reproducible local-service t
 
 ## Progress
 
+- Stabilized the CLI shell Gateway test double so it returns the accumulated
+  PTY echo only after receiving terminal EOF. This prevents an artificial
+  server close racing the CLI's asynchronous stdin completion and causing an
+  unnecessary second Session. The shell unit test and repository-wide Go suite
+  pass with this deterministic behavior; production reconnect behavior is
+  unchanged.
+
 - Implemented `hako shell <tenant-id> <workspace-id>` over the Session API and
   Gateway WSS protocol. The CLI requires a prior `hako login`, `HAKO_API_URL`,
   and `HAKO_GATEWAY_URL`; see [Workspace CLI](../docs/workspace-cli.md).

@@ -18,11 +18,13 @@ import (
 type fakeReader struct {
 	reads  int
 	secret []byte
+	lastID string
 	change func(context.Context)
 }
 
-func (f *fakeReader) ReadSecret(ctx context.Context, _ modelcredentials.SecretAccess) ([]byte, error) {
+func (f *fakeReader) ReadSecret(ctx context.Context, access modelcredentials.SecretAccess) ([]byte, error) {
 	f.reads++
+	f.lastID = access.CredentialID
 	value := append([]byte(nil), f.secret...)
 	if f.change != nil {
 		f.change(ctx)
@@ -84,6 +86,15 @@ func TestModelCredentialResolverRequiresLiveProvenanceAndRechecksRotation(t *tes
 		VALUES ('mcred_modelrun01','tenant_model_run','anthropic','binding_model_run','11111111111111111111111111111111','active',1,'usr_model_run','usr_model_run',now(),now())`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := pool.Exec(ctx, `INSERT INTO tenant_model_credential_bindings(id,tenant_id,provider,purpose,secret_arn,reader_role_arn,status,created_at,updated_at)
+		VALUES ('binding_model_agent','tenant_model_run','anthropic','native_agent','arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/model/agent-AbCdEf',
+		'arn:aws:iam::123456789012:role/hako/model-agent-reader','approved',now(),now())`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO tenant_model_credentials(id,tenant_id,provider,purpose,binding_id,secret_version_id,status,credential_generation,created_by,updated_by,created_at,updated_at)
+		VALUES ('mcred_modelagent1','tenant_model_run','anthropic','native_agent','binding_model_agent','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','active',1,'usr_model_run','usr_model_run',now(),now())`); err != nil {
+		t.Fatal(err)
+	}
 	reader := &fakeReader{secret: []byte("sk-ant-model-test")}
 	resolver, err := New(pool, transaction.DefaultPolicy(), reader)
 	if err != nil {
@@ -99,7 +110,7 @@ func TestModelCredentialResolverRequiresLiveProvenanceAndRechecksRotation(t *tes
 	}
 	reader.change = func(ctx context.Context) {
 		if _, err := pool.Exec(ctx, `UPDATE tenant_model_credentials SET secret_version_id='22222222222222222222222222222222',credential_generation=2,updated_at=now()
-			WHERE tenant_id='tenant_model_run' AND provider='anthropic'`); err != nil {
+			WHERE tenant_id='tenant_model_run' AND provider='anthropic' AND purpose='claude_action'`); err != nil {
 			t.Errorf("rotate during Secret retrieval: %v", err)
 		}
 	}
@@ -116,6 +127,9 @@ func TestModelCredentialResolverRequiresLiveProvenanceAndRechecksRotation(t *tes
 		return nil
 	}); err != nil {
 		t.Fatalf("trusted resolver failed: %v", err)
+	}
+	if reader.lastID != "mcred_modelrun01" {
+		t.Fatalf("Claude Action resolver selected another purpose credential ID=%q", reader.lastID)
 	}
 	for _, b := range consumed {
 		if b != 0 {

@@ -27,12 +27,18 @@ var (
 	credentialIDPattern        = regexp.MustCompile(`^mcred_[A-Za-z0-9_-]{8,80}$`)
 )
 
-const ProviderAnthropic = "anthropic"
+const (
+	ProviderAnthropic = "anthropic"
+
+	PurposeClaudeAction = "claude_action"
+	PurposeNativeAgent  = "native_agent"
+)
 
 type Credential struct {
 	ID                   string          `json:"id"`
 	TenantID             domain.TenantID `json:"tenant_id"`
 	Provider             string          `json:"provider"`
+	Purpose              string          `json:"purpose"`
 	BindingID            string          `json:"binding_id"`
 	SecretVersionID      string          `json:"secret_version_id"`
 	Status               string          `json:"status"`
@@ -111,8 +117,8 @@ func ResolveForRunnerClaim(ctx context.Context, tx pgx.Tx, identity RunnerClaimI
 	var access SecretAccess
 	err = tx.QueryRow(ctx, `SELECT c.id,c.tenant_id,c.provider,b.reader_role_arn,b.secret_arn,c.secret_version_id,c.credential_generation
 		FROM tenant_model_credentials c JOIN tenant_model_credential_bindings b
-		ON b.tenant_id=c.tenant_id AND b.id=c.binding_id AND b.provider=c.provider AND b.status='approved'
-		WHERE c.tenant_id=$1 AND c.provider='anthropic' AND c.status='active'`, tenantID).
+		ON b.tenant_id=c.tenant_id AND b.id=c.binding_id AND b.provider=c.provider AND b.purpose=c.purpose AND b.status='approved'
+		WHERE c.tenant_id=$1 AND c.provider='anthropic' AND c.purpose='claude_action' AND c.status='active'`, tenantID).
 		Scan(&access.CredentialID, &access.TenantID, &access.Provider, &access.ReaderRoleARN, &access.SecretARN, &access.SecretVersionID, &access.CredentialGeneration)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return SecretAccess{}, ErrCredentialNotConfigured
@@ -128,7 +134,7 @@ func List(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID) ([]Credentia
 	if ctx == nil || tx == nil || tenantID == "" {
 		return nil, ErrCredentialNotFound
 	}
-	rows, err := tx.Query(ctx, `SELECT id,tenant_id,provider,binding_id,secret_version_id,status,credential_generation,created_at,updated_at
+	rows, err := tx.Query(ctx, `SELECT id,tenant_id,provider,purpose,binding_id,secret_version_id,status,credential_generation,created_at,updated_at
 		FROM tenant_model_credentials WHERE tenant_id=$1 ORDER BY provider,id`, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("list Tenant model credentials: %w", err)
@@ -137,7 +143,7 @@ func List(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID) ([]Credentia
 	items := make([]Credential, 0)
 	for rows.Next() {
 		var item Credential
-		if err := rows.Scan(&item.ID, &item.TenantID, &item.Provider, &item.BindingID, &item.SecretVersionID, &item.Status,
+		if err := rows.Scan(&item.ID, &item.TenantID, &item.Provider, &item.Purpose, &item.BindingID, &item.SecretVersionID, &item.Status,
 			&item.CredentialGeneration, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan Tenant model credential: %w", err)
 		}
@@ -155,7 +161,7 @@ func Create(ctx context.Context, tx pgx.Tx, credential Credential, actor domain.
 	}
 	var approved bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM tenant_model_credential_bindings
-		WHERE tenant_id=$1 AND id=$2 AND provider=$3 AND status='approved')`, credential.TenantID, credential.BindingID, credential.Provider).Scan(&approved); err != nil {
+		WHERE tenant_id=$1 AND id=$2 AND provider=$3 AND purpose=$4 AND status='approved')`, credential.TenantID, credential.BindingID, credential.Provider, credential.Purpose).Scan(&approved); err != nil {
 		return Credential{}, fmt.Errorf("verify Tenant model credential binding: %w", err)
 	}
 	if !approved {
@@ -164,11 +170,11 @@ func Create(ctx context.Context, tx pgx.Tx, credential Credential, actor domain.
 	credential.Status, credential.CredentialGeneration = "active", 1
 	credential.CreatedAt, credential.UpdatedAt = now.UTC(), now.UTC()
 	err := tx.QueryRow(ctx, `INSERT INTO tenant_model_credentials
-		(id,tenant_id,provider,binding_id,secret_version_id,status,credential_generation,created_by,updated_by,created_at,updated_at)
-		VALUES ($1,$2,$3,$4,$5,'active',1,$6,$6,$7,$7)
-		RETURNING id,tenant_id,provider,binding_id,secret_version_id,status,credential_generation,created_at,updated_at`,
-		credential.ID, credential.TenantID, credential.Provider, credential.BindingID, credential.SecretVersionID, actor, now.UTC()).
-		Scan(&credential.ID, &credential.TenantID, &credential.Provider, &credential.BindingID, &credential.SecretVersionID, &credential.Status,
+		(id,tenant_id,provider,purpose,binding_id,secret_version_id,status,credential_generation,created_by,updated_by,created_at,updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,'active',1,$7,$7,$8,$8)
+		RETURNING id,tenant_id,provider,purpose,binding_id,secret_version_id,status,credential_generation,created_at,updated_at`,
+		credential.ID, credential.TenantID, credential.Provider, credential.Purpose, credential.BindingID, credential.SecretVersionID, actor, now.UTC()).
+		Scan(&credential.ID, &credential.TenantID, &credential.Provider, &credential.Purpose, &credential.BindingID, &credential.SecretVersionID, &credential.Status,
 			&credential.CredentialGeneration, &credential.CreatedAt, &credential.UpdatedAt)
 	if err != nil {
 		var postgresErr *pgconn.PgError
@@ -180,32 +186,32 @@ func Create(ctx context.Context, tx pgx.Tx, credential Credential, actor domain.
 	return credential, nil
 }
 
-func Rotate(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, provider, versionID string, expectedGeneration int64, actor domain.UserID, now time.Time) (Credential, error) {
-	if ctx == nil || tx == nil || tenantID == "" || provider != ProviderAnthropic || !versionIDPattern.MatchString(versionID) || expectedGeneration <= 0 || actor == "" || now.IsZero() {
+func Rotate(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, provider, purpose, versionID string, expectedGeneration int64, actor domain.UserID, now time.Time) (Credential, error) {
+	if ctx == nil || tx == nil || tenantID == "" || provider != ProviderAnthropic || !ValidPurpose(purpose) || !versionIDPattern.MatchString(versionID) || expectedGeneration <= 0 || actor == "" || now.IsZero() {
 		return Credential{}, ErrCredentialConflict
 	}
-	return update(ctx, tx, `UPDATE tenant_model_credentials c SET secret_version_id=$4,credential_generation=c.credential_generation+1,
-		updated_by=$5,updated_at=$6 FROM tenant_model_credential_bindings b
-		WHERE c.tenant_id=$1 AND c.provider=$2 AND c.credential_generation=$3 AND c.status='active'
-		AND b.tenant_id=c.tenant_id AND b.id=c.binding_id AND b.provider=c.provider AND b.status='approved'
-		RETURNING c.id,c.tenant_id,c.provider,c.binding_id,c.secret_version_id,c.status,c.credential_generation,c.created_at,c.updated_at`,
-		tenantID, provider, expectedGeneration, versionID, actor, now.UTC())
+	return update(ctx, tx, `UPDATE tenant_model_credentials c SET secret_version_id=$5,credential_generation=c.credential_generation+1,
+		updated_by=$6,updated_at=$7 FROM tenant_model_credential_bindings b
+		WHERE c.tenant_id=$1 AND c.provider=$2 AND c.purpose=$3 AND c.credential_generation=$4 AND c.status='active'
+		AND b.tenant_id=c.tenant_id AND b.id=c.binding_id AND b.provider=c.provider AND b.purpose=c.purpose AND b.status='approved'
+		RETURNING c.id,c.tenant_id,c.provider,c.purpose,c.binding_id,c.secret_version_id,c.status,c.credential_generation,c.created_at,c.updated_at`,
+		tenantID, provider, purpose, expectedGeneration, versionID, actor, now.UTC())
 }
 
-func Disable(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, provider string, expectedGeneration int64, actor domain.UserID, now time.Time) (Credential, error) {
-	if ctx == nil || tx == nil || tenantID == "" || provider != ProviderAnthropic || expectedGeneration <= 0 || actor == "" || now.IsZero() {
+func Disable(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, provider, purpose string, expectedGeneration int64, actor domain.UserID, now time.Time) (Credential, error) {
+	if ctx == nil || tx == nil || tenantID == "" || provider != ProviderAnthropic || !ValidPurpose(purpose) || expectedGeneration <= 0 || actor == "" || now.IsZero() {
 		return Credential{}, ErrCredentialConflict
 	}
 	return update(ctx, tx, `UPDATE tenant_model_credentials c SET status='disabled',credential_generation=c.credential_generation+1,
-		updated_by=$4,updated_at=$5
-		WHERE c.tenant_id=$1 AND c.provider=$2 AND c.credential_generation=$3 AND c.status='active'
-		RETURNING c.id,c.tenant_id,c.provider,c.binding_id,c.secret_version_id,c.status,c.credential_generation,c.created_at,c.updated_at`,
-		tenantID, provider, expectedGeneration, actor, now.UTC())
+		updated_by=$5,updated_at=$6
+		WHERE c.tenant_id=$1 AND c.provider=$2 AND c.purpose=$3 AND c.credential_generation=$4 AND c.status='active'
+		RETURNING c.id,c.tenant_id,c.provider,c.purpose,c.binding_id,c.secret_version_id,c.status,c.credential_generation,c.created_at,c.updated_at`,
+		tenantID, provider, purpose, expectedGeneration, actor, now.UTC())
 }
 
 func update(ctx context.Context, tx pgx.Tx, query string, args ...any) (Credential, error) {
 	var credential Credential
-	err := tx.QueryRow(ctx, query, args...).Scan(&credential.ID, &credential.TenantID, &credential.Provider, &credential.BindingID,
+	err := tx.QueryRow(ctx, query, args...).Scan(&credential.ID, &credential.TenantID, &credential.Provider, &credential.Purpose, &credential.BindingID,
 		&credential.SecretVersionID, &credential.Status, &credential.CredentialGeneration, &credential.CreatedAt, &credential.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Credential{}, ErrCredentialConflict
@@ -217,8 +223,12 @@ func update(ctx context.Context, tx pgx.Tx, query string, args ...any) (Credenti
 }
 
 func validCredential(credential Credential) bool {
-	return credential.TenantID != "" && credential.Provider == ProviderAnthropic && credentialIDPattern.MatchString(credential.ID) &&
+	return credential.TenantID != "" && credential.Provider == ProviderAnthropic && ValidPurpose(credential.Purpose) && credentialIDPattern.MatchString(credential.ID) &&
 		credential.BindingID != "" && versionIDPattern.MatchString(credential.SecretVersionID)
 }
 
 func ValidSecretVersionID(value string) bool { return versionIDPattern.MatchString(value) }
+
+func ValidPurpose(value string) bool {
+	return value == PurposeClaudeAction || value == PurposeNativeAgent
+}

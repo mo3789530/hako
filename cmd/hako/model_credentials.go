@@ -24,6 +24,7 @@ func parseModelCredentialCLI(args []string) (api.ModelCredentialCommand, error) 
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&command.TenantID, "tenant", "", "Tenant ID")
 	flags.StringVar(&command.Provider, "provider", modelcredentials.ProviderAnthropic, "model provider")
+	flags.StringVar(&command.Purpose, "purpose", modelcredentials.PurposeClaudeAction, "credential purpose: claude_action or native_agent")
 	flags.StringVar(&command.BindingID, "binding", "", "operator-approved model credential binding ID")
 	flags.StringVar(&command.SecretVersionID, "version-id", "", "Secrets Manager immutable VersionId; never the secret value")
 	flags.Int64Var(&command.ExpectedGeneration, "generation", 0, "expected current credential generation")
@@ -33,16 +34,16 @@ func parseModelCredentialCLI(args []string) (api.ModelCredentialCommand, error) 
 	switch command.Action {
 	case "list":
 	case "add":
-		if command.BindingID == "" || !modelcredentials.ValidSecretVersionID(command.SecretVersionID) {
-			return command, errors.New("add requires --binding and a 32-character --version-id")
+		if !modelcredentials.ValidPurpose(command.Purpose) || command.BindingID == "" || !modelcredentials.ValidSecretVersionID(command.SecretVersionID) {
+			return command, errors.New("add requires a valid --purpose, --binding and a 32-character --version-id")
 		}
 	case "rotate":
-		if command.ExpectedGeneration <= 0 || !modelcredentials.ValidSecretVersionID(command.SecretVersionID) {
-			return command, errors.New("rotate requires --generation and a 32-character --version-id")
+		if !modelcredentials.ValidPurpose(command.Purpose) || command.ExpectedGeneration <= 0 || !modelcredentials.ValidSecretVersionID(command.SecretVersionID) {
+			return command, errors.New("rotate requires a valid --purpose, --generation and a 32-character --version-id")
 		}
 	case "disable":
-		if command.ExpectedGeneration <= 0 {
-			return command, errors.New("disable requires --generation")
+		if !modelcredentials.ValidPurpose(command.Purpose) || command.ExpectedGeneration <= 0 {
+			return command, errors.New("disable requires a valid --purpose and --generation")
 		}
 	default:
 		return command, errors.New("supported actions: list, add, rotate, disable")

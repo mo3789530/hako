@@ -40,6 +40,13 @@ func TestTenantModelCredentialAPIIsOwnerScopedAndNeverReturnsSecretReferences(t 
 			t.Fatal(err)
 		}
 	}
+	if _, err := pool.Exec(ctx, `INSERT INTO tenant_model_credential_bindings
+		(id,tenant_id,provider,purpose,secret_arn,reader_role_arn,status,created_at,updated_at)
+		VALUES ('binding_model_api_agent','tenant_model_api_a','anthropic','native_agent',
+		'arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/model/agent-XyZaBc',
+		'arn:aws:iam::123456789012:role/hako/model-agent-reader','approved',now(),now())`); err != nil {
+		t.Fatal(err)
+	}
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
@@ -74,6 +81,10 @@ func TestTenantModelCredentialAPIIsOwnerScopedAndNeverReturnsSecretReferences(t 
 		strings.Contains(created.Body.String(), "hako/model/a-") || strings.Contains(created.Body.String(), "model-reader-a") {
 		t.Fatalf("create response exposed secret binding metadata or failed: status=%d body=%s", created.Code, created.Body.String())
 	}
+	createdAgent := call(owner, http.MethodPost, base, `{"provider":"anthropic","purpose":"native_agent","binding_id":"binding_model_api_agent","secret_version_id":"`+version1+`"}`)
+	if createdAgent.Code != http.StatusOK || !strings.Contains(createdAgent.Body.String(), `"purpose":"native_agent"`) {
+		t.Fatalf("create Native Agent credential failed: status=%d body=%s", createdAgent.Code, createdAgent.Body.String())
+	}
 	for _, test := range []struct {
 		token, method, path, body string
 		want                      int
@@ -81,10 +92,13 @@ func TestTenantModelCredentialAPIIsOwnerScopedAndNeverReturnsSecretReferences(t 
 		{owner, http.MethodGet, base, "", 200},
 		{member, http.MethodGet, base, "", 404},
 		{owner, http.MethodPost, base, `{"provider":"anthropic","binding_id":"binding_model_api_b","secret_version_id":"` + version1 + `"}`, 404},
+		{owner, http.MethodPost, base, `{"provider":"anthropic","purpose":"native_agent","binding_id":"binding_model_api_a","secret_version_id":"` + version1 + `"}`, 404},
+		{owner, http.MethodPost, base, `{"provider":"anthropic","purpose":"workspace","binding_id":"binding_model_api_a","secret_version_id":"` + version1 + `"}`, 400},
 		{owner, http.MethodPost, base, `{"provider":"anthropic","binding_id":"binding_model_api_a","secret":"sk-ant-forbidden"}`, 400},
 		{owner, http.MethodPost, base + "/anthropic/rotate", `{"secret_version_id":"` + version2 + `","expected_generation":1}`, 200},
 		{owner, http.MethodPost, base + "/anthropic/rotate", `{"secret_version_id":"` + version1 + `","expected_generation":1}`, 409},
 		{owner, http.MethodPost, base + "/anthropic/disable", `{"expected_generation":2}`, 200},
+		{owner, http.MethodPost, base + "/anthropic/rotate", `{"purpose":"native_agent","secret_version_id":"` + version2 + `","expected_generation":1}`, 200},
 	} {
 		res := call(test.token, test.method, test.path, test.body)
 		if res.Code != test.want {
@@ -92,11 +106,15 @@ func TestTenantModelCredentialAPIIsOwnerScopedAndNeverReturnsSecretReferences(t 
 		}
 	}
 	var active int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM tenant_model_credentials WHERE tenant_id='tenant_model_api_a' AND status='active'`).Scan(&active); err != nil || active != 0 {
-		t.Fatalf("disable did not revoke active metadata: active=%d err=%v", active, err)
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM tenant_model_credentials WHERE tenant_id='tenant_model_api_a' AND purpose='claude_action' AND status='active'`).Scan(&active); err != nil || active != 0 {
+		t.Fatalf("disable did not revoke Claude Action credential: active=%d err=%v", active, err)
+	}
+	var agentActive int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM tenant_model_credentials WHERE tenant_id='tenant_model_api_a' AND purpose='native_agent' AND status='active'`).Scan(&agentActive); err != nil || agentActive != 1 {
+		t.Fatalf("Claude Action disable crossed into Native Agent credential: active=%d err=%v", agentActive, err)
 	}
 	var auditCount int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE action LIKE 'tenant.model_credential.%'`).Scan(&auditCount); err != nil || auditCount != 3 {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE action LIKE 'tenant.model_credential.%'`).Scan(&auditCount); err != nil || auditCount != 5 {
 		t.Fatalf("credential changes were not audited atomically: count=%d err=%v", auditCount, err)
 	}
 }

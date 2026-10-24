@@ -17,6 +17,7 @@ type ModelCredentialCommand struct {
 	Action             string
 	TenantID           string
 	Provider           string
+	Purpose            string
 	BindingID          string
 	SecretVersionID    string
 	ExpectedGeneration int64
@@ -30,31 +31,34 @@ func ManageModelCredential(ctx context.Context, baseURL, accessToken string, com
 	if command.Provider == "" && command.Action != "list" {
 		command.Provider = modelcredentials.ProviderAnthropic
 	}
+	if command.Action != "list" && strings.TrimSpace(command.Purpose) == "" {
+		command.Purpose = modelcredentials.PurposeClaudeAction
+	}
 	path := "/v1/tenants/" + url.PathEscape(command.TenantID) + "/model-credentials"
 	method := http.MethodGet
 	var body []byte
 	switch command.Action {
 	case "list":
 	case "add":
-		if command.Provider != modelcredentials.ProviderAnthropic || strings.TrimSpace(command.BindingID) == "" || !modelcredentials.ValidSecretVersionID(command.SecretVersionID) {
+		if command.Provider != modelcredentials.ProviderAnthropic || !modelcredentials.ValidPurpose(command.Purpose) || strings.TrimSpace(command.BindingID) == "" || !modelcredentials.ValidSecretVersionID(command.SecretVersionID) {
 			return result, errors.New("add requires an approved binding and a 32-character Secret version ID")
 		}
 		method = http.MethodPost
-		body, _ = json.Marshal(ModelCredentialRequest{Provider: command.Provider, BindingID: command.BindingID, SecretVersionID: command.SecretVersionID})
+		body, _ = json.Marshal(ModelCredentialRequest{Provider: command.Provider, Purpose: command.Purpose, BindingID: command.BindingID, SecretVersionID: command.SecretVersionID})
 	case "rotate":
-		if command.Provider != modelcredentials.ProviderAnthropic || command.ExpectedGeneration <= 0 || !modelcredentials.ValidSecretVersionID(command.SecretVersionID) {
+		if command.Provider != modelcredentials.ProviderAnthropic || !modelcredentials.ValidPurpose(command.Purpose) || command.ExpectedGeneration <= 0 || !modelcredentials.ValidSecretVersionID(command.SecretVersionID) {
 			return result, errors.New("rotate requires a 32-character Secret version ID and positive --generation")
 		}
 		path += "/" + url.PathEscape(command.Provider) + "/rotate"
 		method = http.MethodPost
-		body, _ = json.Marshal(ModelCredentialRotateRequest{SecretVersionID: command.SecretVersionID, ExpectedGeneration: command.ExpectedGeneration})
+		body, _ = json.Marshal(ModelCredentialRotateRequest{Purpose: command.Purpose, SecretVersionID: command.SecretVersionID, ExpectedGeneration: command.ExpectedGeneration})
 	case "disable":
-		if command.Provider != modelcredentials.ProviderAnthropic || command.ExpectedGeneration <= 0 {
+		if command.Provider != modelcredentials.ProviderAnthropic || !modelcredentials.ValidPurpose(command.Purpose) || command.ExpectedGeneration <= 0 {
 			return result, errors.New("disable requires positive --generation")
 		}
 		path += "/" + url.PathEscape(command.Provider) + "/disable"
 		method = http.MethodPost
-		body, _ = json.Marshal(ModelCredentialDisableRequest{ExpectedGeneration: command.ExpectedGeneration})
+		body, _ = json.Marshal(ModelCredentialDisableRequest{Purpose: command.Purpose, ExpectedGeneration: command.ExpectedGeneration})
 	default:
 		return result, errors.New("supported model credential actions: list, add, rotate, disable")
 	}
@@ -92,11 +96,12 @@ func ManageModelCredential(ctx context.Context, baseURL, accessToken string, com
 	}
 	if command.Action == "list" {
 		for _, item := range result.Items {
-			if string(item.TenantID) != command.TenantID || item.Provider == "" || item.ID == "" {
+			if string(item.TenantID) != command.TenantID || item.Provider == "" || item.ID == "" || !modelcredentials.ValidPurpose(item.Purpose) {
 				return ModelCredentialResult{}, errors.New("model credential response identity mismatch")
 			}
 		}
 	} else if result.Credential == nil || string(result.Credential.TenantID) != command.TenantID || result.Credential.Provider != command.Provider ||
+		result.Credential.Purpose != command.Purpose ||
 		result.Credential.CredentialGeneration <= 0 || result.Credential.Status == "" {
 		return ModelCredentialResult{}, errors.New("model credential response identity mismatch")
 	}

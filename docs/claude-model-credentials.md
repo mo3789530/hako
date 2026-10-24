@@ -6,11 +6,12 @@ general Workspace Secrets.
 
 ## Data and provisioning boundary
 
-The database stores only metadata: Tenant/provider, an operator-approved
-binding ID, an immutable Secrets Manager VersionId, status, generation, and
-auditing actor/timestamps. The API and CLI never accept or return plaintext,
-Secret ARN, or reader Role ARN. A per-Tenant/provider unique constraint permits
-one configured Anthropic credential per Tenant.
+The database stores only metadata: Tenant/provider/purpose, an
+operator-approved purpose-matched binding ID, an immutable Secrets Manager
+VersionId, status, generation, and auditing actor/timestamps. The API and CLI
+never accept or return plaintext, Secret ARN, or reader Role ARN. A
+per-Tenant/provider/purpose unique constraint permits separate Anthropic
+credentials for `claude_action` and `native_agent`.
 
 An authorized platform operator provisions `tenant_model_credential_bindings`
 after creating a dedicated Secret and reader Role. The binding is immutable to
@@ -27,9 +28,9 @@ through `hako_api`):
 
 ```sql
 INSERT INTO tenant_model_credential_bindings
-  (id, tenant_id, provider, secret_arn, reader_role_arn, status, created_at, updated_at)
+  (id, tenant_id, provider, purpose, secret_arn, reader_role_arn, status, created_at, updated_at)
 VALUES
-  ('binding_<opaque-id>', '<tenant-id>', 'anthropic',
+  ('binding_<opaque-id>', '<tenant-id>', 'anthropic', 'claude_action',
    'arn:aws:secretsmanager:<region>:<account>:secret:<tenant-specific-name>',
    'arn:aws:iam::<account>:role/hako/model-reader/<opaque-id>',
    'approved', now(), now());
@@ -56,11 +57,14 @@ POST /v1/tenants/{tenant}/model-credentials/anthropic/rotate
 POST /v1/tenants/{tenant}/model-credentials/anthropic/disable
 ```
 
-Create references an existing approved binding and a 32-hex-character
-Secrets Manager VersionId. Rotate/disable require an expected generation; each
-successful change increments the generation and is audited in the same DB
-transaction. Stale rotations are rejected. Cross-Tenant binding references are
-hidden as not found. All successful responses are `Cache-Control: no-store`.
+Create references an existing approved binding with the same purpose and a
+32-hex-character Secrets Manager VersionId. `purpose` may be `claude_action`
+or `native_agent`; omission defaults to `claude_action` for compatibility.
+Rotate/disable accept the purpose and require an expected generation; each
+successful change increments only that purpose's generation and is audited in
+the same DB transaction. Stale rotations are rejected. Cross-Tenant and
+cross-purpose binding references are hidden as not found. All successful
+responses are `Cache-Control: no-store`.
 
 CLI equivalents are:
 
@@ -69,6 +73,10 @@ hako model credential list --tenant acme
 hako model credential add --tenant acme --binding model-anthropic-acme --version-id 0123456789abcdef0123456789abcdef
 hako model credential rotate --tenant acme --version-id fedcba9876543210fedcba9876543210 --generation 1
 hako model credential disable --tenant acme --generation 2
+
+hako model credential add --tenant acme --purpose native_agent --binding model-agent-acme --version-id 0123456789abcdef0123456789abcdef
+hako model credential rotate --tenant acme --purpose native_agent --version-id fedcba9876543210fedcba9876543210 --generation 1
+hako model credential disable --tenant acme --purpose native_agent --generation 2
 ```
 
 The CLI accepts a VersionId, never a credential value. Do not place provider
@@ -77,7 +85,7 @@ inputs, logs, or artifacts.
 
 ## Runtime eligibility and revocation
 
-The trusted resolver requires a live claimed runner identity pinned to the
+The Claude Action trusted resolver requires a live claimed runner identity pinned to the
 exact Resource Plane and Lambda MicroVM, a non-expired lease, an active
 Tenant-owned GitHub integration/repository opt-in, a persisted launch-time
 workflow provenance timestamp, and the hash of the current workflow policy to
@@ -85,6 +93,13 @@ match the hash verified before claim consumption. It also requires an active
 credential and an approved same-Tenant Anthropic binding. Forks, unverified
 jobs, disabled/rotated credentials, stale policy, or foreign runtime identities
 are denied before the SecretReader is called.
+
+`native_agent` currently provides purpose-scoped Owner/Admin metadata and
+operator binding management only. The Actions Runner broker resolver is
+hard-coded to `claude_action`; no Native Agent runtime can read this credential.
+Task 53 must add a separate Agent Run policy/provenance resolver and runtime
+resource/network enforcement before any Native Agent credential delivery is
+enabled.
 
 The Secret read occurs outside the DB transaction. Immediately after the read,
 the resolver repeats the authorization and compares the full binding,
