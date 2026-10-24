@@ -37,6 +37,14 @@ The local composed Gateway lease/sweep and CLI option checks run with
 `make test-workspace-idle-lifecycle-integration` against the already-running
 development PostgreSQL database.
 
+## CLI API wiring refresh (2026-10-24)
+
+The Tenant idle-policy CLI now has an HTTP-backed test for both GET and PUT.
+It checks the exact Tenant endpoint, Bearer token, serialized enabled/grace
+policy, returned revision, and that the CLI Tenant argument overrides a
+Tenant ID embedded in the update object. Missing token/API URL fail closed.
+This complements the PostgreSQL API authorization/audit integration tests.
+
 ## Goal
 
 Implement the documented lifecycle:
