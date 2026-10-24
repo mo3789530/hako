@@ -331,6 +331,20 @@ func TestWorkspaceServiceCommandConsumerBindsMicroVMAndReportsObservation(t *tes
 		len(latestReports.reports) != 1 || latestReports.reports[0].Revision != latest.Revision {
 		t.Fatalf("stale queue trigger was not replaced with latest desired state: guest=%+v reports=%+v", latestGuest.command, latestReports.reports)
 	}
+
+	guestSentinel := "guest returned secret endpoint details"
+	latestGuest.err = errors.New(guestSentinel)
+	err = latestConsumer.Handle(ctx, encoded)
+	if !errors.Is(err, ErrWorkspaceServiceDelivery) || strings.Contains(err.Error(), guestSentinel) {
+		t.Fatalf("Guest error escaped the retry boundary: %v", err)
+	}
+	latestGuest.err = nil
+	reportSentinel := "provider response exposed secret ARN"
+	latestReports.err = errors.New(reportSentinel)
+	err = latestConsumer.Handle(ctx, encoded)
+	if !errors.Is(err, ErrWorkspaceServiceDelivery) || strings.Contains(err.Error(), reportSentinel) {
+		t.Fatalf("report sink error escaped the retry boundary: %v", err)
+	}
 }
 
 func TestWorkspaceServiceConsumerDeliversGeneratedSecretsOnlyToBoundGuest(t *testing.T) {

@@ -219,5 +219,6 @@ returns rejected reports to SQS instead of acknowledging them.
 The Resource Plane SQS handler records failed records with a fixed
 `command_delivery` failure class and the SQS message ID, then returns that
 record for retry. It never logs the command body or raw provider/Guest error.
-The local adapter test injects a sensitive sentinel error and verifies the log
-does not contain it.
+The consumer returns a fixed retry error for raw Guest and report-sink failures.
+Local tests inject sensitive sentinel errors and verify neither logs nor the
+consumer's returned error expose them.

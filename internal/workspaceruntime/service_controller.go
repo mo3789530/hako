@@ -237,10 +237,10 @@ func (c *WorkspaceServiceCommandConsumer) Handle(ctx context.Context, payload []
 		ObservedRevision: observation.ObservedRevision, DesiredState: observation.DesiredState, ObservedState: observation.ObservedState,
 		Healthy: observation.Healthy, ErrorCode: observation.ErrorCode, ObservedAt: c.now().UTC()}
 	if err := c.reports.Report(ctx, report); err != nil {
-		return fmt.Errorf("report Workspace Service result: %w", err)
+		return ErrWorkspaceServiceDelivery
 	}
 	if guestErr != nil {
-		return fmt.Errorf("%w: %v", ErrWorkspaceServiceDelivery, guestErr)
+		return ErrWorkspaceServiceDelivery
 	}
 	return nil
 }
