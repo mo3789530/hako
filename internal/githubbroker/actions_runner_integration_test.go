@@ -4,6 +4,8 @@ package githubbroker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"testing"
 	"time"
 
@@ -64,8 +66,20 @@ func TestPostgresActionsRunnerLaunchAndBootstrapRequireExactClaimPlaneAndMicroVM
 	if err := pool.QueryRow(ctx, `SELECT state,claim_id FROM github_actions_runner_jobs WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=1`, request.IntegrationID, request.WorkflowJobID).Scan(&state, &claimID); err != nil || state != "starting" || claimID != request.ClaimID {
 		t.Fatalf("registration start did not consume claim: state=%q claim=%q err=%v", state, claimID, err)
 	}
-	if retry, err := start(ctx, "rp-tokyo-01", request); err != nil || retry.ResourcePlaneID != command.ResourcePlaneID || retry.ClaimID != command.ClaimID {
+	if retry, err := start(ctx, "rp-tokyo-01", request); err != nil || retry.ResourcePlaneID != command.ResourcePlaneID || retry.ClaimID != command.ClaimID ||
+		retry.DiagnosticsUploadToken != command.DiagnosticsUploadToken {
 		t.Fatalf("lost launch response was not idempotently replayed: command=%+v err=%v", retry, err)
+	}
+	capability, err := hex.DecodeString(command.DiagnosticsUploadToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityDigest := sha256.Sum256(capability)
+	clear(capability)
+	var storedCapabilityDigest string
+	if err := pool.QueryRow(ctx, `SELECT diagnostics_upload_token_sha256 FROM github_actions_runner_jobs WHERE integration_id=$1 AND workflow_job_id=$2 AND run_attempt=1`,
+		request.IntegrationID, request.WorkflowJobID).Scan(&storedCapabilityDigest); err != nil || storedCapabilityDigest != hex.EncodeToString(capabilityDigest[:]) {
+		t.Fatalf("raw diagnostics capability was not stored as its digest: stored=%q error=%v", storedCapabilityDigest, err)
 	}
 	if _, err := start(ctx, "rp-us-01", request); err == nil {
 		t.Fatal("same claimed job was dispatched to another Resource Plane")

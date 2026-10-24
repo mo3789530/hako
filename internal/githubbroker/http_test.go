@@ -189,7 +189,7 @@ func TestBrokerMTLSHandshakeAndHTTPResolver(t *testing.T) {
 		Installation: runnerIdentity.Installation, Repository: runnerIdentity.Repository, WorkflowJobID: runnerIdentity.WorkflowJobID, WorkflowRunID: runnerIdentity.WorkflowRunID,
 		RunAttempt: runnerIdentity.RunAttempt, WorkflowName: runnerIdentity.WorkflowName, JobName: runnerIdentity.JobName, HeadBranch: runnerIdentity.HeadBranch,
 		HeadSHA: runnerIdentity.HeadSHA, Labels: runnerIdentity.Labels, ClaimID: runnerIdentity.ClaimID, LeaseExpires: runnerNow.Add(time.Minute),
-		Owner: "acme", Name: "runner-repo", State: "starting"}
+		Owner: "acme", Name: "runner-repo", State: "starting", DiagnosticsUploadToken: strings.Repeat("a", 64)}
 	launchService, err := NewActionsRunnerLaunchService([]string{"rp-tokyo-01"}, func(_ context.Context, planeID string, request ActionsRunnerRegistrationRequest) (ActionsRunnerLaunchCommand, error) {
 		if planeID != launchCommand.ResourcePlaneID || request.IntegrationID != launchCommand.IntegrationID || request.ClaimID != launchCommand.ClaimID {
 			return ActionsRunnerLaunchCommand{}, ErrActionsRunnerLaunchDenied

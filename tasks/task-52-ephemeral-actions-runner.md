@@ -8,12 +8,19 @@ The guest now collects bounded regular `.log` files from the official runner's
 `_diag` directory before deleting ephemeral runner state. It skips symlinks,
 caps collection at 64 KiB, redacts the exact registration/model credentials
 and common GitHub/API token forms, computes a SHA-256 digest, and exposes the
-redacted bytes only through the one-shot process result callback. Unit tests
-verify redaction, digest, size bounds, symlink handling, and collection before
-cleanup. The guest executable currently emits only process metadata; durable
-Resource Plane-to-Control Plane upload and attachment to the exact commit
-Check remain unimplemented, so the Check log acceptance criterion is still
-open.
+redacted bytes through a one-shot process result callback. The Resource Plane
+startup claim carries a stable capability derived from the high-entropy claim
+ID; only its SHA-256 digest is persisted. The signed guest bootstrap includes
+the exact HTTPS upload endpoint and capability. After collection, the Guest
+retries a bounded upload before deleting `_diag`; Control Plane API validates
+the request digest, applies its own redaction pass, and writes only the redacted
+3 KiB excerpt and full-log digest to the immutable job/attempt Check row. The
+Check Outbox then updates the exact commit Check. Identical upload replay is
+idempotent; a changed payload is rejected. Unit and PostgreSQL integration
+tests verify the capability, commit binding, redaction, retries, and outbox.
+The full logs are not retained in DSQL/S3. The endpoint must be reachable via
+the configured MicroVM egress connector; deployed network/Lambda verification
+remains unperformed.
 
 Claude Code Action support is tracked separately in [Task 73](task-73-claude-code-action.md), including Tenant-scoped model credentials, untrusted PR denial, and action-specific E2E.
 

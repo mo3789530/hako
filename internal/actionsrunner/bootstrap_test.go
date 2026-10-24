@@ -64,7 +64,8 @@ func TestRunnerBootstrapperUsesScopedAWSAuthAndSignedJobEnvelope(t *testing.T) {
 		if envelope.Claims.IntegrationID != "integration_runner" || envelope.Claims.WorkflowJobID != 9901 || envelope.Claims.WorkflowRunID != 9902 ||
 			envelope.Claims.RunAttempt != 1 || envelope.Claims.RepositoryURL != "https://github.com/acme/api" || envelope.Claims.RunnerName != "hako-9901-1" ||
 			envelope.Claims.Token != "synthetic-registration-token" || strings.Join(envelope.Claims.Labels, ",") != "self-hosted,hako,standard" ||
-			string(envelope.Claims.ModelCredential) != "sk-ant-synthetic-secret" {
+			string(envelope.Claims.ModelCredential) != "sk-ant-synthetic-secret" || envelope.Claims.DiagnosticsUploadToken != strings.Repeat("a", 64) ||
+			envelope.Claims.DiagnosticsUploadURL != "https://api.hako.example/v1/internal/actions-runner/integrations/integration_runner/jobs/9901/attempts/1/diagnostics" {
 			t.Fatalf("bootstrap lost exact admitted job identity: %+v", envelope.Claims)
 		}
 		if strings.Contains(fmt.Sprint(envelope), "sk-ant-synthetic-secret") || strings.Contains(fmt.Sprintf("%#v", envelope.Claims), "sk-ant-synthetic-secret") {
@@ -84,7 +85,8 @@ func TestRunnerBootstrapperUsesScopedAWSAuthAndSignedJobEnvelope(t *testing.T) {
 	instance := LambdaRunnerInstance{ResourcePlaneID: "rp-tokyo-01", MicroVMID: "runner-microvm-1",
 		Endpoint: "https://runner-microvm-1.lambda-microvm.ap-northeast-1.on.aws", ImageIdentifier: "arn:aws:lambda:ap-northeast-1:123456789012:microvm-image:runner"}
 	if err := bootstrapper.Deliver(context.Background(), RunnerBootstrapRequest{Instance: instance, Job: lambdaRunnerJob(), Repository: RunnerRepository{Owner: "acme", Name: "api"}, Token: token,
-		ModelCredential: []byte("sk-ant-synthetic-secret")}); err != nil {
+		ModelCredential: []byte("sk-ant-synthetic-secret"), DiagnosticsUploadURL: "https://api.hako.example/v1/internal/actions-runner/integrations/integration_runner/jobs/9901/attempts/1/diagnostics",
+		DiagnosticsUploadToken: strings.Repeat("a", 64)}); err != nil {
 		t.Fatalf("Deliver() error = %v", err)
 	}
 	if !requestSeen || api.input == nil || aws.ToString(api.input.MicrovmIdentifier) != instance.MicroVMID || aws.ToInt32(api.input.ExpirationInMinutes) != 1 ||

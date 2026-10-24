@@ -42,7 +42,8 @@ type RunnerStartupFailureReporter interface {
 }
 
 type RunnerStartupWorkerConfig struct {
-	OperationTimeout time.Duration
+	OperationTimeout         time.Duration
+	DiagnosticsUploadBaseURL string
 }
 
 type RunnerStartupWorker struct {
@@ -61,6 +62,9 @@ func NewRunnerStartupWorker(config RunnerStartupWorkerConfig, start RunnerLaunch
 	bootstrap RunnerGuestBootstrapper, failures RunnerStartupFailureReporter, resourcePlaneID string) (*RunnerStartupWorker, error) {
 	if config.OperationTimeout < 5*time.Second || config.OperationTimeout > 5*time.Minute || start == nil || launcher == nil ||
 		binder == nil || tokens == nil || bootstrap == nil || failures == nil || !validResourcePlaneID(resourcePlaneID) {
+		return nil, ErrInvalidRunnerLaunch
+	}
+	if config.DiagnosticsUploadBaseURL != "" && !validRunnerDiagnosticsBaseURL(config.DiagnosticsUploadBaseURL) {
 		return nil, ErrInvalidRunnerLaunch
 	}
 	return &RunnerStartupWorker{config: config, resourcePlaneID: resourcePlaneID, start: start, launcher: launcher, binder: binder, tokens: tokens, bootstrap: bootstrap, failures: failures}, nil
@@ -119,8 +123,14 @@ func (w *RunnerStartupWorker) Start(ctx context.Context, request githubbroker.Ac
 		}
 	}
 	defer clear(modelCredential)
+	diagnosticsURL := ""
+	diagnosticsToken := ""
+	if w.config.DiagnosticsUploadBaseURL != "" {
+		diagnosticsURL = runnerDiagnosticsUploadURL(w.config.DiagnosticsUploadBaseURL, command.IntegrationID, command.WorkflowJobID, command.RunAttempt)
+		diagnosticsToken = command.DiagnosticsUploadToken
+	}
 	if err := w.bootstrap.Deliver(operationCtx, RunnerBootstrapRequest{Instance: instance, Job: job, Repository: repository, Token: grant.Token,
-		ModelCredential: modelCredential}); err != nil {
+		ModelCredential: modelCredential, DiagnosticsUploadURL: diagnosticsURL, DiagnosticsUploadToken: diagnosticsToken}); err != nil {
 		fail()
 		return ErrRunnerStartFailed
 	}

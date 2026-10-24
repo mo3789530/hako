@@ -174,7 +174,8 @@ func TestActionsRunnerTerminalWebhookCleanupRecovery(t *testing.T) {
 			command := githubbroker.ActionsRunnerLaunchCommand{ResourcePlaneID: "rp-tokyo-01", IntegrationID: claimed.IntegrationID, TenantID: domain.TenantID(claimed.TenantID),
 				Installation: claimed.Installation, Repository: claimed.Repository, WorkflowJobID: claimed.JobID, WorkflowRunID: claimed.WorkflowRunID,
 				RunAttempt: claimed.RunAttempt, WorkflowName: claimed.WorkflowName, JobName: claimed.JobName, HeadBranch: claimed.HeadBranch, HeadSHA: claimed.HeadSHA,
-				Labels: append([]string(nil), claimed.Labels...), ClaimID: claimed.ClaimID, LeaseExpires: claimed.LeaseExpires, Owner: "acme", Name: "api", State: "starting"}
+				Labels: append([]string(nil), claimed.Labels...), ClaimID: claimed.ClaimID, LeaseExpires: claimed.LeaseExpires, Owner: "acme", Name: "api", State: "starting",
+				DiagnosticsUploadToken: strings.Repeat("d", 64)}
 			instance := LambdaRunnerInstance{ResourcePlaneID: "rp-tokyo-01", MicroVMID: "microvm-cleanup", Endpoint: "https://microvm-cleanup.lambda-microvm.ap-northeast-1.on.aws",
 				ImageIdentifier: "arn:aws:lambda:ap-northeast-1:123456789012:microvm-image:hako-actions-runner"}
 			runnerToken, err := githubapp.NewRunnerRegistrationToken("synthetic-github-runner-token", time.Now().Add(time.Hour))

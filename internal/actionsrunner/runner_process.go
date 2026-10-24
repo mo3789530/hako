@@ -35,28 +35,30 @@ var (
 )
 
 type RunnerProcessResult struct {
-	IntegrationID        string
-	WorkflowJobID        int64
-	WorkflowRunID        int64
-	RunAttempt           int64
-	ExitCode             int
-	FailurePhase         string
-	Cancelled            bool
-	TimedOut             bool
-	CleanupFailed        bool
-	Diagnostics          []byte
-	DiagnosticsSHA256    string
-	DiagnosticsTruncated bool
+	IntegrationID           string
+	WorkflowJobID           int64
+	WorkflowRunID           int64
+	RunAttempt              int64
+	ExitCode                int
+	FailurePhase            string
+	Cancelled               bool
+	TimedOut                bool
+	CleanupFailed           bool
+	Diagnostics             []byte
+	DiagnosticsSHA256       string
+	DiagnosticsTruncated    bool
+	DiagnosticsUploadFailed bool
 }
 
 func (RunnerProcessResult) String() string   { return "[REDACTED runner process result]" }
 func (RunnerProcessResult) GoString() string { return "[REDACTED runner process result]" }
 
 type RunnerProcessConfig struct {
-	RootDirectory string
-	SetupTimeout  time.Duration
-	MaximumRun    time.Duration
-	OnExit        func(RunnerProcessResult)
+	RootDirectory       string
+	SetupTimeout        time.Duration
+	MaximumRun          time.Duration
+	OnExit              func(RunnerProcessResult)
+	DiagnosticsUploader RunnerDiagnosticsUploader
 }
 
 // RunnerProcessConsumer configures the official runner as ephemeral and starts
@@ -147,6 +149,7 @@ func (c *RunnerProcessConsumer) Consume(ctx context.Context, claims RunnerBootst
 	if err := configure.Run(); err != nil {
 		result := runnerProcessFailureResult(claims, "configure", err)
 		result.setDiagnostics(c.collectDiagnostics(diagnosticSecrets...))
+		result.DiagnosticsUploadFailed = c.uploadDiagnostics(claims, result.Diagnostics)
 		result.CleanupFailed = c.cleanupLocalRunnerState() != nil
 		c.reportExit(result)
 		clearRunnerDiagnosticSecrets(diagnosticSecrets)
@@ -164,6 +167,7 @@ func (c *RunnerProcessConsumer) Consume(ctx context.Context, claims RunnerBootst
 		cancel()
 		result := runnerProcessFailureResult(claims, "start", err)
 		result.setDiagnostics(c.collectDiagnostics(diagnosticSecrets...))
+		result.DiagnosticsUploadFailed = c.uploadDiagnostics(claims, result.Diagnostics)
 		result.CleanupFailed = c.cleanupLocalRunnerState() != nil
 		c.reportExit(result)
 		clearRunnerDiagnosticSecrets(diagnosticSecrets)
@@ -191,6 +195,7 @@ func (c *RunnerProcessConsumer) Consume(ctx context.Context, claims RunnerBootst
 			}
 		}
 		result.setDiagnostics(c.collectDiagnostics(diagnosticSecrets...))
+		result.DiagnosticsUploadFailed = c.uploadDiagnostics(claims, result.Diagnostics)
 		cancel()
 		result.CleanupFailed = c.cleanupLocalRunnerState() != nil
 		c.reportExit(result)
@@ -200,6 +205,40 @@ func (c *RunnerProcessConsumer) Consume(ctx context.Context, claims RunnerBootst
 		c.mu.Unlock()
 	}()
 	return nil
+}
+
+func (c *RunnerProcessConsumer) uploadDiagnostics(claims RunnerBootstrapClaims, logs []byte) bool {
+	if len(logs) == 0 || claims.DiagnosticsUploadURL == "" || claims.DiagnosticsUploadToken == "" {
+		return false
+	}
+	uploader := c.config.DiagnosticsUploader
+	if uploader == nil {
+		var err error
+		uploader, err = NewHTTPRunnerDiagnosticsUploader(nil)
+		if err != nil {
+			return true
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	digest := sha256.Sum256(logs)
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := uploader.Upload(ctx, claims.DiagnosticsUploadURL, claims.DiagnosticsUploadToken, logs, hex.EncodeToString(digest[:])); err == nil {
+			return false
+		}
+		if attempt == 2 {
+			break
+		}
+		delay := time.Duration(1<<attempt) * 100 * time.Millisecond
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return true
+		case <-timer.C:
+		}
+	}
+	return true
 }
 
 func runnerProcessFailureResult(claims RunnerBootstrapClaims, phase string, err error) RunnerProcessResult {
@@ -337,6 +376,12 @@ func redactRunnerDiagnostic(input []byte, exactSecrets ...[]byte) []byte {
 	return result
 }
 
+// RedactRunnerDiagnostics applies the guest's conservative credential pattern
+// filter again at the Control Plane ingestion boundary.
+func RedactRunnerDiagnostics(input []byte) []byte {
+	return redactRunnerDiagnostic(input)
+}
+
 func (r RunnerProcessResult) DiagnosticSummary(maxBytes int) string {
 	if maxBytes <= 0 || len(r.Diagnostics) == 0 {
 		return ""
@@ -412,6 +457,9 @@ func validRunnerBootstrapClaims(claims RunnerBootstrapClaims) bool {
 		strings.ContainsAny(claims.Token, "\x00\r\n ") || claims.ExpiresAt <= now || claims.ExpiresAt > now+int64((5*time.Minute)/time.Second) ||
 		claims.RunnerName != "hako-"+strconv.FormatInt(claims.WorkflowJobID, 10)+"-"+strconv.FormatInt(claims.RunAttempt, 10) ||
 		!validRunnerRepositoryURL(claims.RepositoryURL) || len(claims.Labels) == 0 || len(claims.Labels) > 100 {
+		return false
+	}
+	if !validRunnerDiagnosticsClaims(claims.DiagnosticsUploadURL, claims.DiagnosticsUploadToken, claims.IntegrationID, claims.WorkflowJobID, claims.RunAttempt) {
 		return false
 	}
 	seen := make(map[string]struct{}, len(claims.Labels))

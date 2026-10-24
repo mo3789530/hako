@@ -35,18 +35,20 @@ type RunnerBootstrapAuthAPI interface {
 }
 
 type RunnerBootstrapClaims struct {
-	SchemaVersion   int      `json:"schema_version"`
-	MicroVMID       string   `json:"microvm_id"`
-	IntegrationID   string   `json:"integration_id"`
-	WorkflowJobID   int64    `json:"workflow_job_id"`
-	WorkflowRunID   int64    `json:"workflow_run_id"`
-	RunAttempt      int64    `json:"run_attempt"`
-	RepositoryURL   string   `json:"repository_url"`
-	RunnerName      string   `json:"runner_name"`
-	Labels          []string `json:"labels"`
-	Token           string   `json:"registration_token"`
-	ModelCredential []byte   `json:"model_credential,omitempty"`
-	ExpiresAt       int64    `json:"expires_at_unix"`
+	SchemaVersion          int      `json:"schema_version"`
+	MicroVMID              string   `json:"microvm_id"`
+	IntegrationID          string   `json:"integration_id"`
+	WorkflowJobID          int64    `json:"workflow_job_id"`
+	WorkflowRunID          int64    `json:"workflow_run_id"`
+	RunAttempt             int64    `json:"run_attempt"`
+	RepositoryURL          string   `json:"repository_url"`
+	RunnerName             string   `json:"runner_name"`
+	Labels                 []string `json:"labels"`
+	Token                  string   `json:"registration_token"`
+	ModelCredential        []byte   `json:"model_credential,omitempty"`
+	DiagnosticsUploadURL   string   `json:"diagnostics_upload_url,omitempty"`
+	DiagnosticsUploadToken string   `json:"diagnostics_upload_token,omitempty"`
+	ExpiresAt              int64    `json:"expires_at_unix"`
 }
 
 func (RunnerBootstrapClaims) String() string   { return "[REDACTED runner bootstrap claims]" }
@@ -63,11 +65,13 @@ func (SignedRunnerBootstrap) String() string   { return "[REDACTED signed runner
 func (SignedRunnerBootstrap) GoString() string { return "[REDACTED signed runner bootstrap]" }
 
 type RunnerBootstrapRequest struct {
-	Instance        LambdaRunnerInstance
-	Job             githubwebhook.ActionsRunnerJob
-	Repository      RunnerRepository
-	Token           githubapp.RunnerRegistrationToken
-	ModelCredential []byte
+	Instance               LambdaRunnerInstance
+	Job                    githubwebhook.ActionsRunnerJob
+	Repository             RunnerRepository
+	Token                  githubapp.RunnerRegistrationToken
+	ModelCredential        []byte
+	DiagnosticsUploadURL   string
+	DiagnosticsUploadToken string
 }
 
 func (RunnerBootstrapRequest) String() string   { return "[REDACTED runner bootstrap request]" }
@@ -114,6 +118,7 @@ func (b *RunnerBootstrapper) Deliver(ctx context.Context, request RunnerBootstra
 		RepositoryURL: "https://github.com/" + request.Repository.Owner + "/" + request.Repository.Name,
 		RunnerName:    "hako-" + strconv.FormatInt(request.Job.JobID, 10) + "-" + strconv.FormatInt(request.Job.RunAttempt, 10),
 		Labels:        append([]string(nil), request.Job.Labels...), Token: request.Token.Value(), ModelCredential: append([]byte(nil), request.ModelCredential...),
+		DiagnosticsUploadURL: request.DiagnosticsUploadURL, DiagnosticsUploadToken: request.DiagnosticsUploadToken,
 		ExpiresAt: request.Token.ExpiresAt().Unix()}
 	defer clear(claims.ModelCredential)
 	if claims.ExpiresAt > now.Add(5*time.Minute).Unix() {
@@ -223,7 +228,8 @@ func validateBootstrapRequest(request RunnerBootstrapRequest, now time.Time) err
 	if validateRunnerLaunchJob(request.Job) != nil || request.Job.State != "starting" || !request.Job.LeaseExpires.After(now) ||
 		!validRepositoryPart(request.Repository.Owner) || !validRepositoryPart(request.Repository.Name) ||
 		request.Instance.MicroVMID == "" || request.Instance.ResourcePlaneID == "" || !request.Token.ExpiresAt().After(now.Add(30*time.Second)) ||
-		request.Token.Value() == "" || len(request.Token.Value()) > 4096 || !validBootstrapModelCredential(request.ModelCredential) {
+		request.Token.Value() == "" || len(request.Token.Value()) > 4096 || !validBootstrapModelCredential(request.ModelCredential) ||
+		!validRunnerDiagnosticsClaims(request.DiagnosticsUploadURL, request.DiagnosticsUploadToken, request.Job.IntegrationID, request.Job.JobID, request.Job.RunAttempt) {
 		return ErrRunnerBootstrap
 	}
 	_, err := runnerBootstrapEndpoint(request.Instance)

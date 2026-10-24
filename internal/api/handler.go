@@ -168,6 +168,10 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 	e.HTTPErrorHandler = apiErrorHandler
 	e.Use(requestIDMiddleware)
 	e.GET("/healthz", publicHealth)
+	// The one-use capability is scoped to a single Actions Runner job attempt;
+	// Cognito is intentionally not required on this machine-to-machine route.
+	e.POST("/v1/internal/actions-runner/integrations/:integration_id/jobs/:workflow_job_id/attempts/:run_attempt/diagnostics",
+		putActionsRunnerDiagnostics(pool))
 	if webhookHandler != nil {
 		e.POST("/v1/integrations/github/webhook", func(c *echo.Context) error {
 			request := c.Request().WithContext(githubwebhookcore.WithCorrelationID(c.Request().Context(), RequestIDFromContext(c.Request().Context())))

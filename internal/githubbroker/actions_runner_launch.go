@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,24 +22,30 @@ import (
 var ErrActionsRunnerLaunchDenied = errors.New("GitHub Actions runner launch denied")
 
 type ActionsRunnerLaunchCommand struct {
-	ResourcePlaneID string          `json:"resource_plane_id"`
-	IntegrationID   string          `json:"integration_id"`
-	TenantID        domain.TenantID `json:"tenant_id"`
-	Installation    int64           `json:"installation_id"`
-	Repository      int64           `json:"repository_id"`
-	WorkflowJobID   int64           `json:"workflow_job_id"`
-	WorkflowRunID   int64           `json:"workflow_run_id"`
-	RunAttempt      int64           `json:"run_attempt"`
-	WorkflowName    string          `json:"workflow_name"`
-	JobName         string          `json:"job_name"`
-	HeadBranch      string          `json:"head_branch"`
-	HeadSHA         string          `json:"head_sha"`
-	Labels          []string        `json:"labels"`
-	ClaimID         string          `json:"claim_id"`
-	LeaseExpires    time.Time       `json:"lease_expires_at"`
-	Owner           string          `json:"repository_owner"`
-	Name            string          `json:"repository_name"`
-	State           string          `json:"state"`
+	ResourcePlaneID        string          `json:"resource_plane_id"`
+	IntegrationID          string          `json:"integration_id"`
+	TenantID               domain.TenantID `json:"tenant_id"`
+	Installation           int64           `json:"installation_id"`
+	Repository             int64           `json:"repository_id"`
+	WorkflowJobID          int64           `json:"workflow_job_id"`
+	WorkflowRunID          int64           `json:"workflow_run_id"`
+	RunAttempt             int64           `json:"run_attempt"`
+	WorkflowName           string          `json:"workflow_name"`
+	JobName                string          `json:"job_name"`
+	HeadBranch             string          `json:"head_branch"`
+	HeadSHA                string          `json:"head_sha"`
+	Labels                 []string        `json:"labels"`
+	ClaimID                string          `json:"claim_id"`
+	LeaseExpires           time.Time       `json:"lease_expires_at"`
+	Owner                  string          `json:"repository_owner"`
+	Name                   string          `json:"repository_name"`
+	State                  string          `json:"state"`
+	DiagnosticsUploadToken string          `json:"diagnostics_upload_token"`
+}
+
+func (ActionsRunnerLaunchCommand) String() string { return "[REDACTED Actions Runner launch command]" }
+func (ActionsRunnerLaunchCommand) GoString() string {
+	return "[REDACTED Actions Runner launch command]"
 }
 
 type ActionsRunnerLaunchStarter func(context.Context, string, ActionsRunnerRegistrationRequest) (ActionsRunnerLaunchCommand, error)
@@ -167,7 +174,7 @@ func validActionsRunnerLaunchCommand(command ActionsRunnerLaunchCommand, planeID
 		command.RunAttempt == request.RunAttempt && command.ClaimID == request.ClaimID && command.TenantID != "" && command.Installation > 0 &&
 		command.Repository > 0 && command.WorkflowRunID > 0 && command.State == "starting" && command.LeaseExpires.After(now) &&
 		validActionsRunnerBranch(command.HeadBranch) && validCommitSHA(command.HeadSHA) && validActionsRunnerRepositoryPart(command.Owner) &&
-		validActionsRunnerRepositoryPart(command.Name) && len(command.Labels) > 0 && len(command.Labels) <= 100
+		validActionsRunnerRepositoryPart(command.Name) && len(command.Labels) > 0 && len(command.Labels) <= 100 && validRunnerDiagnosticsToken(command.DiagnosticsUploadToken)
 }
 
 func NewPostgresActionsRunnerLaunchStarter(pool transaction.Beginner, policy transaction.Policy) ActionsRunnerLaunchStarter {
@@ -188,6 +195,10 @@ func postgresActionsRunnerLaunchStarter(pool transaction.Beginner, policy transa
 		if pool == nil || ctx == nil || !resourcePlaneIDPattern.MatchString(planeID) || request.RunAttempt <= 0 || !validActionsRunnerRegistrationRequest(request) {
 			return ActionsRunnerLaunchCommand{}, ErrActionsRunnerLaunchDenied
 		}
+		tokenMaterial := sha256.Sum256([]byte("hako/actions-runner/diagnostics/v1\x00" + request.IntegrationID + "\x00" +
+			strconv.FormatInt(request.WorkflowJobID, 10) + "\x00" + strconv.FormatInt(request.RunAttempt, 10) + "\x00" + request.ClaimID))
+		commandToken := hex.EncodeToString(tokenMaterial[:])
+		tokenDigest := sha256.Sum256(tokenMaterial[:])
 		now := time.Now().UTC()
 		return transaction.Within(ctx, pool, policy, func(ctx context.Context, tx pgx.Tx) (ActionsRunnerLaunchCommand, error) {
 			var command ActionsRunnerLaunchCommand
@@ -242,7 +253,16 @@ func postgresActionsRunnerLaunchStarter(pool transaction.Beginner, policy transa
 				!provenanceFenceMatches(provenanceVerifiedAt, provenancePolicySHA256, proof, verified) {
 				return ActionsRunnerLaunchCommand{}, ErrActionsRunnerLaunchDenied
 			}
+			tag, err := tx.Exec(ctx, `UPDATE github_actions_runner_jobs SET diagnostics_upload_token_sha256=$1,updated_at=$2
+				WHERE integration_id=$3 AND workflow_job_id=$4 AND run_attempt=$5 AND claim_id=$6 AND state='starting'
+				AND resource_plane_id=$7 AND registration_token_issued_at IS NULL AND lease_expires_at>$2`,
+				hex.EncodeToString(tokenDigest[:]), now, request.IntegrationID, request.WorkflowJobID, request.RunAttempt,
+				request.ClaimID, planeID)
+			if err != nil || tag.RowsAffected() != 1 {
+				return ActionsRunnerLaunchCommand{}, ErrActionsRunnerLaunchDenied
+			}
 			command.ResourcePlaneID, command.State = planeID, "starting"
+			command.DiagnosticsUploadToken = commandToken
 			return command, nil
 		})
 	}
@@ -254,6 +274,18 @@ func validCommitSHA(value string) bool {
 	}
 	for _, char := range value {
 		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+func validRunnerDiagnosticsToken(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, character := range value {
+		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')) {
 			return false
 		}
 	}

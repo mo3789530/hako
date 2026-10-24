@@ -57,6 +57,7 @@ func (fakeRunnerLambdaAPI) CreateMicrovmAuthToken(context.Context, *lambdamicrov
 func TestConfiguredDeploymentValidatesWorkerProfile(t *testing.T) {
 	values := map[string]string{
 		"HAKO_RESOURCE_PLANE_ID": "rp-tokyo-01", "HAKO_ACTIONS_RUNNER_BROKER_URL": "https://broker.example",
+		"HAKO_ACTIONS_RUNNER_DIAGNOSTICS_UPLOAD_BASE_URL":      "https://api.hako.example",
 		"HAKO_ACTIONS_RUNNER_BROKER_CLIENT_CERT_SECRET_ARN":    "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:broker-cert",
 		"HAKO_ACTIONS_RUNNER_BROKER_CLIENT_KEY_SECRET_ARN":     "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:broker-key",
 		"HAKO_ACTIONS_RUNNER_BROKER_CA_SECRET_ARN":             "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:broker-ca",
@@ -92,11 +93,12 @@ func TestConfiguredDeploymentValidatesWorkerProfile(t *testing.T) {
 
 func TestBuildHandlerUsesFakeSecretsAndPlaneBoundMTLS(t *testing.T) {
 	config := deploymentConfig{ResourcePlaneID: "rp-tokyo-01", BrokerURL: "https://broker.example",
-		BrokerClientCertARN:    "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:broker-cert",
-		BrokerClientKeyARN:     "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:broker-key",
-		BrokerCAARN:            "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:broker-ca",
-		BootstrapSigningKeyARN: "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:bootstrap-signing",
-		ImageIdentifier:        "arn:aws:lambda:ap-northeast-1:123456789012:microvm-image:hako-runner", ImageVersion: "3",
+		DiagnosticsUploadBaseURL: "https://api.hako.example",
+		BrokerClientCertARN:      "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:broker-cert",
+		BrokerClientKeyARN:       "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:broker-key",
+		BrokerCAARN:              "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:broker-ca",
+		BootstrapSigningKeyARN:   "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:bootstrap-signing",
+		ImageIdentifier:          "arn:aws:lambda:ap-northeast-1:123456789012:microvm-image:hako-runner", ImageVersion: "3",
 		EgressNetworkConnector: "arn:aws:lambda:ap-northeast-1:123456789012:network-connector:restricted", MaximumDuration: 3600, OperationTimeout: time.Minute}
 	certPEM, keyPEM, caPEM := testBrokerCertificate(t, "spiffe://hako/resource-plane/rp-tokyo-01")
 	_, signingKey, err := ed25519.GenerateKey(rand.Reader)

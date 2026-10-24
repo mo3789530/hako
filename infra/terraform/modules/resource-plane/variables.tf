@@ -394,6 +394,7 @@ variable "actions_runner_deployment" {
   type = object({
     zip_path                       = string
     broker_url                     = string
+    diagnostics_upload_base_url    = string
     broker_client_cert_secret_arn  = string
     broker_client_key_secret_arn   = string
     broker_ca_secret_arn           = string
@@ -416,6 +417,7 @@ variable "actions_runner_deployment" {
       var.actions_runner_vpc_config != null &&
       var.actions_runner_deployment.zip_path != "" && fileexists(var.actions_runner_deployment.zip_path) &&
       can(regex("^https://[^/?#]+(?::[0-9]+)?(/[^?#]*)?$", var.actions_runner_deployment.broker_url)) &&
+      can(regex("^https://[^/?#]+(?::[0-9]+)?$", var.actions_runner_deployment.diagnostics_upload_base_url)) &&
       can(regex("^arn:(aws|aws-us-gov|aws-cn):lambda:[a-z0-9-]+:[0-9]{12}:microvm-image:[A-Za-z0-9_-]+$", var.actions_runner_deployment.microvm_image_arn)) &&
       can(regex("^[1-9][0-9]*$", var.actions_runner_deployment.microvm_image_version)) &&
       can(regex("^arn:(aws|aws-us-gov|aws-cn):lambda:[a-z0-9-]+:[0-9]{12}:network-connector:[A-Za-z0-9_-]+$", var.actions_runner_deployment.egress_connector_arn)) &&

@@ -1,6 +1,7 @@
 package actionsrunner
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -17,12 +18,16 @@ func TestRunnerProcessConsumerUsesOneShotConfigAndPassesModelKeyOnlyToRunner(t *
 	writeRunnerScript(t, filepath.Join(root, "config.sh"), "#!/bin/sh\nprintf '%s' \"$*\" > config.args\ntouch .credentials\n")
 	writeRunnerScript(t, filepath.Join(root, "run.sh"), "#!/bin/sh\nenv > runner.env\nmkdir -p _work/repo _temp _diag\nprintf source > _work/repo/file\nprintf '%s\\n' 'registration_token=registration-token-synthetic' 'ANTHROPIC_API_KEY=sk-ant-synthetic-secret' 'Authorization: Bearer ghp_abcdefghijklmnopqrstuvwxyz1234567890' > _diag/Worker_1.log\n")
 	exited := make(chan RunnerProcessResult, 1)
+	claims := validRunnerProcessClaims()
+	claims.DiagnosticsUploadURL = runnerDiagnosticsUploadURL("https://api.hako.example", claims.IntegrationID, claims.WorkflowJobID, claims.RunAttempt)
+	claims.DiagnosticsUploadToken = strings.Repeat("d", 64)
+	uploader := &recordingRunnerDiagnosticsUploader{root: root}
 	consumer, err := NewRunnerProcessConsumer(RunnerProcessConfig{RootDirectory: root, SetupTimeout: time.Second, MaximumRun: time.Minute,
-		OnExit: func(result RunnerProcessResult) { exited <- result }})
+		DiagnosticsUploader: uploader,
+		OnExit:              func(result RunnerProcessResult) { exited <- result }})
 	if err != nil {
 		t.Fatal(err)
 	}
-	claims := validRunnerProcessClaims()
 	claims.ModelCredential = []byte("sk-ant-synthetic-secret")
 	if err := consumer.Consume(context.Background(), claims); err != nil {
 		t.Fatalf("Consume() failed: %v", err)
@@ -34,6 +39,10 @@ func TestRunnerProcessConsumerUsesOneShotConfigAndPassesModelKeyOnlyToRunner(t *
 	}
 	if result.DiagnosticsTruncated || len(result.Diagnostics) == 0 || result.DiagnosticsSHA256 == "" {
 		t.Fatalf("runner diagnostics were not collected with a digest: %+v", result)
+	}
+	if result.DiagnosticsUploadFailed || uploader.calls != 1 || uploader.token != claims.DiagnosticsUploadToken ||
+		uploader.endpoint != claims.DiagnosticsUploadURL || !uploader.diagPresentDuringUpload || !bytes.Equal(uploader.logs, result.Diagnostics) {
+		t.Fatalf("runner diagnostics were not uploaded before guest cleanup: result=%+v uploader=%+v", result, uploader)
 	}
 	for _, secret := range []string{"registration-token-synthetic", "sk-ant-synthetic-secret", "ghp_abcdefghijklmnopqrstuvwxyz1234567890"} {
 		if strings.Contains(string(result.Diagnostics), secret) {
@@ -188,6 +197,23 @@ func validRunnerProcessClaims() RunnerBootstrapClaims {
 	return RunnerBootstrapClaims{SchemaVersion: 1, MicroVMID: "mvm-runner-1", IntegrationID: "integration_runner", WorkflowJobID: 420,
 		WorkflowRunID: 430, RunAttempt: 2, RepositoryURL: "https://github.com/acme/api", RunnerName: "hako-420-2",
 		Labels: []string{"self-hosted", "hako", "arm64"}, Token: "registration-token-synthetic", ExpiresAt: time.Now().Add(time.Minute).Unix()}
+}
+
+type recordingRunnerDiagnosticsUploader struct {
+	root                    string
+	calls                   int
+	endpoint                string
+	token                   string
+	logs                    []byte
+	diagPresentDuringUpload bool
+}
+
+func (u *recordingRunnerDiagnosticsUploader) Upload(_ context.Context, endpoint, token string, logs []byte, _ string) error {
+	u.calls++
+	u.endpoint, u.token, u.logs = endpoint, token, append([]byte(nil), logs...)
+	_, err := os.Stat(filepath.Join(u.root, "_diag"))
+	u.diagPresentDuringUpload = err == nil
+	return nil
 }
 
 func writeRunnerScript(t *testing.T, path, body string) {

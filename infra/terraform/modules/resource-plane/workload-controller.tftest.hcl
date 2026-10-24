@@ -342,6 +342,7 @@ run "actions_runner_worker_consumes_only_its_opt_in_queue" {
     actions_runner_deployment = {
       zip_path                       = "workload-controller.tftest.hcl"
       broker_url                     = "https://broker.hako.example"
+      diagnostics_upload_base_url    = "https://api.hako.example"
       broker_client_cert_secret_arn  = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/runner-cert-AbCdEf"
       broker_client_key_secret_arn   = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/runner-key-AbCdEf"
       broker_ca_secret_arn           = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/runner-ca-AbCdEf"
@@ -385,6 +386,11 @@ run "actions_runner_worker_consumes_only_its_opt_in_queue" {
       statement.Sid == "ReadOnlyExactActionsRunnerSecrets" && length(statement.Resource) == 4 && !contains(statement.Resource, "*")
     ])
     error_message = "Runner worker queue and Secret permissions must be explicitly scoped."
+  }
+
+  assert {
+    condition     = aws_lambda_function.actions_runner_worker[0].environment[0].variables.HAKO_ACTIONS_RUNNER_DIAGNOSTICS_UPLOAD_BASE_URL == "https://api.hako.example"
+    error_message = "Runner bootstrap must carry the HTTPS Control Plane diagnostics endpoint into the one-shot guest capability."
   }
 
   assert {

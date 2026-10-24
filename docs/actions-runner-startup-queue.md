@@ -34,6 +34,30 @@ PostgreSQL integration tests cover the outbox-to-dispatcher-to-fake-GitHub
 delivery and Check ID persistence. AWS deployment, certificates, Secrets
 Manager provisioning and live GitHub verification remain unperformed.
 
+## Runner diagnostic upload
+
+The guest collects regular `.log` files from the runner `_diag` directory,
+caps the payload at 64 KiB, redacts credentials, computes a SHA-256 digest, and
+uploads it over HTTPS before ephemeral runner state is removed. The signed
+bootstrap binds the upload URL to the exact integration, workflow job, and
+attempt. The bearer capability is derived from the random startup claim ID;
+only its hash is stored with the durable job. The public API route is
+capability-authenticated and accepts only the matching job/attempt and a
+bounded raw payload. Control Plane applies a second redaction pass and stores
+only the payload digest plus an escaped, truncated 3 KiB excerpt on that exact
+Check row. The normal Check Outbox publishes the updated summary. Full runner
+diagnostic logs are not retained in DSQL or S3. Replaying the same digest is
+idempotent; a different payload for an already attached attempt is rejected.
+
+Configure `diagnostics_upload_base_url` on the Resource Plane deployment with
+the HTTPS Control Plane API origin. The MicroVM egress connector must allow the
+resulting Control Plane API route. Local guest, API, PostgreSQL, and Terraform
+mock coverage is exercised by `make test-actions-runner-lifecycle-integration`
+and the Resource Plane Terraform test. This does not verify deployed API
+reachability, real Lambda MicroVM execution, or AWS deployment. A failed guest
+upload is reported only as a boolean process diagnostic; GitHub's terminal
+`workflow_job` event remains authoritative for job outcome.
+
 ## Flow
 
 ```text

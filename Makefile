@@ -24,7 +24,7 @@ test-webhook-lifecycle-integration:
 
 # Synthetic GitHub/provider credentials; isolated schemas; leaves PostgreSQL running.
 test-actions-runner-lifecycle-integration:
-	HAKO_TEST_DATABASE_URL="$${HAKO_TEST_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" go test -tags=integration ./internal/actionsrunner ./internal/store/githubwebhook ./internal/githubbroker ./internal/githubchecks -run 'ActionsRunner|RunnerGuestRuntime|CleanupWorker|BrokerMTLS' -count=1
+	HAKO_TEST_DATABASE_URL="$${HAKO_TEST_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" go test -tags=integration ./internal/actionsrunner ./internal/api ./internal/store/githubwebhook ./internal/githubbroker ./internal/githubchecks -run 'ActionsRunner|RunnerGuestRuntime|CleanupWorker|BrokerMTLS' -count=1
 
 # Requires the cached pinned Go image and the already-running local PostgreSQL.
 test-software-factory-e2e:

@@ -19,7 +19,7 @@ func TestRunnerStartupHandlerReturnsOnlyFailedSQSRecords(t *testing.T) {
 	command := githubbroker.ActionsRunnerLaunchCommand{ResourcePlaneID: "rp-tokyo-01", IntegrationID: request.IntegrationID, TenantID: domain.TenantID("tenant_runner"),
 		Installation: 7121, Repository: 7122, WorkflowJobID: request.WorkflowJobID, WorkflowRunID: 9902, RunAttempt: request.RunAttempt,
 		WorkflowName: "CI", JobName: "test", HeadBranch: "main", HeadSHA: strings.Repeat("a", 40), Labels: []string{"self-hosted", "hako"},
-		ClaimID: request.ClaimID, LeaseExpires: now.Add(time.Minute), Owner: "acme", Name: "api", State: "starting"}
+		ClaimID: request.ClaimID, LeaseExpires: now.Add(time.Minute), Owner: "acme", Name: "api", State: "starting", DiagnosticsUploadToken: strings.Repeat("b", 64)}
 	instance := LambdaRunnerInstance{ResourcePlaneID: command.ResourcePlaneID, MicroVMID: "runner-vm-1", Endpoint: "https://runner-vm-1.lambda-microvm.ap-northeast-1.on.aws",
 		ImageIdentifier: "arn:aws:lambda:ap-northeast-1:123456789012:microvm-image:runner", ImageVersion: "1"}
 	token, err := githubapp.NewRunnerRegistrationToken("synthetic-token", now.Add(time.Hour))

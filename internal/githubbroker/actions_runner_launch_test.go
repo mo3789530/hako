@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -15,7 +16,8 @@ func TestVerifiedActionsRunnerLaunchRunsPreflightBeforeStarter(t *testing.T) {
 	command := ActionsRunnerLaunchCommand{ResourcePlaneID: "rp-tokyo-01", IntegrationID: request.IntegrationID, TenantID: "tenant_test",
 		Installation: 11, Repository: 12, WorkflowJobID: request.WorkflowJobID, WorkflowRunID: 13, RunAttempt: request.RunAttempt,
 		WorkflowName: "Claude", JobName: "review", HeadBranch: "main", HeadSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		Labels: []string{"self-hosted", "hako"}, ClaimID: request.ClaimID, LeaseExpires: now.Add(time.Minute), Owner: "acme", Name: "api", State: "starting"}
+		Labels: []string{"self-hosted", "hako"}, ClaimID: request.ClaimID, LeaseExpires: now.Add(time.Minute), Owner: "acme", Name: "api", State: "starting",
+		DiagnosticsUploadToken: strings.Repeat("a", 64)}
 	preflightCalled, starterCalled := false, false
 	service, err := NewVerifiedActionsRunnerLaunchService([]string{"rp-tokyo-01"}, func(_ context.Context, got ActionsRunnerRegistrationRequest) ([]byte, error) {
 		preflightCalled = true

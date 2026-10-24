@@ -29,18 +29,19 @@ import (
 const maxRunnerSecretBytes = 64 << 10
 
 type deploymentConfig struct {
-	ResourcePlaneID        string
-	BrokerURL              string
-	BrokerClientCertARN    string
-	BrokerClientKeyARN     string
-	BrokerCAARN            string
-	BootstrapSigningKeyARN string
-	ImageIdentifier        string
-	ImageVersion           string
-	ExecutionRoleARN       string
-	EgressNetworkConnector string
-	MaximumDuration        int32
-	OperationTimeout       time.Duration
+	ResourcePlaneID          string
+	BrokerURL                string
+	DiagnosticsUploadBaseURL string
+	BrokerClientCertARN      string
+	BrokerClientKeyARN       string
+	BrokerCAARN              string
+	BootstrapSigningKeyARN   string
+	ImageIdentifier          string
+	ImageVersion             string
+	ExecutionRoleARN         string
+	EgressNetworkConnector   string
+	MaximumDuration          int32
+	OperationTimeout         time.Duration
 }
 
 type secretAPI interface {
@@ -89,11 +90,13 @@ func configuredDeployment(getenv func(string) string) (deploymentConfig, error) 
 	}
 	get := func(name string) string { return strings.TrimSpace(getenv(name)) }
 	config := deploymentConfig{ResourcePlaneID: get("HAKO_RESOURCE_PLANE_ID"), BrokerURL: get("HAKO_ACTIONS_RUNNER_BROKER_URL"),
-		BrokerClientCertARN: get("HAKO_ACTIONS_RUNNER_BROKER_CLIENT_CERT_SECRET_ARN"), BrokerClientKeyARN: get("HAKO_ACTIONS_RUNNER_BROKER_CLIENT_KEY_SECRET_ARN"),
+		DiagnosticsUploadBaseURL: get("HAKO_ACTIONS_RUNNER_DIAGNOSTICS_UPLOAD_BASE_URL"),
+		BrokerClientCertARN:      get("HAKO_ACTIONS_RUNNER_BROKER_CLIENT_CERT_SECRET_ARN"), BrokerClientKeyARN: get("HAKO_ACTIONS_RUNNER_BROKER_CLIENT_KEY_SECRET_ARN"),
 		BrokerCAARN: get("HAKO_ACTIONS_RUNNER_BROKER_CA_SECRET_ARN"), BootstrapSigningKeyARN: get("HAKO_ACTIONS_RUNNER_BOOTSTRAP_SIGNING_KEY_SECRET_ARN"),
 		ImageIdentifier: get("HAKO_ACTIONS_RUNNER_MICROVM_IMAGE_ARN"), ImageVersion: get("HAKO_ACTIONS_RUNNER_MICROVM_IMAGE_VERSION"),
 		ExecutionRoleARN: get("HAKO_ACTIONS_RUNNER_EXECUTION_ROLE_ARN"), EgressNetworkConnector: get("HAKO_ACTIONS_RUNNER_EGRESS_CONNECTOR_ARN")}
-	if config.ResourcePlaneID == "" || config.BrokerURL == "" || config.ImageIdentifier == "" || config.ImageVersion == "" || config.EgressNetworkConnector == "" ||
+	if config.ResourcePlaneID == "" || config.BrokerURL == "" || config.DiagnosticsUploadBaseURL == "" || !actionsrunner.ValidRunnerDiagnosticsBaseURL(config.DiagnosticsUploadBaseURL) ||
+		config.ImageIdentifier == "" || config.ImageVersion == "" || config.EgressNetworkConnector == "" ||
 		!validSecretARN(config.BrokerClientCertARN) || !validSecretARN(config.BrokerClientKeyARN) || !validSecretARN(config.BrokerCAARN) ||
 		!validSecretARN(config.BootstrapSigningKeyARN) {
 		return deploymentConfig{}, errors.New("Resource Plane, HTTPS broker, runner image/network, and distinct Secret references are required")
@@ -202,7 +205,8 @@ func buildHandler(ctx context.Context, config deploymentConfig, secrets secretAP
 	if err != nil {
 		return nil, errors.New("configure signed runner bootstrap sender")
 	}
-	worker, err := actionsrunner.NewRunnerStartupWorker(actionsrunner.RunnerStartupWorkerConfig{OperationTimeout: config.OperationTimeout},
+	worker, err := actionsrunner.NewRunnerStartupWorker(actionsrunner.RunnerStartupWorkerConfig{OperationTimeout: config.OperationTimeout,
+		DiagnosticsUploadBaseURL: config.DiagnosticsUploadBaseURL},
 		launchBroker, launcher, binder, tokenProvider, bootstrapper, failureReporter, config.ResourcePlaneID)
 	if err != nil {
 		return nil, errors.New("configure runner startup worker")

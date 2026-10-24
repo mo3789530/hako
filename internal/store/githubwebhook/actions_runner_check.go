@@ -136,6 +136,10 @@ func updateActionsRunnerCheck(ctx context.Context, tx pgx.Tx, integrationID stri
 	} else {
 		check.OutputSummary = "GitHub reported this workflow job is running on an isolated Lambda MicroVM runner."
 	}
+	check.OutputSummary, err = preserveActionsRunnerDiagnosticsSummary(ctx, tx, check, check.OutputSummary)
+	if err != nil {
+		return err
+	}
 	tag, err := tx.Exec(ctx, `UPDATE github_actions_runner_checks SET status=$1,conclusion=NULLIF($2,''),completed_at=$3,
 		output_summary=$4,revision=revision+1,updated_at=$5
 		WHERE integration_id=$6 AND workflow_job_id=$7 AND run_attempt=$8 AND revision=$9`,
@@ -178,6 +182,10 @@ func FailActionsRunnerCheck(ctx context.Context, tx pgx.Tx, integrationID string
 	}
 	check.Status, check.Conclusion, check.CompletedAt = "completed", "failure", &completed
 	check.OutputSummary = "Hako could not start an isolated Lambda MicroVM runner for this workflow job."
+	check.OutputSummary, err = preserveActionsRunnerDiagnosticsSummary(ctx, tx, check, check.OutputSummary)
+	if err != nil {
+		return err
+	}
 	tag, err := tx.Exec(ctx, `UPDATE github_actions_runner_checks SET status='completed',conclusion='failure',completed_at=$1,
 		output_summary=$2,revision=revision+1,updated_at=$1 WHERE integration_id=$3 AND workflow_job_id=$4 AND run_attempt=$5 AND revision=$6`,
 		completed, check.OutputSummary, integrationID, workflowJobID, runAttempt, check.Revision)

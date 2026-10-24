@@ -48,8 +48,8 @@ func run() error {
 		SetupTimeout:  10 * time.Second,
 		MaximumRun:    8 * time.Hour,
 		OnExit: func(result actionsrunner.RunnerProcessResult) {
-			log.Printf("ephemeral runner finished job=%d attempt=%d exit_code=%d failure_phase=%s cancelled=%t timed_out=%t local_cleanup_failed=%t",
-				result.WorkflowJobID, result.RunAttempt, result.ExitCode, result.FailurePhase, result.Cancelled, result.TimedOut, result.CleanupFailed)
+			log.Printf("ephemeral runner finished job=%d attempt=%d exit_code=%d failure_phase=%s cancelled=%t timed_out=%t local_cleanup_failed=%t diagnostics_upload_failed=%t",
+				result.WorkflowJobID, result.RunAttempt, result.ExitCode, result.FailurePhase, result.Cancelled, result.TimedOut, result.CleanupFailed, result.DiagnosticsUploadFailed)
 		},
 	})
 	if err != nil {

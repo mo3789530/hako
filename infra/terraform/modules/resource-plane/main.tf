@@ -654,6 +654,7 @@ resource "aws_lambda_function" "actions_runner_worker" {
     variables = {
       HAKO_RESOURCE_PLANE_ID                               = var.resource_plane_id
       HAKO_ACTIONS_RUNNER_BROKER_URL                       = var.actions_runner_deployment.broker_url
+      HAKO_ACTIONS_RUNNER_DIAGNOSTICS_UPLOAD_BASE_URL      = var.actions_runner_deployment.diagnostics_upload_base_url
       HAKO_ACTIONS_RUNNER_BROKER_CLIENT_CERT_SECRET_ARN    = var.actions_runner_deployment.broker_client_cert_secret_arn
       HAKO_ACTIONS_RUNNER_BROKER_CLIENT_KEY_SECRET_ARN     = var.actions_runner_deployment.broker_client_key_secret_arn
       HAKO_ACTIONS_RUNNER_BROKER_CA_SECRET_ARN             = var.actions_runner_deployment.broker_ca_secret_arn
