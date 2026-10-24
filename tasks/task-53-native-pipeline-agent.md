@@ -2,6 +2,13 @@
 
 Status: In Progress (versioned manifest selection, fixed-catalog execution, durable per-pipeline results, and independent pipeline Checks through the existing Checks consumer are implemented and locally verified. Issue command authorization requires a verified GitHub identity that is a member of the resolved Tenant, an active Installation binding, exact repository identity, and a pre-existing Factory opt-in. A Tenant-App-only read scope, bounded Issue/default-branch SHA reader, Control Plane-only mTLS broker, and an atomic Issue inbox processor that creates one immutable Agent Run plus a bounded task record are locally composed and PostgreSQL-tested. The Resource Plane Worker now retrieves the bounded task over mTLS and validates current attempt and immutable Run/App/Repository/branch/commit pins. A context digest is bound from launch specification through signed Start/Source tickets and guest `/run`; guest checks it before exposing task text in memory to a process factory. Scheduling remains disabled (dispatcher/batch are Job-only), and the default guest process factory rejects Agent Runs until an isolated model-backed executor, Tenant credential policy, and runtime resource/network enforcement exist. Service container orchestration and live Agent write execution remain; branch/PR policy is implemented as dormant configuration). Priority: P3.
 
+Runtime profile follow-up: profiles are now keyed by Workload kind, Runtime Class,
+and trust level. A Job profile cannot be implicitly reused by Agent or Preview;
+missing kind-specific profiles fail before source materialization. Existing
+profile JSON without `kind` maps to `job` for compatibility. This is an
+additional fail-closed boundary, not a model executor or runtime network
+isolation proof.
+
 ## Goal
 
 Allow Hako-native verification and bounded coding-agent Jobs without silently replacing GitHub Actions or granting agents production authority.
@@ -189,6 +196,12 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   work until the model-backed executor, Tenant credential policy, and runtime
   resource/network policy are implemented. No AWS apply or real Secret read
   was performed.
+- Resource Plane profile selection now includes `WorkloadKind`. Tests prove an
+  Agent Run cannot borrow the otherwise valid Job profile and is rejected
+  before repository source materialization. Profile configuration defaults an
+  omitted `kind` to `job`; explicit `agent` profiles are accepted only as a
+  separate identity. This does not enable Agent scheduling or prove that
+  profile connectors implement an egress restriction.
 
 ## Repository write policy groundwork (2026-10-24)
 

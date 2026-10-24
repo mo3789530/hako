@@ -58,7 +58,7 @@ func TestMetadataSpecificationResolverCombinesTrustedMetadataAndPlaneProfile(t *
 	profile := RuntimeProfile{ImageIdentifier: "arn:aws:lambda:ap-northeast-1:123456789012:microvm-image:hako", ImageVersion: "7",
 		ImageDigest: strings.Repeat("c", 64), IngressNetworkConnectors: []string{"ingress"}, EgressNetworkConnectors: []string{"egress"}}
 	resolver, err := NewMetadataSpecificationResolver(MetadataSpecificationResolverConfig{ResourcePlaneID: "rp_1", Metadata: metaResolver,
-		Sources: sources, Profiles: map[RuntimeProfileKey]RuntimeProfile{{RuntimeClass: "standard", TrustLevel: domain.WorkloadUntrusted}: profile}, Now: func() time.Time { return now }})
+		Sources: sources, Profiles: map[RuntimeProfileKey]RuntimeProfile{{Kind: domain.WorkloadJob, RuntimeClass: "standard", TrustLevel: domain.WorkloadUntrusted}: profile}, Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,13 +97,23 @@ func TestMetadataSpecificationResolverPreservesIssueAgentKind(t *testing.T) {
 		ImageDigest: strings.Repeat("c", 64), IngressNetworkConnectors: []string{"ingress"}, EgressNetworkConnectors: []string{"egress"}}
 	resolver, err := NewMetadataSpecificationResolver(MetadataSpecificationResolverConfig{ResourcePlaneID: "rp_1",
 		Metadata: &fixedExecutionMetadataResolver{metadata: metadata}, Sources: sources, AgentTasks: fixedResolverAgentTaskProvider{task: task},
-		Profiles: map[RuntimeProfileKey]RuntimeProfile{{RuntimeClass: "standard", TrustLevel: domain.WorkloadUntrusted}: profile}, Now: func() time.Time { return now }})
+		Profiles: map[RuntimeProfileKey]RuntimeProfile{{Kind: domain.WorkloadAgent, RuntimeClass: "standard", TrustLevel: domain.WorkloadUntrusted}: profile}, Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
 	spec, err := resolver.Resolve(context.Background(), id)
 	if err != nil || spec.Kind != domain.WorkloadAgent || spec.TriggerEvent != "issue_comment" || spec.AgentTaskContextSHA256 != task.ContextSHA256 {
 		t.Fatalf("Agent specification kind=%q event=%q err=%v", spec.Kind, spec.TriggerEvent, err)
+	}
+	jobProfileOnly, err := NewMetadataSpecificationResolver(MetadataSpecificationResolverConfig{ResourcePlaneID: "rp_1",
+		Metadata: &fixedExecutionMetadataResolver{metadata: metadata}, Sources: sources, AgentTasks: fixedResolverAgentTaskProvider{task: task},
+		Profiles: map[RuntimeProfileKey]RuntimeProfile{{Kind: domain.WorkloadJob, RuntimeClass: "standard", TrustLevel: domain.WorkloadUntrusted}: profile},
+		Now:      func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := jobProfileOnly.Resolve(context.Background(), id); !errors.Is(err, ErrExecutionMaterialization) || sources.calls != 1 {
+		t.Fatalf("Agent borrowed a Job runtime profile or staged source: err=%v source calls=%d", err, sources.calls)
 	}
 }
 
@@ -139,7 +149,7 @@ func TestMetadataSpecificationResolverFailsClosedBeforeSourceMaterialization(t *
 			metadataResolver := &fixedExecutionMetadataResolver{metadata: tc.metadata, err: tc.metaErr}
 			sources := &fixedSourceMaterializer{source: tc.source, err: tc.srcErr}
 			resolver, err := NewMetadataSpecificationResolver(MetadataSpecificationResolverConfig{ResourcePlaneID: "rp_1", Metadata: metadataResolver,
-				Sources: sources, Profiles: map[RuntimeProfileKey]RuntimeProfile{{RuntimeClass: "standard", TrustLevel: domain.WorkloadUntrusted}: profile}, Now: func() time.Time { return now }})
+				Sources: sources, Profiles: map[RuntimeProfileKey]RuntimeProfile{{Kind: domain.WorkloadJob, RuntimeClass: "standard", TrustLevel: domain.WorkloadUntrusted}: profile}, Now: func() time.Time { return now }})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -163,7 +173,7 @@ func TestMetadataSpecificationResolverFailsClosedBeforeSourceMaterialization(t *
 
 func TestNewMetadataSpecificationResolverRejectsIncompleteProfile(t *testing.T) {
 	_, err := NewMetadataSpecificationResolver(MetadataSpecificationResolverConfig{ResourcePlaneID: "rp_1", Metadata: &fixedExecutionMetadataResolver{},
-		Sources: &fixedSourceMaterializer{}, Profiles: map[RuntimeProfileKey]RuntimeProfile{{RuntimeClass: "standard", TrustLevel: domain.WorkloadUntrusted}: {
+		Sources: &fixedSourceMaterializer{}, Profiles: map[RuntimeProfileKey]RuntimeProfile{{Kind: domain.WorkloadJob, RuntimeClass: "standard", TrustLevel: domain.WorkloadUntrusted}: {
 			ImageIdentifier: "image", ImageVersion: "1", ImageDigest: strings.Repeat("a", 64), EgressNetworkConnectors: []string{"egress"}}}})
 	if !errors.Is(err, ErrExecutionMaterialization) {
 		t.Fatalf("incomplete runtime profile error = %v", err)

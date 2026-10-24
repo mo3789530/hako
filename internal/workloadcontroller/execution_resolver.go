@@ -34,6 +34,7 @@ type SourceMaterializer interface {
 type MaterializedSource = workloadsource.MaterializedSource
 
 type RuntimeProfileKey struct {
+	Kind         domain.WorkloadKind
 	RuntimeClass string
 	TrustLevel   domain.WorkloadTrustLevel
 }
@@ -72,7 +73,8 @@ func NewMetadataSpecificationResolver(config MetadataSpecificationResolverConfig
 	}
 	profiles := make(map[RuntimeProfileKey]RuntimeProfile, len(config.Profiles))
 	for key, profile := range config.Profiles {
-		if key.RuntimeClass == "" || key.TrustLevel == "" || profile.ImageIdentifier == "" || profile.ImageVersion == "" ||
+		if (key.Kind != domain.WorkloadJob && key.Kind != domain.WorkloadAgent && key.Kind != domain.WorkloadPreview) ||
+			key.RuntimeClass == "" || key.TrustLevel == "" || profile.ImageIdentifier == "" || profile.ImageVersion == "" ||
 			!digestPattern.MatchString(profile.ImageDigest) || len(profile.IngressNetworkConnectors) != 1 ||
 			len(profile.EgressNetworkConnectors) != 1 || profile.IngressNetworkConnectors[0] == "" || profile.EgressNetworkConnectors[0] == "" {
 			return nil, ErrExecutionMaterialization
@@ -97,7 +99,8 @@ func (r *MetadataSpecificationResolver) Resolve(ctx context.Context, id workload
 	if err != nil || !metadata.matches(id) || !validExecutionMetadata(metadata, r.now().UTC()) {
 		return Specification{}, ErrExecutionMetadata
 	}
-	profile, ok := r.profiles[RuntimeProfileKey{RuntimeClass: metadata.RuntimeClass, TrustLevel: metadata.TrustLevel}]
+	kind := effectiveWorkloadKind(metadata)
+	profile, ok := r.profiles[RuntimeProfileKey{Kind: kind, RuntimeClass: metadata.RuntimeClass, TrustLevel: metadata.TrustLevel}]
 	if !ok {
 		return Specification{}, ErrExecutionMaterialization
 	}
@@ -119,7 +122,7 @@ func (r *MetadataSpecificationResolver) Resolve(ctx context.Context, id workload
 		return Specification{}, ErrExecutionMaterialization
 	}
 	spec := Specification{Identity: id, ImageDigest: profile.ImageDigest, SourceDigest: source.Digest,
-		Kind:      effectiveWorkloadKind(metadata),
+		Kind:      kind,
 		CommitSHA: metadata.CommitSHA, TriggerEvent: metadata.TriggerEvent, TriggerBranch: metadata.TriggerBranch, CorrelationID: metadata.CorrelationID,
 		RequestedAt: metadata.RequestedAt.UTC(), Deadline: metadata.Deadline.UTC(),
 		ArtifactPrefix: source.ArtifactPrefix, ImageIdentifier: profile.ImageIdentifier, ImageVersion: profile.ImageVersion,

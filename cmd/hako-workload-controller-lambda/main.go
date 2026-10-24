@@ -39,6 +39,7 @@ import (
 const maxProfileConfigBytes = 32 << 10
 
 type profileDocument struct {
+	Kind             domain.WorkloadKind       `json:"kind,omitempty"`
 	RuntimeClass     string                    `json:"runtime_class"`
 	TrustLevel       domain.WorkloadTrustLevel `json:"trust_level"`
 	ImageIdentifier  string                    `json:"image_identifier"`
@@ -365,7 +366,14 @@ func parseProfiles(raw string) (map[workloadcontroller.RuntimeProfileKey]workloa
 	}
 	profiles := make(map[workloadcontroller.RuntimeProfileKey]workloadcontroller.RuntimeProfile, len(docs))
 	for _, doc := range docs {
-		key := workloadcontroller.RuntimeProfileKey{RuntimeClass: strings.TrimSpace(doc.RuntimeClass), TrustLevel: doc.TrustLevel}
+		kind := doc.Kind
+		if kind == "" {
+			kind = domain.WorkloadJob
+		}
+		key := workloadcontroller.RuntimeProfileKey{Kind: kind, RuntimeClass: strings.TrimSpace(doc.RuntimeClass), TrustLevel: doc.TrustLevel}
+		if key.Kind != domain.WorkloadJob && key.Kind != domain.WorkloadAgent && key.Kind != domain.WorkloadPreview {
+			return nil, errors.New("Workload runtime profile kind is invalid")
+		}
 		if key.RuntimeClass == "" || (key.TrustLevel != domain.WorkloadUntrusted && key.TrustLevel != domain.WorkloadTrusted && key.TrustLevel != domain.WorkloadPrivileged) {
 			return nil, errors.New("Workload runtime profile identity is invalid")
 		}

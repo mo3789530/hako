@@ -16,7 +16,7 @@ func TestParseProfiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := workloadcontroller.RuntimeProfileKey{RuntimeClass: "standard", TrustLevel: domain.WorkloadUntrusted}
+	key := workloadcontroller.RuntimeProfileKey{Kind: domain.WorkloadJob, RuntimeClass: "standard", TrustLevel: domain.WorkloadUntrusted}
 	if profile, ok := profiles[key]; !ok || profile.ImageVersion != "1" || len(profile.IngressNetworkConnectors) != 1 {
 		t.Fatalf("unexpected parsed profile: %#v", profiles)
 	}
@@ -28,6 +28,7 @@ func TestParseProfilesRejectsUnknownDuplicateAndUnsupportedProfiles(t *testing.T
 		"unknown field":     strings.Replace(testProfile, `"runtime_class"`, `"extra":true,"runtime_class"`, 1),
 		"duplicate":         strings.TrimSuffix(testProfile, "]") + "," + strings.TrimPrefix(testProfile, "["),
 		"unsupported trust": strings.Replace(testProfile, `"untrusted"`, `"privileged-ish"`, 1),
+		"unsupported kind":  strings.Replace(testProfile, `"runtime_class"`, `"kind":"shell","runtime_class"`, 1),
 		"trailing value":    testProfile + `{}`,
 	}
 	for name, input := range tests {
@@ -39,6 +40,18 @@ func TestParseProfilesRejectsUnknownDuplicateAndUnsupportedProfiles(t *testing.T
 	}
 	if _, err := parseProfiles(strings.Repeat(" ", maxProfileConfigBytes+1)); err == nil {
 		t.Fatal("oversized runtime profile configuration was accepted")
+	}
+}
+
+func TestParseProfilesSeparatesWorkloadKinds(t *testing.T) {
+	job := strings.Replace(testProfile, `"runtime_class"`, `"kind":"job","runtime_class"`, 1)
+	agent := strings.Replace(testProfile, `"runtime_class"`, `"kind":"agent","runtime_class"`, 1)
+	profiles, err := parseProfiles(strings.TrimSuffix(job, "]") + "," + strings.Trim(agent, "[]") + "]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(profiles) != 2 {
+		t.Fatalf("workload kind profiles = %d, want 2", len(profiles))
 	}
 }
 
