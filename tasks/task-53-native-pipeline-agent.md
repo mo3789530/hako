@@ -355,10 +355,10 @@ contract is unit-tested; target MicroVM enforcement remains unverified. Service
 admission is default-off and must remain disabled in production until those
 target gates pass.
 
-- [ ] Provision only immutable Service Catalog entries (`postgres`, `redis`)
+- [x] Provision only immutable Service Catalog entries (`postgres`, `redis`)
   on a Job/attempt-scoped rootless containerd network. No user-provided image,
   command, mount, port mapping, or host socket is accepted.
-- [ ] Keep service storage ephemeral and disjoint across Job attempts; derive
+- [x] Keep service storage ephemeral and disjoint across Job attempts; derive
   container/network names from the immutable Workload identity and remove them
   on success, failure, cancellation, timeout, startup error, and recovery.
 - [x] Reject a Factory pipeline whose aggregate declared CPU or memory budget
@@ -375,7 +375,7 @@ target gates pass.
   arbitrary Internet or AWS access to the Job or its service containers. Host
   process loopback-only enforcement is now implemented in the workload image;
   container egress and target MicroVM behavior remain unverified.
-- [ ] Generate PostgreSQL credentials per attempt, pass them only to the
+- [x] Generate PostgreSQL credentials per attempt, pass them only to the
   service and test process, and include them in the bounded log redaction set.
   Never persist them in DSQL, journal, result, artifact, or container labels.
 - [ ] Wait for catalog health checks before executing pipeline commands and
@@ -389,6 +389,14 @@ target gates pass.
   PostgreSQL image; it is not evidence for nerdctl, the pinned ARM64 image, or
   the Lambda MicroVM. Keep Agent scheduling disabled until its separate
   executor, credential policy, and network/resource gates pass.
+
+The checked items above are locally implemented and tested. Podman now
+confirms effective cgroup v2 memory/CPU/PID values as well as container
+metadata. They do not establish the pinned ARM64 nerdctl behavior or Lambda
+MicroVM enforcement. The remaining unchecked items include aggregate command
+plus sidecar cgroup limits, verified container egress denial, and cleanup
+confirmation in the target runtime; Service and Agent production admission
+must remain disabled until those gates pass.
 
 ## Process identity isolation (2026-10-24)
 
