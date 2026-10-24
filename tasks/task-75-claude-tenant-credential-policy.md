@@ -24,6 +24,15 @@ Make model credentials Tenant-owned, purpose-specific and available only to expl
 - [ ] Provision and review target Tenant reader Roles and required KMS grants in the owning Resource Plane/account, then apply the reviewed Broker allowlist. No AWS apply or real Secret retrieval is included in local implementation.
 - [ ] Provision Broker mTLS certificates and add production Broker/Worker deployment configuration after the final runtime delivery protocol is reviewed.
 
+## Tenant credential CLI/API wiring refresh (2026-10-24)
+
+Added HTTP-backed tests around `hako tenant model-credential list`, `add`,
+`rotate`, and `disable`. They verify Tenant-scoped routing, Bearer authentication, purpose and
+generation/version metadata, `Cache-Control: no-store`, and that request/output
+paths do not carry plaintext provider credentials. The CLI accepts only an
+immutable Secret `VersionId`; target Role and Secret provisioning plus
+production mTLS remain separate deployment gates.
+
 ## Acceptance criteria
 
 - Unit and PostgreSQL tests prove cross-Tenant secret reference/authorization denial and that disable/rotation takes effect for new runs.
