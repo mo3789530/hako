@@ -25,9 +25,11 @@ import (
 )
 
 type copyTestDialer struct {
-	seenPath chan string
-	uploadOK chan []byte
-	download []byte
+	seenPath         chan string
+	uploadOK         chan []byte
+	download         []byte
+	uploadFailed     bool
+	truncateDownload bool
 }
 
 func (d copyTestDialer) OpenShell(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
@@ -62,18 +64,38 @@ func (d copyTestDialer) OpenFileTransfer(_ context.Context, _ workspacesession.C
 			if d.uploadOK != nil {
 				d.uploadOK <- body
 			}
+			if d.uploadFailed {
+				_ = workspaceprotocol.WriteFileResponse(peer, workspaceprotocol.FileResponse{OK: false, Code: "transfer_failed"})
+				return
+			}
 			_ = workspaceprotocol.WriteFileResponse(peer, workspaceprotocol.FileResponse{OK: true, Size: request.Size})
 		case "download":
 			_ = workspaceprotocol.WriteFileResponse(peer, workspaceprotocol.FileResponse{OK: true, Size: int64(len(d.download))})
-			_, _ = peer.Write(d.download)
+			payload := d.download
+			if d.truncateDownload && len(payload) > 0 {
+				payload = payload[:len(payload)-1]
+			}
+			_, _ = peer.Write(payload)
 		}
 	}()
 	return client, nil
 }
 
 func TestCopyWorkspacePathUploadAndDownloadOverAuthenticatedGateway(t *testing.T) {
-	for _, download := range []bool{false, true} {
-		t.Run(map[bool]string{false: "upload", true: "download"}[download], func(t *testing.T) {
+	cases := []struct {
+		name             string
+		download         bool
+		failed           bool
+		truncateDownload bool
+	}{
+		{name: "upload"},
+		{name: "download", download: true},
+		{name: "upload failure", failed: true},
+		{name: "incomplete download", download: true, failed: true, truncateDownload: true},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			download := testCase.download
 			previousGetter := cliCredentialGetter
 			cliCredentialGetter = workspaceShellCredentials(fmt.Sprintf(`{"access_token":"copy-access","token_type":"Bearer","expires_in":3600,"stored_at":"%s"}`,
 				time.Now().UTC().Format(time.RFC3339)))
@@ -120,7 +142,9 @@ func TestCopyWorkspacePathUploadAndDownloadOverAuthenticatedGateway(t *testing.T
 			uploadOK := make(chan []byte, 1)
 			gateway, err := workspacegateway.New(workspacegateway.Config{ResourcePlaneID: "rp_cli",
 				Verifier: &workspacesession.Verifier{Keys: map[string]ed25519.PublicKey{"copy-test": publicKey}, Audience: workspacesession.AudienceGateway, Lookup: activeWorkspaceSession{}},
-				Dialer:   copyTestDialer{seenPath: seenPath, uploadOK: uploadOK, download: body}, MaxConnections: 2, MaxConnectionsPerWorkspace: 2})
+				Dialer: copyTestDialer{seenPath: seenPath, uploadOK: uploadOK, download: body,
+					uploadFailed: testCase.failed && !download, truncateDownload: testCase.truncateDownload},
+				MaxConnections: 2, MaxConnectionsPerWorkspace: 2})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -139,13 +163,21 @@ func TestCopyWorkspacePathUploadAndDownloadOverAuthenticatedGateway(t *testing.T
 				if err := os.WriteFile(localPath, body, 0600); err != nil {
 					t.Fatal(err)
 				}
+			} else if testCase.failed {
+				if err := os.WriteFile(localPath, []byte("keep-existing"), 0600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			source, destination := localPath, remotePath
 			if download {
 				source, destination = remotePath, localPath
 			}
-			if err := copyWorkspacePathWith(context.Background(), "tenant_cli", "ws_cli", source, destination, download,
-				apiServer.Client(), &tls.Config{RootCAs: gatewayTLS.RootCAs}); err != nil {
+			err = copyWorkspacePathWith(context.Background(), "tenant_cli", "ws_cli", source, destination, download,
+				apiServer.Client(), &tls.Config{RootCAs: gatewayTLS.RootCAs})
+			if testCase.failed && err == nil {
+				t.Fatal("failed transfer unexpectedly succeeded")
+			}
+			if !testCase.failed && err != nil {
 				t.Fatalf("copyWorkspacePathWith: %v", err)
 			}
 			if created.Load() != 1 || revoked.Load() != 1 {
@@ -160,7 +192,16 @@ func TestCopyWorkspacePathUploadAndDownloadOverAuthenticatedGateway(t *testing.T
 			case <-time.After(time.Second):
 				t.Fatal("file transfer did not reach the Gateway")
 			}
-			if download {
+			if download && testCase.failed {
+				got, readErr := os.ReadFile(localPath)
+				if readErr != nil || string(got) != "keep-existing" {
+					t.Fatalf("failed download changed destination: contents=%q err=%v", got, readErr)
+				}
+				entries, readErr := os.ReadDir(dir)
+				if readErr != nil || len(entries) != 1 || entries[0].Name() != "download.bin" {
+					t.Fatalf("failed download left a temporary file: entries=%v err=%v", entries, readErr)
+				}
+			} else if download {
 				got, err := os.ReadFile(localPath)
 				if err != nil || string(got) != string(body) {
 					t.Fatalf("download contents=%q, err=%v", got, err)

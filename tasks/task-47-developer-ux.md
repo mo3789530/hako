@@ -117,8 +117,10 @@ Added authenticated local API + TLS/WSS Gateway E2E for `hako cp` upload and
 `hako cp --from` download. Both flows verify the file-transfer-only Session,
 Tenant/Workspace route, remote `/workspace` path, transfer payload, Session
 revocation, and atomic local download commit without leaving a temporary file.
-`go test ./cmd/hako -count=1 -coverprofile=...` now reports 58.6% package
-statement coverage; `workspace_copy.go` is 70.5% overall and its path/ID
+Negative transfer cases verify failed upload reporting and that an incomplete
+download preserves the existing destination and removes its temporary file.
+`go test ./cmd/hako -count=1 -coverprofile=...` now reports 58.7% package
+statement coverage; `workspace_copy.go` is 74.4% overall and its path/ID
 validators are 100%. This is local protocol evidence and does not verify a
 deployed Lambda MicroVM or Gateway route.
 
