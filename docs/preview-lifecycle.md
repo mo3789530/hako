@@ -60,9 +60,13 @@ published: responses report `runtime_enabled: false`, and records remain in
 runtime does not yet provision a PR-scoped Workspace binding or expiring
 Tenant-scoped Gateway route. A default-off scheduled Lambda invokes the bounded
 expiry sweep, but it is not enabled by default and only updates DSQL metadata.
-A cleanup worker with retry/backoff transition to `cleaned`, route
-authorization, and Preview quota reservation are still required before Preview
-can be enabled for user traffic.
+The store records only fixed cleanup error categories and schedules bounded
+exponential retries (5 seconds to 1 hour). `cleaned` is written only after the
+runtime executor confirms MicroVM and Gateway route deletion, and duplicate
+confirmation is idempotent. The retry metadata is implemented, but the
+lease/worker that performs physical deletion, route authorization, and Preview
+quota reservation are still required before Preview can be enabled for user
+traffic.
 
 When runtime execution is added, it must bind the immutable PR head SHA to an
 isolated Workspace, enforce Tenant authorization on every route, respect the

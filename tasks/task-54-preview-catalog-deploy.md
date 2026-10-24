@@ -103,6 +103,20 @@ Add optional repository-level preview environments and service metadata/deploy p
 - See [`Preview lifecycle`](../docs/preview-lifecycle.md) for endpoint and CLI
   usage.
 
+## Preview cleanup retry state (2026-10-24)
+
+- Added store transitions that record only fixed cleanup error categories and
+  schedule exponential retries from 5 seconds up to 1 hour. Failures arriving
+  before the stored retry deadline are ignored; attempts are guarded against
+  stale concurrent writes.
+- `MarkCleaned` is idempotent and changes metadata only after its caller has
+  confirmed MicroVM and Gateway route deletion. Unit and PostgreSQL lifecycle
+  tests cover backoff, premature retry rejection, repeated failure, and
+  duplicate completion.
+- The physical cleanup worker, durable claim/lease, Preview-to-runtime binding,
+  and provider/Gateway deletion remain unimplemented. No delete is inferred
+  from the metadata transition.
+
 ## Acceptance criteria
 
 - Tests cover PR update/reopen/close races, stale commit preview, cross-Tenant route access, expiry, cleanup retries, and duplicate webhooks.

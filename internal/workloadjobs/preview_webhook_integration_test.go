@@ -119,6 +119,53 @@ func TestRepositoryPreviewWebhookLifecycleFencesStalePRUpdates(t *testing.T) {
 	if desired != "absent" || state != "cleanup_pending" {
 		t.Fatalf("expired Preview state = desired:%s state:%s, physical cleanup must remain pending", desired, state)
 	}
+	cleanupIdentity := previewstore.CleanupIdentity{TenantID: "tenant_preview_hook", InstallationID: 9801, RepositoryID: 9802, PullRequestNumber: 73}
+	recordFailure := func(at time.Time, code string) (int, time.Time, bool, error) {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			return 0, time.Time{}, false, err
+		}
+		attempt, retryAt, updated, err := previewstore.RecordCleanupFailure(ctx, tx, cleanupIdentity, at, code)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return 0, time.Time{}, false, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return 0, time.Time{}, false, err
+		}
+		return attempt, retryAt, updated, nil
+	}
+	cleanupNow := now.Add(3 * time.Hour)
+	if attempt, retryAt, updated, err := recordFailure(cleanupNow, "microvm_terminate_failed"); err != nil || !updated || attempt != 1 || !retryAt.Equal(cleanupNow.Add(5*time.Second)) {
+		t.Fatalf("first Preview cleanup failure = attempt:%d retry:%s updated:%v error:%v", attempt, retryAt, updated, err)
+	}
+	if attempt, _, updated, err := recordFailure(cleanupNow.Add(4*time.Second), "provider_unavailable"); err != nil || updated || attempt != 0 {
+		t.Fatalf("Preview cleanup retry ran before backoff elapsed: attempt=%d updated=%v error=%v", attempt, updated, err)
+	}
+	if attempt, retryAt, updated, err := recordFailure(cleanupNow.Add(5*time.Second), "provider_unavailable"); err != nil || !updated || attempt != 2 || !retryAt.Equal(cleanupNow.Add(15*time.Second)) {
+		t.Fatalf("second Preview cleanup failure = attempt:%d retry:%s updated:%v error:%v", attempt, retryAt, updated, err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleaned, err := previewstore.MarkCleaned(ctx, tx, cleanupIdentity, cleanupNow.Add(time.Minute))
+	if err != nil || !cleaned {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("mark confirmed Preview cleanup: cleaned=%v error=%v", cleaned, err)
+	}
+	if duplicate, err := previewstore.MarkCleaned(ctx, tx, cleanupIdentity, cleanupNow.Add(time.Minute)); err != nil || !duplicate {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("duplicate Preview cleanup confirmation: cleaned=%v error=%v", duplicate, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var lastError, cleanupState string
+	var cleanupAttempts int
+	if err := pool.QueryRow(ctx, `SELECT state,cleanup_attempts,cleanup_last_error FROM repository_previews WHERE tenant_id='tenant_preview_hook' AND installation_id=9801 AND github_repository_id=9802 AND pull_request_number=73`).Scan(&cleanupState, &cleanupAttempts, &lastError); err != nil || cleanupState != "cleaned" || cleanupAttempts != 2 || lastError != "" {
+		t.Fatalf("persisted Preview cleanup state=%s attempts=%d last_error=%q err=%v", cleanupState, cleanupAttempts, lastError, err)
+	}
 	if expired, err := previewstore.ExpireBatch(ctx, pool, now.Add(4*time.Hour), 10); err != nil || expired != 0 {
 		t.Fatalf("transactional Preview expiry wrapper = %d, %v", expired, err)
 	}
