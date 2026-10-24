@@ -17,8 +17,14 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v5"
+	"github.com/mo3789530/hako/internal/dispatcher"
 	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/operationresults"
+	"github.com/mo3789530/hako/internal/resourcecontroller"
+	fakeruntime "github.com/mo3789530/hako/internal/runtime/fake"
 	"github.com/mo3789530/hako/internal/store/dsql"
+	"github.com/mo3789530/hako/internal/store/outbox"
+	"github.com/mo3789530/hako/internal/store/transaction"
 	"github.com/mo3789530/hako/internal/store/workspaceactivity"
 	"github.com/mo3789530/hako/internal/testutil"
 	"github.com/mo3789530/hako/internal/workspaceagent"
@@ -265,6 +271,62 @@ func TestWorkspaceGatewayDisconnectReconnectFencesIdleSuspendEndToEnd(t *testing
 	if eventCount != 1 || outboxCount != 1 || auditCount != 1 {
 		t.Fatalf("idle suspend side effects event=%d outbox=%d system-audit=%d, want exactly one each", eventCount, outboxCount, auditCount)
 	}
+
+	// Carry the system-generated Operation through the same transactional
+	// Outbox Dispatcher, Resource Controller, and result consumer used for
+	// ordinary Workspace actions. The runtime is fake; no provider API is called.
+	publisher := &idleLifecyclePublisher{}
+	operationDispatcher, err := dispatcher.New(
+		dispatcher.StoreAdapter{Pool: pool, Policy: transaction.DefaultPolicy()}, publisher,
+		map[string]string{"rp_idle_e2e": "memory://rp_idle_e2e"}, dispatcher.Config{BatchSize: 1},
+	)
+	if err != nil {
+		t.Fatalf("create idle Operation Dispatcher: %v", err)
+	}
+	dispatchStats, err := operationDispatcher.RunOnce(ctx)
+	if err != nil || dispatchStats.Claimed != 1 || dispatchStats.Published != 1 || len(publisher.events) != 1 {
+		t.Fatalf("dispatch idle suspend Operation: stats=%+v events=%d err=%v", dispatchStats, len(publisher.events), err)
+	}
+	if publisher.queueURL != "memory://rp_idle_e2e" || publisher.events[0].AggregateType != "operation" || publisher.events[0].AggregateID == "" {
+		t.Fatalf("idle suspend was not routed to its Placement Resource Plane queue: queue=%q event=%+v", publisher.queueURL, publisher.events[0])
+	}
+	var dispatched bool
+	if err := pool.QueryRow(ctx, `SELECT published_at IS NOT NULL FROM outbox_events WHERE id=$1`, publisher.events[0].ID).Scan(&dispatched); err != nil || !dispatched {
+		t.Fatalf("Dispatcher did not acknowledge published idle command: published=%t err=%v", dispatched, err)
+	}
+	resultQueue := &fakeOperationResultsQueue{}
+	controller, err := resourcecontroller.New("rp_idle_e2e", fakeruntime.New(), resultQueue, nil)
+	if err != nil {
+		t.Fatalf("create idle Resource Controller: %v", err)
+	}
+	if err := controller.Handle(ctx, publisher.events[0].Payload); err != nil {
+		t.Fatalf("execute idle suspend in fake Resource Plane runtime: %v", err)
+	}
+	resultConsumer, err := operationresults.New(operationresults.StoreAdapter{Pool: pool, Policy: transaction.DefaultPolicy()}, resultQueue,
+		operationresults.Config{BatchSize: 1, WaitTime: time.Second})
+	if err != nil {
+		t.Fatalf("create idle Operation result consumer: %v", err)
+	}
+	resultStats, err := resultConsumer.RunOnce(ctx)
+	if err != nil || resultStats.Applied != 1 || resultStats.Failed != 0 {
+		t.Fatalf("apply fake idle suspend result: stats=%+v err=%v", resultStats, err)
+	}
+	var operationStatus, observedState string
+	if err := pool.QueryRow(ctx, `SELECT o.status,s.observed_state FROM operations o JOIN workspace_status s ON s.workspace_id=o.workspace_id
+		WHERE o.workspace_id='ws_idle_e2e' AND o.type='suspend'`).Scan(&operationStatus, &observedState); err != nil || operationStatus != "succeeded" || observedState != "suspended" {
+		t.Fatalf("idle suspend result projection status=%q observed=%q err=%v", operationStatus, observedState, err)
+	}
+}
+
+type idleLifecyclePublisher struct {
+	queueURL string
+	events   []outbox.Event
+}
+
+func (p *idleLifecyclePublisher) Publish(_ context.Context, queueURL string, event outbox.Event) error {
+	p.queueURL = queueURL
+	p.events = append(p.events, event)
+	return nil
 }
 
 var _ workspacegateway.StreamDialer = idleLifecycleDialer{}

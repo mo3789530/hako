@@ -26,8 +26,10 @@ system audit. A default-off Control Plane Terraform schedule, exact DSQL
 `DbConnect` role, SQL role grants, and Lambda error alarm are defined and pass
 local Terraform validation. The CLI supports `hako resume ... --wait` and
 retains the default asynchronous mode. Real MicroVM Guest reconnect behavior,
-idle Outbox dispatch through the Resource Plane suspend executor, and AWS
-deployment remain. See
+and AWS deployment remain. The composed local E2E now also dispatches the idle
+suspend through the standard Outbox Dispatcher, routes it to the Placement
+Resource Plane queue, executes it through the Resource Controller fake, and
+applies its terminal result back to PostgreSQL. See
 [Workspace connection lifecycle](../docs/workspace-connection-lifecycle.md).
 Priority: P1. Depends on Tasks 43–47 and the Task 84 Workspace binding/generation fence.
 
@@ -96,6 +98,9 @@ Workspace connections and the Workspace allocation has not changed.
 6. [x] Document grace-period semantics, active-connection definition, policy
    defaults, crash recovery, manual override, and local-disk loss on MicroVM
    termination.
+7. [x] Exercise idle suspend through the standard Dispatcher, Resource
+   Controller, and Operation result consumer with fake queue/runtime adapters;
+   verify Outbox acknowledgement and terminal `observed_state=suspended`.
 
 ## Acceptance criteria
 
@@ -112,7 +117,8 @@ Workspace connections and the Workspace allocation has not changed.
 - Gateway restart and missed release are recovered through durable expiry;
   no process-local timer is required for correctness.
 - Integration tests exercise Gateway lease events through PostgreSQL and the
-  standard Dispatcher/Resource Plane suspend path using fakes.
+  standard Dispatcher/Resource Plane suspend path using fakes, including
+  Outbox routing/publication, fake runtime execution, and result projection.
 - No terminal/application bytes enter the Control Plane. Logs contain no
   Session Ticket, Agent Ticket, lease secret, or terminal payload.
 - Keep PostgreSQL running. No real Secret retrieval, AWS apply, external

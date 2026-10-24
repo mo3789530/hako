@@ -120,7 +120,12 @@ disconnect/reconnect leases through the signed Control Plane API into
 PostgreSQL, proves an active reconnect fences suspension, and verifies that an
 expired idle lease creates exactly one suspend Operation, Outbox event, and
 system audit. The upstream runtime is a fake stream; real MicroVM Guest
-reconnect behavior remains open. The default-off
+reconnect behavior remains open. The same E2E carries that idle-generated
+Operation through the transactional Outbox Dispatcher, verifies placement-based
+Resource Plane queue routing and publication acknowledgement, executes it with
+the Resource Controller fake, and consumes the result back into PostgreSQL to
+reach `observed_state=suspended`. This proves local control flow, not a
+deployed SQS queue or provider action. The default-off
 Terraform schedule, IAM, DSQL role contract, and alarm pass local validation;
 AWS deployment remains open. No AWS apply or real Secret read is part of local
 verification.
