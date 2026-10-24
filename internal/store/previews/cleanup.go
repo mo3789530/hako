@@ -45,6 +45,10 @@ func ClaimDue(ctx context.Context, tx pgx.Tx, claimID string, now time.Time, lea
 		SELECT tenant_id,installation_id,github_repository_id,pull_request_number
 		FROM repository_previews
 		WHERE desired_state='absent' AND state='cleanup_pending'
+		  AND NOT EXISTS (SELECT 1 FROM repository_preview_runtime_allocations a
+		    WHERE a.tenant_id=repository_previews.tenant_id AND a.installation_id=repository_previews.installation_id
+		      AND a.github_repository_id=repository_previews.github_repository_id
+		      AND a.pull_request_number=repository_previews.pull_request_number)
 		  AND ((cleanup_claim_id IS NULL AND (cleanup_next_attempt_at IS NULL OR cleanup_next_attempt_at <= $1))
 		       OR (cleanup_claim_id IS NOT NULL AND cleanup_lease_expires_at <= $1))
 		ORDER BY COALESCE(cleanup_next_attempt_at,updated_at),updated_at,tenant_id,installation_id,github_repository_id,pull_request_number
@@ -56,6 +60,9 @@ func ClaimDue(ctx context.Context, tx pgx.Tx, claimID string, now time.Time, lea
 	WHERE p.tenant_id=due.tenant_id AND p.installation_id=due.installation_id
 	  AND p.github_repository_id=due.github_repository_id AND p.pull_request_number=due.pull_request_number
 	  AND p.desired_state='absent' AND p.state='cleanup_pending'
+	  AND NOT EXISTS (SELECT 1 FROM repository_preview_runtime_allocations a
+	    WHERE a.tenant_id=p.tenant_id AND a.installation_id=p.installation_id
+	      AND a.github_repository_id=p.github_repository_id AND a.pull_request_number=p.pull_request_number)
 	  AND ((p.cleanup_claim_id IS NULL AND (p.cleanup_next_attempt_at IS NULL OR p.cleanup_next_attempt_at <= $1))
 	       OR (p.cleanup_claim_id IS NOT NULL AND p.cleanup_lease_expires_at <= $1))
 		RETURNING p.tenant_id,p.installation_id,p.github_repository_id,p.pull_request_number,p.head_sha,p.head_ref,p.generation,
@@ -108,6 +115,15 @@ func MarkCleaned(ctx context.Context, tx pgx.Tx, job CleanupJob, now time.Time) 
 	if ctx == nil || tx == nil || !validCleanupJob(job) || now.IsZero() {
 		return false, errors.New("valid claimed Preview and transaction time are required")
 	}
+	var hasRuntimeAllocations bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM repository_preview_runtime_allocations
+		WHERE tenant_id=$1 AND installation_id=$2 AND github_repository_id=$3 AND pull_request_number=$4)`,
+		job.TenantID, job.InstallationID, job.RepositoryID, job.PullRequestNumber).Scan(&hasRuntimeAllocations); err != nil {
+		return false, fmt.Errorf("check generation-scoped Preview cleanup state: %w", err)
+	}
+	if hasRuntimeAllocations {
+		return false, nil
+	}
 	tag, err := tx.Exec(ctx, `UPDATE repository_previews
 		SET state='cleaned',cleanup_claim_id=NULL,cleanup_lease_expires_at=NULL,cleanup_next_attempt_at=NULL,cleanup_last_error='',updated_at=$8
 		WHERE tenant_id=$1 AND installation_id=$2 AND github_repository_id=$3 AND pull_request_number=$4
@@ -119,13 +135,6 @@ func MarkCleaned(ctx context.Context, tx pgx.Tx, job CleanupJob, now time.Time) 
 		return false, fmt.Errorf("mark Preview cleanup complete: %w", err)
 	}
 	if tag.RowsAffected() == 1 {
-		if _, err := tx.Exec(ctx, `UPDATE repository_preview_runtime_allocations
-			SET desired_state='absent',state='cleaned',updated_at=$5
-			WHERE tenant_id=$1 AND installation_id=$2 AND github_repository_id=$3 AND pull_request_number=$4
-			  AND desired_state='absent' AND state<>'cleaned'`, job.TenantID, job.InstallationID,
-			job.RepositoryID, job.PullRequestNumber, now.UTC()); err != nil {
-			return false, fmt.Errorf("confirm Preview runtime generations cleaned: %w", err)
-		}
 		return true, nil
 	}
 	var alreadyCleaned bool

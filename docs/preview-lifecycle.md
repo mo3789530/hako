@@ -57,10 +57,11 @@ expiry separately for each generation. A head update or close moves every
 older active generation to `cleanup_pending` in the same webhook transaction;
 expiry does the same in its bounded sweep. Reopen creates a new generation
 without overwriting old cleanup records. Provider IDs are reserved for this
-private table and are not included in the Tenant-facing Preview list. The
-existing cleanup confirmation transitions all absent generations to `cleaned`
-only after its executor confirms PR-level runtime deletion. These are durable
-metadata transitions only; no Preview MicroVM or Gateway route is created yet.
+private table and are not included in the Tenant-facing Preview list. Each
+generation now has its own cleanup lease and acknowledgement; the older
+PR-level cleanup path is restricted to Previews that have no runtime-allocation
+rows. These are durable metadata transitions only; no Preview MicroVM or
+Gateway route is created yet.
 
 Migration 000160 adds bounded provision claims to those generation rows: claim
 ID, lease expiry, attempt count, fixed failure class, and retry deadline.
@@ -105,18 +106,21 @@ expiry sweep, but it is not enabled by default and only updates DSQL metadata.
 The store records only fixed cleanup error categories and schedules bounded
 exponential retries (5 seconds to 1 hour). `cleaned` is written only after the
 runtime executor confirms MicroVM and Gateway route deletion, and duplicate
-confirmation is idempotent. Migrations 000145–000146 add expiring, attempt-fenced
-cleanup claims so crashed workers can be recovered and stale workers cannot
-acknowledge a newer claim. Migration 000147 adds lifecycle generations, which
-also fence cleanup metadata against later PR head/state changes. The local
-`internal/previewcleanup` worker now claims bounded batches, calls an injected
-idempotent executor under a deadline capped by the claim lease, and only marks
-the row cleaned after executor confirmation. Fixed provider error categories
-schedule a retry while keeping the quota reservation. PostgreSQL integration
-verifies failure/backoff, attempt and claim changes, confirmed cleanup, and
-duplicate sweep behavior. The actual executor that resolves Preview-to-runtime
-binding and deletes the MicroVM/Gateway route, plus its scheduled deployment,
-is still required before Preview can be enabled for user traffic.
+confirmation is idempotent. Migrations 000145–000147 add parent cleanup leases
+and lifecycle generations. Migrations 000161–000162 add separate lease,
+attempt, and retry state to each runtime generation. The local
+`internal/previewcleanup.RuntimeWorker` claims bounded generation batches and
+uses immutable provider bindings; it marks a generation cleaned only after an
+injected executor confirms deletion. It can also retire generations that never
+had a provision attempt without calling a provider. The legacy PR-wide worker
+does not claim Previews that have generation rows, preventing it from
+acknowledging those rows without per-generation confirmation. The quota remains
+reserved until every generation is cleaned. PostgreSQL integration verifies
+lease recovery, active-claim exclusion, retry/backoff, stale-claim rejection,
+provider-bound cleanup, and final quota release. A concrete Resource Plane
+cleanup command/executor, handling of interrupted unbound provision attempts,
+and scheduled worker deployment are still required before Preview can be
+enabled for user traffic.
 
 Webhook admission reserves the Tenant Preview concurrency slot in the same
 transaction as the PR lifecycle update, using the shared Tenant quota OCC row.

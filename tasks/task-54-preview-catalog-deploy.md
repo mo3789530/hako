@@ -126,6 +126,17 @@ Add optional repository-level preview environments and service metadata/deploy p
   error classification. The focused target reports 72.4% package coverage. A
   concrete Resource Plane command, deployed worker/DSQL role grant, Lambda
   MicroVM allocation, and Gateway route are not wired yet.
+- Migrations 000161–000162 add claim/lease/retry state and a bounded due index
+  for each retired runtime generation. `previewcleanup.RuntimeWorker` sends
+  exact persisted bindings to an injected generation cleanup executor and
+  acknowledges the parent Preview only when all generations are cleaned. The
+  legacy PR-wide cleanup worker skips Previews with generation rows. PostgreSQL
+  integration verifies expired-lease recovery, active-lease exclusion, retry,
+  stale-claim rejection, cleanup of a bound generation, and quota release. A
+  generation with no provision attempt is safely retired without provider I/O;
+  an interrupted provision attempt with no binding still requires Resource
+  Plane tag recovery. Concrete AWS/Resource Plane deletion and scheduled
+  composition are not wired.
 - `go test ./...` passed. PostgreSQL Preview lifecycle E2E passed against the
   local `hako-dev-postgres`, including stale delivery, close/reopen, Tenant
   scoping, and duplicate replay.

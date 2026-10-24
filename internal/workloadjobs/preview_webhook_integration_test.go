@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/githubwebhook"
+	"github.com/mo3789530/hako/internal/previewcleanup"
 	"github.com/mo3789530/hako/internal/previewprovision"
 	"github.com/mo3789530/hako/internal/store/dsql"
 	webhookstore "github.com/mo3789530/hako/internal/store/githubwebhook"
@@ -277,90 +278,27 @@ func TestRepositoryPreviewWebhookLifecycleFencesStalePRUpdates(t *testing.T) {
 		return jobs[0], true, nil
 	}
 	cleanupNow := now.Add(3 * time.Hour)
-	firstJob, claimed, err := claimCleanup(cleanupNow, "preview-cleaner-a1")
-	if err != nil || !claimed || firstJob.Attempt != 1 || firstJob.Generation != 4 || firstJob.LeaseExpiresAt != cleanupNow.Add(30*time.Second) {
-		t.Fatalf("first Preview cleanup claim = %+v claimed=%v error=%v", firstJob, claimed, err)
-	}
-	staleGenerationJob := firstJob
-	staleGenerationJob.Generation--
-	tx, err = pool.Begin(ctx)
+	runtimeCleaner := &previewLifecycleRuntimeCleaner{}
+	runtimeClaimSequence := 0
+	runtimeWorker := previewcleanup.RuntimeWorker{Pool: pool, Executor: runtimeCleaner, Lease: 30 * time.Second, Timeout: 5 * time.Second, BatchSize: 1,
+		Now: func() time.Time { return cleanupNow }, NewClaimID: func() (string, error) {
+			runtimeClaimSequence++
+			return fmt.Sprintf("preview-runtime-cleaner-%d", runtimeClaimSequence), nil
+		}}
+	cleanupStatsOne, err := runtimeWorker.RunOnce(ctx)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("first generation-scoped Preview cleanup pass: stats:%+v error:%v", cleanupStatsOne, err)
 	}
-	if _, updated, err := previewstore.RecordCleanupFailure(ctx, tx, staleGenerationJob, cleanupNow.Add(time.Second), "provider_unavailable"); err != nil || updated {
-		_ = tx.Rollback(ctx)
-		t.Fatalf("stale Preview generation recorded cleanup failure: updated=%v error=%v", updated, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	tx, err = pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	retryAt, updated, err := previewstore.RecordCleanupFailure(ctx, tx, firstJob, cleanupNow.Add(time.Second), "microvm_terminate_failed")
-	if err != nil || !updated || !retryAt.Equal(cleanupNow.Add(6*time.Second)) {
-		_ = tx.Rollback(ctx)
-		t.Fatalf("first Preview cleanup failure = retry:%s updated:%v error:%v", retryAt, updated, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if _, claimed, err := claimCleanup(cleanupNow.Add(5*time.Second), "preview-cleaner-a2"); err != nil || claimed {
-		t.Fatalf("Preview cleanup retry claimed before backoff elapsed: claimed=%v error=%v", claimed, err)
-	}
-	secondJob, claimed, err := claimCleanup(cleanupNow.Add(6*time.Second), "preview-cleaner-a2")
-	if err != nil || !claimed || secondJob.Attempt != 2 {
-		t.Fatalf("second Preview cleanup claim = %+v claimed=%v error=%v", secondJob, claimed, err)
-	}
-	// A worker whose lease expired or was superseded cannot complete a recovered claim.
-	tx, err = pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stale, err := previewstore.MarkCleaned(ctx, tx, firstJob, cleanupNow.Add(7*time.Second)); err != nil || stale {
-		_ = tx.Rollback(ctx)
-		t.Fatalf("stale Preview cleanup claim completed: cleaned=%v error=%v", stale, err)
-	}
-	retryAt, updated, err = previewstore.RecordCleanupFailure(ctx, tx, secondJob, cleanupNow.Add(7*time.Second), "provider_unavailable")
-	if err != nil || !updated || !retryAt.Equal(cleanupNow.Add(17*time.Second)) {
-		_ = tx.Rollback(ctx)
-		t.Fatalf("second Preview cleanup failure = retry:%s updated:%v error:%v", retryAt, updated, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	thirdJob, claimed, err := claimCleanup(cleanupNow.Add(17*time.Second), "preview-cleaner-a3")
-	if err != nil || !claimed || thirdJob.Attempt != 3 {
-		t.Fatalf("third Preview cleanup claim = %+v claimed=%v error=%v", thirdJob, claimed, err)
-	}
-	tx, err = pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	staleGenerationCompletion := thirdJob
-	staleGenerationCompletion.Generation--
-	if stale, err := previewstore.MarkCleaned(ctx, tx, staleGenerationCompletion, cleanupNow.Add(18*time.Second)); err != nil || stale {
-		_ = tx.Rollback(ctx)
-		t.Fatalf("stale Preview generation completed cleanup: cleaned=%v error=%v", stale, err)
-	}
-	cleaned, err := previewstore.MarkCleaned(ctx, tx, thirdJob, cleanupNow.Add(18*time.Second))
-	if err != nil || !cleaned {
-		_ = tx.Rollback(ctx)
-		t.Fatalf("mark confirmed Preview cleanup: cleaned=%v error=%v", cleaned, err)
-	}
-	if duplicate, err := previewstore.MarkCleaned(ctx, tx, thirdJob, cleanupNow.Add(18*time.Second)); err != nil || !duplicate {
-		_ = tx.Rollback(ctx)
-		t.Fatalf("duplicate Preview cleanup confirmation: cleaned=%v error=%v", duplicate, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatal(err)
+	cleanupStatsTwo, err := runtimeWorker.RunOnce(ctx)
+	if err != nil || cleanupStatsOne.Claimed+cleanupStatsTwo.Claimed != 2 || cleanupStatsOne.Confirmed+cleanupStatsTwo.Confirmed != 2 ||
+		len(runtimeCleaner.jobs) != 1 || runtimeCleaner.jobs[0].Generation != 3 {
+		t.Fatalf("generation-scoped Preview cleanup = stats:%+v %+v provider_jobs:%+v error:%v", cleanupStatsOne, cleanupStatsTwo, runtimeCleaner.jobs, err)
 	}
 	var lastError, cleanupState string
 	var cleanupAttempts int
 	var cleanupClaim *string
 	var cleanupLease *time.Time
-	if err := pool.QueryRow(ctx, `SELECT state,cleanup_attempts,cleanup_last_error,cleanup_claim_id,cleanup_lease_expires_at FROM repository_previews WHERE tenant_id='tenant_preview_hook' AND installation_id=9801 AND github_repository_id=9802 AND pull_request_number=73`).Scan(&cleanupState, &cleanupAttempts, &lastError, &cleanupClaim, &cleanupLease); err != nil || cleanupState != "cleaned" || cleanupAttempts != 3 || lastError != "" || cleanupClaim != nil || cleanupLease != nil {
+	if err := pool.QueryRow(ctx, `SELECT state,cleanup_attempts,cleanup_last_error,cleanup_claim_id,cleanup_lease_expires_at FROM repository_previews WHERE tenant_id='tenant_preview_hook' AND installation_id=9801 AND github_repository_id=9802 AND pull_request_number=73`).Scan(&cleanupState, &cleanupAttempts, &lastError, &cleanupClaim, &cleanupLease); err != nil || cleanupState != "cleaned" || cleanupAttempts != 0 || lastError != "" || cleanupClaim != nil || cleanupLease != nil {
 		t.Fatalf("persisted Preview cleanup state=%s attempts=%d last_error=%q claim=%v lease=%v err=%v", cleanupState, cleanupAttempts, lastError, cleanupClaim, cleanupLease, err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM repository_preview_runtime_allocations
@@ -542,6 +480,15 @@ type previewProvisionFake struct {
 	binding  previewstore.RuntimeBinding
 	jobs     []previewstore.ProvisionJob
 	cleaned  int
+}
+
+type previewLifecycleRuntimeCleaner struct {
+	jobs []previewstore.RuntimeCleanupJob
+}
+
+func (f *previewLifecycleRuntimeCleaner) CleanupGeneration(_ context.Context, job previewstore.RuntimeCleanupJob) error {
+	f.jobs = append(f.jobs, job)
+	return nil
 }
 
 func (f *previewProvisionFake) Provision(_ context.Context, job previewstore.ProvisionJob) (previewstore.RuntimeBinding, error) {
