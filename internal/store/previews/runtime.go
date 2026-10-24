@@ -2,6 +2,8 @@ package previews
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
@@ -19,13 +21,14 @@ var (
 
 type ProvisionJob struct {
 	CleanupIdentity
-	Generation     int64
-	HeadSHA        string
-	HeadRef        string
-	ExpiresAt      time.Time
-	ClaimID        string
-	LeaseExpiresAt time.Time
-	Attempt        int
+	Generation         int64
+	RuntimeWorkspaceID domain.WorkspaceID
+	HeadSHA            string
+	HeadRef            string
+	ExpiresAt          time.Time
+	ClaimID            string
+	LeaseExpiresAt     time.Time
+	Attempt            int
 }
 
 // RuntimeBinding is produced by the Resource Plane after it has created the
@@ -80,6 +83,7 @@ func ClaimRuntimeAllocations(ctx context.Context, tx pgx.Tx, claimID string, now
 			return nil, fmt.Errorf("scan claimed Preview runtime allocation: %w", err)
 		}
 		job.ExpiresAt, job.LeaseExpiresAt = job.ExpiresAt.UTC(), job.LeaseExpiresAt.UTC()
+		job.RuntimeWorkspaceID = runtimeWorkspaceID(job.CleanupIdentity, job.Generation)
 		jobs = append(jobs, job)
 	}
 	if err := rows.Err(); err != nil {
@@ -92,7 +96,7 @@ func ClaimRuntimeAllocations(ctx context.Context, tx pgx.Tx, claimID string, now
 // only while its PR head remains current. If it returns false, the caller must
 // compensate any Resource Plane resources it already created.
 func BindRuntimeAllocation(ctx context.Context, tx pgx.Tx, job ProvisionJob, binding RuntimeBinding, now time.Time) (bool, error) {
-	if ctx == nil || tx == nil || !validProvisionJob(job) || !validRuntimeBinding(binding) || now.IsZero() {
+	if ctx == nil || tx == nil || !validProvisionJob(job) || !validRuntimeBinding(binding) || binding.WorkspaceID != job.RuntimeWorkspaceID || now.IsZero() {
 		return false, ErrInvalidRuntimeAllocation
 	}
 	tag, err := tx.Exec(ctx, `UPDATE repository_preview_runtime_allocations a
@@ -147,7 +151,15 @@ func RecordRuntimeAllocationFailure(ctx context.Context, tx pgx.Tx, job Provisio
 
 func validProvisionJob(job ProvisionJob) bool {
 	return validCleanupIdentity(job.CleanupIdentity) && job.Generation > 0 && len(job.HeadSHA) == 40 &&
+		job.RuntimeWorkspaceID == runtimeWorkspaceID(job.CleanupIdentity, job.Generation) &&
 		!job.ExpiresAt.IsZero() && validCleanupClaimID(job.ClaimID) && !job.LeaseExpiresAt.IsZero() && job.Attempt > 0
+}
+
+func runtimeWorkspaceID(identity CleanupIdentity, generation int64) domain.WorkspaceID {
+	key := fmt.Sprintf("%s\x00%d\x00%d\x00%d\x00%d", identity.TenantID, identity.InstallationID,
+		identity.RepositoryID, identity.PullRequestNumber, generation)
+	digest := sha256.Sum256([]byte(key))
+	return domain.WorkspaceID("prvws_" + hex.EncodeToString(digest[:16]))
 }
 
 func validRuntimeBinding(binding RuntimeBinding) bool {

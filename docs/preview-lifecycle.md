@@ -65,9 +65,13 @@ metadata transitions only; no Preview MicroVM or Gateway route is created yet.
 Migration 000160 adds bounded provision claims to those generation rows: claim
 ID, lease expiry, attempt count, fixed failure class, and retry deadline.
 `ClaimRuntimeAllocations` claims only the current unexpired PR-head generation
-and can reclaim an expired worker lease. `BindRuntimeAllocation` records
+and can reclaim an expired worker lease. Each claim carries a deterministic
+private runtime Workspace ID derived from Tenant, Installation, Repository, PR,
+and generation, so retries of one generation converge and later PR heads get a
+different runtime identity. `BindRuntimeAllocation` records
 provider IDs only while the same generation, claim, attempt, and lease are
-still current; a stale result is rejected and its caller must compensate any
+still current and the returned Workspace ID matches that deterministic ID; a
+stale or mismatched result is rejected and its caller must compensate any
 provider resources it already created. Provision failures use fixed error
 classes and bounded exponential retry. `internal/previewprovision.Worker` now
 executes that claim/provision/bind/retry state machine through an injected

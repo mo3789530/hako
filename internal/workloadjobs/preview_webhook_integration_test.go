@@ -154,8 +154,10 @@ func TestRepositoryPreviewWebhookLifecycleFencesStalePRUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	staleBinding := provisioner.binding
+	staleBinding.WorkspaceID = firstProvisionJob.RuntimeWorkspaceID
 	stale, err := previewstore.BindRuntimeAllocation(ctx, tx, firstProvisionJob,
-		provisioner.binding, provisionRetryAt.Add(time.Second))
+		staleBinding, provisionRetryAt.Add(time.Second))
 	if err != nil || stale {
 		_ = tx.Rollback(ctx)
 		t.Fatalf("superseded Preview provision claim bound runtime: bound=%v err=%v", stale, err)
@@ -549,7 +551,9 @@ func (f *previewProvisionFake) Provision(_ context.Context, job previewstore.Pro
 		f.failures = f.failures[1:]
 		return previewstore.RuntimeBinding{}, err
 	}
-	return f.binding, nil
+	binding := f.binding
+	binding.WorkspaceID = job.RuntimeWorkspaceID
+	return binding, nil
 }
 
 func (f *previewProvisionFake) Compensate(context.Context, previewstore.ProvisionJob, previewstore.RuntimeBinding) error {

@@ -116,6 +116,9 @@ Add optional repository-level preview environments and service metadata/deploy p
 - Migration 000160 adds provisioning lease/claim metadata, attempt tracking,
   fixed error classes with retry deadlines, and a store API that binds provider
   IDs only for the current unexpired Preview generation and exact claim/attempt.
+  Claims carry a deterministic private runtime Workspace ID derived from the
+  Tenant/Installation/Repository/PR/generation identity, and binding rejects a
+  different provider-returned Workspace ID.
   `internal/previewprovision.Worker` now runs the claim/provision/bind/retry
   loop through an injected provisioner and compensates a stale result. Local
   PostgreSQL integration covers retry, binding, and compensation after a PR

@@ -135,7 +135,9 @@ func (p *integrationProvisioner) Provision(_ context.Context, job previewstore.P
 		p.failures = p.failures[1:]
 		return previewstore.RuntimeBinding{}, err
 	}
-	return p.binding, nil
+	binding := p.binding
+	binding.WorkspaceID = job.RuntimeWorkspaceID
+	return binding, nil
 }
 
 func (p *integrationProvisioner) Compensate(context.Context, previewstore.ProvisionJob, previewstore.RuntimeBinding) error {
