@@ -5,9 +5,11 @@ package previewprovision
 import (
 	"context"
 	"errors"
+	"regexp"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/idgen"
 	"github.com/mo3789530/hako/internal/store/previews"
 	"github.com/mo3789530/hako/internal/store/transaction"
@@ -25,11 +27,14 @@ var (
 	ErrCompensationFailed    = errors.New("stale Preview runtime could not be compensated")
 )
 
+var resourcePlaneIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`)
+
 // Provisioner routes all mutations through the authorized Resource Plane. It
-// must be idempotent for a Preview generation. If Provision returns an error
-// after creating any provider resource, it must return the partial binding so
-// Compensate can remove exactly those resources. Compensate must accept partial
-// bindings and be safe if resources are already gone.
+// must be idempotent for a Preview generation. Compensate runs after every
+// failed Provision, including when no provider IDs were returned; it must
+// rediscover unbound resources using the immutable RuntimeWorkspaceID and Hako
+// tags. It must accept partial bindings and be safe if resources are already
+// gone.
 type Provisioner interface {
 	Provision(context.Context, previews.ProvisionJob) (previews.RuntimeBinding, error)
 	Compensate(context.Context, previews.ProvisionJob, previews.RuntimeBinding) error
@@ -44,18 +49,19 @@ type Stats struct {
 }
 
 type Worker struct {
-	Pool        transaction.Beginner
-	Provisioner Provisioner
-	Now         func() time.Time
-	NewClaimID  func() (string, error)
-	Lease       time.Duration
-	Timeout     time.Duration
-	BatchSize   int
+	Pool                  transaction.Beginner
+	Provisioner           Provisioner
+	TargetResourcePlaneID domain.ResourcePlaneID
+	Now                   func() time.Time
+	NewClaimID            func() (string, error)
+	Lease                 time.Duration
+	Timeout               time.Duration
+	BatchSize             int
 }
 
 func (w Worker) RunOnce(ctx context.Context) (Stats, error) {
 	var stats Stats
-	if ctx == nil || ctx.Err() != nil || w.Pool == nil || w.Provisioner == nil {
+	if ctx == nil || ctx.Err() != nil || w.Pool == nil || w.Provisioner == nil || !resourcePlaneIDPattern.MatchString(string(w.TargetResourcePlaneID)) {
 		return stats, ErrWorkerConfiguration
 	}
 	now := w.Now
@@ -88,7 +94,7 @@ func (w Worker) RunOnce(ctx context.Context) (Stats, error) {
 	}
 	claimedAt := now().UTC()
 	jobs, err := transaction.Within(ctx, w.Pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) ([]previews.ProvisionJob, error) {
-		return previews.ClaimRuntimeAllocations(ctx, tx, claimID, claimedAt, lease, batchSize)
+		return previews.ClaimRuntimeAllocations(ctx, tx, w.TargetResourcePlaneID, claimID, claimedAt, lease, batchSize)
 	})
 	if err != nil {
 		return stats, ErrClaimFailed
@@ -112,15 +118,13 @@ func (w Worker) RunOnce(ctx context.Context) (Stats, error) {
 		cancel()
 		completedAt := now().UTC()
 		if provisionErr != nil {
-			if hasProviderIdentity(binding) {
-				compensationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
-				compensationErr := w.Provisioner.Compensate(compensationCtx, job, binding)
-				cancel()
-				if compensationErr != nil {
-					return stats, ErrCompensationFailed
-				}
-				stats.Compensated++
+			compensationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+			compensationErr := w.Provisioner.Compensate(compensationCtx, job, binding)
+			cancel()
+			if compensationErr != nil {
+				return stats, ErrCompensationFailed
 			}
+			stats.Compensated++
 			_, updated, err := recordFailure(ctx, w.Pool, job, completedAt, classify(provisionErr))
 			if err != nil {
 				return stats, ErrFailureRecording
@@ -152,10 +156,6 @@ func (w Worker) RunOnce(ctx context.Context) (Stats, error) {
 		stats.Bound++
 	}
 	return stats, nil
-}
-
-func hasProviderIdentity(binding previews.RuntimeBinding) bool {
-	return binding.ResourcePlaneID != "" || binding.WorkspaceID != "" || binding.MicroVMID != "" || binding.GatewayRouteID != ""
 }
 
 func recordFailure(ctx context.Context, pool transaction.Beginner, job previews.ProvisionJob, now time.Time, code string) (time.Time, bool, error) {

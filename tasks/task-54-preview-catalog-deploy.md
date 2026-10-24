@@ -120,14 +120,14 @@ Add optional repository-level preview environments and service metadata/deploy p
   Tenant/Installation/Repository/PR/generation identity, and binding rejects a
   different provider-returned Workspace ID.
   `internal/previewprovision.Worker` now runs the claim/provision/bind/retry
-  loop through an injected provisioner, compensating partial provider
-  resources after a failed attempt and stale results after a generation race.
+  loop through an injected provisioner, compensating partial or unbound
+  provider resources by immutable generation identity after a failed attempt
+  and stale results after a generation race.
   Local PostgreSQL integration covers partial MicroVM creation followed by
   route-publish failure and cleanup, retry, binding, and compensation after a
   PR head changes during provisioning, plus failed-compensation lease recovery;
   unit tests cover bounded config and fixed error classification. A concrete
-  Resource Plane command, deployed
-  worker/DSQL role grant, Lambda
+  Resource Plane command, deployed worker/DSQL role grant, Lambda
   MicroVM allocation, and Gateway route are not wired yet.
 - Migrations 000161–000162 add claim/lease/retry state and a bounded due index
   for each retired runtime generation. `previewcleanup.RuntimeWorker` sends
@@ -135,11 +135,15 @@ Add optional repository-level preview environments and service metadata/deploy p
   acknowledges the parent Preview only when all generations are cleaned. The
   legacy PR-wide cleanup worker skips Previews with generation rows. PostgreSQL
   integration verifies expired-lease recovery, active-lease exclusion, retry,
-  stale-claim rejection, cleanup of a bound generation, and quota release. A
-  generation with no provision attempt is safely retired without provider I/O;
-  an interrupted provision attempt with no binding still requires Resource
-  Plane tag recovery. Concrete AWS/Resource Plane deletion and scheduled
-  composition are not wired.
+  stale-claim rejection, cleanup of a bound generation, cleanup identity for an
+  interrupted unbound attempt, and quota release. A generation with no provision
+  attempt is safely retired without provider I/O; an unbound attempted
+  generation is now delivered to the executor with its deterministic runtime
+  Workspace ID and pinned Resource Plane ID so it can recover resources by Hako
+  tags. Migrations 000165–000168 add, index, and constrain the Resource Plane pin. The
+  first provision claim persists the configured Plane and retries cannot move
+  the generation. Placement policy and the concrete tag discovery/deletion
+  adapter and scheduled composition are not wired.
 - Migrations 000163–000164 add a separate Preview Gateway session registry
   because deterministic Preview runtime Workspace IDs are intentionally absent
   from the public Workspace table. Tenant members can request/revoke scoped

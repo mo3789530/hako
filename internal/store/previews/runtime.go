@@ -21,14 +21,15 @@ var (
 
 type ProvisionJob struct {
 	CleanupIdentity
-	Generation         int64
-	RuntimeWorkspaceID domain.WorkspaceID
-	HeadSHA            string
-	HeadRef            string
-	ExpiresAt          time.Time
-	ClaimID            string
-	LeaseExpiresAt     time.Time
-	Attempt            int
+	Generation            int64
+	RuntimeWorkspaceID    domain.WorkspaceID
+	TargetResourcePlaneID domain.ResourcePlaneID
+	HeadSHA               string
+	HeadRef               string
+	ExpiresAt             time.Time
+	ClaimID               string
+	LeaseExpiresAt        time.Time
+	Attempt               int
 }
 
 // RuntimeBinding is produced by the Resource Plane after it has created the
@@ -44,8 +45,8 @@ type RuntimeBinding struct {
 // generations. Expired leases are recoverable after a worker restart. A later
 // BindRuntimeAllocation call rechecks the current generation before recording
 // any provider identity.
-func ClaimRuntimeAllocations(ctx context.Context, tx pgx.Tx, claimID string, now time.Time, lease time.Duration, limit int) ([]ProvisionJob, error) {
-	if ctx == nil || tx == nil || !validCleanupClaimID(claimID) || now.IsZero() || lease < 5*time.Second || lease > 10*time.Minute || limit < 1 || limit > 100 {
+func ClaimRuntimeAllocations(ctx context.Context, tx pgx.Tx, resourcePlaneID domain.ResourcePlaneID, claimID string, now time.Time, lease time.Duration, limit int) ([]ProvisionJob, error) {
+	if ctx == nil || tx == nil || !runtimeIdentifierPattern.MatchString(string(resourcePlaneID)) || !validCleanupClaimID(claimID) || now.IsZero() || lease < 5*time.Second || lease > 10*time.Minute || limit < 1 || limit > 100 {
 		return nil, ErrInvalidRuntimeAllocation
 	}
 	rows, err := tx.Query(ctx, `WITH due AS (
@@ -54,6 +55,7 @@ func ClaimRuntimeAllocations(ctx context.Context, tx pgx.Tx, claimID string, now
 		JOIN repository_previews p USING (tenant_id,installation_id,github_repository_id,pull_request_number)
 		WHERE a.desired_state='present' AND p.desired_state='present' AND p.generation=a.generation
 		  AND a.expires_at>$1 AND p.expires_at>$1
+		  AND (a.target_resource_plane_id IS NULL AND a.provision_attempts=0 OR a.target_resource_plane_id=$5)
 		  AND ((a.state='awaiting_runtime' AND (a.provision_next_attempt_at IS NULL OR a.provision_next_attempt_at <= $1))
 		       OR (a.state='provisioning' AND a.provision_lease_expires_at <= $1))
 		ORDER BY COALESCE(a.provision_next_attempt_at,a.created_at),a.created_at,a.tenant_id,a.installation_id,a.github_repository_id,a.pull_request_number,a.generation
@@ -61,16 +63,18 @@ func ClaimRuntimeAllocations(ctx context.Context, tx pgx.Tx, claimID string, now
 	)
 	UPDATE repository_preview_runtime_allocations a
 	SET state='provisioning',provision_claim_id=$3,provision_lease_expires_at=$4,
-	    provision_attempts=a.provision_attempts+1,provision_next_attempt_at=NULL,provision_last_error='',updated_at=$1
+	    provision_attempts=a.provision_attempts+1,provision_next_attempt_at=NULL,provision_last_error='',
+	    target_resource_plane_id=COALESCE(a.target_resource_plane_id,$5),updated_at=$1
 	FROM due
 	WHERE a.tenant_id=due.tenant_id AND a.installation_id=due.installation_id
 	  AND a.github_repository_id=due.github_repository_id AND a.pull_request_number=due.pull_request_number AND a.generation=due.generation
 	  AND a.desired_state='present' AND a.expires_at>$1
+	  AND (a.target_resource_plane_id IS NULL AND a.provision_attempts=0 OR a.target_resource_plane_id=$5)
 	  AND ((a.state='awaiting_runtime' AND (a.provision_next_attempt_at IS NULL OR a.provision_next_attempt_at <= $1))
 	       OR (a.state='provisioning' AND a.provision_lease_expires_at <= $1))
 	RETURNING a.tenant_id,a.installation_id,a.github_repository_id,a.pull_request_number,a.generation,
-	          a.head_sha,a.head_ref,a.expires_at,a.provision_claim_id,a.provision_lease_expires_at,a.provision_attempts`,
-		now.UTC(), limit, claimID, now.UTC().Add(lease))
+	          a.head_sha,a.head_ref,a.expires_at,a.target_resource_plane_id,a.provision_claim_id,a.provision_lease_expires_at,a.provision_attempts`,
+		now.UTC(), limit, claimID, now.UTC().Add(lease), resourcePlaneID)
 	if err != nil {
 		return nil, fmt.Errorf("claim Preview runtime allocations: %w", err)
 	}
@@ -79,7 +83,7 @@ func ClaimRuntimeAllocations(ctx context.Context, tx pgx.Tx, claimID string, now
 	for rows.Next() {
 		var job ProvisionJob
 		if err := rows.Scan(&job.TenantID, &job.InstallationID, &job.RepositoryID, &job.PullRequestNumber,
-			&job.Generation, &job.HeadSHA, &job.HeadRef, &job.ExpiresAt, &job.ClaimID, &job.LeaseExpiresAt, &job.Attempt); err != nil {
+			&job.Generation, &job.HeadSHA, &job.HeadRef, &job.ExpiresAt, &job.TargetResourcePlaneID, &job.ClaimID, &job.LeaseExpiresAt, &job.Attempt); err != nil {
 			return nil, fmt.Errorf("scan claimed Preview runtime allocation: %w", err)
 		}
 		job.ExpiresAt, job.LeaseExpiresAt = job.ExpiresAt.UTC(), job.LeaseExpiresAt.UTC()
@@ -96,7 +100,7 @@ func ClaimRuntimeAllocations(ctx context.Context, tx pgx.Tx, claimID string, now
 // only while its PR head remains current. If it returns false, the caller must
 // compensate any Resource Plane resources it already created.
 func BindRuntimeAllocation(ctx context.Context, tx pgx.Tx, job ProvisionJob, binding RuntimeBinding, now time.Time) (bool, error) {
-	if ctx == nil || tx == nil || !validProvisionJob(job) || !validRuntimeBinding(binding) || binding.WorkspaceID != job.RuntimeWorkspaceID || now.IsZero() {
+	if ctx == nil || tx == nil || !validProvisionJob(job) || !validRuntimeBinding(binding) || binding.ResourcePlaneID != job.TargetResourcePlaneID || binding.WorkspaceID != job.RuntimeWorkspaceID || now.IsZero() {
 		return false, ErrInvalidRuntimeAllocation
 	}
 	tag, err := tx.Exec(ctx, `UPDATE repository_preview_runtime_allocations a
@@ -104,6 +108,7 @@ func BindRuntimeAllocation(ctx context.Context, tx pgx.Tx, job ProvisionJob, bin
 		    provision_claim_id=NULL,provision_lease_expires_at=NULL,provision_next_attempt_at=NULL,provision_last_error='',updated_at=$8
 		WHERE a.tenant_id=$1 AND a.installation_id=$2 AND a.github_repository_id=$3 AND a.pull_request_number=$4
 		  AND a.generation=$5 AND a.desired_state='present' AND a.state='provisioning'
+		  AND a.target_resource_plane_id=$9
 		  AND a.provision_claim_id=$6 AND a.provision_attempts=$7 AND a.provision_lease_expires_at=$13
 		  AND a.provision_lease_expires_at>$8 AND a.expires_at>$8
 		  AND EXISTS (SELECT 1 FROM repository_previews p WHERE p.tenant_id=a.tenant_id
@@ -150,7 +155,7 @@ func RecordRuntimeAllocationFailure(ctx context.Context, tx pgx.Tx, job Provisio
 }
 
 func validProvisionJob(job ProvisionJob) bool {
-	return validCleanupIdentity(job.CleanupIdentity) && job.Generation > 0 && len(job.HeadSHA) == 40 &&
+	return validCleanupIdentity(job.CleanupIdentity) && job.Generation > 0 && runtimeIdentifierPattern.MatchString(string(job.TargetResourcePlaneID)) && len(job.HeadSHA) == 40 &&
 		job.RuntimeWorkspaceID == runtimeWorkspaceID(job.CleanupIdentity, job.Generation) &&
 		!job.ExpiresAt.IsZero() && validCleanupClaimID(job.ClaimID) && !job.LeaseExpiresAt.IsZero() && job.Attempt > 0
 }
@@ -160,6 +165,16 @@ func runtimeWorkspaceID(identity CleanupIdentity, generation int64) domain.Works
 		identity.RepositoryID, identity.PullRequestNumber, generation)
 	digest := sha256.Sum256([]byte(key))
 	return domain.WorkspaceID("prvws_" + hex.EncodeToString(digest[:16]))
+}
+
+// RuntimeWorkspaceID returns the stable, private runtime identity for one PR
+// head generation. Resource Plane recovery uses it to rediscover resources by
+// Hako tags when a worker stopped before provider IDs were bound in the CP.
+func RuntimeWorkspaceID(identity CleanupIdentity, generation int64) (domain.WorkspaceID, error) {
+	if !validCleanupIdentity(identity) || generation < 1 {
+		return "", ErrInvalidRuntimeAllocation
+	}
+	return runtimeWorkspaceID(identity, generation), nil
 }
 
 func validRuntimeBinding(binding RuntimeBinding) bool {

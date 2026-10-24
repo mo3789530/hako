@@ -55,7 +55,7 @@ func TestWorkerFencesAndCompensatesStalePreviewProvision(t *testing.T) {
 	}
 	claimSequence := 0
 	worker := Worker{
-		Pool: pool, Provisioner: provisioner, Lease: 10 * time.Second, Timeout: time.Second, BatchSize: 1,
+		Pool: pool, Provisioner: provisioner, TargetResourcePlaneID: "rp_preview_test", Lease: 10 * time.Second, Timeout: time.Second, BatchSize: 1,
 		Now: func() time.Time { return clock },
 		NewClaimID: func() (string, error) {
 			claimSequence++
@@ -74,12 +74,23 @@ func TestWorkerFencesAndCompensatesStalePreviewProvision(t *testing.T) {
 		WHERE tenant_id='tenant_preview_provision' AND pull_request_number=31 AND generation=1`).Scan(&retryAt); err != nil {
 		t.Fatalf("read provider retry deadline: %v", err)
 	}
+	var targetResourcePlaneID string
+	if err := pool.QueryRow(ctx, `SELECT target_resource_plane_id FROM repository_preview_runtime_allocations
+		WHERE tenant_id='tenant_preview_provision' AND pull_request_number=31 AND generation=1`).Scan(&targetResourcePlaneID); err != nil || targetResourcePlaneID != "rp_preview_test" {
+		t.Fatalf("Preview target Resource Plane = %q err=%v", targetResourcePlaneID, err)
+	}
 	clock = retryAt.Add(-time.Second)
 	early, err := worker.RunOnce(ctx)
 	if err != nil || early.Claimed != 0 {
 		t.Fatalf("worker claimed before retry deadline: stats=%+v err=%v", early, err)
 	}
 	clock = retryAt
+	wrongPlaneWorker := worker
+	wrongPlaneWorker.TargetResourcePlaneID = "rp_another_plane"
+	wrongPlaneRetry, err := wrongPlaneWorker.RunOnce(ctx)
+	if err != nil || wrongPlaneRetry.Claimed != 0 {
+		t.Fatalf("Preview retry moved to a different Resource Plane: stats=%+v err=%v", wrongPlaneRetry, err)
+	}
 	succeeded, err := worker.RunOnce(ctx)
 	if err != nil || succeeded.Claimed != 1 || succeeded.Bound != 1 {
 		t.Fatalf("successful retry: stats=%+v err=%v", succeeded, err)
@@ -164,6 +175,27 @@ func TestWorkerFencesAndCompensatesStalePreviewProvision(t *testing.T) {
 	recovered, err := worker.RunOnce(ctx)
 	if err != nil || recovered.Claimed != 1 || recovered.Bound != 1 {
 		t.Fatalf("provision did not recover after lease expiry: stats=%+v err=%v", recovered, err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO repository_previews
+		(tenant_id,installation_id,github_repository_id,pull_request_number,head_sha,head_ref,desired_state,state,last_delivery_id,last_event_at,expires_at,created_at,updated_at)
+		VALUES ('tenant_preview_provision',9811,9812,34,$1,'feature/unknown-result','present','awaiting_runtime','70000000-0000-4000-8000-000000000005',$2,$3,$2,$2)`,
+		strings.Repeat("e", 40), clock, clock.Add(time.Hour)); err != nil {
+		t.Fatalf("seed missing-provider-result Preview: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO repository_preview_runtime_allocations
+		(tenant_id,installation_id,github_repository_id,pull_request_number,generation,head_sha,head_ref,desired_state,state,expires_at,created_at,updated_at)
+		VALUES ('tenant_preview_provision',9811,9812,34,1,$1,'feature/unknown-result','present','awaiting_runtime',$2,$3,$3)`,
+		strings.Repeat("e", 40), clock.Add(time.Hour), clock); err != nil {
+		t.Fatalf("seed missing-provider-result runtime generation: %v", err)
+	}
+	provisioner.failures = append(provisioner.failures, ErrMicroVMLaunch)
+	clock = clock.Add(time.Second)
+	unknownResult, err := worker.RunOnce(ctx)
+	if err != nil || unknownResult.Claimed != 1 || unknownResult.RetryScheduled != 1 || unknownResult.Compensated != 1 {
+		t.Fatalf("failure without provider IDs was not compensated before retry: stats=%+v err=%v", unknownResult, err)
+	}
+	if last := provisioner.compensatedBindings[len(provisioner.compensatedBindings)-1]; last != (previewstore.RuntimeBinding{}) {
+		t.Fatalf("empty provider binding changed before tag recovery: %+v", last)
 	}
 }
 

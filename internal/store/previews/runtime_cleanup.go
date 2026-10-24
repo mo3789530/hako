@@ -11,22 +11,25 @@ import (
 
 type RuntimeCleanupJob struct {
 	CleanupIdentity
-	Generation        int64
-	HeadSHA           string
-	HeadRef           string
-	ResourcePlaneID   domain.ResourcePlaneID
-	WorkspaceID       domain.WorkspaceID
-	MicroVMID         string
-	GatewayRouteID    string
-	ProviderBound     bool
-	ProvisionAttempts int
-	ClaimID           string
-	LeaseExpiresAt    time.Time
-	Attempt           int
+	Generation           int64
+	HeadSHA              string
+	HeadRef              string
+	RuntimeWorkspaceID   domain.WorkspaceID
+	ResourcePlaneID      domain.ResourcePlaneID
+	BoundResourcePlaneID domain.ResourcePlaneID
+	WorkspaceID          domain.WorkspaceID
+	MicroVMID            string
+	GatewayRouteID       string
+	ProviderBound        bool
+	ProvisionAttempts    int
+	ClaimID              string
+	LeaseExpiresAt       time.Time
+	Attempt              int
 }
 
-// ClaimRuntimeCleanupDue leases only retired generations with a durable
-// provider binding. A live provision lease is allowed to finish or compensate
+// ClaimRuntimeCleanupDue leases retired generations with either a durable
+// provider binding or an incomplete provision attempt that requires tag-based
+// provider recovery. A live provision lease is allowed to finish or compensate
 // before cleanup starts; an expired lease can be recovered after a crash.
 func ClaimRuntimeCleanupDue(ctx context.Context, tx pgx.Tx, claimID string, now time.Time, lease time.Duration, limit int) ([]RuntimeCleanupJob, error) {
 	if ctx == nil || tx == nil || !validCleanupClaimID(claimID) || now.IsZero() || lease < 5*time.Second || lease > 10*time.Minute || limit < 1 || limit > 100 {
@@ -37,7 +40,8 @@ func ClaimRuntimeCleanupDue(ctx context.Context, tx pgx.Tx, claimID string, now 
 		FROM repository_preview_runtime_allocations
 		WHERE desired_state='absent' AND state='cleanup_pending'
 		  AND ((resource_plane_id IS NOT NULL AND workspace_id IS NOT NULL AND microvm_id IS NOT NULL AND gateway_route_id IS NOT NULL)
-		       OR (resource_plane_id IS NULL AND workspace_id IS NULL AND microvm_id IS NULL AND gateway_route_id IS NULL AND provision_attempts=0 AND provision_claim_id IS NULL))
+		       OR (resource_plane_id IS NULL AND workspace_id IS NULL AND microvm_id IS NULL AND gateway_route_id IS NULL
+		           AND (provision_attempts=0 OR target_resource_plane_id IS NOT NULL)))
 		  AND (provision_claim_id IS NULL OR provision_lease_expires_at <= $1)
 		  AND ((runtime_cleanup_claim_id IS NULL AND (runtime_cleanup_next_attempt_at IS NULL OR runtime_cleanup_next_attempt_at <= $1))
 		       OR (runtime_cleanup_claim_id IS NOT NULL AND runtime_cleanup_lease_expires_at <= $1))
@@ -52,12 +56,14 @@ func ClaimRuntimeCleanupDue(ctx context.Context, tx pgx.Tx, claimID string, now 
 	  AND a.github_repository_id=due.github_repository_id AND a.pull_request_number=due.pull_request_number AND a.generation=due.generation
 	  AND a.desired_state='absent' AND a.state='cleanup_pending'
 	  AND ((a.resource_plane_id IS NOT NULL AND a.workspace_id IS NOT NULL AND a.microvm_id IS NOT NULL AND a.gateway_route_id IS NOT NULL)
-	       OR (a.resource_plane_id IS NULL AND a.workspace_id IS NULL AND a.microvm_id IS NULL AND a.gateway_route_id IS NULL AND a.provision_attempts=0 AND a.provision_claim_id IS NULL))
+	       OR (a.resource_plane_id IS NULL AND a.workspace_id IS NULL AND a.microvm_id IS NULL AND a.gateway_route_id IS NULL
+	           AND (a.provision_attempts=0 OR a.target_resource_plane_id IS NOT NULL)))
 	  AND (a.provision_claim_id IS NULL OR a.provision_lease_expires_at <= $1)
 	  AND ((a.runtime_cleanup_claim_id IS NULL AND (a.runtime_cleanup_next_attempt_at IS NULL OR a.runtime_cleanup_next_attempt_at <= $1))
 	       OR (a.runtime_cleanup_claim_id IS NOT NULL AND a.runtime_cleanup_lease_expires_at <= $1))
 	RETURNING a.tenant_id,a.installation_id,a.github_repository_id,a.pull_request_number,a.generation,a.head_sha,a.head_ref,
-	          COALESCE(a.resource_plane_id,''),COALESCE(a.workspace_id,''),COALESCE(a.microvm_id,''),COALESCE(a.gateway_route_id,''),
+	          COALESCE(a.target_resource_plane_id,a.resource_plane_id,''),COALESCE(a.resource_plane_id,''),
+	          COALESCE(a.workspace_id,''),COALESCE(a.microvm_id,''),COALESCE(a.gateway_route_id,''),
 	          a.resource_plane_id IS NOT NULL,a.provision_attempts,a.runtime_cleanup_claim_id,
 	          a.runtime_cleanup_lease_expires_at,a.runtime_cleanup_attempts`, now.UTC(), limit, claimID, now.UTC().Add(lease))
 	if err != nil {
@@ -68,11 +74,12 @@ func ClaimRuntimeCleanupDue(ctx context.Context, tx pgx.Tx, claimID string, now 
 	for rows.Next() {
 		var job RuntimeCleanupJob
 		if err := rows.Scan(&job.TenantID, &job.InstallationID, &job.RepositoryID, &job.PullRequestNumber,
-			&job.Generation, &job.HeadSHA, &job.HeadRef, &job.ResourcePlaneID, &job.WorkspaceID, &job.MicroVMID,
+			&job.Generation, &job.HeadSHA, &job.HeadRef, &job.ResourcePlaneID, &job.BoundResourcePlaneID, &job.WorkspaceID, &job.MicroVMID,
 			&job.GatewayRouteID, &job.ProviderBound, &job.ProvisionAttempts, &job.ClaimID, &job.LeaseExpiresAt, &job.Attempt); err != nil {
 			return nil, fmt.Errorf("scan claimed Preview runtime cleanup: %w", err)
 		}
 		job.LeaseExpiresAt = job.LeaseExpiresAt.UTC()
+		job.RuntimeWorkspaceID = runtimeWorkspaceID(job.CleanupIdentity, job.Generation)
 		jobs = append(jobs, job)
 	}
 	if err := rows.Err(); err != nil {
@@ -110,7 +117,8 @@ func MarkRuntimeAllocationCleaned(ctx context.Context, tx pgx.Tx, job RuntimeCle
 		return false, ErrInvalidRuntimeAllocation
 	}
 	tag, err := tx.Exec(ctx, `UPDATE repository_preview_runtime_allocations
-		SET state='cleaned',runtime_cleanup_claim_id=NULL,runtime_cleanup_lease_expires_at=NULL,
+		SET state='cleaned',provision_claim_id=NULL,provision_lease_expires_at=NULL,provision_next_attempt_at=NULL,
+		    runtime_cleanup_claim_id=NULL,runtime_cleanup_lease_expires_at=NULL,
 		    runtime_cleanup_next_attempt_at=NULL,runtime_cleanup_last_error='',updated_at=$9
 		WHERE tenant_id=$1 AND installation_id=$2 AND github_repository_id=$3 AND pull_request_number=$4 AND generation=$5
 		  AND desired_state='absent' AND state='cleanup_pending' AND runtime_cleanup_claim_id=$6
@@ -145,11 +153,14 @@ func MarkRuntimeAllocationCleaned(ctx context.Context, tx pgx.Tx, job RuntimeCle
 }
 
 func validRuntimeCleanupJob(job RuntimeCleanupJob) bool {
-	if !validCleanupIdentity(job.CleanupIdentity) || job.Generation <= 0 || !validCleanupClaimID(job.ClaimID) || job.LeaseExpiresAt.IsZero() || job.Attempt <= 0 {
+	if !validCleanupIdentity(job.CleanupIdentity) || job.Generation <= 0 || job.RuntimeWorkspaceID != runtimeWorkspaceID(job.CleanupIdentity, job.Generation) ||
+		!validCleanupClaimID(job.ClaimID) || job.LeaseExpiresAt.IsZero() || job.Attempt <= 0 {
 		return false
 	}
 	if job.ProviderBound {
-		return validRuntimeBinding(RuntimeBinding{ResourcePlaneID: job.ResourcePlaneID, WorkspaceID: job.WorkspaceID, MicroVMID: job.MicroVMID, GatewayRouteID: job.GatewayRouteID})
+		return job.ResourcePlaneID == job.BoundResourcePlaneID && validRuntimeBinding(RuntimeBinding{ResourcePlaneID: job.BoundResourcePlaneID,
+			WorkspaceID: job.WorkspaceID, MicroVMID: job.MicroVMID, GatewayRouteID: job.GatewayRouteID})
 	}
-	return job.ProvisionAttempts == 0 && job.ResourcePlaneID == "" && job.WorkspaceID == "" && job.MicroVMID == "" && job.GatewayRouteID == ""
+	return (job.ProvisionAttempts == 0 || runtimeIdentifierPattern.MatchString(string(job.ResourcePlaneID))) &&
+		job.BoundResourcePlaneID == "" && job.WorkspaceID == "" && job.MicroVMID == "" && job.GatewayRouteID == ""
 }

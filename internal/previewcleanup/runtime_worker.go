@@ -18,13 +18,16 @@ var (
 )
 
 type RuntimeExecutor interface {
-	// CleanupGeneration removes exactly the bound MicroVM and Gateway route.
-	// It must be idempotent and must not use caller-supplied names as provider IDs.
+	// CleanupGeneration removes exactly the bound MicroVM and Gateway route. If
+	// the Control Plane has no binding but a provision attempt exists, it must
+	// rediscover resources by the immutable runtime Workspace identity and Hako
+	// tags. It must be idempotent and never treat caller names as provider IDs.
 	CleanupGeneration(context.Context, previews.RuntimeCleanupJob) error
 }
 
-// RuntimeWorker cleans retired PR-head generations independently. The
-// Workspace and provider IDs in each claimed job are immutable store bindings.
+// RuntimeWorker cleans retired PR-head generations independently. Bound
+// provider IDs and deterministic unbound recovery identities come from the
+// store, not from user input.
 type RuntimeWorker struct {
 	Pool       transaction.Beginner
 	Executor   RuntimeExecutor
@@ -88,7 +91,7 @@ func (w RuntimeWorker) RunOnce(ctx context.Context) (Stats, error) {
 			continue
 		}
 		var cleanupErr error
-		if job.ProviderBound {
+		if job.ProviderBound || job.ProvisionAttempts > 0 {
 			cleanupCtx, cancel := context.WithDeadline(ctx, deadline)
 			cleanupErr = w.Executor.CleanupGeneration(cleanupCtx, job)
 			cancel()

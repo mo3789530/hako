@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/store/previews"
 )
 
@@ -53,7 +54,8 @@ func TestRunOnceRejectsInvalidConfigurationBeforeDatabaseAccess(t *testing.T) {
 		compensate: func(context.Context, previews.ProvisionJob, previews.RuntimeBinding) error { return nil },
 	}
 	valid := Worker{Pool: provisionNeverBeginPool{}, Provisioner: provisioner,
-		Lease: 10 * time.Second, Timeout: time.Second, BatchSize: 1,
+		TargetResourcePlaneID: "rp_preview_test",
+		Lease:                 10 * time.Second, Timeout: time.Second, BatchSize: 1,
 		NewClaimID: func() (string, error) { return "preview-provision-1234", nil }}
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -65,7 +67,9 @@ func TestRunOnceRejectsInvalidConfigurationBeforeDatabaseAccess(t *testing.T) {
 		{name: "nil context", worker: valid},
 		{name: "canceled context", worker: valid, ctx: canceled},
 		{name: "missing pool", worker: Worker{Provisioner: provisioner}, ctx: context.Background()},
-		{name: "missing provisioner", worker: Worker{Pool: valid.Pool}, ctx: context.Background()},
+		{name: "missing provisioner", worker: Worker{Pool: valid.Pool, TargetResourcePlaneID: valid.TargetResourcePlaneID}, ctx: context.Background()},
+		{name: "missing target Resource Plane", worker: Worker{Pool: valid.Pool, Provisioner: provisioner}, ctx: context.Background()},
+		{name: "invalid target Resource Plane", worker: withPreviewTargetPlane(valid, "rp bad"), ctx: context.Background()},
 		{name: "short lease", worker: withProvisionConfig(valid, 4*time.Second, time.Second, 1), ctx: context.Background()},
 		{name: "long lease", worker: withProvisionConfig(valid, 11*time.Minute, time.Second, 1), ctx: context.Background()},
 		{name: "short timeout", worker: withProvisionConfig(valid, 10*time.Second, 500*time.Millisecond, 1), ctx: context.Background()},
@@ -86,6 +90,11 @@ func TestRunOnceRejectsInvalidConfigurationBeforeDatabaseAccess(t *testing.T) {
 			}
 		})
 	}
+}
+
+func withPreviewTargetPlane(worker Worker, plane string) Worker {
+	worker.TargetResourcePlaneID = domain.ResourcePlaneID(plane)
+	return worker
 }
 
 func withProvisionConfig(worker Worker, lease, timeout time.Duration, batch int) Worker {

@@ -150,6 +150,30 @@ func TestRuntimeWorkerCleansRetiredGenerationsAndReleasesPreviewQuota(t *testing
 	if err := pool.QueryRow(ctx, `SELECT state FROM repository_previews WHERE tenant_id='tenant_preview_runtime_cleanup' AND pull_request_number=41`).Scan(&previewState); err != nil || previewState != "cleaned" {
 		t.Fatalf("Preview quota not released after every generation was cleaned: state=%q err=%v", previewState, err)
 	}
+
+	orphanAt := closeAt.Add(2 * time.Second)
+	if _, err := pool.Exec(ctx, `INSERT INTO repository_previews
+		(tenant_id,installation_id,github_repository_id,pull_request_number,head_sha,head_ref,desired_state,state,last_delivery_id,last_event_at,expires_at,created_at,updated_at,generation)
+		VALUES ('tenant_preview_runtime_cleanup',9821,9822,42,$1,'feature/orphan','absent','cleanup_pending','80000000-0000-4000-8000-000000000002',$2,$3,$2,$2,1)`,
+		sha, orphanAt, orphanAt.Add(time.Hour)); err != nil {
+		t.Fatalf("seed interrupted-provision Preview: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO repository_preview_runtime_allocations
+		(tenant_id,installation_id,github_repository_id,pull_request_number,generation,head_sha,head_ref,desired_state,state,expires_at,target_resource_plane_id,provision_attempts,provision_claim_id,provision_lease_expires_at,created_at,updated_at)
+		VALUES ('tenant_preview_runtime_cleanup',9821,9822,42,1,$1,'feature/orphan','absent','cleanup_pending',$2,'rp_test',1,'preview-provision-crashed',$4,$3,$3)`,
+		sha, orphanAt.Add(time.Hour), orphanAt, orphanAt.Add(-time.Minute)); err != nil {
+		t.Fatalf("seed unbound interrupted runtime generation: %v", err)
+	}
+	clock = orphanAt
+	orphan, err := worker.RunOnce(ctx)
+	if err != nil || orphan.Claimed != 1 || orphan.Confirmed != 1 || len(executor.jobs) != 4 {
+		t.Fatalf("tag-based orphan cleanup: stats=%+v jobs=%+v err=%v", orphan, executor.jobs, err)
+	}
+	wantRuntimeID, err := previews.RuntimeWorkspaceID(previews.CleanupIdentity{TenantID: "tenant_preview_runtime_cleanup", InstallationID: 9821,
+		RepositoryID: 9822, PullRequestNumber: 42}, 1)
+	if err != nil || executor.jobs[3].ProviderBound || executor.jobs[3].ProvisionAttempts != 1 || executor.jobs[3].RuntimeWorkspaceID != wantRuntimeID {
+		t.Fatalf("unbound orphan cleanup identity = %+v expected %q err=%v", executor.jobs[3], wantRuntimeID, err)
+	}
 }
 
 type runtimeCleanupFake struct {

@@ -124,7 +124,7 @@ func TestRepositoryPreviewWebhookLifecycleFencesStalePRUpdates(t *testing.T) {
 		ResourcePlaneID: "rp_preview_01", WorkspaceID: "ws_preview_01", MicroVMID: "microvm_preview_01", GatewayRouteID: "route_preview_01"}}
 	workerNow := provisionTime
 	claimIDs := []string{"preview-provision-a1", "preview-provision-early", "preview-provision-a2"}
-	worker := previewprovision.Worker{Pool: pool, Provisioner: provisioner, Lease: 30 * time.Second, Timeout: 5 * time.Second, BatchSize: 1,
+	worker := previewprovision.Worker{Pool: pool, Provisioner: provisioner, TargetResourcePlaneID: "rp_preview_01", Lease: 30 * time.Second, Timeout: 5 * time.Second, BatchSize: 1,
 		Now: func() time.Time { return workerNow }, NewClaimID: func() (string, error) {
 			claimID := claimIDs[0]
 			claimIDs = claimIDs[1:]

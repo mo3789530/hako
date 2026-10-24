@@ -121,19 +121,28 @@ stale or mismatched result is rejected and its caller must compensate any
 provider resources it already created. Provision failures use fixed error
 classes and bounded exponential retry. `internal/previewprovision.Worker` now
 executes that claim/provision/bind/retry state machine through an injected
-Resource Plane provisioner. If a failed attempt returns a partial provider
-binding, the worker compensates those resources before scheduling retry; a
-compensation failure leaves the claim for lease-based recovery instead of
-pretending cleanup succeeded. If a successful result loses its generation
-fence, it also invokes idempotent compensation. PostgreSQL lifecycle
+Resource Plane provisioner. After every failed attempt, the worker invokes
+compensation with the partial binding, if any, and the immutable generation
+identity so the Resource Plane can discover unbound resources by Hako tags
+before retry. A compensation failure leaves the claim for lease-based recovery
+instead of pretending cleanup succeeded. If a successful result loses its
+generation fence, it also invokes idempotent compensation. PostgreSQL lifecycle
 integration drives a fake provisioner through partial MicroVM creation followed
 by route-publish failure and cleanup, retry/backoff, successful binding, and a
 PR-head change during provisioning that rejects and compensates the stale
 result. It also verifies that a failed compensation does not schedule a
 duplicate attempt while the lease is active, then recovers after lease expiry.
-A concrete Resource Plane command, provision-worker
-deployment and DSQL role grant, Lambda MicroVM API call, and Gateway route
-publisher are still not wired, so no Preview runtime is allocated.
+
+Migrations 000165–000168 add and constrain a target Resource Plane pin to each runtime
+generation. The first provision claim stores the configured Plane before
+provider I/O; retries cannot move a generation to another Plane. Bound results
+must match this pin, and cleanup jobs carry it together with the deterministic
+runtime Workspace ID even when no provider IDs were persisted. The provision
+worker currently receives a fixed target Plane ID; policy/capacity-based
+Preview placement is not implemented. Resource Plane command transport,
+worker deployment and DSQL role grants, Lambda MicroVM API calls, Gateway route
+publication, and tag-based provider executor are still missing, so no Preview
+runtime is allocated.
 
 Each present Preview records a fixed `expires_at` using the Tenant's configured
 Preview lifetime (24 hours when no quota row exists). `synchronize` deliveries
@@ -160,17 +169,20 @@ confirmation is idempotent. Migrations 000145–000147 add parent cleanup leases
 and lifecycle generations. Migrations 000161–000162 add separate lease,
 attempt, and retry state to each runtime generation. The local
 `internal/previewcleanup.RuntimeWorker` claims bounded generation batches and
-uses immutable provider bindings; it marks a generation cleaned only after an
-injected executor confirms deletion. It can also retire generations that never
-had a provision attempt without calling a provider. The legacy PR-wide worker
+uses immutable provider bindings, or the deterministic private runtime
+Workspace ID plus pinned Resource Plane ID when an interrupted provision
+attempt has no binding, and marks a generation cleaned only after an injected
+executor confirms deletion. It can
+also retire generations that never had a provision attempt without calling a
+provider. The legacy PR-wide worker
 does not claim Previews that have generation rows, preventing it from
 acknowledging those rows without per-generation confirmation. The quota remains
 reserved until every generation is cleaned. PostgreSQL integration verifies
 lease recovery, active-claim exclusion, retry/backoff, stale-claim rejection,
-provider-bound cleanup, and final quota release. A concrete Resource Plane
-cleanup command/executor, handling of interrupted unbound provision attempts,
-and scheduled worker deployment are still required before Preview can be
-enabled for user traffic.
+provider-bound cleanup, interrupted unbound-attempt tag-recovery identity, and
+final quota release. A concrete Resource Plane cleanup command/executor that
+implements tag discovery, and scheduled worker deployment are still required
+before Preview can be enabled for user traffic.
 
 Webhook admission reserves the Tenant Preview concurrency slot in the same
 transaction as the PR lifecycle update, using the shared Tenant quota OCC row.
