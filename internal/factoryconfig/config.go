@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	webhookevent "github.com/mo3789530/hako/internal/githubwebhook"
+	"github.com/mo3789530/hako/internal/servicecatalog"
 	"gopkg.in/yaml.v3"
 )
 
@@ -253,6 +254,9 @@ func validate(config *Config) error {
 			}
 			seen[service] = struct{}{}
 		}
+		if err := validateServiceBudget(pipeline.MemoryMB, pipeline.CPUMillis, pipeline.Network, pipeline.Services); err != nil {
+			return err
+		}
 		config.Pipelines[name] = pipeline
 	}
 	return nil
@@ -350,6 +354,9 @@ func ValidateExecutionPlan(plan ExecutionPlan) error {
 		len(plan.Services) > 4 || len(plan.Commands) >= MaxSteps {
 		return manifestError("execution plan metadata is invalid")
 	}
+	if err := validateServiceBudget(plan.MemoryMB, plan.CPUMillis, plan.Network, plan.Services); err != nil {
+		return err
+	}
 	seen := make(map[string]struct{}, len(plan.Commands)+1)
 	seen["checkout"] = struct{}{}
 	seenServices := make(map[string]struct{}, len(plan.Services))
@@ -371,6 +378,32 @@ func ValidateExecutionPlan(plan ExecutionPlan) error {
 			return manifestError("execution plan repeats a step")
 		}
 		seen[command.Step] = struct{}{}
+	}
+	return nil
+}
+
+// validateServiceBudget ensures fixed catalog sidecars fit within the
+// pipeline's declared budget and leave resources for the pipeline process.
+// The runtime still has to enforce the declared pipeline budget itself.
+func validateServiceBudget(memoryMB, cpuMillis int, network string, services []string) error {
+	if len(services) == 0 {
+		return nil
+	}
+	if network == "none" {
+		return manifestError("pipeline services require the registry-only network profile")
+	}
+	var serviceMemoryMB, serviceCPUMillis int64
+	for _, name := range services {
+		template, err := servicecatalog.Resolve(name)
+		if err != nil {
+			return manifestError("pipeline contains an unsupported service")
+		}
+		memoryMB := (template.Resources.MemoryBytes + (1 << 20) - 1) / (1 << 20)
+		serviceMemoryMB += memoryMB
+		serviceCPUMillis += int64(template.Resources.MilliCPU)
+	}
+	if serviceMemoryMB >= int64(memoryMB) || serviceCPUMillis >= int64(cpuMillis) {
+		return manifestError("pipeline service resources must fit within the declared memory and CPU budget")
 	}
 	return nil
 }

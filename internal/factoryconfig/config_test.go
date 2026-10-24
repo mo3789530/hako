@@ -18,13 +18,14 @@ pipelines:
     steps: [checkout, go-test, go-vet]
     services: [postgres, redis]
     network: registry-only
+    cpu_millis: 1500
 `))
 	if err != nil {
 		t.Fatal(err)
 	}
 	pipeline := config.Pipelines["verify"]
 	if config.Version != 1 || pipeline.RuntimeClass != "standard" || pipeline.TimeoutSecond != 1800 ||
-		pipeline.MemoryMB != 2048 || pipeline.CPUMillis != 1000 || pipeline.Repository != "read" || pipeline.Network != "registry-only" {
+		pipeline.MemoryMB != 2048 || pipeline.CPUMillis != 1500 || pipeline.Repository != "read" || pipeline.Network != "registry-only" {
 		t.Fatalf("normalized manifest = %+v", config)
 	}
 }
@@ -227,6 +228,7 @@ pipelines:
   verify:
     steps: [checkout, go-test, go-vet, golangci-lint, npm-test, npm-build, python-test]
     services: [postgres, redis]
+    cpu_millis: 1500
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -244,7 +246,7 @@ pipelines:
 		{Step: "python-test", Executable: "/usr/bin/python3", Args: []string{"-m", "unittest", "discover"}},
 	}
 	if plan.Pipeline != "verify" || plan.RuntimeClass != "standard" || plan.TimeoutSecond != 1800 ||
-		plan.MemoryMB != 2048 || plan.CPUMillis != 1000 || plan.Network != "registry-only" ||
+		plan.MemoryMB != 2048 || plan.CPUMillis != 1500 || plan.Network != "registry-only" ||
 		!equalStrings(plan.Services, []string{"postgres", "redis"}) || len(plan.Commands) != len(want) {
 		t.Fatalf("Plan() metadata = %+v", plan)
 	}
@@ -316,6 +318,36 @@ pipelines:
 	mutated.Services = []string{"postgres", "postgres"}
 	if !errors.Is(ValidateExecutionPlan(mutated), ErrManifest) {
 		t.Fatalf("duplicate-service plan accepted: %+v", mutated)
+	}
+}
+
+func TestPipelineServiceResourcesMustFitDeclaredBudgetAndNetwork(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		fields string
+	}{
+		{name: "memory exhausted", fields: "    memory_mb: 1024\n    cpu_millis: 1000\n"},
+		{name: "cpu exhausted", fields: "    memory_mb: 2048\n    cpu_millis: 750\n"},
+		{name: "services without network", fields: "    memory_mb: 2048\n    cpu_millis: 1000\n    network: none\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			yaml := "version: 1\non: {push: {branches: [main]}}\npipelines:\n  verify:\n    steps: [checkout, go-test]\n    services: [postgres]\n" + test.fields
+			if _, err := Parse([]byte(yaml)); !errors.Is(err, ErrManifest) {
+				t.Fatalf("Parse accepted an invalid Service resource/network budget: %v", err)
+			}
+		})
+	}
+	config, err := Parse([]byte("version: 1\non: {push: {branches: [main]}}\npipelines:\n  verify:\n    steps: [checkout, go-test]\n    services: [postgres, redis]\n    memory_mb: 2048\n    cpu_millis: 1500\n"))
+	if err != nil {
+		t.Fatalf("Parse rejected services that fit the declared budget: %v", err)
+	}
+	plan, err := Plan(config, "verify")
+	if err != nil || ValidateExecutionPlan(plan) != nil {
+		t.Fatalf("valid Service budget plan rejected: plan=%+v err=%v", plan, err)
+	}
+	plan.CPUMillis = 1000
+	if !errors.Is(ValidateExecutionPlan(plan), ErrManifest) {
+		t.Fatalf("ValidateExecutionPlan accepted sidecars that exhaust the CPU budget")
 	}
 }
 

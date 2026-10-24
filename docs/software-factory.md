@@ -433,6 +433,12 @@ bounds are 30–3600 seconds, 256–8192 MiB, and 250–4000 CPU millis. Network
 either `none` or `registry-only`; public Internet access is not an option in
 this schema.
 
+Declared Service Catalog sidecars are charged against the pipeline's declared
+memory and CPU budget using each fixed catalog resource request. The plan is
+rejected if sidecars exhaust either budget or use `network: none`. This is
+admission-time validation only: the current Workload Agent runtime does not
+yet enforce the pipeline process budget or provision Service containers.
+
 The validated configuration is converted to a deterministic execution plan
 inside the Workload Agent, after it verifies the installed source archive
 against the Run's commit-bound digest. `checkout` is handled as source staging,

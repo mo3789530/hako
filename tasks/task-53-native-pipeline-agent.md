@@ -202,6 +202,11 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   omitted `kind` to `job`; explicit `agent` profiles are accepted only as a
   separate identity. This does not enable Agent scheduling or prove that
   profile connectors implement an egress restriction.
+- Factory validation now totals the immutable Service Catalog memory/CPU
+  requests against the declared pipeline budget and rejects sidecars that
+  exhaust either budget or use `network: none`. This is admission planning
+  only; the Workload Agent still has no Job-scoped Service provisioner or
+  runtime enforcement for the pipeline process budget.
 
 ## Remaining runtime implementation gates
 
@@ -217,9 +222,11 @@ The Job runtime needs its own implementation with these acceptance conditions:
 - [ ] Keep service storage ephemeral and disjoint across Job attempts; derive
   container/network names from the immutable Workload identity and remove them
   on success, failure, cancellation, timeout, startup error, and recovery.
-- [ ] Enforce each service's catalog memory/CPU limits and the aggregate Job
-  budget before starting any container. Reject a plan when its complete
-  resource request exceeds the selected Lambda MicroVM profile.
+- [ ] Enforce each service's catalog memory/CPU limits at container runtime
+  and enforce the aggregate Job budget for commands plus sidecars. Reject a
+  plan when its complete resource request exceeds the selected Lambda MicroVM
+  profile; current manifest validation only checks the declared pipeline
+  budget and does not enforce that budget against the MicroVM.
 - [ ] Bind service ports only to the MicroVM loopback interface. Permit only
   the registry traffic needed to obtain pinned catalog images; do not provide
   arbitrary Internet or AWS access to the Job or its service containers.
