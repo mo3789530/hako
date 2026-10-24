@@ -2,13 +2,77 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mo3789530/hako/internal/api"
+	"github.com/mo3789530/hako/internal/auth"
 	"github.com/mo3789530/hako/internal/domain"
 )
+
+type cliTestCredentialGetter string
+
+func (g cliTestCredentialGetter) Get(service, account string) (string, error) {
+	if g == "" {
+		return "", errors.New("credential not found")
+	}
+	if service != auth.KeyringService || account != auth.KeyringAccount {
+		return "", errors.New("unexpected keyring lookup")
+	}
+	encoded, err := json.Marshal(auth.TokenSet{AccessToken: string(g), TokenType: "Bearer", ExpiresIn: 3600, StoredAt: time.Now().UTC()})
+	return string(encoded), err
+}
+
+func TestAPIHealthCLIRequiresSavedTokenAndCallsProtectedRoute(t *testing.T) {
+	oldGetter := cliCredentialGetter
+	t.Cleanup(func() { cliCredentialGetter = oldGetter })
+
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/health" {
+			t.Errorf("health CLI request = %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer cli-health-token" {
+			t.Errorf("Authorization = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"ok"}`)
+	}))
+	defer server.Close()
+	t.Setenv("HAKO_API_URL", server.URL)
+
+	cliCredentialGetter = cliTestCredentialGetter("cli-health-token")
+	if err := apiHealth(); err != nil {
+		t.Fatalf("apiHealth with saved token: %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("health request count = %d, want 1", requests)
+	}
+
+	cliCredentialGetter = cliTestCredentialGetter("")
+	if err := apiHealth(); err == nil || !strings.Contains(err.Error(), "run hako login") {
+		t.Fatalf("apiHealth without saved token = %v, want login error", err)
+	}
+	if requests != 1 {
+		t.Fatalf("unauthenticated health request reached API: count=%d", requests)
+	}
+
+	t.Setenv("HAKO_API_URL", "")
+	cliCredentialGetter = cliTestCredentialGetter("cli-health-token")
+	if err := apiHealth(); err == nil || !strings.Contains(err.Error(), "HAKO_API_URL is required") {
+		t.Fatalf("apiHealth without API URL = %v, want configuration error", err)
+	}
+	if requests != 1 {
+		t.Fatalf("missing API URL unexpectedly called server: count=%d", requests)
+	}
+}
 
 func TestWorkspaceServiceHealthRequiresCurrentRuntimeObservation(t *testing.T) {
 	tests := []struct {
