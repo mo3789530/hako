@@ -36,20 +36,24 @@ client.
 The API enables this endpoint only when configured with
 `HAKO_RESOURCE_PLANE_WORKSPACE_SESSION_SECRET_ARNS`, a JSON map from Resource
 Plane ID to a distinct Secrets Manager ARN. The API resolves keys only for the
-matching Plane. The production Secrets, IAM grants, Resource Plane client
-configuration/distribution, and live revocation propagation are not yet
-provisioned. A Resource Plane Gateway must not connect directly to Aurora DSQL.
+matching Plane. The production Secrets, IAM grants, and Resource Plane client
+configuration/distribution are not yet provisioned. A Resource Plane Gateway
+must not connect directly to Aurora DSQL.
 The Gateway must route from signed Tenant/Workspace/Resource Plane claims;
 caller-supplied routing IDs must not override those claims. Key rotation should publish the new public key
 before switching the Control Plane signer, keep the previous public key until
 all tickets signed by it expire, then remove it. For incident response, disable
-the signing key and revoke affected session rows; existing data streams also
-need an active-connection close mechanism, which remains to be implemented.
+the signing key and revoke affected session rows. The Gateway rechecks active
+Session state every 15 seconds on existing streams and closes both stream
+directions on revocation or lookup failure; production propagation remains to
+be verified.
 
 Ticket issuance is presently dependency-injected into the API handler and is
-disabled if no issuer is configured. Production signer/lookup-key provisioning,
-Gateway client configuration, active-connection revocation propagation,
-fleet-wide single-connection/replay coordination, WSS routing, rate/connection limits, metrics, and the
+disabled if no issuer is configured. Production signer/lookup-key provisioning
+and Gateway client configuration remain open. Local Gateway WSS routing,
+revocation polling, one active connection per Session across replicas, a shared
+ten-connection Workspace cap, and a 30-new-lease-per-minute Workspace limit
+are implemented and tested. Production metrics ingestion, deployment, and the
 real MicroVM upstream path remain open Task 46 work. The ticket library,
 RBAC-backed API flow, HTTPS/HMAC lookup client, and PostgreSQL-backed lookup
 endpoint are locally tested; they do not constitute a deployed Zero Trust
