@@ -59,6 +59,12 @@ Prove one Tenant-owned GitHub Repository can go from installation through one is
 - Failure diagnostics include Hako Run/event IDs without credential material.
 - AWS smoke prerequisites, dedicated account guard, required approvals, and cleanup report are documented.
 
+The approval-gated deployed smoke boundary, dedicated account requirements,
+resource ownership/cleanup rules, and cleanup report template are documented
+in [`Software Factory AWS Smoke Test Runbook`](../docs/software-factory-aws-smoke.md).
+This satisfies the documentation criterion only; no AWS smoke or deployment
+has been run.
+
 ## Progress (2026-10-12)
 
 - Re-verified on 2026-10-18 with `GOCACHE=/tmp/hako-go-cache make test-software-factory-e2e`; the required Podman/PostgreSQL end-to-end test passed without AWS or public GitHub credentials.
