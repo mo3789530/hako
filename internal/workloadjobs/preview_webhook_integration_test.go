@@ -117,6 +117,78 @@ func TestRepositoryPreviewWebhookLifecycleFencesStalePRUpdates(t *testing.T) {
 		WHERE tenant_id='tenant_preview_hook' AND installation_id=9801 AND github_repository_id=9802 AND pull_request_number=73 AND generation=3`).Scan(&currentDesired, &currentState); err != nil || currentDesired != "present" || currentState != "awaiting_runtime" {
 		t.Fatalf("reopened Preview generation was not independently recorded: desired=%s state=%s err=%v", currentDesired, currentState, err)
 	}
+	provisionTime := now.Add(10 * time.Second)
+	claimProvision := func(at time.Time, claimID string) ([]previewstore.ProvisionJob, error) {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			return nil, err
+		}
+		jobs, err := previewstore.ClaimRuntimeAllocations(ctx, tx, claimID, at, 30*time.Second, 10)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		return jobs, nil
+	}
+	firstProvision, err := claimProvision(provisionTime, "preview-provision-a1")
+	if err != nil || len(firstProvision) != 1 || firstProvision[0].Generation != 3 || firstProvision[0].Attempt != 1 ||
+		firstProvision[0].LeaseExpiresAt != provisionTime.Add(30*time.Second) {
+		t.Fatalf("initial Preview provision claim = %+v, err=%v", firstProvision, err)
+	}
+	firstProvisionJob := firstProvision[0]
+	failureAt := provisionTime.Add(time.Second)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provisionRetryAt, recorded, err := previewstore.RecordRuntimeAllocationFailure(ctx, tx, firstProvisionJob, failureAt, "microvm_launch_failed")
+	if err != nil || !recorded || provisionRetryAt != failureAt.Add(5*time.Second) {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("record Preview launch failure: retry=%s recorded=%v err=%v", provisionRetryAt, recorded, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if jobs, err := claimProvision(provisionRetryAt.Add(-time.Second), "preview-provision-early"); err != nil || len(jobs) != 0 {
+		t.Fatalf("Preview provision retried before backoff: jobs=%+v err=%v", jobs, err)
+	}
+	secondProvision, err := claimProvision(provisionRetryAt, "preview-provision-a2")
+	if err != nil || len(secondProvision) != 1 || secondProvision[0].Attempt != 2 {
+		t.Fatalf("Preview provision retry claim = %+v, err=%v", secondProvision, err)
+	}
+	secondProvisionJob := secondProvision[0]
+	tx, err = pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale, err := previewstore.BindRuntimeAllocation(ctx, tx, firstProvisionJob,
+		previewstore.RuntimeBinding{ResourcePlaneID: "rp_preview_01", WorkspaceID: "ws_preview_01", MicroVMID: "microvm_preview_01", GatewayRouteID: "route_preview_01"}, provisionRetryAt.Add(time.Second))
+	if err != nil || stale {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("superseded Preview provision claim bound runtime: bound=%v err=%v", stale, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tx, err = pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, err := previewstore.BindRuntimeAllocation(ctx, tx, secondProvisionJob,
+		previewstore.RuntimeBinding{ResourcePlaneID: "rp_preview_01", WorkspaceID: "ws_preview_01", MicroVMID: "microvm_preview_01", GatewayRouteID: "route_preview_01"}, provisionRetryAt.Add(time.Second))
+	if err != nil || !bound {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("bind current Preview runtime generation: bound=%v err=%v", bound, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT state FROM repository_previews WHERE tenant_id='tenant_preview_hook' AND installation_id=9801 AND github_repository_id=9802 AND pull_request_number=73`).Scan(&state); err != nil || state != "awaiting_runtime" {
+		t.Fatalf("Preview lifecycle state after runtime binding = %q, err=%v", state, err)
+	}
 	for i := 0; i < 2; i++ {
 		tx, err := pool.Begin(ctx)
 		if err != nil {
@@ -232,7 +304,7 @@ func TestRepositoryPreviewWebhookLifecycleFencesStalePRUpdates(t *testing.T) {
 	}
 	staleGenerationJob := firstJob
 	staleGenerationJob.Generation--
-	tx, err := pool.Begin(ctx)
+	tx, err = pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

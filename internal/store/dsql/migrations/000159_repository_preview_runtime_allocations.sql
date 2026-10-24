@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS repository_preview_runtime_allocations (
     head_sha TEXT NOT NULL CHECK (length(head_sha) = 40),
     head_ref TEXT NOT NULL CHECK (length(head_ref) BETWEEN 1 AND 1024),
     desired_state TEXT NOT NULL CHECK (desired_state IN ('present', 'absent')),
-    state TEXT NOT NULL CHECK (state IN ('awaiting_runtime', 'running', 'cleanup_pending', 'cleaned')),
+    state TEXT NOT NULL CHECK (state IN ('awaiting_runtime', 'provisioning', 'running', 'cleanup_pending', 'cleaned')),
     expires_at TIMESTAMPTZ NOT NULL,
     resource_plane_id TEXT,
     workspace_id TEXT,

@@ -113,6 +113,12 @@ Add optional repository-level preview environments and service metadata/deploy p
   the Tenant API still does not expose provider identifiers. This is generation
   metadata only: provision claims, Lambda MicroVM allocation, Gateway routing,
   and provider-backed per-generation cleanup are still unimplemented.
+- Migration 000160 adds provisioning lease/claim metadata, attempt tracking,
+  fixed error classes with retry deadlines, and a store API that binds provider
+  IDs only for the current unexpired Preview generation and exact claim/attempt.
+  Local PostgreSQL integration covers retry, stale-attempt rejection, and
+  successful binding. No provision worker, DSQL role grant, Resource Plane
+  command, Lambda MicroVM allocation, or Gateway route is wired yet.
 - `go test ./...` passed. PostgreSQL Preview lifecycle E2E passed against the
   local `hako-dev-postgres`, including stale delivery, close/reopen, Tenant
   scoping, and duplicate replay.
