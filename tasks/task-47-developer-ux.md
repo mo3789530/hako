@@ -97,6 +97,17 @@ Complete the basic interactive development flow and reproducible local-service t
   MicroVM. Remaining gates include recovery after Agent/MicroVM replacement,
   actual ARM64 image build/MicroVM validation, and production Gateway routing.
 
+## CLI API wiring refresh (2026-10-24)
+
+- Added an HTTP-backed `hako wait` CLI test using a synthetic local API token.
+  It verifies the Tenant/Workspace-scoped GET route, Bearer authorization,
+  observed-state output, and fail-closed behavior when the token or API URL is
+  missing. Existing polling tests cover transitions, cancellation, API errors,
+  terminal states, and timeout. `go test ./cmd/hako -count=1 -coverprofile=...`
+  reports 49.1% package statement coverage; `workspace_waitCLI` is 85.7% and
+  the wait-state loop is 89.7%. This does not validate a deployed Gateway or
+  Lambda MicroVM.
+
 ## Acceptance criteria
 
 - CLI unit and authenticated integration tests cover happy path, re-login, authorization failure, disconnect, cancellation, and invalid forwards.

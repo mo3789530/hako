@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -38,6 +42,59 @@ func TestParseWorkspaceWaitArgs(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWorkspaceWaitCLIRoutesAuthenticatedTenantScopedAPIRequest(t *testing.T) {
+	previousGetter := cliCredentialGetter
+	cliCredentialGetter = workspaceShellCredentials(`{"access_token":"wait-access","token_type":"Bearer","expires_in":3600,"stored_at":"` + time.Now().UTC().Format(time.RFC3339) + `"}`)
+	t.Cleanup(func() { cliCredentialGetter = previousGetter })
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/tenants/tenant_wait/workspaces/ws_wait" {
+			t.Errorf("Workspace GET = %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer wait-access" {
+			t.Errorf("Authorization header = %q", r.Header.Get("Authorization"))
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"workspace":{"id":"ws_wait","tenant_id":"tenant_wait"},"status":{"desired_state":"running","observed_state":"running"}}`)
+	}))
+	defer server.Close()
+	t.Setenv("HAKO_API_URL", server.URL)
+
+	var output bytes.Buffer
+	err := workspaceWaitCLI(context.Background(), []string{"tenant_wait", "ws_wait", "--timeout", "1s"}, &output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); !strings.Contains(got, "Workspace ws_wait: desired=running observed=running") {
+		t.Fatalf("wait output = %q", got)
+	}
+}
+
+func TestWorkspaceWaitCLIFailsClosedForMissingConfiguration(t *testing.T) {
+	t.Run("missing token", func(t *testing.T) {
+		previousGetter := cliCredentialGetter
+		cliCredentialGetter = workspaceShellCredentials("")
+		t.Cleanup(func() { cliCredentialGetter = previousGetter })
+		t.Setenv("HAKO_API_URL", "https://api.example")
+		if err := workspaceWaitCLI(context.Background(), []string{"tenant_wait", "ws_wait"}, io.Discard); err == nil {
+			t.Fatal("missing access token must fail")
+		}
+	})
+	t.Run("missing API URL", func(t *testing.T) {
+		previousGetter := cliCredentialGetter
+		cliCredentialGetter = workspaceShellCredentials(`{"access_token":"wait-access","token_type":"Bearer","expires_in":3600,"stored_at":"` + time.Now().UTC().Format(time.RFC3339) + `"}`)
+		t.Cleanup(func() { cliCredentialGetter = previousGetter })
+		t.Setenv("HAKO_API_URL", " ")
+		if err := workspaceWaitCLI(context.Background(), []string{"tenant_wait", "ws_wait"}, io.Discard); err == nil {
+			t.Fatal("missing API URL must fail")
+		}
+	})
 }
 
 func TestWaitForWorkspaceStateReportsProgressAndReturnsOnTarget(t *testing.T) {
@@ -101,5 +158,14 @@ func TestWaitForWorkspaceStateHandlesTimeoutCancellationAndAPIError(t *testing.T
 	err = waitForWorkspaceState(context.Background(), options, func(context.Context, string, string) (api.WorkspaceView, error) { return api.WorkspaceView{}, apiErr }, &output, nil)
 	if !errors.Is(err, apiErr) {
 		t.Fatalf("API error=%v", err)
+	}
+}
+
+func TestLastObservedStateUsesUnknownForEmptyState(t *testing.T) {
+	if got := lastObservedState(""); got != "unknown" {
+		t.Fatalf("lastObservedState(empty) = %q, want unknown", got)
+	}
+	if got := lastObservedState("provisioning"); got != "provisioning" {
+		t.Fatalf("lastObservedState(value) = %q, want provisioning", got)
 	}
 }
