@@ -81,8 +81,18 @@ The API handles lease metadata only; it does not carry Workspace application
 traffic.
 
 This cap is not configurable yet. Per-Gateway process limits can be lower, and
-fleet-wide request-rate limiting or same-ticket replay coordination across
-replicas is not provided by the lease cap.
+fleet-wide request-rate limiting is not provided by the lease cap.
+
+## Cross-replica Session replay fence
+
+Lease renewal also atomically claims the exact, unexpired Session row identified
+by the signed ticket ID, Tenant, Workspace, and Resource Plane. One Session can
+have only one active connection lease at a time, including when requests reach
+different Gateway replicas. A competing lease receives HTTP 409. Releasing a
+lease clears the claim only when that lease owns it; if a Gateway disappears,
+the claim becomes reusable at the earlier of the lease expiry and Session
+expiry. The signed ticket value and its claims are not stored in this field.
+This is connection replay exclusion, not fleet-wide request-rate limiting.
 
 Idle candidate selection is scoped to the current running allocation. It
 excludes Workspaces with any unexpired lease and Workspaces that have never

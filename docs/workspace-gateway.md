@@ -81,10 +81,14 @@ outgoing chunk (64 KiB default, 1 MiB maximum). Separately, the signed lease API
 admits at most ten unexpired connections for the current Workspace allocation
 across Gateway replicas. It returns HTTP 429 at capacity; the Gateway preserves
 that status for clients. The cap is enforced transactionally against shared
-Control Plane metadata, not application data. Stream contents and tickets are
+Control Plane metadata, not application data. The same lease API also claims
+the persisted Session row for one active connection, so concurrent reuse of
+one signed Session Ticket across Gateway replicas receives HTTP 409. Release
+clears the claim only for its owning lease; claim expiry permits recovery
+after Gateway failure. Only the opaque Session ID and active lease metadata
+are stored; the signed ticket value is not. Stream contents and tickets are
 not logged. `/healthz` returns only static readiness status. Per-process caps
-remain local, and same-ticket replay coordination across replicas plus
-fleet-wide request-rate limiting remain open. TLS termination, private
+remain local, and fleet-wide request-rate limiting remains open. TLS termination, private
 Gateway-to-runtime transport, and task/service health wiring are deployment
 responsibilities.
 
@@ -102,8 +106,9 @@ events, rejected connections, active process connections, and duration. Metric
 dimensions are limited to Resource Plane, fixed channel, and fixed outcome;
 Tenant/Workspace IDs, tickets, and stream contents are excluded. These are
 process-local metrics. The signed lease API enforces the shared ten-connection
-per-Workspace allocation cap across replicas; global ticket-replay coordination
-and fleet-wide request-rate limiting remain open. The VS Code process bridge
+per-Workspace allocation cap and rejects concurrent reuse of the same Session
+Ticket across replicas with HTTP 409; fleet-wide request-rate limiting remains
+open. The VS Code process bridge
 and Lambda MicroVM end-to-end stream PoC also remain open Task 46/47 work.
 
 ## Resource Plane Gateway process

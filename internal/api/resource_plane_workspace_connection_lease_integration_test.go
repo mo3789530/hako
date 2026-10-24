@@ -45,6 +45,8 @@ func TestResourcePlaneWorkspaceConnectionLeaseHMACLifecycle(t *testing.T) {
 			VALUES ('ws_lease_api', 'running', 'running', $1)`, []any{now}},
 		{`INSERT INTO resource_bindings (workspace_id, resource_plane_id, kind, external_id, created_at, allocation_generation)
 			VALUES ('ws_lease_api', 'rp_lease_api', 'lambda_microvm', 'vm_lease_api', $1, 1)`, []any{now}},
+		{`INSERT INTO sessions (id, user_id, tenant_id, workspace_id, resource_plane_id, permissions_json, expires_at, created_at)
+			VALUES ('abcdef0123456789abcdef0123456789abcdef0123456789', 'user_lease_api', 'tenant_lease_api', 'ws_lease_api', 'rp_lease_api', '["shell"]', $1, $2)`, []any{now.Add(10 * time.Minute), now}},
 	} {
 		if _, err := pool.Exec(ctx, statement.query, statement.args...); err != nil {
 			t.Fatalf("seed connection lease API: %v\nquery: %s", err, statement.query)
@@ -65,7 +67,8 @@ func TestResourcePlaneWorkspaceConnectionLeaseHMACLifecycle(t *testing.T) {
 	server := httptest.NewTLSServer(e)
 	defer server.Close()
 	leaseID := "0123456789abcdef0123456789abcdef0123456789abcdef"
-	body, err := json.Marshal(workspaceConnectionLeaseRequest{TenantID: "tenant_lease_api", WorkspaceID: "ws_lease_api",
+	sessionID := "abcdef0123456789abcdef0123456789abcdef0123456789"
+	body, err := json.Marshal(workspaceConnectionLeaseRequest{SessionID: sessionID, TenantID: "tenant_lease_api", WorkspaceID: "ws_lease_api",
 		ResourcePlaneID: "rp_lease_api", MicroVMID: "vm_lease_api", AllocationGeneration: 1, ExpiresAt: now.Add(90 * time.Second)})
 	if err != nil {
 		t.Fatal(err)
@@ -110,7 +113,7 @@ func TestResourcePlaneWorkspaceConnectionLeaseHMACLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct signed Gateway lease reporter: %v", err)
 	}
-	lease, err := reporter.Open(ctx, workspaceagent.WorkspaceConnectionLeaseIdentity{TenantID: "tenant_lease_api", WorkspaceID: "ws_lease_api",
+	lease, err := reporter.Open(ctx, workspaceagent.WorkspaceConnectionLeaseIdentity{SessionID: sessionID, TenantID: "tenant_lease_api", WorkspaceID: "ws_lease_api",
 		ResourcePlaneID: "rp_lease_api", MicroVMID: "vm_lease_api", AllocationGeneration: 1})
 	if err != nil {
 		t.Fatalf("Gateway lease reporter create: %v", err)
@@ -129,13 +132,65 @@ func TestResourcePlaneWorkspaceConnectionLeaseHMACLifecycle(t *testing.T) {
 	if released != 2 || generation != 1 {
 		t.Fatalf("Gateway→Control Plane→PostgreSQL lifecycle released=%d generation=%d, want 2 released rows and generation 1", released, generation)
 	}
+	replaySessionID := fmt.Sprintf("%048x", 500)
+	if _, err := pool.Exec(ctx, `INSERT INTO sessions (id, user_id, tenant_id, workspace_id, resource_plane_id, permissions_json, expires_at, created_at)
+		VALUES ($1, 'user_lease_api', 'tenant_lease_api', 'ws_lease_api', 'rp_lease_api', '["shell"]', $2, $3)`, replaySessionID, now.Add(10*time.Minute), now); err != nil {
+		t.Fatalf("seed replay Session: %v", err)
+	}
+	replayBody, err := json.Marshal(workspaceConnectionLeaseRequest{SessionID: replaySessionID, TenantID: "tenant_lease_api", WorkspaceID: "ws_lease_api",
+		ResourcePlaneID: "rp_lease_api", MicroVMID: "vm_lease_api", AllocationGeneration: 1, ExpiresAt: time.Now().UTC().Add(90 * time.Second)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstReplayLease, secondReplayLease := fmt.Sprintf("%048x", 501), fmt.Sprintf("%048x", 502)
+	if response := callLease(http.MethodPut, firstReplayLease, "", replayBody, true); response.Code != http.StatusNoContent {
+		t.Fatalf("first shared Session connection response=%d %s", response.Code, response.Body.String())
+	}
+	if response := callLease(http.MethodPut, secondReplayLease, "", replayBody, true); response.Code != http.StatusConflict {
+		t.Fatalf("concurrent shared Session replay response=%d %s, want 409", response.Code, response.Body.String())
+	}
+	if response := callLease(http.MethodPost, fmt.Sprintf("%048x", 503), "/release", replayBody, true); response.Code != http.StatusNoContent {
+		t.Fatalf("unknown lease release response=%d %s", response.Code, response.Body.String())
+	}
+	if response := callLease(http.MethodPut, secondReplayLease, "", replayBody, true); response.Code != http.StatusConflict {
+		t.Fatalf("unknown lease release cleared active Session claim: response=%d %s, want 409", response.Code, response.Body.String())
+	}
+	if response := callLease(http.MethodPost, firstReplayLease, "/release", replayBody, true); response.Code != http.StatusNoContent {
+		t.Fatalf("release first replay lease response=%d %s", response.Code, response.Body.String())
+	}
+	if response := callLease(http.MethodPut, secondReplayLease, "", replayBody, true); response.Code != http.StatusNoContent {
+		t.Fatalf("reconnect after release response=%d %s", response.Code, response.Body.String())
+	}
+	if response := callLease(http.MethodPost, secondReplayLease, "/release", replayBody, true); response.Code != http.StatusNoContent {
+		t.Fatalf("release reconnect lease response=%d %s", response.Code, response.Body.String())
+	}
 	for i := 0; i < workspaceactivity.MaxActiveLeasesPerWorkspace; i++ {
 		id := fmt.Sprintf("%048x", i+100)
-		if response := callLease(http.MethodPut, id, "", body, true); response.Code != http.StatusNoContent {
+		newSessionID := fmt.Sprintf("%048x", i+300)
+		if _, err := pool.Exec(ctx, `INSERT INTO sessions (id, user_id, tenant_id, workspace_id, resource_plane_id, permissions_json, expires_at, created_at)
+			VALUES ($1, 'user_lease_api', 'tenant_lease_api', 'ws_lease_api', 'rp_lease_api', '["shell"]', $2, $3)`, newSessionID, now.Add(10*time.Minute), now); err != nil {
+			t.Fatalf("seed connection Session for cap test: %v", err)
+		}
+		connectionBody, err := json.Marshal(workspaceConnectionLeaseRequest{SessionID: newSessionID, TenantID: "tenant_lease_api", WorkspaceID: "ws_lease_api",
+			ResourcePlaneID: "rp_lease_api", MicroVMID: "vm_lease_api", AllocationGeneration: 1, ExpiresAt: time.Now().UTC().Add(90 * time.Second)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response := callLease(http.MethodPut, id, "", connectionBody, true); response.Code != http.StatusNoContent {
 			t.Fatalf("shared active connection %d response=%d %s", i+1, response.Code, response.Body.String())
 		}
 	}
-	if response := callLease(http.MethodPut, fmt.Sprintf("%048x", 100+workspaceactivity.MaxActiveLeasesPerWorkspace), "", body, true); response.Code != http.StatusTooManyRequests {
+	lastSessionID := fmt.Sprintf("%048x", 300+workspaceactivity.MaxActiveLeasesPerWorkspace)
+	if _, err := pool.Exec(ctx, `INSERT INTO sessions (id, user_id, tenant_id, workspace_id, resource_plane_id, permissions_json, expires_at, created_at)
+		VALUES ($1, 'user_lease_api', 'tenant_lease_api', 'ws_lease_api', 'rp_lease_api', '["shell"]', $2, $3)`, lastSessionID, now.Add(10*time.Minute), now); err != nil {
+		t.Fatalf("seed over-cap Session: %v", err)
+	}
+	overCapBody, err := json.Marshal(workspaceConnectionLeaseRequest{SessionID: lastSessionID, TenantID: "tenant_lease_api", WorkspaceID: "ws_lease_api",
+		ResourcePlaneID: "rp_lease_api", MicroVMID: "vm_lease_api", AllocationGeneration: 1, ExpiresAt: time.Now().UTC().Add(90 * time.Second)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response := callLease(http.MethodPut, fmt.Sprintf("%048x", 100+workspaceactivity.MaxActiveLeasesPerWorkspace), "", overCapBody, true); response.Code != http.StatusTooManyRequests {
 		t.Fatalf("connection over shared Workspace cap response=%d %s, want 429", response.Code, response.Body.String())
 	}
 }

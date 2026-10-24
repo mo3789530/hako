@@ -40,12 +40,14 @@ func TestConnectionLeaseRenewReleaseExpiryAndRuntimeFence(t *testing.T) {
 			VALUES ('ws_activity', 'running', 'running', $1)`, []any{now}},
 		{`INSERT INTO resource_bindings (workspace_id, resource_plane_id, kind, external_id, created_at, allocation_generation)
 			VALUES ('ws_activity', 'rp_activity', 'lambda_microvm', 'vm_activity', $1, 4)`, []any{now}},
+		{`INSERT INTO sessions (id, user_id, tenant_id, workspace_id, resource_plane_id, permissions_json, expires_at, created_at)
+			VALUES ('abcdef0123456789abcdef0123456789abcdef0123456789', 'user_activity', 'tenant_activity', 'ws_activity', 'rp_activity', '["shell"]', $1, $2)`, []any{now.Add(10 * time.Minute), now}},
 	} {
 		if _, err := pool.Exec(ctx, statement.query, statement.args...); err != nil {
 			t.Fatalf("seed Workspace lease database: %v\nquery: %s", err, statement.query)
 		}
 	}
-	lease := Lease{ID: "0123456789abcdef0123456789abcdef0123456789abcdef", TenantID: "tenant_activity",
+	lease := Lease{ID: "0123456789abcdef0123456789abcdef0123456789abcdef", SessionID: "abcdef0123456789abcdef0123456789abcdef0123456789", TenantID: "tenant_activity",
 		WorkspaceID: "ws_activity", ResourcePlaneID: "rp_activity", MicroVMID: "vm_activity", AllocationGeneration: 4,
 		ExpiresAt: now.Add(90 * time.Second), Now: now}
 	renew := func(value Lease) error {
@@ -178,6 +180,13 @@ func TestConnectionLeaseLimitIsSharedAcrossConcurrentGatewayReplicas(t *testing.
 			t.Fatalf("seed Workspace lease limit database: %v\nquery: %s", err, statement.query)
 		}
 	}
+	for i := 0; i < MaxActiveLeasesPerWorkspace*2+1; i++ {
+		sessionID := fmt.Sprintf("%048x", i+1)
+		if _, err := pool.Exec(ctx, `INSERT INTO sessions (id, user_id, tenant_id, workspace_id, resource_plane_id, permissions_json, expires_at, created_at)
+			VALUES ($1, 'user_lease_limit', 'tenant_lease_limit', 'ws_lease_limit', 'rp_lease_limit', '["shell"]', $2, $3)`, sessionID, now.Add(10*time.Minute), now); err != nil {
+			t.Fatalf("seed connection Session %s: %v", sessionID, err)
+		}
+	}
 
 	const contenders = MaxActiveLeasesPerWorkspace * 2
 	results := make(chan error, contenders)
@@ -189,7 +198,7 @@ func TestConnectionLeaseLimitIsSharedAcrossConcurrentGatewayReplicas(t *testing.
 		go func(i int) {
 			defer workers.Done()
 			start.Wait()
-			lease := Lease{ID: fmt.Sprintf("%048x", i+1), TenantID: "tenant_lease_limit", WorkspaceID: "ws_lease_limit",
+			lease := Lease{ID: fmt.Sprintf("%048x", i+101), SessionID: fmt.Sprintf("%048x", i+1), TenantID: "tenant_lease_limit", WorkspaceID: "ws_lease_limit",
 				ResourcePlaneID: "rp_lease_limit", MicroVMID: "vm_lease_limit", AllocationGeneration: 1,
 				ExpiresAt: now.Add(90 * time.Second), Now: now}
 			_, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (struct{}, error) {
@@ -222,6 +231,9 @@ func TestConnectionLeaseLimitIsSharedAcrossConcurrentGatewayReplicas(t *testing.
 		t.Fatal(err)
 	}
 	renewal.TenantID, renewal.WorkspaceID, renewal.ResourcePlaneID = "tenant_lease_limit", "ws_lease_limit", "rp_lease_limit"
+	if err := pool.QueryRow(ctx, `SELECT id FROM sessions WHERE active_connection_lease_id=$1`, renewal.ID).Scan(&renewal.SessionID); err != nil {
+		t.Fatal(err)
+	}
 	renewal.MicroVMID, renewal.AllocationGeneration, renewal.Now = "vm_lease_limit", 1, now.Add(time.Second)
 	renewal.ExpiresAt = renewal.Now.Add(90 * time.Second)
 	if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (struct{}, error) {
@@ -235,12 +247,65 @@ func TestConnectionLeaseLimitIsSharedAcrossConcurrentGatewayReplicas(t *testing.
 	}
 	newLease := renewal
 	newLease.ID = fmt.Sprintf("%048x", contenders+1)
+	newLease.SessionID = fmt.Sprintf("%048x", contenders+1)
 	newLease.Now = now.Add(3 * time.Second)
 	newLease.ExpiresAt = newLease.Now.Add(90 * time.Second)
 	if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (struct{}, error) {
 		return struct{}{}, Renew(ctx, tx, newLease)
 	}); err != nil {
 		t.Fatalf("admit replacement lease after release: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE sessions SET active_connection_lease_id=NULL, active_connection_expires_at=NULL WHERE workspace_id='ws_lease_limit'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE workspace_connection_leases SET released_at=COALESCE(released_at, $1) WHERE workspace_id='ws_lease_limit'`, now.Add(4*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	sharedSession := fmt.Sprintf("%048x", contenders+1)
+	replayResults := make(chan error, 2)
+	var replayStart sync.WaitGroup
+	replayStart.Add(1)
+	for i := 0; i < 2; i++ {
+		workers.Add(1)
+		go func(i int) {
+			defer workers.Done()
+			replayStart.Wait()
+			lease := Lease{ID: fmt.Sprintf("%048x", 900+i), SessionID: sharedSession,
+				TenantID: "tenant_lease_limit", WorkspaceID: "ws_lease_limit", ResourcePlaneID: "rp_lease_limit",
+				MicroVMID: "vm_lease_limit", AllocationGeneration: 1, ExpiresAt: now.Add(6 * time.Second), Now: now.Add(5 * time.Second)}
+			_, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (struct{}, error) {
+				return struct{}{}, Renew(ctx, tx, lease)
+			})
+			replayResults <- err
+		}(i)
+	}
+	replayStart.Done()
+	workers.Wait()
+	close(replayResults)
+	replayAccepted, replayDenied := 0, 0
+	for err := range replayResults {
+		switch {
+		case err == nil:
+			replayAccepted++
+		case errors.Is(err, ErrSessionConnected):
+			replayDenied++
+		default:
+			t.Fatalf("same-Session concurrent admission failed unexpectedly: %v", err)
+		}
+	}
+	if replayAccepted != 1 || replayDenied != 1 {
+		t.Fatalf("same-Session concurrent admission accepted=%d denied=%d, want 1/1", replayAccepted, replayDenied)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE sessions SET active_connection_expires_at=$2 WHERE id=$1`, sharedSession, now.Add(5*time.Second)); err != nil {
+		t.Fatalf("expire failed Gateway Session claim: %v", err)
+	}
+	expiredClaimLease := Lease{ID: fmt.Sprintf("%048x", 910), SessionID: sharedSession, TenantID: "tenant_lease_limit",
+		WorkspaceID: "ws_lease_limit", ResourcePlaneID: "rp_lease_limit", MicroVMID: "vm_lease_limit", AllocationGeneration: 1,
+		ExpiresAt: now.Add(2 * time.Minute), Now: now.Add(6 * time.Second)}
+	if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (struct{}, error) {
+		return struct{}{}, Renew(ctx, tx, expiredClaimLease)
+	}); err != nil {
+		t.Fatalf("recover expired Gateway Session claim: %v", err)
 	}
 }
 

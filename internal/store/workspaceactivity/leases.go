@@ -20,14 +20,16 @@ const (
 )
 
 var (
-	ErrInvalidLease    = errors.New("invalid Workspace connection lease")
-	ErrStaleLease      = errors.New("Workspace connection lease does not match the active runtime")
-	ErrConnectionLimit = errors.New("Workspace active connection limit reached")
-	leaseIDPattern     = regexp.MustCompile(`^[a-f0-9]{48}$`)
+	ErrInvalidLease     = errors.New("invalid Workspace connection lease")
+	ErrStaleLease       = errors.New("Workspace connection lease does not match the active runtime")
+	ErrConnectionLimit  = errors.New("Workspace active connection limit reached")
+	ErrSessionConnected = errors.New("Workspace Session already has an active connection")
+	leaseIDPattern      = regexp.MustCompile(`^[a-f0-9]{48}$`)
 )
 
 type Lease struct {
 	ID                   string
+	SessionID            string
 	TenantID             domain.TenantID
 	WorkspaceID          domain.WorkspaceID
 	ResourcePlaneID      domain.ResourcePlaneID
@@ -89,6 +91,23 @@ func Renew(ctx context.Context, tx pgx.Tx, lease Lease) error {
 	if activeLeases >= MaxActiveLeasesPerWorkspace {
 		return ErrConnectionLimit
 	}
+	var claimedSessionID string
+	err = tx.QueryRow(ctx, `UPDATE sessions SET active_connection_lease_id = $6,
+		active_connection_expires_at = LEAST($7, expires_at)
+		WHERE id = $1 AND tenant_id = $2 AND workspace_id = $3 AND resource_plane_id = $4
+			AND expires_at > $5
+			AND (active_connection_lease_id IS NULL OR active_connection_lease_id = $6 OR active_connection_expires_at <= $5)
+		RETURNING id`, lease.SessionID, lease.TenantID, lease.WorkspaceID, lease.ResourcePlaneID,
+		lease.Now.UTC(), lease.ID, lease.ExpiresAt.UTC()).Scan(&claimedSessionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrSessionConnected
+	}
+	if err != nil {
+		return fmt.Errorf("claim Workspace Session connection: %w", err)
+	}
+	if claimedSessionID != lease.SessionID {
+		return ErrSessionConnected
+	}
 	var insertedID string
 	err = tx.QueryRow(ctx, `INSERT INTO workspace_connection_leases
 		(lease_id, tenant_id, workspace_id, resource_plane_id, microvm_id, allocation_generation, expires_at, created_at, renewed_at)
@@ -129,7 +148,16 @@ func Release(ctx context.Context, tx pgx.Tx, lease Lease) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("release Workspace connection lease: %w", err)
 	}
-	return result.RowsAffected() == 1, nil
+	if result.RowsAffected() != 1 {
+		return false, nil
+	}
+	if _, err := tx.Exec(ctx, `UPDATE sessions SET active_connection_lease_id = NULL, active_connection_expires_at = NULL
+		WHERE id = $1 AND tenant_id = $2 AND workspace_id = $3 AND resource_plane_id = $4
+			AND active_connection_lease_id = $5`, lease.SessionID, lease.TenantID, lease.WorkspaceID,
+		lease.ResourcePlaneID, lease.ID); err != nil {
+		return false, fmt.Errorf("release Workspace Session connection claim: %w", err)
+	}
+	return true, nil
 }
 
 func HasActiveLeases(ctx context.Context, tx pgx.Tx, workspaceID domain.WorkspaceID, planeID domain.ResourcePlaneID,
@@ -195,6 +223,6 @@ func validLease(lease Lease) bool {
 }
 
 func validLeaseIdentity(lease Lease) bool {
-	return leaseIDPattern.MatchString(lease.ID) && lease.TenantID != "" && lease.WorkspaceID != "" && lease.ResourcePlaneID != "" &&
+	return leaseIDPattern.MatchString(lease.ID) && leaseIDPattern.MatchString(lease.SessionID) && lease.TenantID != "" && lease.WorkspaceID != "" && lease.ResourcePlaneID != "" &&
 		lease.MicroVMID != "" && lease.AllocationGeneration > 0 && !lease.Now.IsZero()
 }

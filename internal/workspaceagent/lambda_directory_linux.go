@@ -102,13 +102,18 @@ func (d *WorkspaceLambdaMicroVMStreamDirectory) open(ctx context.Context, claims
 	}
 	var lease WorkspaceConnectionLeaseHandle
 	if d.Leases != nil {
-		lease, err = d.Leases.Open(lookupCtx, WorkspaceConnectionLeaseIdentity{TenantID: claims.TenantID,
+		lease, err = d.Leases.Open(lookupCtx, WorkspaceConnectionLeaseIdentity{SessionID: claims.TicketID, TenantID: claims.TenantID,
 			WorkspaceID: claims.WorkspaceID, ResourcePlaneID: claims.ResourcePlane, MicroVMID: journal.ProviderID,
 			AllocationGeneration: journal.AllocationGeneration})
 		if err != nil {
 			var status interface{ GatewayHTTPStatusCode() int }
-			if errors.As(err, &status) && status.GatewayHTTPStatusCode() == 429 {
-				return nil, ErrWorkspaceConnectionLimit
+			if errors.As(err, &status) {
+				switch status.GatewayHTTPStatusCode() {
+				case 429:
+					return nil, ErrWorkspaceConnectionLimit
+				case 409:
+					return nil, ErrWorkspaceSessionConnected
+				}
 			}
 			return nil, ErrInteractiveChannelUnavailable
 		}

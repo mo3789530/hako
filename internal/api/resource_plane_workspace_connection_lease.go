@@ -24,6 +24,7 @@ const maxWorkspaceConnectionLeaseRequestBytes = 2 << 10
 var workspaceConnectionLeaseIDPattern = workspaceServiceDesiredRequestIDPattern
 
 type workspaceConnectionLeaseRequest struct {
+	SessionID            string                 `json:"session_id"`
 	TenantID             domain.TenantID        `json:"tenant_id"`
 	WorkspaceID          domain.WorkspaceID     `json:"workspace_id"`
 	ResourcePlaneID      domain.ResourcePlaneID `json:"resource_plane_id"`
@@ -78,10 +79,11 @@ func workspaceConnectionLeaseHandler(pool transaction.Beginner, resolveKey Resou
 		decoder := json.NewDecoder(strings.NewReader(string(body)))
 		decoder.DisallowUnknownFields()
 		if decoder.Decode(&request) != nil || decoder.Decode(new(any)) != io.EOF || request.ResourcePlaneID != planeID ||
-			request.TenantID == "" || request.WorkspaceID == "" || request.MicroVMID == "" || request.AllocationGeneration < 1 || request.ExpiresAt.IsZero() {
+			!workspaceConnectionLeaseIDPattern.MatchString(request.SessionID) || request.TenantID == "" || request.WorkspaceID == "" ||
+			request.MicroVMID == "" || request.AllocationGeneration < 1 || request.ExpiresAt.IsZero() {
 			return echo.NewHTTPError(http.StatusBadRequest, "invalid Workspace connection lease request")
 		}
-		lease := workspaceactivity.Lease{ID: leaseID, TenantID: request.TenantID, WorkspaceID: request.WorkspaceID,
+		lease := workspaceactivity.Lease{ID: leaseID, SessionID: request.SessionID, TenantID: request.TenantID, WorkspaceID: request.WorkspaceID,
 			ResourcePlaneID: planeID, MicroVMID: request.MicroVMID, AllocationGeneration: request.AllocationGeneration,
 			ExpiresAt: request.ExpiresAt, Now: now}
 		_, err = transaction.Within(c.Request().Context(), pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (struct{}, error) {
@@ -99,6 +101,9 @@ func workspaceConnectionLeaseHandler(pool transaction.Beginner, resolveKey Resou
 		}
 		if errors.Is(err, workspaceactivity.ErrConnectionLimit) {
 			return echo.NewHTTPError(http.StatusTooManyRequests, "Workspace connection limit reached")
+		}
+		if errors.Is(err, workspaceactivity.ErrSessionConnected) {
+			return echo.NewHTTPError(http.StatusConflict, "Workspace Session already has an active connection")
 		}
 		if err != nil {
 			return fmt.Errorf("persist Workspace connection lease: %w", err)

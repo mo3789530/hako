@@ -28,11 +28,19 @@ const (
 )
 
 var ErrWorkspaceConnectionLimit error = workspaceConnectionLimitError{}
+var ErrWorkspaceSessionConnected error = workspaceSessionConnectedError{}
 
 type workspaceConnectionLimitError struct{}
 
 func (workspaceConnectionLimitError) Error() string              { return "Workspace connection limit reached" }
 func (workspaceConnectionLimitError) GatewayHTTPStatusCode() int { return http.StatusTooManyRequests }
+
+type workspaceSessionConnectedError struct{}
+
+func (workspaceSessionConnectedError) Error() string {
+	return "Workspace Session already has an active connection"
+}
+func (workspaceSessionConnectedError) GatewayHTTPStatusCode() int { return http.StatusConflict }
 
 type workspaceLeaseHTTPError struct{ status int }
 
@@ -42,6 +50,7 @@ func (e workspaceLeaseHTTPError) Error() string {
 func (e workspaceLeaseHTTPError) GatewayHTTPStatusCode() int { return e.status }
 
 type WorkspaceConnectionLeaseIdentity struct {
+	SessionID            string
 	TenantID             domain.TenantID
 	WorkspaceID          domain.WorkspaceID
 	ResourcePlaneID      domain.ResourcePlaneID
@@ -81,7 +90,7 @@ func NewSignedWorkspaceConnectionLeaseReporter(endpoint string, key []byte, clie
 }
 
 func (r *signedWorkspaceConnectionLeaseReporter) Open(ctx context.Context, identity WorkspaceConnectionLeaseIdentity) (WorkspaceConnectionLeaseHandle, error) {
-	if r == nil || ctx == nil || identity.TenantID == "" || identity.WorkspaceID == "" || identity.ResourcePlaneID == "" ||
+	if r == nil || ctx == nil || !validWorkspaceSessionID(identity.SessionID) || identity.TenantID == "" || identity.WorkspaceID == "" || identity.ResourcePlaneID == "" ||
 		!validWorkspaceHookVMID(identity.MicroVMID) || identity.AllocationGeneration < 1 {
 		return nil, ErrInteractiveChannelUnavailable
 	}
@@ -127,13 +136,14 @@ func (l *signedWorkspaceConnectionLease) Close() error {
 func (r *signedWorkspaceConnectionLeaseReporter) send(ctx context.Context, method, leasePath string,
 	identity WorkspaceConnectionLeaseIdentity, expiresAt time.Time) error {
 	body, err := json.Marshal(struct {
+		SessionID            string                 `json:"session_id"`
 		TenantID             domain.TenantID        `json:"tenant_id"`
 		WorkspaceID          domain.WorkspaceID     `json:"workspace_id"`
 		ResourcePlaneID      domain.ResourcePlaneID `json:"resource_plane_id"`
 		MicroVMID            string                 `json:"microvm_id"`
 		AllocationGeneration int64                  `json:"allocation_generation"`
 		ExpiresAt            time.Time              `json:"expires_at"`
-	}{identity.TenantID, identity.WorkspaceID, identity.ResourcePlaneID, identity.MicroVMID, identity.AllocationGeneration, expiresAt.UTC()})
+	}{identity.SessionID, identity.TenantID, identity.WorkspaceID, identity.ResourcePlaneID, identity.MicroVMID, identity.AllocationGeneration, expiresAt.UTC()})
 	if err != nil || len(body) > 2<<10 {
 		return ErrInteractiveChannelUnavailable
 	}
@@ -161,6 +171,18 @@ func (r *signedWorkspaceConnectionLeaseReporter) send(ctx context.Context, metho
 		return workspaceLeaseHTTPError{status: response.StatusCode}
 	}
 	return nil
+}
+
+func validWorkspaceSessionID(value string) bool {
+	if len(value) != 48 {
+		return false
+	}
+	for _, char := range value {
+		if !(char >= '0' && char <= '9') && !(char >= 'a' && char <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func noWorkspaceLeaseRedirectClient(client *http.Client) *http.Client {

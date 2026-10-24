@@ -260,12 +260,25 @@ func (g *Gateway) serveChecked(w http.ResponseWriter, r *http.Request, permissio
 	if err != nil || upstream == nil {
 		status := http.StatusBadGateway
 		var statusError interface{ GatewayHTTPStatusCode() int }
-		if errors.As(err, &statusError) && statusError.GatewayHTTPStatusCode() == http.StatusTooManyRequests {
-			status = http.StatusTooManyRequests
+		if errors.As(err, &statusError) {
+			candidate := statusError.GatewayHTTPStatusCode()
+			if candidate == http.StatusTooManyRequests || candidate == http.StatusConflict {
+				status = candidate
+			}
 		}
-		g.logFailure(r.Context(), claims, permission, "runtime_dial")
+		failureClass := "runtime_dial"
+		if status == http.StatusTooManyRequests {
+			failureClass = "connection_capacity"
+		} else if status == http.StatusConflict {
+			failureClass = "session_connection_replay"
+		}
+		g.logFailure(r.Context(), claims, permission, failureClass)
 		if status == http.StatusTooManyRequests {
 			http.Error(w, "Workspace connection limit reached", status)
+			return
+		}
+		if status == http.StatusConflict {
+			http.Error(w, "Workspace Session already has an active connection", status)
 			return
 		}
 		http.Error(w, "Workspace runtime is unavailable", status)

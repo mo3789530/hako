@@ -195,7 +195,7 @@ func (s *workspaceLeaseReporterStub) Open(_ context.Context, identity WorkspaceC
 }
 
 func TestWorkspaceLambdaDirectoryPreservesSharedConnectionLimit(t *testing.T) {
-	claims := workspacesession.Claims{UserID: "user-1", TenantID: "tenant-1", WorkspaceID: "workspace-1", ResourcePlane: "rp-1",
+	claims := workspacesession.Claims{TicketID: "abcdef0123456789abcdef0123456789abcdef0123456789", UserID: "user-1", TenantID: "tenant-1", WorkspaceID: "workspace-1", ResourcePlane: "rp-1",
 		Permissions: []workspacesession.Permission{workspacesession.PermissionShell}}
 	reporter := &workspaceLeaseReporterStub{err: workspaceLeaseHTTPError{status: 429}}
 	tokens := &gatewayTokenProviderStub{}
@@ -214,13 +214,28 @@ func TestWorkspaceLambdaDirectoryPreservesSharedConnectionLimit(t *testing.T) {
 	}
 }
 
+func TestWorkspaceLambdaDirectoryPreservesCrossGatewaySessionReplayConflict(t *testing.T) {
+	claims := workspacesession.Claims{TicketID: "abcdef0123456789abcdef0123456789abcdef0123456789", UserID: "user-1", TenantID: "tenant-1",
+		WorkspaceID: "workspace-1", ResourcePlane: "rp-1", Permissions: []workspacesession.Permission{workspacesession.PermissionShell}}
+	reporter := &workspaceLeaseReporterStub{err: workspaceLeaseHTTPError{status: 409}}
+	directory := &WorkspaceLambdaMicroVMStreamDirectory{ResourcePlaneID: "rp-1",
+		Journal: &workspaceJournalReaderStub{snapshot: workspacejournal.Snapshot{Journal: newRunningWorkspaceJournal(t, claims, "microvm-1"), ETag: `"running"`}},
+		MicroVMs: &workspaceMicroVMReaderStub{output: &lambdamicrovms.GetMicrovmOutput{MicrovmId: aws.String("microvm-1"),
+			State: types.MicrovmStateRunning, Endpoint: aws.String("https://microvm-1.lambda-microvm.us-east-1.on.aws")}},
+		Tokens: &gatewayTokenProviderStub{}, Tickets: &AgentTicketIssuer{KeyID: "k1", PrivateKey: makePrivateKey(t), TTL: time.Minute},
+		Leases: reporter, Region: "us-east-1", Origin: "https://gateway.hako.test", WebSocket: &gatewayWebSocketStub{}}
+	if _, err := directory.OpenShell(context.Background(), claims); !errors.Is(err, ErrWorkspaceSessionConnected) {
+		t.Fatalf("same-Session replay error=%v, want ErrWorkspaceSessionConnected", err)
+	}
+}
+
 type workspaceLeaseHandleStub struct{ refreshed, closed int }
 
 func (s *workspaceLeaseHandleStub) Refresh(context.Context) error { s.refreshed++; return nil }
 func (s *workspaceLeaseHandleStub) Close() error                  { s.closed++; return nil }
 
 func TestWorkspaceLambdaDirectoryCreatesAndReleasesAllocationBoundLease(t *testing.T) {
-	claims := workspacesession.Claims{UserID: "user-1", TenantID: "tenant-1", WorkspaceID: "workspace-1", ResourcePlane: "rp-1",
+	claims := workspacesession.Claims{TicketID: "abcdef0123456789abcdef0123456789abcdef0123456789", UserID: "user-1", TenantID: "tenant-1", WorkspaceID: "workspace-1", ResourcePlane: "rp-1",
 		Permissions: []workspacesession.Permission{workspacesession.PermissionShell}}
 	journal := newRunningWorkspaceJournal(t, claims, "microvm-1")
 	reporter := &workspaceLeaseReporterStub{}
@@ -232,7 +247,7 @@ func TestWorkspaceLambdaDirectoryCreatesAndReleasesAllocationBoundLease(t *testi
 		Tokens: &gatewayTokenProviderStub{token: "token"}, Tickets: &AgentTicketIssuer{KeyID: "k1", PrivateKey: makePrivateKey(t), TTL: time.Minute},
 		Leases: reporter, Region: "us-east-1", Origin: "https://gateway.hako.test", WebSocket: &gatewayWebSocketStub{stream: stream}}
 	opened, err := directory.OpenShell(context.Background(), claims)
-	if err != nil || reporter.opened != 1 || reporter.identity != (WorkspaceConnectionLeaseIdentity{TenantID: claims.TenantID,
+	if err != nil || reporter.opened != 1 || reporter.identity != (WorkspaceConnectionLeaseIdentity{SessionID: claims.TicketID, TenantID: claims.TenantID,
 		WorkspaceID: claims.WorkspaceID, ResourcePlaneID: claims.ResourcePlane, MicroVMID: "microvm-1", AllocationGeneration: 1}) {
 		t.Fatalf("connection lease was not bound to current allocation before stream: identity=%+v opened=%d err=%v", reporter.identity, reporter.opened, err)
 	}

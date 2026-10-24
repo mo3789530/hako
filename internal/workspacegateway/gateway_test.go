@@ -545,6 +545,28 @@ func TestGatewayReturnsTooManyRequestsForSharedWorkspaceConnectionLimit(t *testi
 	}
 }
 
+func TestGatewayReturnsConflictForSessionAlreadyConnectedOnAnotherReplica(t *testing.T) {
+	dialer := &testDialer{err: testGatewayStatusError(http.StatusConflict)}
+	gateway, err := New(Config{ResourcePlaneID: "rp_gateway_a", Verifier: newTestVerifier(t), Dialer: dialer,
+		AllowedOrigins: []string{"https://ide.example.test"}, MaxConnections: 2, MaxConnectionsPerWorkspace: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "https://gateway.example.test/v1/workspaces/ws_gateway_a/shell", nil)
+	request.Header.Set("Authorization", "Bearer "+issueTestTicket(t, []workspacesession.Permission{workspacesession.PermissionShell}))
+	request.Header.Set("Origin", "https://ide.example.test")
+	request.Header.Set("Upgrade", "websocket")
+	request.Header.Set("Connection", "Upgrade")
+	request.Header.Set("Sec-WebSocket-Version", "13")
+	request.Header.Set("Sec-WebSocket-Key", base64.StdEncoding.EncodeToString([]byte("1234567890123456")))
+	request.Header.Set("Sec-WebSocket-Protocol", "hako.workspace.v1")
+	response := httptest.NewRecorder()
+	gateway.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("Gateway status=%d body=%s, want 409", response.Code, response.Body.String())
+	}
+}
+
 func TestGatewayEmitsRedactedCloudWatchEMFConnectionMetrics(t *testing.T) {
 	var metrics lockedBuffer
 	gateway, server, token, _ := newTestGateway(t, Config{
