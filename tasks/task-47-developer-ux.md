@@ -108,9 +108,19 @@ Complete the basic interactive development flow and reproducible local-service t
   observed-state output, and fail-closed behavior when the token or API URL is
   missing. Existing polling tests cover transitions, cancellation, API errors,
   terminal states, and timeout. `go test ./cmd/hako -count=1 -coverprofile=...`
-  reports 49.1% package statement coverage; `workspace_waitCLI` is 85.7% and
-  the wait-state loop is 89.7%. This does not validate a deployed Gateway or
-  Lambda MicroVM.
+  reported 49.1% package statement coverage at that point; this was a
+  point-in-time result, not a minimum coverage gate.
+
+## File transfer CLI E2E and coverage refresh (2026-10-25)
+
+Added authenticated local API + TLS/WSS Gateway E2E for `hako cp` upload and
+`hako cp --from` download. Both flows verify the file-transfer-only Session,
+Tenant/Workspace route, remote `/workspace` path, transfer payload, Session
+revocation, and atomic local download commit without leaving a temporary file.
+`go test ./cmd/hako -count=1 -coverprofile=...` now reports 58.6% package
+statement coverage; `workspace_copy.go` is 70.5% overall and its path/ID
+validators are 100%. This is local protocol evidence and does not verify a
+deployed Lambda MicroVM or Gateway route.
 
 ## Acceptance criteria
 
