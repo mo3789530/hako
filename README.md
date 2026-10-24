@@ -1633,7 +1633,7 @@ Hakoは最初は **Lambda MicroVMを使ったRemote Development Environment** �
 - [ ] E2EテストをCIに組み込み、Fake Runtimeの必須実行とAWS環境の定期実行を設定する（Fake Runtime/PostgreSQL integration testはPR・main CIで毎回実行。AWS実環境の定期実行と専用OIDC role/environmentは未設定）。
 - [ ] E2E失敗時にログ、Operation履歴、関連AWS resource IDから原因を追跡できるようにする。
 - [ ] Backup/復旧、Workspace cleanup、孤立AWSリソース検出の運用手順を整備する。
-- [ ] BYOC、複数リージョン、Persistent DB、Billingの要件を個別ADRと後続タスクに分ける。
+- [x] BYOC ([ADR 0010](docs/adr/0010-customer-owned-resource-planes.md))、複数リージョン ([ADR 0011](docs/adr/0011-multi-region-resource-planes.md))、Persistent DB ([ADR 0012](docs/adr/0012-persistent-development-databases.md))、Billing ([ADR 0013](docs/adr/0013-usage-metering-and-billing.md)) の要件を個別ADRに記録する（要件整理のみ。実装は未承認・未着手）。
 
 ### Phase 9: Hako Software Factory
 

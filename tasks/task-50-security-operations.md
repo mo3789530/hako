@@ -129,3 +129,11 @@ error details do not enter those scheduled-handler logs or return values; the
 affected command packages pass. A source scan found no remaining `log.Fatal(err)`,
 `log.Fatalf(...%v...)`, or `log.Printf(...%v...)` patterns under `cmd/`.
 This does not verify deployed CloudWatch retention or alert operations.
+
+The deferred architecture requirements are now recorded as four separate
+ADRs: [BYOC](../docs/adr/0010-customer-owned-resource-planes.md),
+[multi-Region placement](../docs/adr/0011-multi-region-resource-planes.md),
+[persistent development databases](../docs/adr/0012-persistent-development-databases.md),
+and [usage metering/billing](../docs/adr/0013-usage-metering-and-billing.md).
+Each names an accountable owner role, scope, requirements, non-goals, and
+revisit conditions. They defer implementation and do not approve AWS changes.
