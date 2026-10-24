@@ -4,6 +4,12 @@ package githubbroker
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -201,14 +207,51 @@ func TestPostgresNativeAgentCredentialRequiresExactRunAndRepositoryOptIn(t *test
 	if reader.reads != 1 {
 		t.Fatalf("credential reader calls=%d, want 1 after default-off denial and enabled read", reader.reads)
 	}
+	brokerService, err := NewPostgresAgentModelCredentialService([]string{"rp-agent-credential"}, pool, transaction.DefaultPolicy(), reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := WithAgentModelCredential(http.NotFoundHandler(), brokerService)
+	callBroker := func(requestIdentity modelcredentials.AgentRunIdentity, caller string) *httptest.ResponseRecorder {
+		requestBody, marshalErr := json.Marshal(requestIdentity)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		request := httptest.NewRequest(http.MethodPost, agentModelCredentialRoute, strings.NewReader(string(requestBody)))
+		request.Header.Set("Content-Type", "application/json")
+		callerURI, parseErr := url.Parse(caller)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		certificate := &x509.Certificate{URIs: []*url.URL{callerURI}}
+		request.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{certificate}, VerifiedChains: [][]*x509.Certificate{{certificate}}}
+		response := httptest.NewRecorder()
+		broker.ServeHTTP(response, request)
+		return response
+	}
+	brokerResponse := callBroker(identity, resourcePlaneURIPrefix+"rp-agent-credential")
+	var brokerCredential struct {
+		Credential []byte `json:"credential"`
+	}
+	if brokerResponse.Code != http.StatusOK || brokerResponse.Header().Get("Cache-Control") != "no-store" ||
+		json.Unmarshal(brokerResponse.Body.Bytes(), &brokerCredential) != nil || string(brokerCredential.Credential) != "sk-ant-synthetic-agent-key" {
+		t.Fatalf("DB-backed Broker credential response status=%d cache=%q body=%q", brokerResponse.Code, brokerResponse.Header().Get("Cache-Control"), brokerResponse.Body.String())
+	}
+	clear(brokerCredential.Credential)
+	wrongPlaneIdentity := identity
+	wrongPlaneIdentity.ResourcePlaneID = "rp-another-plane"
+	brokerReads := reader.reads
+	if response := callBroker(wrongPlaneIdentity, resourcePlaneURIPrefix+"rp-agent-credential"); response.Code != http.StatusForbidden || reader.reads != brokerReads {
+		t.Fatalf("Broker accepted foreign-plane identity: status=%d reader_calls=%d want=%d", response.Code, reader.reads, brokerReads)
+	}
 	wrongAttempt := identity
 	wrongAttempt.Generation++
-	if err := resolver.WithAgentRunCredential(ctx, wrongAttempt, func(context.Context, []byte) error { t.Fatal("stale attempt reached Agent consumer"); return nil }); err == nil || reader.reads != 1 {
+	if err := resolver.WithAgentRunCredential(ctx, wrongAttempt, func(context.Context, []byte) error { t.Fatal("stale attempt reached Agent consumer"); return nil }); err == nil || reader.reads != brokerReads {
 		t.Fatalf("stale attempt error=%v reads=%d", err, reader.reads)
 	}
 	wrongPlane := identity
 	wrongPlane.ResourcePlaneID = "rp-another-plane"
-	if err := resolver.WithAgentRunCredential(ctx, wrongPlane, func(context.Context, []byte) error { t.Fatal("foreign Plane reached Agent consumer"); return nil }); err == nil || reader.reads != 1 {
+	if err := resolver.WithAgentRunCredential(ctx, wrongPlane, func(context.Context, []byte) error { t.Fatal("foreign Plane reached Agent consumer"); return nil }); err == nil || reader.reads != brokerReads {
 		t.Fatalf("foreign Plane error=%v reads=%d", err, reader.reads)
 	}
 	reader.change = func(ctx context.Context) {
@@ -218,7 +261,7 @@ func TestPostgresNativeAgentCredentialRequiresExactRunAndRepositoryOptIn(t *test
 		}
 	}
 	var staleDelivered []byte
-	if err := resolver.WithAgentRunCredential(ctx, identity, func(_ context.Context, value []byte) error { staleDelivered = value; return nil }); err == nil || staleDelivered != nil || reader.reads != 2 {
+	if err := resolver.WithAgentRunCredential(ctx, identity, func(_ context.Context, value []byte) error { staleDelivered = value; return nil }); err == nil || staleDelivered != nil || reader.reads != brokerReads+1 {
 		t.Fatalf("credential rotated during read was delivered: err=%v delivered=%q reads=%d", err, staleDelivered, reader.reads)
 	}
 	reader.change = nil

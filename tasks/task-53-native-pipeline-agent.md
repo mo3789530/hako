@@ -217,9 +217,12 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   rotation during read. An allowlisted Resource Plane mTLS Broker endpoint and
   bounded no-store HTTP client expose this credential only to the trusted
   Worker process; endpoint tests cover mTLS identity, strict request decoding,
-  response bounds, and cache policy. The Worker and guest process are not yet
-  composed with this client; Agent execution remains disabled, and these tests
-  did not call AWS or retrieve a real Secret.
+  response bounds, and cache policy. A PostgreSQL integration test crosses the
+  DB resolver, broker Service, and HTTP route with a synthetic SecretReader;
+  it verifies the allowed Plane response and foreign-plane rejection. The
+  Worker and guest process are not yet composed with this client; Agent
+  execution remains disabled, and these tests did not call AWS or retrieve a
+  real Secret.
 
 - Added a shared `internal/agenttask` canonical digest implementation used by
   Control Plane persistence, Broker validation, Resource Plane Worker, and
