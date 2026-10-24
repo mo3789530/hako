@@ -438,9 +438,42 @@ func main() {
 			}
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: hako login | hako api health | hako tenant membership <tenant-id> | hako tenant quota get <tenant-id> | hako tenant quota set <tenant-id> <workspaces 1-10> <workload-runs 1-5> [artifact-storage-GiB 1-100 [service-memory-GiB 1-2 service-millicpu 1-1500 [preview-runs 1-5 preview-lifetime-hours 1-24]]] [--yes] | hako usage <tenant-id> | hako service usage <tenant-id> <workspace-id> | hako tenant placement-policy get <tenant-id> | hako tenant placement-policy set <tenant-id> '<policy-json>' | hako tenant workspace-idle-policy get <tenant-id> | hako tenant workspace-idle-policy set <tenant-id> <enabled:true|false> <grace-seconds:300-86400> | hako create <tenant-id> <workspace-name> [--idempotency-key <key>] | hako list <tenant-id> [limit] [offset] | hako get <tenant-id> <workspace-id> | hako wait <tenant-id> <workspace-id> [--state running|suspended|deleted] [--timeout 10m] [--interval 2s] | hako shell <tenant-id> <workspace-id> | hako open <tenant-id> <workspace-id> [local-port] | hako ssh-proxy <tenant-id> <workspace-id> | hako cp <tenant-id> <workspace-id> <local-path> <workspace-path> | hako cp --from <tenant-id> <workspace-id> <workspace-path> <local-path> | hako forward <tenant-id> <workspace-id> <remote-port> [local-port] | hako suspend|resume|delete <tenant-id> <workspace-id> [--idempotency-key <key>] [--wait (resume only)] | hako workload create --tenant <id> --installation <id> --repository <id> --commit <sha> [--ref <ref>] [--timeout-seconds <seconds>] [--idempotency-key <key>] | hako workload list <tenant-id> [limit] [offset] | hako workload show <tenant-id> <run-id> | hako workload cancel <tenant-id> <run-id>")
+		_ = writeCLIUsage(os.Stderr)
 		os.Exit(2)
 	}
+}
+
+func writeCLIUsage(output io.Writer) error {
+	_, err := fmt.Fprint(output, `usage: hako <command>
+
+Authentication and Tenant:
+  hako login
+  hako api health
+  hako tenant membership <tenant-id>
+  hako tenant quota get|set <tenant-id> ...
+  hako usage <tenant-id>
+
+Workspace:
+  hako create <tenant-id> <workspace-name> [--idempotency-key <key>]
+  hako list <tenant-id> [limit] [offset]
+  hako get|wait|shell|open|ssh-proxy <tenant-id> <workspace-id> ...
+  hako cp <tenant-id> <workspace-id> <local-path> <workspace-path>
+  hako cp --from <tenant-id> <workspace-id> <workspace-path> <local-path>
+  hako forward <tenant-id> <workspace-id> <remote-port> [local-port]
+  hako suspend|resume|delete <tenant-id> <workspace-id> [options]
+
+Workspace Services:
+  hako add <tenant-id> <workspace-id> postgres|redis [instance-name]
+  hako services <tenant-id> <workspace-id>
+  hako service usage <tenant-id> <workspace-id>
+  hako service start|stop|remove|rotate-credentials <tenant-id> <workspace-id> <instance-name>
+
+Workloads:
+  hako workload create --tenant <id> --installation <id> --repository <id> --commit <sha> [options]
+  hako workload list <tenant-id> [limit] [offset]
+  hako workload show|cancel <tenant-id> <run-id>
+`)
+	return err
 }
 
 func writeWorkspaceServiceList(output io.Writer, items []domain.Service) error {

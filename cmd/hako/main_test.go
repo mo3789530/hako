@@ -32,6 +32,23 @@ func TestWorkspaceServiceHealthRequiresCurrentRuntimeObservation(t *testing.T) {
 	}
 }
 
+func TestCLIUsageListsWorkspaceServiceCommands(t *testing.T) {
+	var output bytes.Buffer
+	if err := writeCLIUsage(&output); err != nil {
+		t.Fatalf("writeCLIUsage: %v", err)
+	}
+	for _, command := range []string{
+		"hako add <tenant-id> <workspace-id> postgres|redis",
+		"hako services <tenant-id> <workspace-id>",
+		"hako service usage <tenant-id> <workspace-id>",
+		"hako service start|stop|remove|rotate-credentials",
+	} {
+		if !strings.Contains(output.String(), command) {
+			t.Errorf("CLI usage does not list %q", command)
+		}
+	}
+}
+
 func TestParseTenantQuotaSetArgs(t *testing.T) {
 	tests := []struct {
 		name       string
