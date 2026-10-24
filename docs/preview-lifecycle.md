@@ -26,15 +26,26 @@ deliveries; the webhook receipt timestamp is used only when that field is
 missing. Equal timestamps use Delivery ID as a deterministic tie-breaker.
 Duplicate deliveries are suppressed by the durable webhook inbox.
 
+Each present Preview records a fixed `expires_at` using the Tenant's configured
+Preview lifetime (24 hours when no quota row exists). `synchronize` deliveries
+update the pinned commit without extending that lifetime; a valid `reopened`
+event starts a new lifetime. The bounded `previews.ExpireDue` store operation
+transitions expired rows to `desired_state=absent,state=cleanup_pending` and is
+idempotent. It never marks a Preview `cleaned`; a later runtime cleanup worker
+must confirm physical deletion before doing so. Migrations 000142–000144 add
+the expiry column and index, and backfill existing present records using their
+Tenant quota or the 24-hour fallback.
+
 ## Runtime and cleanup status
 
 This is lifecycle metadata only. No MicroVM is created and no Gateway route is
 published: responses report `runtime_enabled: false`, and records remain in
 `awaiting_runtime` or `cleanup_pending`. The existing Lambda MicroVM Workspace
 runtime does not yet provision a PR-scoped Workspace binding or expiring
-Tenant-scoped Gateway route. A cleanup worker, retry/backoff transition to
-`cleaned`, expiry sweep, route authorization, and Preview quota reservation are
-still required before Preview can be enabled for user traffic.
+Tenant-scoped Gateway route. Scheduled invocation of the expiry sweep, a
+cleanup worker with retry/backoff transition to `cleaned`, route authorization,
+and Preview quota reservation are still required before Preview can be enabled
+for user traffic.
 
 When runtime execution is added, it must bind the immutable PR head SHA to an
 isolated Workspace, enforce Tenant authorization on every route, respect the

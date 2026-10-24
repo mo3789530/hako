@@ -5,8 +5,10 @@ PostgreSQL RBAC/reference integration coverage are implemented. OIDC deploy
 policy API/CLI and fixed-GitHub-issuer RS256/JWKS claim verification are now
 implemented locally; no STS exchange or deployment execution is enabled.
 Tenant-scoped Preview opt-in and transactional PR desired-state tracking are
-implemented locally, including stale GitHub `updated_at` fencing. Preview
-MicroVM allocation, Gateway routing, expiry and cleanup execution/retries, and
+implemented locally, including stale GitHub `updated_at` fencing, fixed
+Tenant-quota-based expiry metadata, and a bounded idempotent expiry-to-cleanup
+transition. Preview MicroVM allocation, Gateway routing, scheduled sweep,
+physical cleanup execution/retries, and
 production IAM wiring remain incomplete. The dormant approval verifier checks
 the live Actions run attempt against signed repository, owner, ref, SHA,
 workflow and event claims, checks pending deployments and approval history,
@@ -71,6 +73,12 @@ Add optional repository-level preview environments and service metadata/deploy p
   Migration 000140 adds the opt-in, and 000141 adds the lifecycle table.
   Runtime allocation is explicitly reported disabled; this change does not
   create a MicroVM, Workspace, or Gateway route.
+- Migrations 000142–000144 record the fixed quota-based `expires_at` (24-hour
+  fallback), and bounded `previews.ExpireDue` moves expired present records to
+  `cleanup_pending` without claiming physical deletion. Reopen starts a new
+  lifetime; synchronize does not extend it. PostgreSQL E2E verifies expiry and
+  duplicate sweep idempotency. Scheduled invocation and a runtime cleanup
+  worker remain unimplemented.
 - `go test ./...` passed. PostgreSQL Preview lifecycle E2E passed against the
   local `hako-dev-postgres`, including stale delivery, close/reopen, Tenant
   scoping, and duplicate replay.
