@@ -16,11 +16,19 @@ import (
 // execution-bound Agent ticket and one image-configured source directory. No
 // request, queue, repository, or ticket field can select a filesystem path.
 type FilesystemExecutionResolver struct {
-	repositoryPath string
-	now            func() time.Time
+	repositoryPath   string
+	allowJobServices bool
+	now              func() time.Time
 }
 
 func NewFilesystemExecutionResolver(repositoryPath string, now func() time.Time) (*FilesystemExecutionResolver, error) {
+	return NewFilesystemExecutionResolverWithJobServices(repositoryPath, now, false)
+}
+
+// NewFilesystemExecutionResolverWithJobServices admits catalog Service
+// declarations only for an explicitly composed Job image. The default
+// constructor keeps them rejected.
+func NewFilesystemExecutionResolverWithJobServices(repositoryPath string, now func() time.Time, allowJobServices bool) (*FilesystemExecutionResolver, error) {
 	repositoryPath = strings.TrimSpace(repositoryPath)
 	if repositoryPath == "" || !filepath.IsAbs(repositoryPath) || strings.ContainsAny(repositoryPath, "\r\n,\\") {
 		return nil, ErrExecutionPlan
@@ -32,7 +40,7 @@ func NewFilesystemExecutionResolver(repositoryPath string, now func() time.Time)
 	if now == nil {
 		now = time.Now
 	}
-	return &FilesystemExecutionResolver{repositoryPath: absolute, now: now}, nil
+	return &FilesystemExecutionResolver{repositoryPath: absolute, allowJobServices: allowJobServices, now: now}, nil
 }
 
 func (r *FilesystemExecutionResolver) ResolveExecution(ctx context.Context, claims TicketClaims) (ExecutionPlan, error) {
@@ -58,7 +66,7 @@ func (r *FilesystemExecutionResolver) ResolveExecution(ctx context.Context, clai
 			return ExecutionPlan{}, ErrExecutionPlan
 		}
 		if plan.Kind != domain.WorkloadAgent {
-			pipelines, err := resolveFactoryPipelines(ctx, plan)
+			pipelines, err := resolveFactoryPipelines(ctx, plan, r.allowJobServices)
 			if err != nil {
 				return ExecutionPlan{}, err
 			}
@@ -68,7 +76,7 @@ func (r *FilesystemExecutionResolver) ResolveExecution(ctx context.Context, clai
 	return plan, nil
 }
 
-func resolveFactoryPipelines(ctx context.Context, execution ExecutionPlan) ([]factoryconfig.ExecutionPlan, error) {
+func resolveFactoryPipelines(ctx context.Context, execution ExecutionPlan, allowJobServices bool) ([]factoryconfig.ExecutionPlan, error) {
 	if ctx == nil || ctx.Err() != nil || execution.TriggerEvent == "" || execution.TriggerBranch == "" {
 		return nil, ErrExecutionPlan
 	}
@@ -92,7 +100,7 @@ func resolveFactoryPipelines(ctx context.Context, execution ExecutionPlan) ([]fa
 		plan, err := factoryconfig.Plan(config, name)
 		if err != nil || factoryconfig.ValidateExecutionPlan(plan) != nil || plan.RuntimeClass != "standard" ||
 			plan.MemoryMB > execution.JobMemoryLimitMB || plan.CPUMillis > execution.JobCPULimitMillis ||
-			plan.Network != "registry-only" || len(plan.Services) != 0 {
+			plan.Network != "registry-only" || len(plan.Services) != 0 && !allowJobServices {
 			return nil, ErrFactoryManifest
 		}
 		plans = append(plans, plan)

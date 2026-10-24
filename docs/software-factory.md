@@ -477,11 +477,12 @@ admission-time validation against the manifest's own declared budget. The
 separate Linux Job Service Engine now provisions only fixed `postgres` and
 `redis` templates with attempt-scoped internal networks, ephemeral tmpfs,
 catalog CPU/memory limits, loopback-only published ports, generated credentials,
-health checks, and bounded cleanup. It is opt-in and is not composed with the
-trusted manifest resolver yet; that resolver continues to reject `services`
-until the Lambda MicroVM image, runtime profile limits, and egress policy are
-validated. The Job command process budget is not yet enforced as an aggregate
-cgroup limit.
+health checks, and bounded cleanup. It is opt-in: the guest manifest resolver
+admits `services` only when the Agent is explicitly composed with that Job
+Service manager. The default resolver and default workload image continue to
+reject/disable services. This local composition does not establish Lambda
+MicroVM cgroup enforcement, target-image availability, or egress policy. The
+Job command process budget is not yet enforced as an aggregate cgroup limit.
 
 `make test-job-services-podman` runs the production service engine against a
 local rootless Podman daemon through a test-only CLI adapter. It requires a
@@ -510,9 +511,9 @@ retains the legacy fixed Go-test path; an invalid manifest or an event matching
 no pipeline fails the Run instead of silently falling back.
 
 The current Agent runtime supports only `standard` with `registry-only`
-network policy. It rejects manifests declaring service containers, `network:
-none`, or another runtime class because the Job Service engine and network
-profiles are not connected yet. Memory and CPU values are parsed and bounded,
+network policy. Unless the opt-in Job Service manager is composed, it rejects
+manifests declaring service containers. `network: none` and other runtime
+classes are rejected. Memory and CPU values are parsed and bounded,
 but are not yet enforced against the selected MicroVM profile. Tool
 executables must exist in the selected immutable MicroVM image; missing tools
 fail the Run.

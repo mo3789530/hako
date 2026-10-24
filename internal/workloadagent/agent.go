@@ -16,6 +16,7 @@ type FilesystemAgentConfig struct {
 	MaxOutput             int
 	Now                   func() time.Time
 	RequireRuntimeBinding bool
+	AllowJobServices      bool
 }
 
 // FilesystemAgent composes the authenticated protocol, verified source
@@ -27,7 +28,7 @@ type FilesystemAgent struct {
 }
 
 func NewFilesystemAgent(config FilesystemAgentConfig) (*FilesystemAgent, error) {
-	resolver, err := NewFilesystemExecutionResolver(config.SourceDirectory, config.Now)
+	resolver, err := NewFilesystemExecutionResolverWithJobServices(config.SourceDirectory, config.Now, config.AllowJobServices)
 	if err != nil {
 		return nil, err
 	}

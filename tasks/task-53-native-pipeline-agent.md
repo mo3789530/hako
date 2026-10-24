@@ -232,10 +232,11 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   `SELECT 1`. The fixture does not print the generated credential or provider
   error text. This verifies the local handoff and port path, not target
   MicroVM/nerdctl enforcement.
-- Production composition still does not inject this provisioner, and the
-  trusted manifest resolver rejects pipelines declaring Services. Rootless
-  containerd is available only in a dedicated opt-in image target and must be
-  exercised in the target MicroVM. The runtime socket stays owned by UID
+- The guest resolver admits Service declarations only when image-owned
+  configuration explicitly enables the Job Service manager; its default
+  constructor and the default image remain disabled. Rootless containerd is
+  available only in a dedicated opt-in image target and must be exercised in
+  the target MicroVM. The runtime socket stays owned by UID
   100000, distinct from the Job UID; target nerdctl label inspection, pinned
   ARM64 image behavior, host firewall support, and container egress need
   execution tests. Those conditions keep Service pipelines and Agent
@@ -322,11 +323,11 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   propagation, and over-capacity rejection. These configured ceilings do not
   prove that Lambda MicroVM cgroups enforce them; target runtime validation is
   still required.
-- Added a regression test that first proves a valid `postgres` sidecar plan
-  passes manifest admission, then verifies the Workload Agent refuses to run it
-  until a Job/attempt-scoped executor is composed. This protects the boundary
-  against accidental reuse of Workspace-owned Service IDs or volumes; it does
-  not complete service orchestration.
+- The guest resolver admits a valid `postgres` sidecar plan only through an
+  explicit Job Service configuration; default admission remains fail-closed.
+  The Agent enables this only when the image has composed the Job-scoped
+  manager. This protects the boundary against accidental reuse of
+  Workspace-owned Service IDs or volumes; it does not prove target enforcement.
 
 ## Remaining runtime implementation gates
 
@@ -345,8 +346,9 @@ rootless CPU/memory limits require systemd and cgroup v2
 ([v2.4.1 rootless requirements](https://github.com/containerd/nerdctl/blob/v2.4.1/docs/rootless.md)).
 If the Lambda MicroVM image cannot provide that manager/delegation, service
 creation fails instead of relying on silently ignored limits. This command
-contract is unit-tested; target MicroVM enforcement remains unverified and
-Services remain disabled.
+contract is unit-tested; target MicroVM enforcement remains unverified. Service
+admission is default-off and must remain disabled in production until those
+target gates pass.
 
 - [ ] Provision only immutable Service Catalog entries (`postgres`, `redis`)
   on a Job/attempt-scoped rootless containerd network. No user-provided image,

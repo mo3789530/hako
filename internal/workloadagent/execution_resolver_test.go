@@ -146,6 +146,37 @@ pipelines:
 	}
 }
 
+func TestResolveFactoryPipelinesAdmitsServicesOnlyWhenExplicitlyEnabled(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".hako"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `version: 1
+on:
+  push:
+    branches: [main]
+pipelines:
+  verify:
+    steps: [checkout, go-test]
+    services: [postgres]
+`
+	if err := os.WriteFile(filepath.Join(root, ".hako", "factory.yaml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	execution := ExecutionPlan{RepositoryPath: root, TriggerEvent: "push", TriggerBranch: "main",
+		JobMemoryLimitMB: 4096, JobCPULimitMillis: 4000}
+	if _, err := resolveFactoryPipelines(context.Background(), execution, false); !errors.Is(err, ErrFactoryManifest) {
+		t.Fatalf("default resolver admitted Job Services: %v", err)
+	}
+	plans, err := resolveFactoryPipelines(context.Background(), execution, true)
+	if err != nil {
+		t.Fatalf("explicitly enabled Job Services rejected: %v", err)
+	}
+	if len(plans) != 1 || len(plans[0].Services) != 1 || plans[0].Services[0] != "postgres" {
+		t.Fatalf("resolved service plan = %+v", plans)
+	}
+}
+
 func TestReadFactoryManifestRejectsSymlinkedPath(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".hako"), 0o700); err != nil {

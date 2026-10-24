@@ -64,6 +64,7 @@ func run() error {
 		SourceDirectory:       sourceDirectory,
 		TrustedKeys:           keys,
 		RequireRuntimeBinding: true,
+		AllowJobServices:      jobServices != nil,
 		ProcessFactory: workloadagent.GoTestProcessFactory{
 			GoBinary:     "/usr/local/go/bin/go",
 			GoCache:      "/tmp/hako-go-cache",
