@@ -92,18 +92,28 @@ wrong channel/Workspace/Origin, plaintext rejection, denied/allowed port
 forwarding, per-Workspace connection cap, concurrent ticket replay rejection
 with reconnect-after-close, active-stream revocation and fail-closed lookup
 failure, upstream failure, and oversized frames. The concrete authenticated
-Gateway composition exists in the local service entrypoint; Terraform
-deployment, distributed limits, metrics/audit events, IDE process bridge, and
-Lambda MicroVM end-to-end stream PoC remain
-open Task 46/47 work.
+Gateway composition exists in the local service entrypoint. Each stream
+attempt emits a structured `workspace_gateway.connection` log. The service
+entrypoint also emits CloudWatch Embedded Metric Format records for connection
+events, rejected connections, active process connections, and duration. Metric
+dimensions are limited to Resource Plane, fixed channel, and fixed outcome;
+Tenant/Workspace IDs, tickets, and stream contents are excluded. These are
+process-local metrics and do not coordinate limits across Gateway replicas.
+Distributed limits, the VS Code process bridge, and the Lambda MicroVM
+end-to-end stream PoC remain open Task 46/47 work.
 
 ## Resource Plane Gateway process
 
 `cmd/hako-workspace-gateway` is the long-running HTTPS/WSS process entrypoint.
-It composes the session verifier, signed HTTPS/HMAC active-session client,
-S3-backed Workspace runtime journal, Lambda MicroVM lookup/auth-token client,
-and one-use Agent-ticket signer. It resolves a fresh runtime allocation per
-shell connection and never reads Aurora DSQL or accepts AWS credentials from
+It composes the session verifier, signed HTTPS/HMAC active-session and
+connection-lease clients, S3-backed Workspace runtime journal, Lambda MicroVM
+lookup/auth-token client, and one-use Agent-ticket signer. Before opening the
+Guest WSS stream it creates a lease bound to Tenant, Workspace, Resource Plane,
+MicroVM, and allocation generation. It renews that lease every 30 seconds with
+a 90-second expiry and releases it on stream close; missed release is recovered
+by expiry. A heartbeat failure closes the stream so a Workspace cannot remain
+connected without a durable lease. It resolves a fresh runtime allocation per
+connection and never reads Aurora DSQL or accepts AWS credentials from
 environment variables. AWS SDK default credentials are expected to come from
 the Resource Plane ECS task role. The included
 `cmd/hako-workspace-gateway/Dockerfile` builds a non-root ARM64 image, and
@@ -122,6 +132,8 @@ The process requires these deployment inputs:
 | `HAKO_GATEWAY_SESSION_PUBLIC_KEYS_FILE` | JSON map of signing key ID to raw-base64 Ed25519 public key; supports verification key overlap |
 | `HAKO_GATEWAY_SESSION_LOOKUP_ENDPOINT` | HTTPS Control Plane origin for active-session revalidation |
 | `HAKO_GATEWAY_SESSION_LOOKUP_KEY_FILE` | Raw per-Resource-Plane HMAC key bytes (at least 32 bytes), mounted as a secret |
+| `HAKO_GATEWAY_CONNECTION_LEASE_ENDPOINT` | HTTPS Control Plane origin for signed Workspace connection lease renew/release |
+| `HAKO_GATEWAY_CONNECTION_LEASE_KEY_FILE` | Raw per-Resource-Plane HMAC key bytes (at least 32 bytes), mounted as a secret |
 | `HAKO_GATEWAY_AGENT_TICKET_KEY_ID`, `HAKO_GATEWAY_AGENT_TICKET_KEY_FILE` | Active signing key ID and mounted Ed25519 PKCS#8 PEM private key |
 | `HAKO_WORKSPACE_RUNTIME_JOURNAL_BUCKET`, optional `HAKO_WORKSPACE_RUNTIME_JOURNAL_PREFIX` | Resource Plane journal location |
 | `HAKO_GATEWAY_MAX_CONNECTIONS`, `HAKO_GATEWAY_MAX_CONNECTIONS_PER_WORKSPACE` | In-process caps; defaults to 500 and 10 |
@@ -129,9 +141,16 @@ The process requires these deployment inputs:
 Private/HMAC key paths must be regular non-symlink files and not group/world
 writable. Secrets are not logged. A restart is currently required to rotate
 mounted keys; coordinate Session signer verification overlap and Guest Agent
-public-key image updates operationally. No Terraform service/task role/listener
-is provisioned yet, and no real Secret/AWS API/MicroVM was accessed. The
-process currently enables shell and the fixed VS Code bridge; guest port
+public-key image updates operationally. Resource Plane Terraform now provides
+a default-off Fargate/ALB deployment contract with a 60-minute WebSocket idle
+timeout, private task, HTTPS target group, exact MicroVM/journal/Secret IAM,
+ephemeral Secret loader volume, CPU
+scaling, and target-health/ALB-5xx alarms. It has only been checked with
+OpenTofu mock plans; no AWS apply, Secret retrieval, DNS change, or live
+MicroVM access occurred. The Secret loader and Gateway application share the
+ECS task role because ECS assigns one task role to every container; that role
+is restricted to the six exact Secret ARNs and configured runtime resources.
+The process currently enables shell and the fixed VS Code bridge; guest port
 forward fails closed. The VS Code bridge requires code-server to run at the
 fixed guest-loopback port and does not change its authentication policy.
 `/healthz` is an unauthenticated static liveness check,

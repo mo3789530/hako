@@ -1,6 +1,6 @@
 # Task 46: Hako Session Tickets and Gateway
 
-Status: In Progress (Ed25519 Gateway-audience ticket claims, RBAC-backed session API, HTTPS/HMAC active-session lookup, TLS/WSS core, shell/port local E2E, and a fixed-port VS Code bridge are implemented. `cmd/hako-workspace-gateway` composes the verifier, HTTPS session lookup, S3 runtime journal, Lambda MicroVM SDK/token provider, Agent ticket signer, and journal-backed shell/VS Code directory into a non-root HTTPS service; mounted-key/config validation and a local ARM64 container build target are included. Workspace image code-server startup is implemented with a pinned/checksummed ARM64 release and unprivileged process lifecycle; actual image build, Terraform deployment, production key/secret provisioning and rotation, distributed limits/metrics/audit, and live MicroVM connectivity remain). Priority: P1.
+Status: In Progress (Ed25519 Gateway-audience ticket claims, RBAC-backed session API, HTTPS/HMAC active-session lookup, TLS/WSS core, shell/port local E2E, fixed-port VS Code bridge, idle-lease reporting, structured connection logs, and CloudWatch EMF metrics are implemented. `cmd/hako-workspace-gateway` composes the verifier, HTTPS session/lease clients, S3 runtime journal, Lambda MicroVM SDK/token provider, Agent ticket signer, and journal-backed shell/VS Code directory into a non-root HTTPS service. A default-off Resource Plane Terraform contract now creates the 443-only ALB with a 60-minute WebSocket idle timeout, private ARM64 Fargate tasks, ephemeral Secret loader volume, exact journal/MicroVM/Secret IAM, CPU scaling, and health/5xx alarms; OpenTofu mock-plan tests cover disabled and enabled configurations. Actual AWS deployment, production key/secret/certificate/DNS/network provisioning, idle-sweep-to-Dispatcher runtime E2E, fleet-wide connection/rate limits, and live MicroVM connectivity remain. Priority: P1.
 
 ## Goal
 
@@ -84,3 +84,17 @@ application bytes remain Gateway-to-Resource-Plane and never transit the
 Control Plane. WSS tests exercise revocation and fail-closed lookup failure.
 This is per-process and is not a substitute for distributed connection limits
 or production runtime validation.
+
+## Progress update (2026-10-24, Gateway telemetry)
+
+The Gateway now emits one structured `workspace_gateway.connection` log for
+each stream attempt, with fixed channel/outcome fields, duration, current
+process connection count, and authenticated Tenant/Workspace identity when
+available. It excludes Session ticket values and stream contents. When the
+service entrypoint is used, it also writes CloudWatch Embedded Metric Format
+records for connection events, rejected connections, active connections, and
+duration. Metric dimensions are limited to Resource Plane, fixed channel, and
+fixed outcome; Tenant, Workspace, ticket, and error text are not dimensions.
+The focused Gateway and service-entrypoint Go tests pass. These metrics are
+process-local snapshots and do not implement fleet-wide connection/rate
+coordination or prove production CloudWatch ingestion.

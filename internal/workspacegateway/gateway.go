@@ -7,9 +7,11 @@ package workspacegateway
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -36,6 +38,8 @@ var (
 
 type StreamDialer interface {
 	OpenShell(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error)
+	OpenExec(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error)
+	OpenFileTransfer(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error)
 	OpenVSCode(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error)
 	OpenPort(context.Context, workspacesession.Claims, workspacesession.Permission, uint16) (io.ReadWriteCloser, error)
 }
@@ -56,15 +60,21 @@ type Config struct {
 	MaxConnectionsPerWorkspace int
 	MaxPayloadBytes            int
 	SessionRecheckInterval     time.Duration
+	Logger                     *slog.Logger
+	// MetricsWriter receives CloudWatch Embedded Metric Format JSON records.
+	// It must be an operational log sink (normally stdout), never a client stream.
+	MetricsWriter io.Writer
 }
 
 type Gateway struct {
-	config   Config
-	origins  map[string]struct{}
-	mu       sync.Mutex
-	active   int
-	byWS     map[domain.WorkspaceID]int
-	byTicket map[string]struct{}
+	config    Config
+	logger    *slog.Logger
+	origins   map[string]struct{}
+	mu        sync.Mutex
+	active    int
+	byWS      map[domain.WorkspaceID]int
+	byTicket  map[string]struct{}
+	metricsMu sync.Mutex
 }
 
 func New(config Config) (*Gateway, error) {
@@ -85,6 +95,9 @@ func New(config Config) (*Gateway, error) {
 	if config.SessionRecheckInterval == 0 {
 		config.SessionRecheckInterval = defaultSessionRecheckInterval
 	}
+	if config.Logger == nil {
+		config.Logger = slog.Default()
+	}
 	origins := make(map[string]struct{}, len(config.AllowedOrigins))
 	for _, raw := range config.AllowedOrigins {
 		parsed, err := url.Parse(raw)
@@ -93,7 +106,7 @@ func New(config Config) (*Gateway, error) {
 		}
 		origins[parsed.Scheme+"://"+strings.ToLower(parsed.Host)] = struct{}{}
 	}
-	return &Gateway{config: config, origins: origins, byWS: make(map[domain.WorkspaceID]int), byTicket: make(map[string]struct{})}, nil
+	return &Gateway{config: config, logger: config.Logger, origins: origins, byWS: make(map[domain.WorkspaceID]int), byTicket: make(map[string]struct{})}, nil
 }
 
 func (g *Gateway) Handler() http.Handler {
@@ -104,6 +117,8 @@ func (g *Gateway) Handler() http.Handler {
 		_, _ = io.WriteString(w, `{"status":"ok"}`)
 	})
 	mux.HandleFunc("GET /v1/workspaces/{workspace_id}/shell", g.serveShell)
+	mux.HandleFunc("GET /v1/workspaces/{workspace_id}/exec", g.serveExec)
+	mux.HandleFunc("GET /v1/workspaces/{workspace_id}/files", g.serveFiles)
 	mux.HandleFunc("GET /v1/workspaces/{workspace_id}/ssh", g.serveSSH)
 	mux.HandleFunc("GET /v1/workspaces/{workspace_id}/vscode", g.serveVSCode)
 	mux.HandleFunc("GET /v1/workspaces/{workspace_id}/ports/{port}", g.servePort)
@@ -121,6 +136,18 @@ func noStore(next http.Handler) http.Handler {
 func (g *Gateway) serveShell(w http.ResponseWriter, r *http.Request) {
 	g.serve(w, r, workspacesession.PermissionShell, func(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
 		return g.config.Dialer.OpenShell(ctx, claims)
+	})
+}
+
+func (g *Gateway) serveExec(w http.ResponseWriter, r *http.Request) {
+	g.serve(w, r, workspacesession.PermissionExec, func(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
+		return g.config.Dialer.OpenExec(ctx, claims)
+	})
+}
+
+func (g *Gateway) serveFiles(w http.ResponseWriter, r *http.Request) {
+	g.serve(w, r, workspacesession.PermissionFileTransfer, func(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
+		return g.config.Dialer.OpenFileTransfer(ctx, claims)
 	})
 }
 
@@ -170,6 +197,12 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request, permission works
 }
 
 func (g *Gateway) serveChecked(w http.ResponseWriter, r *http.Request, permission workspacesession.Permission, check streamCheck, open streamOpener) {
+	startedAt := time.Now()
+	outcome := "rejected"
+	var claims workspacesession.Claims
+	defer func() {
+		g.recordConnectionMetric(permission, outcome, time.Since(startedAt), claims)
+	}()
 	if r.TLS == nil {
 		http.Error(w, "HTTPS is required", http.StatusUpgradeRequired)
 		return
@@ -184,7 +217,8 @@ func (g *Gateway) serveChecked(w http.ResponseWriter, r *http.Request, permissio
 		return
 	}
 	token := bearer(r.Header.Get("Authorization"))
-	claims, err := g.config.Verifier.Authorize(r.Context(), token, permission)
+	verifiedClaims, err := g.config.Verifier.Authorize(r.Context(), token, permission)
+	claims = verifiedClaims
 	if err != nil {
 		status := http.StatusUnauthorized
 		if errors.Is(err, workspacesession.ErrSessionStateUnavailable) {
@@ -194,31 +228,37 @@ func (g *Gateway) serveChecked(w http.ResponseWriter, r *http.Request, permissio
 		return
 	}
 	if claims.WorkspaceID != workspaceID || claims.ResourcePlane != g.config.ResourcePlaneID {
+		g.logFailure(r.Context(), claims, permission, "session_scope_mismatch")
 		http.Error(w, "Workspace session is not authorized", http.StatusNotFound)
 		return
 	}
 	if check != nil {
 		if err := check(r.Context(), claims); err != nil {
+			g.logFailure(r.Context(), claims, permission, "route_authorization")
 			http.Error(w, "Workspace route is not authorized", http.StatusForbidden)
 			return
 		}
 	}
 	release, err := g.acquire(workspaceID, claims.TicketID)
 	if err != nil {
+		g.logFailure(r.Context(), claims, permission, "connection_capacity")
 		http.Error(w, "Workspace Gateway is at connection capacity", http.StatusTooManyRequests)
 		return
 	}
 	defer release()
 	if !allowedOrigin(r.Header.Get("Origin"), g.origins) {
+		g.logFailure(r.Context(), claims, permission, "origin_rejected")
 		http.Error(w, "Workspace session origin is not allowed", http.StatusForbidden)
 		return
 	}
 	if !validUpgradeRequest(r) {
+		g.logFailure(r.Context(), claims, permission, "websocket_upgrade_rejected")
 		http.Error(w, "valid WebSocket upgrade is required", http.StatusBadRequest)
 		return
 	}
 	upstream, err := open(r.Context(), claims)
 	if err != nil || upstream == nil {
+		g.logFailure(r.Context(), claims, permission, "runtime_dial")
 		http.Error(w, "Workspace runtime is unavailable", http.StatusBadGateway)
 		return
 	}
@@ -248,11 +288,106 @@ func (g *Gateway) serveChecked(w http.ResponseWriter, r *http.Request, permissio
 			proxyAuthorizedStreams(r.Context(), client, upstream, g.config.MaxPayloadBytes,
 				g.config.SessionRecheckInterval, func(ctx context.Context) error {
 					_, err := g.config.Verifier.Authorize(ctx, token, permission)
+					if err != nil {
+						g.logFailure(ctx, claims, permission, "session_recheck")
+					}
 					return err
 				})
 		},
 	}
 	server.ServeHTTP(w, r)
+	outcome = "disconnected"
+}
+
+type gatewayMetricEvent struct {
+	AWS struct {
+		Timestamp         int64 `json:"Timestamp"`
+		CloudWatchMetrics []struct {
+			Namespace  string     `json:"Namespace"`
+			Dimensions [][]string `json:"Dimensions"`
+			Metrics    []struct {
+				Name string `json:"Name"`
+				Unit string `json:"Unit"`
+			} `json:"Metrics"`
+		} `json:"CloudWatchMetrics"`
+	} `json:"_aws"`
+	ResourcePlaneID      string  `json:"ResourcePlaneId"`
+	Channel              string  `json:"Channel"`
+	Outcome              string  `json:"Outcome"`
+	ConnectionEvents     float64 `json:"ConnectionEvents"`
+	RejectedConnections  float64 `json:"RejectedConnections"`
+	ActiveConnections    float64 `json:"ActiveConnections"`
+	ConnectionDurationMS float64 `json:"ConnectionDurationMs"`
+}
+
+func (g *Gateway) recordConnectionMetric(permission workspacesession.Permission, outcome string, duration time.Duration, claims workspacesession.Claims) {
+	active, _ := g.ActiveConnections()
+	logger := g.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.InfoContext(context.Background(), "Workspace Gateway connection lifecycle",
+		"event", "workspace_gateway.connection", "resource_plane_id", g.config.ResourcePlaneID,
+		"channel", permission, "outcome", outcome, "duration_ms", duration.Milliseconds(),
+		"active_connections", active, "tenant_id", claims.TenantID, "workspace_id", claims.WorkspaceID)
+	if g.config.MetricsWriter == nil {
+		return
+	}
+	event := gatewayMetricEvent{
+		ResourcePlaneID: string(g.config.ResourcePlaneID), Channel: string(permission), Outcome: outcome,
+		ConnectionEvents: 1, ActiveConnections: float64(active), ConnectionDurationMS: float64(duration.Milliseconds()),
+	}
+	if outcome == "rejected" {
+		event.RejectedConnections = 1
+	}
+	event.AWS.Timestamp = time.Now().UnixMilli()
+	metric := struct {
+		Namespace  string     `json:"Namespace"`
+		Dimensions [][]string `json:"Dimensions"`
+		Metrics    []struct {
+			Name string `json:"Name"`
+			Unit string `json:"Unit"`
+		} `json:"Metrics"`
+	}{Namespace: "Hako/WorkspaceGateway", Dimensions: [][]string{{"ResourcePlaneId", "Channel", "Outcome"}}}
+	for _, definition := range []struct{ name, unit string }{
+		{"ConnectionEvents", "Count"}, {"RejectedConnections", "Count"},
+		{"ActiveConnections", "Count"}, {"ConnectionDurationMs", "Milliseconds"},
+	} {
+		metric.Metrics = append(metric.Metrics, struct {
+			Name string `json:"Name"`
+			Unit string `json:"Unit"`
+		}{Name: definition.name, Unit: definition.unit})
+	}
+	event.AWS.CloudWatchMetrics = []struct {
+		Namespace  string     `json:"Namespace"`
+		Dimensions [][]string `json:"Dimensions"`
+		Metrics    []struct {
+			Name string `json:"Name"`
+			Unit string `json:"Unit"`
+		} `json:"Metrics"`
+	}{metric}
+	encoded, err := json.Marshal(event)
+	if err != nil {
+		return
+	}
+	g.metricsMu.Lock()
+	defer g.metricsMu.Unlock()
+	if _, err := fmt.Fprintln(g.config.MetricsWriter, string(encoded)); err != nil {
+		logger.WarnContext(context.Background(), "Workspace Gateway metric write failed", "failure_class", "metrics_write")
+	}
+}
+
+func (g *Gateway) logFailure(ctx context.Context, claims workspacesession.Claims, permission workspacesession.Permission, failureClass string) {
+	logger := g.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.ErrorContext(ctx, "Workspace Gateway request failed",
+		"failure_class", failureClass,
+		"tenant_id", claims.TenantID,
+		"workspace_id", claims.WorkspaceID,
+		"resource_plane_id", claims.ResourcePlane,
+		"permission", permission)
 }
 
 // proxyAuthorizedStreams periodically rechecks the persisted Session while a

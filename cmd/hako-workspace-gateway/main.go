@@ -41,23 +41,25 @@ const maxGatewayKeyFileBytes = 64 << 10
 var gatewayKeyIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 type deploymentConfig struct {
-	ResourcePlaneID        domain.ResourcePlaneID
-	ListenAddress          string
-	TLSCertFile            string
-	TLSKeyFile             string
-	SessionPublicKeysFile  string
-	SessionLookupEndpoint  string
-	SessionLookupKeyFile   string
-	AgentTicketKeyID       string
-	AgentTicketKeyFile     string
-	PublicOrigin           string
-	JournalBucket          string
-	JournalPrefix          string
-	Region                 string
-	AllowedOrigins         []string
-	MaxConnections         int
-	MaxConnectionsPerWS    int
-	SessionRecheckInterval time.Duration
+	ResourcePlaneID         domain.ResourcePlaneID
+	ListenAddress           string
+	TLSCertFile             string
+	TLSKeyFile              string
+	SessionPublicKeysFile   string
+	SessionLookupEndpoint   string
+	SessionLookupKeyFile    string
+	ConnectionLeaseEndpoint string
+	ConnectionLeaseKeyFile  string
+	AgentTicketKeyID        string
+	AgentTicketKeyFile      string
+	PublicOrigin            string
+	JournalBucket           string
+	JournalPrefix           string
+	Region                  string
+	AllowedOrigins          []string
+	MaxConnections          int
+	MaxConnectionsPerWS     int
+	SessionRecheckInterval  time.Duration
 }
 
 func main() {
@@ -125,6 +127,15 @@ func buildGateway(awsCfg aws.Config, cfg deploymentConfig) (*workspacegateway.Ga
 	if err != nil {
 		return nil, errors.New("configure authenticated Control Plane session lookup")
 	}
+	leaseKey, err := readBoundedFile(cfg.ConnectionLeaseKeyFile, 4096, true)
+	if err != nil || len(leaseKey) < 32 || len(leaseKey) > 4096 {
+		return nil, errors.New("Workspace connection lease HMAC key file is invalid")
+	}
+	leases, err := workspaceagent.NewSignedWorkspaceConnectionLeaseReporter(cfg.ConnectionLeaseEndpoint, leaseKey, nil)
+	wipe(leaseKey)
+	if err != nil {
+		return nil, errors.New("configure authenticated Control Plane Workspace connection lease reporter")
+	}
 	agentKeyPEM, err := readBoundedFile(cfg.AgentTicketKeyFile, maxGatewayKeyFileBytes, true)
 	if err != nil {
 		return nil, errors.New("read Workspace Agent ticket key file")
@@ -143,14 +154,14 @@ func buildGateway(awsCfg aws.Config, cfg deploymentConfig) (*workspacegateway.Ga
 	directory := &workspaceagent.WorkspaceLambdaMicroVMStreamDirectory{
 		ResourcePlaneID: cfg.ResourcePlaneID, Journal: journal, MicroVMs: microVMs,
 		Tokens: workspaceagent.LambdaMicroVMAuthTokenProvider{API: microVMs}, Tickets: issuer,
-		Region: cfg.Region, Origin: cfg.PublicOrigin,
+		Leases: leases, Region: cfg.Region, Origin: cfg.PublicOrigin,
 	}
 	return workspacegateway.New(workspacegateway.Config{
 		ResourcePlaneID: cfg.ResourcePlaneID,
 		Verifier:        &workspacesession.Verifier{Keys: publicKeys, Audience: workspacesession.AudienceGateway, Lookup: lookup},
 		Dialer:          directory, AllowedOrigins: cfg.AllowedOrigins,
 		MaxConnections: cfg.MaxConnections, MaxConnectionsPerWorkspace: cfg.MaxConnectionsPerWS,
-		SessionRecheckInterval: cfg.SessionRecheckInterval,
+		SessionRecheckInterval: cfg.SessionRecheckInterval, MetricsWriter: os.Stdout,
 	})
 }
 
@@ -160,19 +171,21 @@ func loadDeploymentConfig(getenv func(string) string) (deploymentConfig, error) 
 	}
 	get := func(name string) string { return strings.TrimSpace(getenv(name)) }
 	cfg := deploymentConfig{
-		ResourcePlaneID:       domain.ResourcePlaneID(get("HAKO_RESOURCE_PLANE_ID")),
-		ListenAddress:         get("HAKO_GATEWAY_LISTEN_ADDRESS"),
-		TLSCertFile:           get("HAKO_GATEWAY_TLS_CERT_FILE"),
-		TLSKeyFile:            get("HAKO_GATEWAY_TLS_KEY_FILE"),
-		SessionPublicKeysFile: get("HAKO_GATEWAY_SESSION_PUBLIC_KEYS_FILE"),
-		SessionLookupEndpoint: get("HAKO_GATEWAY_SESSION_LOOKUP_ENDPOINT"),
-		SessionLookupKeyFile:  get("HAKO_GATEWAY_SESSION_LOOKUP_KEY_FILE"),
-		AgentTicketKeyID:      get("HAKO_GATEWAY_AGENT_TICKET_KEY_ID"),
-		AgentTicketKeyFile:    get("HAKO_GATEWAY_AGENT_TICKET_KEY_FILE"),
-		PublicOrigin:          get("HAKO_GATEWAY_PUBLIC_ORIGIN"),
-		JournalBucket:         get("HAKO_WORKSPACE_RUNTIME_JOURNAL_BUCKET"),
-		JournalPrefix:         get("HAKO_WORKSPACE_RUNTIME_JOURNAL_PREFIX"),
-		Region:                get("AWS_REGION"),
+		ResourcePlaneID:         domain.ResourcePlaneID(get("HAKO_RESOURCE_PLANE_ID")),
+		ListenAddress:           get("HAKO_GATEWAY_LISTEN_ADDRESS"),
+		TLSCertFile:             get("HAKO_GATEWAY_TLS_CERT_FILE"),
+		TLSKeyFile:              get("HAKO_GATEWAY_TLS_KEY_FILE"),
+		SessionPublicKeysFile:   get("HAKO_GATEWAY_SESSION_PUBLIC_KEYS_FILE"),
+		SessionLookupEndpoint:   get("HAKO_GATEWAY_SESSION_LOOKUP_ENDPOINT"),
+		SessionLookupKeyFile:    get("HAKO_GATEWAY_SESSION_LOOKUP_KEY_FILE"),
+		ConnectionLeaseEndpoint: get("HAKO_GATEWAY_CONNECTION_LEASE_ENDPOINT"),
+		ConnectionLeaseKeyFile:  get("HAKO_GATEWAY_CONNECTION_LEASE_KEY_FILE"),
+		AgentTicketKeyID:        get("HAKO_GATEWAY_AGENT_TICKET_KEY_ID"),
+		AgentTicketKeyFile:      get("HAKO_GATEWAY_AGENT_TICKET_KEY_FILE"),
+		PublicOrigin:            get("HAKO_GATEWAY_PUBLIC_ORIGIN"),
+		JournalBucket:           get("HAKO_WORKSPACE_RUNTIME_JOURNAL_BUCKET"),
+		JournalPrefix:           get("HAKO_WORKSPACE_RUNTIME_JOURNAL_PREFIX"),
+		Region:                  get("AWS_REGION"),
 	}
 	if cfg.ListenAddress == "" {
 		cfg.ListenAddress = ":8443"
@@ -199,9 +212,10 @@ func loadDeploymentConfig(getenv func(string) string) (deploymentConfig, error) 
 		}
 	}
 	if cfg.ResourcePlaneID == "" || cfg.TLSCertFile == "" || cfg.TLSKeyFile == "" || cfg.SessionPublicKeysFile == "" ||
-		cfg.SessionLookupEndpoint == "" || cfg.SessionLookupKeyFile == "" || cfg.AgentTicketKeyID == "" || cfg.AgentTicketKeyFile == "" ||
+		cfg.SessionLookupEndpoint == "" || cfg.SessionLookupKeyFile == "" || cfg.ConnectionLeaseEndpoint == "" || cfg.ConnectionLeaseKeyFile == "" ||
+		cfg.AgentTicketKeyID == "" || cfg.AgentTicketKeyFile == "" ||
 		cfg.PublicOrigin == "" || cfg.JournalBucket == "" || cfg.Region == "" || len(cfg.AllowedOrigins) == 0 {
-		return deploymentConfig{}, errors.New("Workspace Gateway requires Resource Plane, TLS, session keys, lookup endpoint/key, Agent key, journal, region, and allowed-origin configuration")
+		return deploymentConfig{}, errors.New("Workspace Gateway requires Resource Plane, TLS, session keys, lookup endpoint/key, connection lease endpoint/key, Agent key, journal, region, and allowed-origin configuration")
 	}
 	if !gatewayKeyIDPattern.MatchString(cfg.AgentTicketKeyID) {
 		return deploymentConfig{}, errors.New("HAKO_GATEWAY_AGENT_TICKET_KEY_ID is invalid")

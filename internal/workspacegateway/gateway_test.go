@@ -1,11 +1,14 @@
 package workspacegateway
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -26,6 +30,29 @@ import (
 type activeLookup struct {
 	active bool
 	err    error
+}
+
+type lockedBuffer struct {
+	mu sync.Mutex
+	bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(value []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.Buffer.Write(value)
+}
+
+func (b *lockedBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.Buffer.Bytes()...)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.Buffer.String()
 }
 
 func (l activeLookup) IsActive(context.Context, workspacesession.Claims) (bool, error) {
@@ -62,6 +89,12 @@ type testDialer struct {
 }
 
 func (d *testDialer) OpenShell(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
+	return d.open()
+}
+func (d *testDialer) OpenExec(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
+	return d.open()
+}
+func (d *testDialer) OpenFileTransfer(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
 	return d.open()
 }
 func (d *testDialer) OpenVSCode(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
@@ -141,6 +174,34 @@ func TestGatewaySSHProxyRejectsTicketWithoutDedicatedPermission(t *testing.T) {
 	}
 }
 
+func TestGatewayFileTransferRequiresDedicatedPermissionAndRoutesFilesStream(t *testing.T) {
+	gateway, server, _, dialer := newTestGateway(t, Config{MaxConnections: 1, MaxConnectionsPerWorkspace: 1})
+	defer server.Close()
+	if _, err := dialWorkspace(server.URL, "/v1/workspaces/ws_gateway_a/files", issueTestTicket(t, []workspacesession.Permission{workspacesession.PermissionShell}), "https://ide.example.test"); err == nil {
+		t.Fatal("file route accepted a shell-only ticket")
+	}
+	if dialer.opens.Load() != 0 {
+		t.Fatalf("runtime was opened before permission validation: %d", dialer.opens.Load())
+	}
+	token := issueTestTicket(t, []workspacesession.Permission{workspacesession.PermissionFileTransfer})
+	client, err := dialWorkspace(server.URL, "/v1/workspaces/ws_gateway_a/files", token, "https://ide.example.test")
+	if err != nil {
+		t.Fatalf("dial file-transfer WSS: %v", err)
+	}
+	if err := websocket.Message.Send(client, []byte("file-transfer-frame")); err != nil {
+		t.Fatal(err)
+	}
+	var received []byte
+	if err := websocket.Message.Receive(client, &received); err != nil || string(received) != "file-transfer-frame" {
+		t.Fatalf("file-transfer relay=%q error=%v", received, err)
+	}
+	_ = client.Close()
+	waitForConnections(t, gateway, 0)
+	if dialer.opens.Load() != 1 {
+		t.Fatalf("file-transfer runtime opens=%d, want 1", dialer.opens.Load())
+	}
+}
+
 func TestGatewayClientDialsTLSStreamWithShortLivedTicket(t *testing.T) {
 	_, server, token, _ := newTestGateway(t, Config{MaxConnections: 1, MaxConnectionsPerWorkspace: 1})
 	defer server.Close()
@@ -177,6 +238,23 @@ func TestGatewayClientUsesSSHProxyRouteWithoutCallerPort(t *testing.T) {
 	if _, err := Dial(context.Background(), server.URL, domain.WorkspaceID("ws_gateway_a"), workspacesession.PermissionSSHProxy, 22,
 		token, &tls.Config{RootCAs: serverTransport.TLSClientConfig.RootCAs}); err == nil {
 		t.Fatal("SSH proxy client must not accept a caller-selected port")
+	}
+}
+
+func TestGatewayClientUsesFileTransferRouteWithoutCallerPort(t *testing.T) {
+	_, server, _, _ := newTestGateway(t, Config{MaxConnections: 1, MaxConnectionsPerWorkspace: 1})
+	defer server.Close()
+	token := issueTestTicket(t, []workspacesession.Permission{workspacesession.PermissionFileTransfer})
+	serverTransport := server.Client().Transport.(*http.Transport)
+	connection, err := Dial(context.Background(), server.URL, domain.WorkspaceID("ws_gateway_a"), workspacesession.PermissionFileTransfer, 0,
+		token, &tls.Config{RootCAs: serverTransport.TLSClientConfig.RootCAs})
+	if err != nil {
+		t.Fatalf("dial file-transfer endpoint: %v", err)
+	}
+	_ = connection.Close()
+	if _, err := Dial(context.Background(), server.URL, domain.WorkspaceID("ws_gateway_a"), workspacesession.PermissionFileTransfer, 22,
+		token, &tls.Config{RootCAs: serverTransport.TLSClientConfig.RootCAs}); err == nil {
+		t.Fatal("file-transfer client must not accept a caller-selected port")
 	}
 }
 
@@ -439,6 +517,42 @@ func TestGatewayConnectionLimitAndUpstreamFailure(t *testing.T) {
 	}
 }
 
+func TestGatewayEmitsRedactedCloudWatchEMFConnectionMetrics(t *testing.T) {
+	var metrics lockedBuffer
+	gateway, server, token, _ := newTestGateway(t, Config{
+		MaxConnections: 2, MaxConnectionsPerWorkspace: 1, MetricsWriter: &metrics,
+	})
+	defer server.Close()
+	client, err := dialWorkspace(server.URL, "/v1/workspaces/ws_gateway_a/shell", token, "https://ide.example.test")
+	if err != nil {
+		t.Fatalf("dial Gateway: %v", err)
+	}
+	_ = client.Close()
+	waitForConnections(t, gateway, 0)
+	deadline := time.Now().Add(time.Second)
+	for len(metrics.Bytes()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+
+	var event map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(metrics.Bytes()), &event); err != nil {
+		t.Fatalf("decode EMF metric: %v; raw=%s", err, metrics.String())
+	}
+	if event["ResourcePlaneId"] != "rp_gateway_a" || event["Channel"] != string(workspacesession.PermissionShell) || event["Outcome"] != "disconnected" {
+		t.Fatalf("unexpected metric dimensions: %#v", event)
+	}
+	if event["ConnectionEvents"] != float64(1) || event["RejectedConnections"] != float64(0) || event["ActiveConnections"] != float64(0) {
+		t.Fatalf("unexpected metric values: %#v", event)
+	}
+	if strings.Contains(metrics.String(), token) || strings.Contains(metrics.String(), "tenant_gateway") || strings.Contains(metrics.String(), "ws_gateway_a") {
+		t.Fatalf("metric contains a credential or high-cardinality identity: %s", metrics.String())
+	}
+	aws, ok := event["_aws"].(map[string]any)
+	if !ok || aws["CloudWatchMetrics"] == nil {
+		t.Fatalf("missing CloudWatch EMF directive: %#v", event["_aws"])
+	}
+}
+
 func TestGatewayRechecksAndClosesActiveStreamAfterSessionRevocation(t *testing.T) {
 	lookup := &revokingActiveLookup{}
 	verifier := &workspacesession.Verifier{Keys: map[string]ed25519.PublicKey{"gateway-test": testPublicKey()},
@@ -479,11 +593,12 @@ func TestGatewayRechecksAndClosesActiveStreamAfterSessionRevocation(t *testing.T
 
 func TestGatewayFailsClosedWhenActiveSessionRecheckIsUnavailable(t *testing.T) {
 	lookup := &revokingActiveLookup{err: errors.New("synthetic lookup failure")}
+	var logs lockedBuffer
 	verifier := &workspacesession.Verifier{Keys: map[string]ed25519.PublicKey{"gateway-test": testPublicKey()},
 		Audience: workspacesession.AudienceGateway, Lookup: lookup}
 	gateway, err := New(Config{ResourcePlaneID: "rp_gateway_a", Verifier: verifier, Dialer: &testDialer{},
 		AllowedOrigins: []string{"https://ide.example.test"}, MaxConnections: 2, MaxConnectionsPerWorkspace: 2,
-		SessionRecheckInterval: 20 * time.Millisecond})
+		SessionRecheckInterval: 20 * time.Millisecond, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -505,6 +620,13 @@ func TestGatewayFailsClosedWhenActiveSessionRecheckIsUnavailable(t *testing.T) {
 	waitForConnections(t, gateway, 0)
 	if got := lookup.calls.Load(); got < 2 {
 		t.Fatalf("active Session lookup calls=%d, want initial authorization and stream recheck", got)
+	}
+	deadline := time.Now().Add(time.Second)
+	for !strings.Contains(logs.String(), "event=workspace_gateway.connection") && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !strings.Contains(logs.String(), "failure_class=session_recheck") || !strings.Contains(logs.String(), "workspace_id=ws_gateway_a") || strings.Contains(logs.String(), "ticket_id=") || strings.Contains(logs.String(), "synthetic lookup failure") {
+		t.Fatalf("Gateway failure log must include trusted identity without credentials/raw errors: %s", logs.String())
 	}
 }
 
