@@ -39,9 +39,16 @@ Add optional repository-level preview environments and service metadata/deploy p
   The allowlist requires an exact AWS STS audience, refs, environments and
   workflow refs. `POST .../deploy-policy/verify` validates the GitHub issuer's
   RS256 signature and exact Repository/Owner ID, ref/environment/workflow/event
-  claims, including legacy and immutable-ID `sub` formats. Tokens are not stored; no AWS credentials are exchanged and every
-  response keeps `execution_enabled=false`. Human approval is currently an
-  explicit policy field only; GitHub Environment protection is not inspected.
+  claims, including legacy and immutable-ID `sub` formats. Tokens are not
+  stored; no AWS credentials are exchanged and every response keeps
+  `execution_enabled=false`. Verification now fails closed unless a
+  Tenant/Installation/Repository-scoped GitHub Environment approval verifier
+  confirms an exact Environment `required_reviewers` rule. A reusable GitHub
+  App client verifies a non-empty User/Team reviewer set with a short-lived
+  `actions:read` token. API integration coverage checks configured approval
+  verification and missing-verifier failure. Production API composition to
+  resolve Tenant App credentials and call this verifier remains incomplete;
+  configured protection is not proof that a specific run was approved.
 - Preview allocation/routing and PR lifecycle cleanup remain blocked by the
   listed runtime/deployment prerequisites. Production approval validation,
   IAM trust/exchange and deployment execution remain disabled.
@@ -70,5 +77,5 @@ Add optional repository-level preview environments and service metadata/deploy p
 
 - Tests cover PR update/reopen/close races, stale commit preview, cross-Tenant route access, expiry, cleanup retries, and duplicate webhooks.
 - Catalog reads/writes enforce Tenant RBAC and validate dependency references.
-- OIDC token validation rejects wrong issuer/audience/repository/ref/environment/workflow and never stores cloud credentials or enables STS exchange.
+- OIDC token validation rejects wrong issuer/audience/repository/ref/environment/workflow; enabled policies require configured Environment reviewer verification and fail closed when that verifier is unavailable. No cloud credentials are stored or STS exchange enabled.
 - Document cost/quota, preview data isolation, cleanup, and production approval policy.

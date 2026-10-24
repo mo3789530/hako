@@ -74,6 +74,9 @@ type WorkspaceCreateConfig struct {
 	GitHubOIDCPolicyVerifier                 interface {
 		Verify(context.Context, string, deploypolicy.Policy, string, int64) (deploypolicy.Claims, error)
 	}
+	GitHubEnvironmentApprovalVerifier interface {
+		Verify(context.Context, domain.TenantID, int64, int64, string) error
+	}
 }
 
 type workspaceCreateRequest struct {
@@ -273,7 +276,7 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 	protected.PUT("/v1/tenants/:tenant_id/software-catalog/:service_id/deploy-policy", setSoftwareCatalogDeployPolicy(pool),
 		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
 	protected.POST("/v1/tenants/:tenant_id/software-catalog/:service_id/deploy-policy/verify",
-		verifySoftwareCatalogDeployPolicy(pool, workspaceConfig.GitHubOIDCPolicyVerifier),
+		verifySoftwareCatalogDeployPolicy(pool, workspaceConfig.GitHubOIDCPolicyVerifier, workspaceConfig.GitHubEnvironmentApprovalVerifier),
 		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
 	protected.GET("/v1/tenants/:tenant_id/github/installations", listGitHubInstallations(pool),
 		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool),

@@ -141,29 +141,29 @@ func ReadDeployPolicy(ctx context.Context, tx pgx.Tx, tenantID, serviceID string
 
 // ReadDeployPolicyBinding returns the registered Repository identity and the
 // policy from one Tenant Catalog row for token verification.
-func ReadDeployPolicyBinding(ctx context.Context, tx pgx.Tx, tenantID, serviceID string) (string, int64, deploypolicy.Policy, error) {
+func ReadDeployPolicyBinding(ctx context.Context, tx pgx.Tx, tenantID, serviceID string) (string, int64, int64, deploypolicy.Policy, error) {
 	if ctx == nil || tx == nil || tenantID == "" || serviceID == "" {
-		return "", 0, deploypolicy.Policy{}, deploypolicy.ErrInvalid
+		return "", 0, 0, deploypolicy.Policy{}, deploypolicy.ErrInvalid
 	}
 	var repository string
-	var repositoryID int64
+	var repositoryID, installationID int64
 	var data []byte
-	err := tx.QueryRow(ctx, `SELECT r.owner_login || '/' || r.repository_name,c.github_repository_id,
+	err := tx.QueryRow(ctx, `SELECT r.owner_login || '/' || r.repository_name,c.github_repository_id,c.installation_id,
 		COALESCE(c.oidc_deploy_policy,'{}'::jsonb)
 		FROM tenant_software_catalog_services c JOIN tenant_github_repositories r
 		ON r.tenant_id=c.tenant_id AND r.installation_id=c.installation_id AND r.github_repository_id=c.github_repository_id
-		WHERE c.tenant_id=$1 AND c.service_id=$2`, tenantID, serviceID).Scan(&repository, &repositoryID, &data)
+		WHERE c.tenant_id=$1 AND c.service_id=$2`, tenantID, serviceID).Scan(&repository, &repositoryID, &installationID, &data)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", 0, deploypolicy.Policy{}, ErrServiceNotFound
+		return "", 0, 0, deploypolicy.Policy{}, ErrServiceNotFound
 	}
 	if err != nil {
-		return "", 0, deploypolicy.Policy{}, fmt.Errorf("read Software Catalog OIDC binding: %w", err)
+		return "", 0, 0, deploypolicy.Policy{}, fmt.Errorf("read Software Catalog OIDC binding: %w", err)
 	}
 	var policy deploypolicy.Policy
 	if err := json.Unmarshal(data, &policy); err != nil || policy.Validate() != nil {
-		return "", 0, deploypolicy.Policy{}, errors.New("stored Software Catalog OIDC policy is invalid")
+		return "", 0, 0, deploypolicy.Policy{}, errors.New("stored Software Catalog OIDC policy is invalid")
 	}
-	return repository, repositoryID, policy, nil
+	return repository, repositoryID, installationID, policy, nil
 }
 
 func SetDeployPolicy(ctx context.Context, tx pgx.Tx, tenantID, serviceID, actor string, policy deploypolicy.Policy, now time.Time) error {

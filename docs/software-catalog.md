@@ -76,13 +76,21 @@ immutable Owner/Repository-ID format are accepted, while the signed numeric
 IDs must match the Tenant Catalog Repository. OIDC tokens are accepted in memory for this
 verification request only; they are not persisted or returned.
 
-This is a claim-verification endpoint only. It does not exchange the token at
-AWS STS, issue cloud credentials, or authorize a deployment; API responses
-always set `execution_enabled` to `false`. `require_human_approval` records
-policy intent but does not inspect GitHub Environment protection settings or
-prove that a human approved a deployment. Those controls and deployment
-execution remain disabled pending a trusted approval integration, IAM trust
-configuration, Preview lifecycle/routing and production deployment review.
+This is a verification endpoint only. It does not exchange the token at AWS
+STS, issue cloud credentials, or authorize a deployment; API responses always
+set `execution_enabled` to `false`. When `require_human_approval` is enabled,
+the API requires a configured Tenant/Installation/Repository-scoped
+Environment approval verifier and returns `environment_approval_verified:true`
+only after it confirms a GitHub `required_reviewers` rule with at least one
+User or Team reviewer. Missing verifier configuration and GitHub API failures
+fail closed; a missing reviewer rule is denied. The reusable GitHub App client
+performs an exact Environment lookup with a short-lived `actions:read` token.
+The production API composition does not yet resolve Tenant App credentials and
+wire this verifier, so the endpoint currently returns unavailable for enabled
+approval policies there. This check verifies configured protection, not that a
+specific deployment run has completed its approval. AWS trust/exchange,
+deployment execution, Preview lifecycle/routing and production review remain
+disabled. See [Task 54](../tasks/task-54-preview-catalog-deploy.md).
 See [Task 54](../tasks/task-54-preview-catalog-deploy.md).
 For PR Preview opt-in and the currently metadata-only lifecycle, see
 [Preview lifecycle](preview-lifecycle.md).

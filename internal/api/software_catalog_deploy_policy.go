@@ -29,20 +29,23 @@ type softwareCatalogDeployPolicyVerificationRequest struct {
 }
 
 type softwareCatalogDeployPolicyVerificationResult struct {
-	Valid            bool   `json:"valid"`
-	ExecutionEnabled bool   `json:"execution_enabled"`
-	Repository       string `json:"repository"`
-	RepositoryID     string `json:"repository_id"`
-	Ref              string `json:"ref"`
-	Environment      string `json:"environment"`
-	WorkflowRef      string `json:"workflow_ref"`
-	EventName        string `json:"event_name"`
-	RunID            string `json:"run_id"`
-	RunAttempt       string `json:"run_attempt"`
+	Valid                       bool   `json:"valid"`
+	ExecutionEnabled            bool   `json:"execution_enabled"`
+	EnvironmentApprovalVerified bool   `json:"environment_approval_verified"`
+	Repository                  string `json:"repository"`
+	RepositoryID                string `json:"repository_id"`
+	Ref                         string `json:"ref"`
+	Environment                 string `json:"environment"`
+	WorkflowRef                 string `json:"workflow_ref"`
+	EventName                   string `json:"event_name"`
+	RunID                       string `json:"run_id"`
+	RunAttempt                  string `json:"run_attempt"`
 }
 
 func verifySoftwareCatalogDeployPolicy(pool transaction.Beginner, verifier interface {
 	Verify(context.Context, string, deploypolicy.Policy, string, int64) (deploypolicy.Claims, error)
+}, approvalVerifier interface {
+	Verify(context.Context, domain.TenantID, int64, int64, string) error
 }) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		user, ok := HakoUserFromContext(c)
@@ -59,16 +62,17 @@ func verifySoftwareCatalogDeployPolicy(pool transaction.Beginner, verifier inter
 		tenantID := domain.TenantID(strings.TrimSpace(c.Param("tenant_id")))
 		serviceID := strings.TrimSpace(c.Param("service_id"))
 		type binding struct {
-			repository   string
-			repositoryID int64
-			policy       deploypolicy.Policy
+			repository     string
+			repositoryID   int64
+			installationID int64
+			policy         deploypolicy.Policy
 		}
 		resolved, err := transaction.Within(c.Request().Context(), pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (binding, error) {
 			if _, err := authz.RequireTenantMembership(ctx, tx, user.ID, tenantID); err != nil {
 				return binding{}, err
 			}
-			repository, repositoryID, policy, err := storecatalog.ReadDeployPolicyBinding(ctx, tx, string(tenantID), serviceID)
-			return binding{repository: repository, repositoryID: repositoryID, policy: policy}, err
+			repository, repositoryID, installationID, policy, err := storecatalog.ReadDeployPolicyBinding(ctx, tx, string(tenantID), serviceID)
+			return binding{repository: repository, repositoryID: repositoryID, installationID: installationID, policy: policy}, err
 		})
 		if errors.Is(err, authz.ErrTenantAccessDenied) || errors.Is(err, storecatalog.ErrServiceNotFound) {
 			return tenantNotFound(c)
@@ -83,7 +87,20 @@ func verifySoftwareCatalogDeployPolicy(pool transaction.Beginner, verifier inter
 		if err != nil {
 			return c.JSON(http.StatusForbidden, errorResponse{Error: errorBody{Code: "oidc_claims_denied", Message: "GitHub OIDC claims do not match the Tenant deployment policy"}})
 		}
-		return c.JSON(http.StatusOK, softwareCatalogDeployPolicyVerificationResult{Valid: true, ExecutionEnabled: false,
+		approvalVerified := false
+		if resolved.policy.RequireHumanApproval {
+			if approvalVerifier == nil {
+				return c.JSON(http.StatusServiceUnavailable, errorResponse{Error: errorBody{Code: "environment_approval_verifier_unavailable", Message: "GitHub Environment approval protection cannot be verified"}})
+			}
+			if err := approvalVerifier.Verify(c.Request().Context(), tenantID, resolved.installationID, resolved.repositoryID, claims.Environment); err != nil {
+				if errors.Is(err, deploypolicy.ErrUnavailable) {
+					return c.JSON(http.StatusServiceUnavailable, errorResponse{Error: errorBody{Code: "environment_approval_verifier_unavailable", Message: "GitHub Environment approval protection is temporarily unavailable"}})
+				}
+				return c.JSON(http.StatusForbidden, errorResponse{Error: errorBody{Code: "environment_approval_missing", Message: "GitHub Environment does not require an authorized human reviewer"}})
+			}
+			approvalVerified = true
+		}
+		return c.JSON(http.StatusOK, softwareCatalogDeployPolicyVerificationResult{Valid: true, ExecutionEnabled: false, EnvironmentApprovalVerified: approvalVerified,
 			Repository: claims.Repository, RepositoryID: claims.RepositoryID, Ref: claims.Ref, Environment: claims.Environment,
 			WorkflowRef: claims.WorkflowRef, EventName: claims.EventName, RunID: claims.RunID, RunAttempt: claims.RunAttempt})
 	}

@@ -16,6 +16,7 @@ import (
 
 	"github.com/mo3789530/hako/internal/auth"
 	"github.com/mo3789530/hako/internal/deploypolicy"
+	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/store/dsql"
 	"github.com/mo3789530/hako/internal/testutil"
 )
@@ -64,7 +65,7 @@ func TestTenantSoftwareCatalogRBACRepositoryAndDependencyFences(t *testing.T) {
 		t.Fatal(err)
 	}
 	policyVerifier := catalogOIDCVerifier{}
-	handler := NewHandler(verifier, pool, WorkspaceCreateConfig{GitHubOIDCPolicyVerifier: policyVerifier})
+	handler := NewHandler(verifier, pool, WorkspaceCreateConfig{GitHubOIDCPolicyVerifier: policyVerifier, GitHubEnvironmentApprovalVerifier: catalogEnvironmentApprovalVerifier{}})
 	tokens := map[string]string{
 		"owner_a":  signTenantAPIToken(t, key, issuer, "catalog-owner-a", "openid hako/api"),
 		"member_a": signTenantAPIToken(t, key, issuer, "catalog-member-a", "openid hako/api"),
@@ -108,8 +109,18 @@ func TestTenantSoftwareCatalogRBACRepositoryAndDependencyFences(t *testing.T) {
 		t.Fatalf("Tenant member read deploy policy: %d %s", got.Code, got.Body.String())
 	}
 	if got := call("member_a", http.MethodPost, policyPath+"/verify", `{"token":"synthetic-valid-token"}`); got.Code != http.StatusOK ||
-		!strings.Contains(got.Body.String(), `"valid":true`) || !strings.Contains(got.Body.String(), `"execution_enabled":false`) || strings.Contains(got.Body.String(), "synthetic-valid-token") {
+		!strings.Contains(got.Body.String(), `"valid":true`) || !strings.Contains(got.Body.String(), `"environment_approval_verified":true`) ||
+		!strings.Contains(got.Body.String(), `"execution_enabled":false`) || strings.Contains(got.Body.String(), "synthetic-valid-token") {
 		t.Fatalf("Tenant member verified dormant OIDC policy: %d %s", got.Code, got.Body.String())
+	}
+	withoutApprovalCheck := NewHandler(verifier, pool, WorkspaceCreateConfig{GitHubOIDCPolicyVerifier: policyVerifier})
+	request := httptest.NewRequest(http.MethodPost, policyPath+"/verify", strings.NewReader(`{"token":"synthetic-valid-token"}`))
+	request.Header.Set("Authorization", "Bearer "+tokens["member_a"])
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	withoutApprovalCheck.ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), `"valid":true`) {
+		t.Fatalf("OIDC accepted without Environment approval verifier: %d %s", response.Code, response.Body.String())
 	}
 	if got := call("member_a", http.MethodPost, policyPath+"/verify", `{"token":"invalid-token"}`); got.Code != http.StatusForbidden {
 		t.Fatalf("invalid OIDC claims were not rejected: %d %s", got.Code, got.Body.String())
@@ -149,6 +160,15 @@ func TestTenantSoftwareCatalogRBACRepositoryAndDependencyFences(t *testing.T) {
 }
 
 type catalogOIDCVerifier struct{}
+
+type catalogEnvironmentApprovalVerifier struct{}
+
+func (catalogEnvironmentApprovalVerifier) Verify(_ context.Context, tenantID domain.TenantID, installationID, repositoryID int64, environment string) error {
+	if tenantID != "tenant_catalog_a" || installationID != 1101 || repositoryID != 11001 || environment != "production" {
+		return deploypolicy.ErrInvalid
+	}
+	return nil
+}
 
 func (catalogOIDCVerifier) Verify(_ context.Context, token string, policy deploypolicy.Policy, repository string, repositoryID int64) (deploypolicy.Claims, error) {
 	if token != "synthetic-valid-token" || policy.Validate() != nil || repository != "acme/payments" || repositoryID != 11001 {
