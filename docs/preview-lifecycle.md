@@ -63,10 +63,11 @@ expiry sweep, but it is not enabled by default and only updates DSQL metadata.
 The store records only fixed cleanup error categories and schedules bounded
 exponential retries (5 seconds to 1 hour). `cleaned` is written only after the
 runtime executor confirms MicroVM and Gateway route deletion, and duplicate
-confirmation is idempotent. The retry metadata is implemented, but the
-lease/worker that performs physical deletion, route authorization, and Preview
-quota reservation are still required before Preview can be enabled for user
-traffic.
+confirmation is idempotent. Migrations 000145–000146 add expiring, attempt-fenced
+cleanup claims so crashed workers can be recovered and stale workers cannot
+acknowledge a newer claim. The worker that resolves Preview-to-runtime binding
+and performs physical deletion, route authorization, and Preview quota
+reservation is still required before Preview can be enabled for user traffic.
 
 When runtime execution is added, it must bind the immutable PR head SHA to an
 isolated Workspace, enforce Tenant authorization on every route, respect the

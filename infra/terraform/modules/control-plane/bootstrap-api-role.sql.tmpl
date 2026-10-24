@@ -66,7 +66,7 @@ AWS IAM GRANT hako_preview_reconciler TO 'REPLACE_WITH_PREVIEW_EXPIRY_RECONCILER
 GRANT USAGE ON SCHEMA public TO hako_preview_reconciler;
 GRANT SELECT (tenant_id, installation_id, github_repository_id, pull_request_number, desired_state, expires_at)
     ON TABLE repository_previews TO hako_preview_reconciler;
-GRANT UPDATE (desired_state, state, cleanup_next_attempt_at, updated_at)
+GRANT UPDATE (desired_state, state, cleanup_next_attempt_at, cleanup_claim_id, cleanup_lease_expires_at, updated_at)
     ON TABLE repository_previews TO hako_preview_reconciler;
 
 -- The Dispatcher role can claim/publish Outbox rows but cannot alter schema or

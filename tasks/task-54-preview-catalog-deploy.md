@@ -9,8 +9,9 @@ implemented locally, including stale GitHub `updated_at` fencing, fixed
 Tenant-quota-based expiry metadata, and a bounded idempotent expiry-to-cleanup
 transition. A default-off scheduled Lambda now invokes this metadata sweep;
 production IAM wiring and enabled invocation remain unverified. Preview
-MicroVM allocation, Gateway routing, and physical cleanup execution/retries
-remain incomplete. The dormant approval verifier checks
+MicroVM allocation, Gateway routing, and physical cleanup execution remain
+incomplete; cleanup retry metadata and attempt-fenced leases are implemented.
+The dormant approval verifier checks
 the live Actions run attempt against signed repository, owner, ref, SHA,
 workflow and event claims, checks pending deployments and approval history,
 and requires Environment reviewers with self-review disabled. Priority: P3.
@@ -74,7 +75,7 @@ Add optional repository-level preview environments and service metadata/deploy p
   Migration 000140 adds the opt-in, and 000141 adds the lifecycle table.
   Runtime allocation is explicitly reported disabled; this change does not
   create a MicroVM, Workspace, or Gateway route.
-- Migrations 000142–000144 record the fixed quota-based `expires_at` (24-hour
+- Migrations 000142–000146 record the fixed quota-based `expires_at` (24-hour
   fallback), and bounded `previews.ExpireDue` moves expired present records to
   `cleanup_pending` without claiming physical deletion. Reopen starts a new
   lifetime; synchronize does not extend it. PostgreSQL E2E verifies expiry and
@@ -110,10 +111,12 @@ Add optional repository-level preview environments and service metadata/deploy p
   before the stored retry deadline are ignored; attempts are guarded against
   stale concurrent writes.
 - `MarkCleaned` is idempotent and changes metadata only after its caller has
-  confirmed MicroVM and Gateway route deletion. Unit and PostgreSQL lifecycle
-  tests cover backoff, premature retry rejection, repeated failure, and
-  duplicate completion.
-- The physical cleanup worker, durable claim/lease, Preview-to-runtime binding,
+  confirmed MicroVM and Gateway route deletion. Migrations 000145–000146 add a
+  bounded cleanup claim lease; claim ID, attempt, and exact expiry fence completion and
+  retry, while expired leases can be reclaimed after worker restart. Unit and
+  PostgreSQL lifecycle tests cover backoff, premature retry rejection, stale
+  claim rejection, lease recovery, repeated failure, and duplicate completion.
+- The physical cleanup worker, Preview-to-runtime binding,
   and provider/Gateway deletion remain unimplemented. No delete is inferred
   from the metadata transition.
 

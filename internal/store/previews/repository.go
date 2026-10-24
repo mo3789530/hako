@@ -102,6 +102,8 @@ func ApplyPullRequestDelivery(ctx context.Context, tx pgx.Tx, tenantID domain.Te
 			cleanup_attempts=CASE WHEN EXCLUDED.desired_state='present' AND (repository_previews.desired_state='present' OR $13='reopened') THEN 0 ELSE repository_previews.cleanup_attempts END,
 			cleanup_next_attempt_at=CASE WHEN EXCLUDED.desired_state='present' AND (repository_previews.desired_state='present' OR $13='reopened') THEN NULL ELSE repository_previews.cleanup_next_attempt_at END,
 			cleanup_last_error=CASE WHEN EXCLUDED.desired_state='present' AND (repository_previews.desired_state='present' OR $13='reopened') THEN '' ELSE repository_previews.cleanup_last_error END,
+			cleanup_claim_id=CASE WHEN EXCLUDED.desired_state='present' AND (repository_previews.desired_state='present' OR $13='reopened') THEN NULL ELSE repository_previews.cleanup_claim_id END,
+			cleanup_lease_expires_at=CASE WHEN EXCLUDED.desired_state='present' AND (repository_previews.desired_state='present' OR $13='reopened') THEN NULL ELSE repository_previews.cleanup_lease_expires_at END,
 			updated_at=EXCLUDED.updated_at
 		WHERE repository_previews.last_event_at < EXCLUDED.last_event_at
 		   OR (repository_previews.last_event_at = EXCLUDED.last_event_at AND repository_previews.last_delivery_id < EXCLUDED.last_delivery_id)`,
@@ -128,7 +130,7 @@ func ExpireDue(ctx context.Context, tx pgx.Tx, now time.Time, limit int) (int64,
 		LIMIT $2
 	)
 	UPDATE repository_previews p
-	SET desired_state='absent',state='cleanup_pending',cleanup_next_attempt_at=NULL,updated_at=$1
+	SET desired_state='absent',state='cleanup_pending',cleanup_next_attempt_at=NULL,cleanup_claim_id=NULL,cleanup_lease_expires_at=NULL,updated_at=$1
 	FROM due
 	WHERE p.tenant_id=due.tenant_id AND p.installation_id=due.installation_id
 	  AND p.github_repository_id=due.github_repository_id AND p.pull_request_number=due.pull_request_number
