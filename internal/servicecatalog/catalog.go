@@ -18,12 +18,19 @@ import (
 
 const SchemaVersion = 1
 
+// Built-in images use the ARM64 child-manifest digest from the official
+// versioned Docker Hub release. A tag is not an immutable runtime identity.
+const (
+	postgresImage = "docker.io/library/postgres@sha256:480557c3a36f683d4101abb700cd7f6f35f60105ecaa9e2f8252b2b743d92b98"
+	redisImage    = "docker.io/library/redis@sha256:0819246a2bb1979f7745a8bae2559a2ffa49071ef7a5e7213b3e347e162aeb26"
+)
+
 var (
 	ErrUnknownTemplate = errors.New("service catalog template is not available")
 	ErrInvalidTemplate = errors.New("invalid service catalog template")
 	namePattern        = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 	versionPattern     = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
-	imagePattern       = regexp.MustCompile(`^docker\.io/library/(postgres|redis):([0-9]+\.[0-9]+(?:\.[0-9]+)?(?:-alpine[0-9]+\.[0-9]+)?)$`)
+	imagePattern       = regexp.MustCompile(`^docker\.io/library/(postgres|redis)@sha256:[a-f0-9]{64}$`)
 	environmentPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
 )
 
@@ -70,7 +77,7 @@ type Template struct {
 var builtins = map[string]Template{
 	"postgres": {
 		SchemaVersion: SchemaVersion, Name: "postgres", Version: "1.0.0",
-		Image:            "docker.io/library/postgres:18.6-alpine3.23",
+		Image:            postgresImage,
 		Resources:        Resources{MemoryBytes: 1 << 30, MilliCPU: 750},
 		Ports:            []Port{{Number: 5432, Protocol: "tcp"}},
 		Volumes:          []Volume{{Name: "postgres-data", MountPath: "/var/lib/postgresql/data", Persistent: true}},
@@ -81,7 +88,7 @@ var builtins = map[string]Template{
 	},
 	"redis": {
 		SchemaVersion: SchemaVersion, Name: "redis", Version: "1.0.0",
-		Image:       "docker.io/library/redis:8.10.2-alpine3.23",
+		Image:       redisImage,
 		Resources:   Resources{MemoryBytes: 256 << 20, MilliCPU: 250},
 		Ports:       []Port{{Number: 6379, Protocol: "tcp"}},
 		HealthCheck: HealthCheck{Command: []string{"redis-cli", "ping"}, Interval: "10s", Timeout: "3s", Retries: 5},

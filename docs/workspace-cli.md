@@ -229,6 +229,12 @@ unfinished. Deployment still needs production ticket signing and active-session
 lookup key configuration, a multi-Workspace runtime router, and fleet-wide
 limits/observability.
 
+Built-in PostgreSQL and Redis images are pinned to their official ARM64 OCI
+manifest digests. Version tags are not accepted as runtime identities because
+they can be moved; updating an image requires reviewing the release version and
+replacing the digest in the Service Catalog. Digest pinning does not by itself
+verify the image at runtime or prove Lambda MicroVM compatibility.
+
 ## Security and failure behavior
 
 - Missing login credentials or required endpoint configuration fail before a

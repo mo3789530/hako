@@ -736,7 +736,7 @@ containerd
 PostgreSQL
 ```
 
-です。初期CatalogはPostgreSQLとRedisに限定し、templateのimage/version、resource limits、private-only ports、volume/healthcheckを固定します。MySQL/MinIOは未提供です。API/CLIの挙動と現在の制約は[Workspace CLI](docs/workspace-cli.md)を参照してください。
+です。初期CatalogはPostgreSQLとRedisに限定し、公式ARM64 manifest digestでimageを固定し、resource limits、private-only ports、volume/healthcheckを固定します。digest更新時はCatalog変更とレビューが必要です。MySQL/MinIOは未提供です。API/CLIの挙動と現在の制約は[Workspace CLI](docs/workspace-cli.md)を参照してください。
 
 ## 21. Service Catalog
 
@@ -1619,7 +1619,7 @@ Hakoは最初は **Lambda MicroVMを使ったRemote Development Environment** �
 
 ### Phase 7: Service Catalogと利用者向けCLI
 
-- [x] Versioned Service Catalog schemaとPostgreSQL/Redis初期Templateを追加（固定version image、resource limits、private ports、volume/healthcheck policy）。
+- [x] Versioned Service Catalog schemaとPostgreSQL/Redis初期Templateを追加（公式ARM64 manifest digest固定image、resource limits、private ports、volume/healthcheck policy）。
 - [ ] hako-agent経由でServiceの起動・停止・状態確認を実装する（revision付きOutbox/Resource Plane queue route、固定Catalog Guest reconcile handler/rootless `nerdctl` adapter、root initによるAgent child再起動耐性revision/replay fence、HMAC状態報告API、SQS Lambda consumer、Terraform default-off配線とPostgreSQL用のSecrets Manager生成credential providerを実装・fake/local検証。SecretはResource Planeから正確なMicroVMへHTTPSで渡し、Guest内の一時mode-0600 env-file経由でのみnerdctlへ注入する。`hako service rotate-credentials`はgeneration付きAWSPENDINGをDBへ適用しhealth確認後にAWSCURRENTへpromoteする。MicroVM image daemon/実PoCとMicroVM世代をまたぐdurable cleanup確認は未完了。詳細は[Workspace Service generated credentials](docs/workspace-service-secrets.md)。
 - [x] 認証済みWorkspace-scoped APIと`hako add`、`hako services`、desired-stateの`hako service start|stop|remove`を追加（DB登録まで。runtime execution/physical cleanupは未接続）。
 - [ ] `hako create/code/open/shell/forward/suspend/resume/delete`のCLI UXを仕上げる。

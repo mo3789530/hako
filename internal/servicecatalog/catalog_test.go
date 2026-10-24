@@ -18,8 +18,8 @@ func TestBuiltinCatalogIsVersionedPrivateAndBounded(t *testing.T) {
 		if template.SchemaVersion != SchemaVersion || template.Version == "" || template.Network != "workspace-private" || template.Privileged {
 			t.Errorf("unsafe/incomplete template metadata: %+v", template)
 		}
-		if strings.Contains(template.Image, "latest") || !imagePattern.MatchString(template.Image) {
-			t.Errorf("image is not an approved version-pinned image: %q", template.Image)
+		if !imagePattern.MatchString(template.Image) {
+			t.Errorf("image is not an immutable ARM64 digest reference: %q", template.Image)
 		}
 		for _, port := range template.Ports {
 			if port.Protocol != "tcp" || port.Number == 0 {
@@ -88,9 +88,16 @@ func TestDecodeRejectsUnknownFieldsAndUnsafeTemplates(t *testing.T) {
 	if _, err := Decode(strings.NewReader(string(encoded) + ` {}`)); err == nil {
 		t.Fatal("multiple JSON values accepted")
 	}
-	base.Image = "docker.io/library/redis:latest"
-	if err := Validate(base); !errors.Is(err, ErrInvalidTemplate) {
-		t.Fatalf("mutable image tag accepted: %v", err)
+	for _, image := range []string{
+		"docker.io/library/redis:8.10.2-alpine3.23",
+		"docker.io/library/redis:latest",
+		"docker.io/library/redis@sha256:ABCDEF",
+		"docker.io/library/postgres@sha256:" + strings.Repeat("a", 63),
+	} {
+		base.Image = image
+		if err := Validate(base); !errors.Is(err, ErrInvalidTemplate) {
+			t.Errorf("mutable or malformed image reference accepted (%q): %v", image, err)
+		}
 	}
 	base, _ = Resolve("redis")
 	base.HealthCheck.Command = []string{"/bin/sh", "-c", "echo unsafe"}
