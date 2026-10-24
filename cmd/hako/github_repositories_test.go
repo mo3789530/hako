@@ -68,6 +68,29 @@ func TestParseGitHubRepositoryPreviewsCLI(t *testing.T) {
 	}
 }
 
+func TestParseGitHubRepositoryPreviewSessionCLI(t *testing.T) {
+	got, err := parseGitHubRepositoryPreviewSessionCLI([]string{"create", "--tenant", " tenant_a ", "--installation", "4", "--repository", "8", "--pull-request", "19", "--permissions", "vscode,shell"}, "create")
+	if err != nil || got.tenantID != "tenant_a" || got.installationID != 4 || got.repositoryID != 8 || got.pullRequest != 19 || len(got.permissions) != 2 {
+		t.Fatalf("parse Preview session create = %+v error=%v", got, err)
+	}
+	revoke, err := parseGitHubRepositoryPreviewSessionCLI([]string{"revoke", "--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "--session", strings.Repeat("a", 48)}, "revoke")
+	if err != nil || revoke.sessionID != strings.Repeat("a", 48) {
+		t.Fatalf("parse Preview session revoke = %+v error=%v", revoke, err)
+	}
+	for _, test := range []struct {
+		action string
+		args   []string
+	}{
+		{"create", []string{"create", "--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "--permissions", "vscode,,shell"}},
+		{"create", []string{"create", "--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "--permissions", "admin"}},
+		{"revoke", []string{"revoke", "--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19"}},
+	} {
+		if _, err := parseGitHubRepositoryPreviewSessionCLI(test.args, test.action); err == nil {
+			t.Errorf("Preview session parser accepted %q", test.args)
+		}
+	}
+}
+
 func TestParseGitHubRepositoryFactoryAndPreviewActions(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -239,6 +262,42 @@ func TestManageGitHubRepositoryCLIsCallTenantScopedAPI(t *testing.T) {
 	}
 	if _, err := manageGitHubRepositoryActionsRunnerWorkflowPolicyCLI([]string{"policy", "--tenant", "tenant_cli", "--installation", "42", "--repository", "7", "--policy-file", policyFile}); err != nil {
 		t.Fatalf("workflow policy CLI request failed: %v", err)
+	}
+}
+
+func TestGitHubRepositoryPreviewSessionCLIsCallTenantScopedAPI(t *testing.T) {
+	var created, revoked bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer preview-session-cli" {
+			t.Errorf("Authorization = %q", r.Header.Get("Authorization"))
+		}
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/tenants/tenant_cli/github/installations/42/repositories/7/previews/19/sessions":
+			created = true
+			w.WriteHeader(http.StatusCreated)
+			_, _ = fmt.Fprintf(w, `{"session_id":"0123456789abcdef0123456789abcdef0123456789abcdef","workspace_id":"prvws_0123456789abcdef0123456789abcdef","ticket":"ticket-secret","expires_at":%q,"permissions":["vscode"]}`,
+				time.Now().Add(time.Minute).UTC().Format(time.RFC3339))
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/tenants/tenant_cli/github/installations/42/repositories/7/previews/19/sessions/0123456789abcdef0123456789abcdef0123456789abcdef":
+			revoked = true
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected Preview session request %s %s", r.Method, r.URL)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HAKO_API_URL", server.URL)
+	previous := cliCredentialGetter
+	cliCredentialGetter = repositoryCLICredentials(fmt.Sprintf(`{"access_token":"preview-session-cli","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+		time.Now().UTC().Format(time.RFC3339)))
+	t.Cleanup(func() { cliCredentialGetter = previous })
+	args := []string{"--tenant", "tenant_cli", "--installation", "42", "--repository", "7", "--pull-request", "19"}
+	createdSession, err := createGitHubRepositoryPreviewSessionCLI(append([]string{"create"}, append(args, "--permissions", "vscode")...))
+	if err != nil || !created || createdSession.WorkspaceID != "prvws_0123456789abcdef0123456789abcdef" || createdSession.Ticket != "ticket-secret" {
+		t.Fatalf("Preview session create = %+v, created=%v, error=%v", createdSession, created, err)
+	}
+	if err := revokeGitHubRepositoryPreviewSessionCLI(append(args, "--session", string(createdSession.SessionID))); err != nil || !revoked {
+		t.Fatalf("Preview session revoke revoked=%v, error=%v", revoked, err)
 	}
 }
 

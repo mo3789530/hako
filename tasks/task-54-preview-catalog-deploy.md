@@ -137,12 +137,28 @@ Add optional repository-level preview environments and service metadata/deploy p
   an interrupted provision attempt with no binding still requires Resource
   Plane tag recovery. Concrete AWS/Resource Plane deletion and scheduled
   composition are not wired.
+- Migrations 000163–000164 add a separate Preview Gateway session registry
+  because deterministic Preview runtime Workspace IDs are intentionally absent
+  from the public Workspace table. Tenant members can request/revoke scoped
+  tickets for a provider-bound current generation. Resource Plane active-ticket
+  lookup rechecks current generation, desired state, and expiry so PR close,
+  head change, and expiry immediately invalidate old tickets. Ticket expiry is
+  capped at Preview expiry, audit events are appended, and provider MicroVM and
+  Gateway route IDs are never returned. The scheduled expiry batch removes
+  expired session rows in bounded batches. API, CLI, client, and PostgreSQL E2E
+  coverage are implemented. The ticket API remains unavailable until a concrete
+  Resource Plane provisioner binds a running generation and deployment enables
+  GitHub Repository APIs with the session issuer. The DSQL bootstrap grants API
+  read/issue/revoke access and gives the default-off expiry reconciler only
+  `id`/`expires_at` reads plus
+  session-row deletion; this SQL role update has not been applied to AWS.
 - `go test ./...` passed. PostgreSQL Preview lifecycle E2E passed against the
   local `hako-dev-postgres`, including stale delivery, close/reopen, Tenant
   scoping, and duplicate replay.
 - Remaining: Preview Workspace/Run binding to Lambda MicroVM, expiring
   Tenant-scoped Gateway route, timeout/merge sweep, provider-backed MicroVM /
-  route cleanup executor, and its scheduled composition. See
+  route cleanup executor, scheduled provision/cleanup composition, and wiring
+  the new Preview Session endpoint into `hako open`. See
   [`Preview lifecycle`](../docs/preview-lifecycle.md).
 
 ## Preview lifecycle read API/CLI (2026-10-24)

@@ -15,6 +15,13 @@ func ExpireBatch(ctx context.Context, pool transaction.Beginner, now time.Time, 
 		return 0, fmt.Errorf("invalid Preview expiry sweep")
 	}
 	expired, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (int64, error) {
+		if _, err := tx.Exec(ctx, `WITH due AS (
+			SELECT id FROM repository_preview_sessions WHERE expires_at <= $1
+			ORDER BY expires_at,id LIMIT $2
+		)
+		DELETE FROM repository_preview_sessions s USING due WHERE s.id=due.id`, now.UTC(), limit); err != nil {
+			return 0, fmt.Errorf("delete expired Preview sessions: %w", err)
+		}
 		return ExpireDue(ctx, tx, now.UTC(), limit)
 	})
 	if err != nil {

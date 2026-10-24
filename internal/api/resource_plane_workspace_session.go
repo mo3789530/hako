@@ -100,7 +100,17 @@ func getActiveWorkspaceSession(pool transaction.Beginner, resolveKey ResourcePla
 			var permissionsJSON string
 			var expiresAt time.Time
 			err := tx.QueryRow(ctx, `SELECT user_id, tenant_id, workspace_id, resource_plane_id, permissions_json, expires_at
-				FROM sessions WHERE id = $1`, claims.TicketID).Scan(&userID, &tenantID, &workspaceID, &resourcePlaneID, &permissionsJSON, &expiresAt)
+				FROM sessions WHERE id = $1
+				UNION ALL
+				SELECT s.user_id,s.tenant_id,s.workspace_id,s.resource_plane_id,s.permissions_json,s.expires_at
+				FROM repository_preview_sessions s
+				JOIN repository_preview_runtime_allocations a ON a.tenant_id=s.tenant_id AND a.installation_id=s.installation_id
+				  AND a.github_repository_id=s.github_repository_id AND a.pull_request_number=s.pull_request_number AND a.generation=s.generation
+				JOIN repository_previews p ON p.tenant_id=a.tenant_id AND p.installation_id=a.installation_id
+				  AND p.github_repository_id=a.github_repository_id AND p.pull_request_number=a.pull_request_number
+				WHERE s.id=$1 AND s.expires_at>$2 AND a.desired_state='present' AND a.state='running'
+				  AND p.desired_state='present' AND p.generation=a.generation AND p.expires_at>$2
+				LIMIT 1`, claims.TicketID, now).Scan(&userID, &tenantID, &workspaceID, &resourcePlaneID, &permissionsJSON, &expiresAt)
 			if errors.Is(err, pgx.ErrNoRows) {
 				return false, nil
 			}

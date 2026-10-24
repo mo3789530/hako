@@ -105,3 +105,28 @@ func TestTicketIssuerRejectsExcessiveTTLAndUsesRotationKeyID(t *testing.T) {
 		t.Fatalf("ticket signed by rotation key failed verification: %v", err)
 	}
 }
+
+func TestTicketIssuerCapsExpiryAtPreviewDeadline(t *testing.T) {
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 25, 0, 0, 0, 0, time.UTC)
+	issuer := &Ed25519Issuer{KeyID: "preview-bound-key", PrivateKey: private, TTL: TicketMaxTTL, Now: func() time.Time { return now }}
+	input := Claims{UserID: "usr_preview", TenantID: "tenant_preview", WorkspaceID: "prvws_0123456789abcdef0123456789abcdef",
+		ResourcePlane: "rp_preview", Permissions: []Permission{PermissionVSCode}}
+	deadline := now.Add(30 * time.Second)
+	token, claims, err := issuer.IssueBefore(input, deadline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Unix(claims.ExpiresAt, 0).After(deadline) {
+		t.Fatalf("ticket expiry %s exceeds Preview deadline %s", time.Unix(claims.ExpiresAt, 0), deadline)
+	}
+	if _, err := Verify(token, map[string]ed25519.PublicKey{issuer.KeyID: public}, AudienceGateway, now.Add(time.Second)); err != nil {
+		t.Fatalf("deadline-bound ticket did not verify: %v", err)
+	}
+	if _, _, err := issuer.IssueBefore(input, now.Add(500*time.Millisecond)); !errors.Is(err, ErrTicket) {
+		t.Fatalf("sub-second remaining Preview lifetime error = %v", err)
+	}
+}

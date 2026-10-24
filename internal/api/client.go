@@ -143,6 +143,14 @@ type WorkspaceSession struct {
 	Permissions []workspacesession.Permission `json:"permissions"`
 }
 
+type RepositoryPreviewSession struct {
+	SessionID   domain.SessionID              `json:"session_id"`
+	WorkspaceID domain.WorkspaceID            `json:"workspace_id"`
+	Ticket      string                        `json:"ticket"`
+	ExpiresAt   time.Time                     `json:"expires_at"`
+	Permissions []workspacesession.Permission `json:"permissions"`
+}
+
 type WorkloadRunListResult struct {
 	Items  []domain.WorkloadRun `json:"items"`
 	Total  int64                `json:"total"`

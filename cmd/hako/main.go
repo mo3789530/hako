@@ -74,6 +74,23 @@ func main() {
 		}
 		_ = json.NewEncoder(os.Stdout).Encode(result)
 	case len(os.Args) >= 5 && os.Args[1] == "github" && os.Args[2] == "repository" && os.Args[3] == "previews":
+		if len(os.Args) >= 6 && os.Args[4] == "session" {
+			if os.Args[5] == "revoke" {
+				if err := revokeGitHubRepositoryPreviewSessionCLI(os.Args[6:]); err != nil {
+					fmt.Fprintf(os.Stderr, "hako github repository previews session revoke: %v\n", err)
+					os.Exit(1)
+				}
+				_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"revoked": true})
+				break
+			}
+			result, err := createGitHubRepositoryPreviewSessionCLI(os.Args[5:])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "hako github repository previews session create: %v\n", err)
+				os.Exit(1)
+			}
+			_ = json.NewEncoder(os.Stdout).Encode(result)
+			break
+		}
 		result, err := listGitHubRepositoryPreviewsCLI(os.Args[4:])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "hako github repository previews: %v\n", err)

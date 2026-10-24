@@ -232,6 +232,13 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 			RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
 		protected.GET("/v1/tenants/:tenant_id/github/installations/:installation_id/repositories/:repository_id/previews", listGitHubRepositoryPreviews(pool),
 			RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+		if workspaceConfig.WorkspaceSessionTicketIssuer != nil {
+			previewSessions := "/v1/tenants/:tenant_id/github/installations/:installation_id/repositories/:repository_id/previews/:pull_request_number/sessions"
+			protected.POST(previewSessions, createRepositoryPreviewSession(pool, workspaceConfig.WorkspaceSessionTicketIssuer),
+				RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+			protected.DELETE(previewSessions+"/:session_id", revokeRepositoryPreviewSession(pool),
+				RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+		}
 		protected.PUT("/v1/tenants/:tenant_id/github/installations/:installation_id/repositories/:repository_id/actions-runner", configureGitHubRepositoryActionsRunner(pool),
 			RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
 		protected.PUT("/v1/tenants/:tenant_id/github/installations/:installation_id/repositories/:repository_id/actions-runner/workflow-policy", configureGitHubRepositoryActionsRunnerWorkflowPolicy(pool),

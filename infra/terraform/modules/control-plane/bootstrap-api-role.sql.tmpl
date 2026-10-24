@@ -45,6 +45,12 @@ REVOKE DELETE ON TABLE tenant_software_catalog_services FROM hako_api;
 -- Preview lifecycle is read-only from the API; webhook processing owns updates.
 REVOKE INSERT, UPDATE, DELETE ON TABLE repository_previews FROM hako_api;
 GRANT SELECT ON TABLE repository_previews TO hako_api;
+-- Preview Gateway sessions are separate from developer Workspace sessions;
+-- only the API may issue/revoke tickets and validate their current generation.
+GRANT SELECT (tenant_id, installation_id, github_repository_id, pull_request_number, generation, desired_state,
+    state, expires_at, resource_plane_id, workspace_id, microvm_id, gateway_route_id)
+    ON TABLE repository_preview_runtime_allocations TO hako_api;
+GRANT SELECT, INSERT, DELETE ON TABLE repository_preview_sessions TO hako_api;
 
 -- The Workspace idle reconciler is a separate scheduled Control Plane
 -- execution identity. It owns only idle-suspend state/Operation writes and
@@ -58,9 +64,9 @@ GRANT SELECT, UPDATE (desired_state, updated_at, reconcile_revision) ON TABLE wo
 GRANT INSERT, UPDATE (idempotency_key) ON TABLE operations TO hako_workspace_idle_reconciler;
 GRANT INSERT ON TABLE operation_events, outbox_events, audit_events TO hako_workspace_idle_reconciler;
 
--- Preview expiry is metadata reconciliation only. It can select and transition
--- expired Preview rows, but has no permission to delete rows or touch runtime
--- bindings, Workspaces, Gateway routes, or provider resources.
+-- Preview expiry transitions expired Preview rows and purges expired Preview
+-- Session metadata in bounded batches. It cannot read runtime/provider IDs or
+-- touch Workspaces, Gateway routes, or provider resources.
 CREATE ROLE hako_preview_reconciler WITH LOGIN;
 AWS IAM GRANT hako_preview_reconciler TO 'REPLACE_WITH_PREVIEW_EXPIRY_RECONCILER_LAMBDA_ROLE_ARN';
 GRANT USAGE ON SCHEMA public TO hako_preview_reconciler;
@@ -68,6 +74,8 @@ GRANT SELECT (tenant_id, installation_id, github_repository_id, pull_request_num
     ON TABLE repository_previews TO hako_preview_reconciler;
 GRANT UPDATE (desired_state, state, generation, cleanup_next_attempt_at, cleanup_claim_id, cleanup_lease_expires_at, updated_at)
     ON TABLE repository_previews TO hako_preview_reconciler;
+GRANT SELECT (id, expires_at) ON TABLE repository_preview_sessions TO hako_preview_reconciler;
+GRANT DELETE ON TABLE repository_preview_sessions TO hako_preview_reconciler;
 -- Preview runtime allocations are per immutable PR-head generation. The
 -- expiry reconciler may only move active generations into cleanup; it cannot
 -- read provider bindings or execute Resource Plane commands.

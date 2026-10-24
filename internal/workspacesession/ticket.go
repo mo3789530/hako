@@ -68,20 +68,53 @@ type Ed25519Issuer struct {
 }
 
 func (i *Ed25519Issuer) Issue(claims Claims) (string, Claims, error) {
-	if i == nil || !keyIDPattern.MatchString(i.KeyID) || len(i.PrivateKey) != ed25519.PrivateKeySize ||
-		claims.UserID == "" || claims.TenantID == "" || claims.WorkspaceID == "" ||
-		!resourceIDRegex.MatchString(string(claims.ResourcePlane)) || !validPermissions(claims.Permissions) {
-		return "", Claims{}, ErrTicket
-	}
-	ttl := i.TTL
-	if ttl <= 0 {
-		ttl = TicketMaxTTL
-	} else if ttl > TicketMaxTTL {
+	if i == nil {
 		return "", Claims{}, ErrTicket
 	}
 	now := time.Now
 	if i.Now != nil {
 		now = i.Now
+	}
+	issuedAt := now().UTC()
+	ttl := i.TTL
+	if ttl <= 0 {
+		ttl = TicketMaxTTL
+	}
+	return i.issueAt(claims, issuedAt, ttl)
+}
+
+// IssueBefore caps the ticket expiry at an external resource deadline. This is
+// used for Preview Sessions so a ticket cannot outlive its PR generation.
+func (i *Ed25519Issuer) IssueBefore(claims Claims, deadline time.Time) (string, Claims, error) {
+	if i == nil || deadline.IsZero() {
+		return "", Claims{}, ErrTicket
+	}
+	now := time.Now
+	if i.Now != nil {
+		now = i.Now
+	}
+	issuedAt := now().UTC()
+	ttl := i.TTL
+	if ttl <= 0 {
+		ttl = TicketMaxTTL
+	}
+	if remaining := deadline.Sub(issuedAt); remaining < ttl {
+		ttl = remaining
+	}
+	return i.issueAt(claims, issuedAt, ttl)
+}
+
+func (i *Ed25519Issuer) issueAt(claims Claims, issuedAt time.Time, ttl time.Duration) (string, Claims, error) {
+	if i == nil || !keyIDPattern.MatchString(i.KeyID) || len(i.PrivateKey) != ed25519.PrivateKeySize ||
+		claims.UserID == "" || claims.TenantID == "" || claims.WorkspaceID == "" ||
+		!resourceIDRegex.MatchString(string(claims.ResourcePlane)) || !validPermissions(claims.Permissions) {
+		return "", Claims{}, ErrTicket
+	}
+	if ttl < time.Second {
+		return "", Claims{}, ErrTicket
+	}
+	if ttl > TicketMaxTTL {
+		return "", Claims{}, ErrTicket
 	}
 	random := i.Random
 	if random == nil {
@@ -91,7 +124,6 @@ func (i *Ed25519Issuer) Issue(claims Claims) (string, Claims, error) {
 	if _, err := io.ReadFull(random, ticketID[:]); err != nil {
 		return "", Claims{}, ErrTicket
 	}
-	issuedAt := now().UTC()
 	claims.Version = 1
 	claims.Audience = AudienceGateway
 	claims.TicketID = hex.EncodeToString(ticketID[:])

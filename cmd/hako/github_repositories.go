@@ -14,6 +14,7 @@ import (
 	"github.com/mo3789530/hako/internal/api"
 	"github.com/mo3789530/hako/internal/auth"
 	"github.com/mo3789530/hako/internal/store/githubregistry"
+	"github.com/mo3789530/hako/internal/workspacesession"
 )
 
 type githubRepositoryFactoryCLIInput struct {
@@ -103,6 +104,79 @@ func listGitHubRepositoryPreviewsCLI(args []string) (api.GitHubRepositoryPreview
 	}
 	return api.ListGitHubRepositoryPreviews(context.Background(), strings.TrimSpace(os.Getenv("HAKO_API_URL")), token,
 		input.tenantID, input.installationID, input.repositoryID, input.limit, nil)
+}
+
+type githubRepositoryPreviewSessionCLIInput struct {
+	tenantID       string
+	installationID int64
+	repositoryID   int64
+	pullRequest    int64
+	sessionID      string
+	permissions    []workspacesession.Permission
+}
+
+func parseGitHubRepositoryPreviewSessionCLI(args []string, action string) (githubRepositoryPreviewSessionCLIInput, error) {
+	var input githubRepositoryPreviewSessionCLIInput
+	if len(args) == 0 || args[0] != action {
+		return input, errors.New("action must be " + action)
+	}
+	permissionText := "vscode"
+	flags := flag.NewFlagSet("github repository previews session "+action, flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&input.tenantID, "tenant", "", "Tenant ID")
+	flags.Int64Var(&input.installationID, "installation", 0, "GitHub Installation ID")
+	flags.Int64Var(&input.repositoryID, "repository", 0, "GitHub Repository ID")
+	flags.Int64Var(&input.pullRequest, "pull-request", 0, "Pull Request number")
+	flags.StringVar(&input.sessionID, "session", "", "Preview Session ID to revoke")
+	if action == "create" {
+		flags.StringVar(&permissionText, "permissions", "vscode", "Comma-separated Gateway permissions")
+	}
+	if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 || strings.TrimSpace(input.tenantID) == "" || input.installationID <= 0 ||
+		input.repositoryID <= 0 || input.pullRequest <= 0 || (action == "revoke" && len(input.sessionID) != 48) {
+		return githubRepositoryPreviewSessionCLIInput{}, errors.New("--tenant, positive --installation, positive --repository, positive --pull-request, and for revoke --session are required")
+	}
+	input.tenantID = strings.TrimSpace(input.tenantID)
+	if action == "create" {
+		parts := strings.Split(permissionText, ",")
+		input.permissions = make([]workspacesession.Permission, 0, len(parts))
+		for _, part := range parts {
+			permission := workspacesession.Permission(strings.TrimSpace(part))
+			if permission == "" {
+				return githubRepositoryPreviewSessionCLIInput{}, errors.New("--permissions contains an empty permission")
+			}
+			input.permissions = append(input.permissions, permission)
+		}
+		if workspacesession.ValidatePermissions(input.permissions) != nil {
+			return githubRepositoryPreviewSessionCLIInput{}, errors.New("--permissions contains an invalid or duplicate permission")
+		}
+	}
+	return input, nil
+}
+
+func createGitHubRepositoryPreviewSessionCLI(args []string) (api.RepositoryPreviewSession, error) {
+	input, err := parseGitHubRepositoryPreviewSessionCLI(args, "create")
+	if err != nil {
+		return api.RepositoryPreviewSession{}, err
+	}
+	token, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
+	if err != nil {
+		return api.RepositoryPreviewSession{}, err
+	}
+	return api.CreateRepositoryPreviewSession(context.Background(), strings.TrimSpace(os.Getenv("HAKO_API_URL")), token,
+		input.tenantID, input.installationID, input.repositoryID, input.pullRequest, input.permissions, nil)
+}
+
+func revokeGitHubRepositoryPreviewSessionCLI(args []string) error {
+	input, err := parseGitHubRepositoryPreviewSessionCLI(append([]string{"revoke"}, args...), "revoke")
+	if err != nil {
+		return err
+	}
+	token, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
+	if err != nil {
+		return err
+	}
+	return api.RevokeRepositoryPreviewSession(context.Background(), strings.TrimSpace(os.Getenv("HAKO_API_URL")), token,
+		input.tenantID, input.installationID, input.repositoryID, input.pullRequest, input.sessionID, nil)
 }
 
 type githubRepositoryActionsRunnerCLIInput struct {

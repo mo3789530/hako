@@ -28,6 +28,35 @@ required; an Installation or Repository outside that Tenant is not disclosed.
 `runtime_enabled` remains false because this listing reports lifecycle
 metadata only.
 
+When a runtime allocation for the current PR generation is marked `running`,
+Tenant members can request a short-lived Gateway Session:
+
+```text
+POST /v1/tenants/{tenant_id}/github/installations/{installation_id}/repositories/{repository_id}/previews/{pull_request_number}/sessions
+{"permissions":["vscode"]}
+```
+
+The response contains the logical runtime Workspace ID, opaque Session ID,
+Gateway ticket, permitted channels, and expiry. It never returns the Lambda
+MicroVM ID or Gateway provider route ID. The CLI equivalent is
+`hako github repository previews session create`; its JSON includes the bearer
+ticket, so treat the output as a secret. Revoke it with
+`hako github repository previews session revoke --tenant ... --installation
+... --repository ... --pull-request ... --session ...`.
+
+Preview session records are separate from developer Workspace sessions because
+Preview runtime identities are not rows in the public `workspaces` table.
+Resource Plane active-session lookup checks both stores. For Preview tickets it
+also verifies that the pinned generation remains the current present generation
+and that its allocation and Preview remain unexpired; PR close, head update,
+expiry, or explicit revoke therefore invalidates an existing ticket immediately.
+The ticket expiry is capped at the Preview expiry. Session create/revoke events
+are audited. These APIs are available only when GitHub Repository APIs and the
+Workspace Session ticket issuer are configured, and return a conflict until a
+provider-bound running allocation exists; they do not themselves allocate a
+MicroVM or publish a route. The scheduled Preview expiry batch also deletes a
+bounded number of expired Preview Session rows using the session-expiry index.
+
 The endpoint writes an audit event. The webhook processor ignores deliveries
 received before `preview_enabled_at`, so enabling Preview does not backfill old
 PR events. Disabling Preview prevents new lifecycle updates; it does not delete
