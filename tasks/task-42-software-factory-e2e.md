@@ -1,6 +1,15 @@
 # Task 42: Software Factory End-to-End
 
-Status: In Progress (local PostgreSQL → Tenant-specific signed HTTP ingress/HMAC and live Installation-binding authorization → duplicate/conflicting Delivery ID handling → immutable untrusted success, failure, pre-dispatch-cancel, in-flight-cancel, timeout, and artifact-failure Runs → isolated Podman Go tests → redacted artifacts → durable Checks outbox/dispatcher → fake GitHub terminal Check conclusions E2E added and run locally; transient GitHub 503 retry is verified without re-running Jobs. Integration tests compose the PostgreSQL-backed Scheduler Consumer, placement/attempt Outbox, Resource Plane Dispatcher route, Lambda MicroVM Worker command handler, signed Agent success execution, PostgreSQL result apply/replay, and confirmed cleanup; handler replacement/replay reuses the MicroVM and Agent process. Cancellation now starts a real signed FilesystemAgent process and verifies fake Lambda MicroVM termination closes the guest Agent, cancels the process context, and projects a cancelled result without artifacts into PostgreSQL. Scheduled recovery uses the production S3 journal adapter over conditional fake S3 and verifies lost-result-ack replay into PostgreSQL after recovery handler restart. CI requires Podman and the pinned Go image. Resolver uses a synthetic in-memory credential, never AWS Secrets Manager. AWS smoke/deployed-runtime validation remains). Priority: P0.
+Status: Local acceptance complete; dedicated AWS smoke/deployed-runtime validation remains approval-gated. The local E2E covers Tenant-specific signed HTTP ingress/HMAC and live Installation-binding authorization → duplicate/conflicting Delivery ID handling → immutable untrusted success, failure, pre-dispatch-cancel, in-flight-cancel, timeout, and artifact-failure Runs → isolated Podman Go tests → redacted artifacts → durable Checks outbox/dispatcher → fake GitHub terminal Check conclusions; transient GitHub 503 retry is verified without re-running Jobs. Integration tests compose the PostgreSQL-backed Scheduler Consumer, placement/attempt Outbox, Resource Plane Dispatcher route, Lambda MicroVM Worker command handler, signed Agent success execution, PostgreSQL result apply/replay, and confirmed cleanup; handler replacement/replay reuses the MicroVM and Agent process. Cancellation starts a signed FilesystemAgent process and verifies fake Lambda MicroVM termination closes the guest Agent, cancels the process context, and projects a cancelled result without artifacts into PostgreSQL. Scheduled recovery uses the production S3 journal adapter over conditional fake S3 and verifies lost-result-ack replay into PostgreSQL after recovery handler restart. CI requires Podman and the pinned Go image. Resolver uses a synthetic in-memory credential, never AWS Secrets Manager. Priority: P0.
+
+## Verification refresh (2026-10-25)
+
+`make test-software-factory-e2e` passed against the already-running local
+PostgreSQL and required Podman environment. It ran the signed webhook → isolated
+Go test → durable GitHub Check E2E, authenticated Workload API visibility test,
+and composed Lambda Worker success/cancellation E2Es. The local acceptance
+criteria are complete; dedicated AWS smoke and deployed-runtime validation
+remain approval-gated and were not run.
 
 ## Local verification refresh (2026-10-24)
 
