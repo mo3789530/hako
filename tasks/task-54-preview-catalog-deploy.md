@@ -149,8 +149,12 @@ Add optional repository-level preview environments and service metadata/deploy p
   a lost conditional claim reverses its provisional reservation. PostgreSQL
   integration covers capacity filtering and release. The manifest/Dispatcher
   now defines a dedicated strict Preview provision/cleanup route with no
-  Workspace queue fallback. The durable command producer, Resource Plane
-  consumer/result consumer, tag discovery/deletion adapter, queue
+  Workspace queue fallback. `internal/previewdispatch.Worker` now atomically
+  claims eligible generations, pins/reserves placement, and inserts strict
+  provision commands into the DSQL/PostgreSQL Outbox. Its integration test
+  verifies a duplicate pass does not enqueue twice and follows the committed
+  command through the Dispatcher into the dedicated Plane queue. The Resource
+  Plane consumer/result consumer, tag discovery/deletion adapter, queue
   infrastructure, worker deployment, and scheduled composition are not wired.
 - Migrations 000163–000164 add a separate Preview Gateway session registry
   because deterministic Preview runtime Workspace IDs are intentionally absent
@@ -170,10 +174,12 @@ Add optional repository-level preview environments and service metadata/deploy p
 - `go test ./...` passed. PostgreSQL Preview lifecycle E2E passed against the
   local `hako-dev-postgres`, including stale delivery, close/reopen, Tenant
   scoping, and duplicate replay.
-- Remaining: Preview Workspace/Run binding to Lambda MicroVM, expiring
+- Remaining: connect the producer worker to its scheduled Lambda composition;
+  add an authenticated Resource Plane command consumer and fenced result
+  projection; Preview Workspace/Run binding to Lambda MicroVM, expiring
   Tenant-scoped Gateway route, timeout/merge sweep, provider-backed MicroVM /
-  route cleanup executor, transactional command producer and Resource Plane
-  result consumer, scheduled provision/cleanup composition and DSQL grants, and lifecycle wiring
+  route cleanup executor, cleanup command producer and Resource Plane result
+  consumer, scheduled provision/cleanup composition and DSQL grants, and lifecycle wiring
   into `hako open`. Placement selection/reservation is implemented locally but
   is not yet connected to a provider-backed runtime. See
   [`Preview lifecycle`](../docs/preview-lifecycle.md).

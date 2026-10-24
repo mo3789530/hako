@@ -1,8 +1,25 @@
 # Preview Runtime command routing contract
 
 This document defines the Control Plane Outbox event envelope accepted by the
-Resource Plane queue router. It does not claim that a command producer,
-Resource Plane consumer, provider adapter, or result consumer is deployed.
+Resource Plane queue router. A local database-only producer now commits Preview
+claims and these events atomically, and PostgreSQL integration coverage follows
+the committed event through the Dispatcher. The Resource Plane consumer,
+provider adapter, and result consumer are not deployed.
+
+## Producer transaction
+
+`internal/previewdispatch.Worker` calls the Preview store claim operation and
+inserts one `repository_preview_runtime.provision` event for every returned
+claim inside the same PostgreSQL/DSQL transaction. The transaction also pins
+the generation to its Resource Plane and reserves configured capacity. If
+command encoding or Outbox insertion fails, the transaction rolls back the
+claim and reservation together. The Worker performs no network calls; a
+separate Outbox Dispatcher publishes after commit. Re-running while the claim
+lease is active does not enqueue a second command.
+
+Event IDs and the claim ID are allocated before entering the OCC-retried
+transaction callback, so transaction retries reuse stable identifiers without
+performing external side effects.
 
 ## Outbox event
 
@@ -48,7 +65,8 @@ queue.
 The optional per-Plane manifest setting is
 `preview_runtime_command_queue_url`. It must be a distinct SQS URL in the
 registered Resource Plane account and region. Queue creation, exact IAM,
-producer, consumer, result acknowledgment, and runtime execution remain
-separate implementation work; no AWS changes were made for this contract.
+Resource Plane consumer, result acknowledgment, provider-backed MicroVM and
+Gateway work, and scheduled deployment composition remain separate work; no
+AWS changes were made for this contract.
 
 See [Preview lifecycle](preview-lifecycle.md) and [Resource Plane registration](resource-plane-registration.md).
