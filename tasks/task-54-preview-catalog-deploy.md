@@ -400,5 +400,9 @@ Add optional repository-level preview environments and service metadata/deploy p
   endpoint is composed only when Resource Plane checkout callers are
   configured and returns the verified Repository owner/name. A bounded
   Resource Plane HTTPS client validates the no-store response before exposing
-  the grant. Git checkout, source archive staging, Guest delivery, and app
-  startup remain unimplemented.
+  the grant. `previewcontroller.PreviewSourceMaterializer` now uses that grant
+  with the immutable Git checkout and existing S3 archive stager, tied to the
+  exact PR head SHA, runtime Workspace, generation, and claim. It removes the
+  temporary checkout and executes no repository code. Unit tests cover its
+  pinning, archive identity, failure cleanup, and malformed results. Runtime
+  composition, Guest source delivery, and app startup remain unimplemented.

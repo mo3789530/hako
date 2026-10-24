@@ -35,8 +35,11 @@ Preview generation snapshots the eligible Tenant-owned GitHub App identity
 allocation row is first created. A separate mTLS broker endpoint issues a
 Contents-read token only for the exact current generation and active
 Resource Plane claim and returns verified Repository metadata through a
-bounded HTTPS client. Unit and PostgreSQL tests cover claim fencing and
-rotation. Git checkout, source archive staging, Guest delivery, and app startup
+bounded HTTPS client. A local Preview materializer now checks out the exact
+head SHA and stages a credential-free S3 archive under the Workspace,
+generation, and active claim identity. Unit tests cover staging and temporary
+checkout cleanup; PostgreSQL tests cover claim fencing and credential
+rotation. Materializer-to-runtime wiring, Guest delivery, and app startup
 remain open; see Task 54 and the Preview lifecycle document.
 
 ### ローカル実装と外部承認の境界
