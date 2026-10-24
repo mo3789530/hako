@@ -21,6 +21,26 @@ Event IDs and the claim ID are allocated before entering the OCC-retried
 transaction callback, so transaction retries reuse stable identifiers without
 performing external side effects.
 
+## Resource Plane consumer and result
+
+`internal/previewcontroller.LambdaHandler` validates the SQS message's
+`HakoEventType` and `AggregateID` attributes against the strict body, then
+rejects commands pinned to another Plane. Provisioning is bounded by the
+earliest of the configured execution timeout, claim lease, and Preview expiry.
+The injected Runtime contract requires idempotency by runtime Workspace and
+generation. Partial provision failures are compensated before a failure result
+is reported; if compensation or result delivery fails, the SQS record is
+returned as a batch failure for retry. Provider error strings are not copied
+into results or logs.
+
+The Resource Plane result Queue receives a generation- and claim-fenced result
+envelope with fixed status/error codes and optional provider binding. FIFO
+queues use Workspace generation ordering and a deterministic deduplication key
+for `(action, workspace, generation, claim, attempt)`. The Control Plane result
+consumer must still compare the result with the active generation, claim,
+attempt, lease, and pinned Plane before applying it. That consumer and the
+Lambda MicroVM/Gateway provider implementation are not yet wired.
+
 ## Outbox event
 
 The Dispatcher accepts only these event identities:

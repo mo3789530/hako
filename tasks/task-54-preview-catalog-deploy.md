@@ -154,8 +154,14 @@ Add optional repository-level preview environments and service metadata/deploy p
   provision commands into the DSQL/PostgreSQL Outbox. Its integration test
   verifies a duplicate pass does not enqueue twice and follows the committed
   command through the Dispatcher into the dedicated Plane queue. The Resource
-  Plane consumer/result consumer, tag discovery/deletion adapter, queue
-  infrastructure, worker deployment, and scheduled composition are not wired.
+  Plane now has a strict SQS Lambda handler core, generation/claim-aware result
+  envelope, bounded execution deadline, fixed failure classes, partial-success
+  compensation contract, and SQS result sink. Unit tests cover event attribute
+  binding, lease expiry, safe compensation, and FIFO result deduplication. The
+  Lambda MicroVM provider adapter, durable fencing across duplicate receives,
+  Control Plane result consumer/projection, tag discovery/deletion adapter,
+  queue infrastructure, worker deployment, and scheduled composition remain
+  unwired.
 - Migrations 000163–000164 add a separate Preview Gateway session registry
   because deterministic Preview runtime Workspace IDs are intentionally absent
   from the public Workspace table. Tenant members can request/revoke scoped
@@ -175,8 +181,8 @@ Add optional repository-level preview environments and service metadata/deploy p
   local `hako-dev-postgres`, including stale delivery, close/reopen, Tenant
   scoping, and duplicate replay.
 - Remaining: connect the producer worker to its scheduled Lambda composition;
-  add an authenticated Resource Plane command consumer and fenced result
-  projection; Preview Workspace/Run binding to Lambda MicroVM, expiring
+  implement durable MicroVM/Gateway provider operations and the Control Plane
+  fenced result consumer/projection; Preview Workspace/Run binding to Lambda MicroVM, expiring
   Tenant-scoped Gateway route, timeout/merge sweep, provider-backed MicroVM /
   route cleanup executor, cleanup command producer and Resource Plane result
   consumer, scheduled provision/cleanup composition and DSQL grants, and lifecycle wiring

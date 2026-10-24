@@ -332,7 +332,7 @@ func validRuntimeBinding(binding RuntimeBinding) bool {
 
 func validRuntimeProvisionError(code string) bool {
 	switch code {
-	case "runtime_profile_missing", "microvm_launch_failed", "gateway_route_publish_failed", "provider_unavailable":
+	case "runtime_profile_missing", "microvm_launch_failed", "gateway_route_publish_failed", "invalid_runtime_binding", "provider_unavailable":
 		return true
 	default:
 		return false
