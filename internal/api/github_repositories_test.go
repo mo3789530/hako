@@ -35,6 +35,27 @@ func TestSetGitHubRepositoryFactoryEnabledUsesTenantScopedPut(t *testing.T) {
 	}
 }
 
+func TestSetGitHubRepositoryPreviewEnabledKeepsRuntimeDisabled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/v1/tenants/tenant_preview_api/github/installations/7001/repositories/7002/preview" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer test-token" {
+			t.Fatalf("Authorization header = %q", r.Header.Get("Authorization"))
+		}
+		var body map[string]bool
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || !body["enabled"] {
+			t.Fatalf("request body = %v, error = %v", body, err)
+		}
+		_, _ = w.Write([]byte(`{"repository":{"tenant_id":"tenant_preview_api","installation_id":7001,"github_repository_id":7002,"preview_enabled":true},"runtime_enabled":false}`))
+	}))
+	defer server.Close()
+	result, err := SetGitHubRepositoryPreviewEnabled(context.Background(), server.URL, "test-token", "tenant_preview_api", 7001, 7002, true, server.Client())
+	if err != nil || !result.Repository.PreviewEnabled || result.RuntimeEnabled {
+		t.Fatalf("SetGitHubRepositoryPreviewEnabled() = %+v, error = %v", result, err)
+	}
+}
+
 func TestSetGitHubRepositoryAgentWritePolicyUsesTenantScopedDormantEndpoint(t *testing.T) {
 	policy := agenttask.WritePolicy{Enabled: true, BranchPrefixes: []string{"hako/agent/"}, AllowPullRequests: true,
 		RequiredChecks: []string{"hako/lint", "hako/test"}, RequireChecksToPass: true}

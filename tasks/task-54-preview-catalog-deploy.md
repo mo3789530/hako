@@ -4,8 +4,10 @@ Status: In Progress. The Tenant-scoped Software Catalog metadata API/CLI and
 PostgreSQL RBAC/reference integration coverage are implemented. OIDC deploy
 policy API/CLI and fixed-GitHub-issuer RS256/JWKS claim verification are now
 implemented locally; no STS exchange or deployment execution is enabled.
-Preview Workspace lifecycle/routing and production approval/IAM wiring remain
-blocked on Tasks 43–46 and 50–51. Priority: P3.
+Tenant-scoped Preview opt-in and transactional PR desired-state tracking are
+implemented locally, including stale GitHub `updated_at` fencing. Preview
+MicroVM allocation, Gateway routing, expiry and cleanup execution/retries, and
+production approval/IAM wiring remain incomplete. Priority: P3.
 
 ## Goal
 
@@ -43,6 +45,26 @@ Add optional repository-level preview environments and service metadata/deploy p
 - Preview allocation/routing and PR lifecycle cleanup remain blocked by the
   listed runtime/deployment prerequisites. Production approval validation,
   IAM trust/exchange and deployment execution remain disabled.
+
+## Preview lifecycle metadata slice (2026-10-24)
+
+- Added default-off Tenant Repository Preview opt-in and Owner/Admin API at
+  `PUT /v1/tenants/{tenant_id}/github/installations/{installation_id}/repositories/{repository_id}/preview`.
+- The durable inbox processor now applies PR opened/reopened/synchronize/closed
+  events in the same transaction as delivery acknowledgement. State is keyed
+  by Tenant, Installation, Repository, and PR; `updated_at` fences delayed old
+  GitHub events, while duplicate Delivery IDs remain idempotent.
+- Open PRs become `awaiting_runtime`; closed PRs become `cleanup_pending`.
+  Migration 000140 adds the opt-in, and 000141 adds the lifecycle table.
+  Runtime allocation is explicitly reported disabled; this change does not
+  create a MicroVM, Workspace, or Gateway route.
+- `go test ./...` passed. PostgreSQL Preview lifecycle E2E passed against the
+  local `hako-dev-postgres`, including stale delivery, close/reopen, Tenant
+  scoping, and duplicate replay.
+- Remaining: Preview Workspace/Run binding to Lambda MicroVM, expiring
+  Tenant-scoped Gateway route, quota reservation, timeout/merge sweep, and
+  idempotent cleanup worker with retry/backoff. See
+  [`Preview lifecycle`](../docs/preview-lifecycle.md).
 
 ## Acceptance criteria
 

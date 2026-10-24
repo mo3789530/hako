@@ -20,6 +20,11 @@ type GitHubRepositoryFactoryResult struct {
 	Repository githubregistry.Repository `json:"repository"`
 }
 
+type GitHubRepositoryPreviewResult struct {
+	Repository     githubregistry.Repository `json:"repository"`
+	RuntimeEnabled bool                      `json:"runtime_enabled"`
+}
+
 type GitHubRepositoryActionsRunnerResult struct {
 	Repository githubregistry.Repository `json:"repository"`
 }
@@ -107,6 +112,46 @@ func SetGitHubRepositoryFactoryEnabled(ctx context.Context, baseURL, accessToken
 		string(result.Repository.TenantID) != tenantID || result.Repository.InstallationID != installationID ||
 		result.Repository.GitHubRepositoryID != repositoryID || result.Repository.FactoryEnabled != enabled {
 		return GitHubRepositoryFactoryResult{}, errors.New("invalid GitHub Repository factory response")
+	}
+	return result, nil
+}
+
+// SetGitHubRepositoryPreviewEnabled manages Preview metadata opt-in. The
+// response must keep RuntimeEnabled false until allocation and Gateway routing
+// are implemented and deployed.
+func SetGitHubRepositoryPreviewEnabled(ctx context.Context, baseURL, accessToken, tenantID string, installationID, repositoryID int64, enabled bool, client *http.Client) (GitHubRepositoryPreviewResult, error) {
+	var result GitHubRepositoryPreviewResult
+	if !validTenantID(tenantID) || strings.TrimSpace(accessToken) == "" || installationID <= 0 || repositoryID <= 0 {
+		return result, errors.New("valid Tenant, Installation, Repository, and access token are required")
+	}
+	path := "/v1/tenants/" + url.PathEscape(tenantID) + "/github/installations/" + strconv.FormatInt(installationID, 10) +
+		"/repositories/" + strconv.FormatInt(repositoryID, 10) + "/preview"
+	endpoint, err := apiEndpoint(baseURL, path)
+	if err != nil {
+		return result, err
+	}
+	body, err := json.Marshal(map[string]bool{"enabled": enabled})
+	if err != nil {
+		return result, errors.New("encode GitHub Repository Preview request")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return result, errors.New("create GitHub Repository Preview request")
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	response, err := safeAPIClient(client).Do(req)
+	if err != nil {
+		return result, errors.New("GitHub Repository Preview request failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return result, readAPIError(response)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil || result.RuntimeEnabled ||
+		string(result.Repository.TenantID) != tenantID || result.Repository.InstallationID != installationID ||
+		result.Repository.GitHubRepositoryID != repositoryID || result.Repository.PreviewEnabled != enabled {
+		return GitHubRepositoryPreviewResult{}, errors.New("invalid GitHub Repository Preview response")
 	}
 	return result, nil
 }

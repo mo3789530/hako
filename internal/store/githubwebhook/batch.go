@@ -23,6 +23,7 @@ type BatchStats struct {
 	Claimed                   int
 	Processed                 int
 	WorkloadRunsCreated       int
+	RepositoryPreviewsUpdated int
 	ActionsRunnerJobsAdmitted int
 	Deferred                  int
 	RawPayloadsPurged         int
@@ -41,17 +42,32 @@ func ProcessBatch(ctx context.Context, pool BatchPool, policy transaction.Policy
 // into a generic test Run. The run creator is injected to keep inbox storage
 // independent of the Workload Run store while sharing one DB transaction.
 func ProcessBatchWithRepositoryTriggers(ctx context.Context, pool BatchPool, policy transaction.Policy, batchSize int, processedAt time.Time, createRun RepositoryRunCreator) (BatchStats, error) {
-	return processBatch(ctx, pool, policy, batchSize, processedAt, createRun, false)
+	return processBatch(ctx, pool, policy, batchSize, processedAt, createRun, nil, false)
+}
+
+// ProcessBatchWithRepositoryPreviews additionally applies explicit opt-in PR
+// Preview lifecycle state in the same transaction as webhook acknowledgement.
+func ProcessBatchWithRepositoryPreviews(ctx context.Context, pool BatchPool, policy transaction.Policy, batchSize int, processedAt time.Time,
+	createRun RepositoryRunCreator, processPreview RepositoryPreviewProcessor) (BatchStats, error) {
+	return processBatch(ctx, pool, policy, batchSize, processedAt, createRun, processPreview, false)
 }
 
 // ProcessBatchWithActionsRunnerAdmissions additionally admits queued
 // workflow_job events into the durable Actions runner job table. Admission is
 // repository-opt-in gated and does not start a runner or create a MicroVM.
 func ProcessBatchWithActionsRunnerAdmissions(ctx context.Context, pool BatchPool, policy transaction.Policy, batchSize int, processedAt time.Time, createRun RepositoryRunCreator) (BatchStats, error) {
-	return processBatch(ctx, pool, policy, batchSize, processedAt, createRun, true)
+	return processBatch(ctx, pool, policy, batchSize, processedAt, createRun, nil, true)
 }
 
-func processBatch(ctx context.Context, pool BatchPool, policy transaction.Policy, batchSize int, processedAt time.Time, createRun RepositoryRunCreator, actionsRunnerAdmissions bool) (BatchStats, error) {
+// ProcessBatchWithActionsRunnerAdmissionsAndPreviews combines the separately
+// authorized Actions admission path with opt-in PR Preview desired state.
+func ProcessBatchWithActionsRunnerAdmissionsAndPreviews(ctx context.Context, pool BatchPool, policy transaction.Policy, batchSize int, processedAt time.Time,
+	createRun RepositoryRunCreator, processPreview RepositoryPreviewProcessor) (BatchStats, error) {
+	return processBatch(ctx, pool, policy, batchSize, processedAt, createRun, processPreview, true)
+}
+
+func processBatch(ctx context.Context, pool BatchPool, policy transaction.Policy, batchSize int, processedAt time.Time, createRun RepositoryRunCreator,
+	processPreview RepositoryPreviewProcessor, actionsRunnerAdmissions bool) (BatchStats, error) {
 	var stats BatchStats
 	if pool == nil || batchSize < 1 || batchSize > MaxRepositoryEventBatchSize {
 		return stats, fmt.Errorf("database pool and batch size between 1 and %d are required", MaxRepositoryEventBatchSize)
@@ -73,12 +89,13 @@ func processBatch(ctx context.Context, pool BatchPool, policy transaction.Policy
 		        JOIN tenant_github_installations i ON i.tenant_id = b.tenant_id AND i.installation_id = b.installation_id
 		        WHERE b.installation_id = d.installation_id AND i.status = 'active' AND i.suspended_at IS NULL
 		      ))
-		    OR ($3 AND d.event_type IN ('push', 'pull_request'))
+			OR ($3 AND d.event_type IN ('push', 'pull_request'))
 			OR ($4 AND d.event_type='workflow_job' AND d.action IN ('queued','in_progress','completed'))
+			OR ($5 AND d.event_type='pull_request')
 		  )
 		ORDER BY CASE WHEN d.event_type='workflow_job' AND d.action='queued' THEN 0 ELSE 1 END,
 		         d.received_at, d.delivery_id
-		LIMIT $1`, batchSize, githubwebhook.RepositoryEventSchemaVersion, createRun != nil, actionsRunnerAdmissions)
+		LIMIT $1`, batchSize, githubwebhook.RepositoryEventSchemaVersion, createRun != nil, actionsRunnerAdmissions, processPreview != nil)
 	if err != nil {
 		return stats, fmt.Errorf("select pending GitHub repository events: %w", err)
 	}
@@ -100,7 +117,7 @@ func processBatch(ctx context.Context, pool BatchPool, policy transaction.Policy
 
 	for _, delivery := range pending {
 		stats.Claimed++
-		type deliveryResult struct{ processed, runCreated, runnerAdmitted bool }
+		type deliveryResult struct{ processed, runCreated, previewUpdated, runnerAdmitted bool }
 		result, err := transaction.Within(ctx, pool, policy, func(ctx context.Context, tx pgx.Tx) (deliveryResult, error) {
 			if delivery.eventType == "workflow_job" {
 				if !actionsRunnerAdmissions {
@@ -123,14 +140,14 @@ func processBatch(ctx context.Context, pool BatchPool, policy transaction.Policy
 				return deliveryResult{processed: done, runnerAdmitted: admitted}, nil
 			}
 			if delivery.eventType == "push" || delivery.eventType == "pull_request" {
-				if createRun == nil {
+				if createRun == nil && (delivery.eventType != "pull_request" || processPreview == nil) {
 					return deliveryResult{}, nil
 				}
-				done, created, err := ProcessRepositoryTriggerDelivery(ctx, tx, delivery.integrationID, delivery.id, processedAt, createRun)
+				done, created, previewUpdated, err := ProcessRepositoryTriggerDeliveryWithPreview(ctx, tx, delivery.integrationID, delivery.id, processedAt, createRun, processPreview)
 				if err != nil {
 					return deliveryResult{}, err
 				}
-				return deliveryResult{processed: done, runCreated: created}, nil
+				return deliveryResult{processed: done, runCreated: created, previewUpdated: previewUpdated}, nil
 			}
 			var processed bool
 			var err error
@@ -150,6 +167,9 @@ func processBatch(ctx context.Context, pool BatchPool, policy transaction.Policy
 		}
 		if result.runCreated {
 			stats.WorkloadRunsCreated++
+		}
+		if result.previewUpdated {
+			stats.RepositoryPreviewsUpdated++
 		}
 		if result.runnerAdmitted {
 			stats.ActionsRunnerJobsAdmitted++

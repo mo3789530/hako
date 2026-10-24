@@ -55,12 +55,13 @@ func buildHandler(ctx context.Context) (func(context.Context, events.CloudWatchE
 			if workloadTriggersEnabled {
 				createRun = workloadjobs.CreateWebhookRepositoryRun
 			}
-			return webhookstore.ProcessBatchWithActionsRunnerAdmissions(ctx, pool, transaction.DefaultPolicy(), 10, now, createRun)
+			return webhookstore.ProcessBatchWithActionsRunnerAdmissionsAndPreviews(ctx, pool, transaction.DefaultPolicy(), 10, now, createRun, workloadjobs.ApplyWebhookRepositoryPreview)
 		}
+		var createRun webhookstore.RepositoryRunCreator
 		if workloadTriggersEnabled {
-			return webhookstore.ProcessBatchWithRepositoryTriggers(ctx, pool, transaction.DefaultPolicy(), 10, now, workloadjobs.CreateWebhookRepositoryRun)
+			createRun = workloadjobs.CreateWebhookRepositoryRun
 		}
-		return webhookstore.ProcessBatch(ctx, pool, transaction.DefaultPolicy(), 10, now)
+		return webhookstore.ProcessBatchWithRepositoryPreviews(ctx, pool, transaction.DefaultPolicy(), 10, now, createRun, workloadjobs.ApplyWebhookRepositoryPreview)
 	}), nil
 }
 

@@ -6,8 +6,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/githubwebhook"
 	"github.com/mo3789530/hako/internal/idgen"
 	webhookstore "github.com/mo3789530/hako/internal/store/githubwebhook"
+	"github.com/mo3789530/hako/internal/store/previews"
 	"github.com/mo3789530/hako/internal/store/workloads"
 )
 
@@ -28,4 +30,11 @@ func CreateWebhookRepositoryRun(ctx context.Context, tx pgx.Tx, tenantID domain.
 		TimeoutSeconds: int64(workloads.DefaultTimeout / time.Second), CorrelationID: correlationID, CreatedAt: now.UTC(),
 	})
 	return created, err
+}
+
+// ApplyWebhookRepositoryPreview records PR preview desired state after the
+// webhook processor has enforced Tenant binding and explicit repository opt-in.
+func ApplyWebhookRepositoryPreview(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, _ string, deliveryID string,
+	event githubwebhook.RepositoryEvent, receivedAt, processedAt time.Time) (bool, error) {
+	return previews.ApplyPullRequestDelivery(ctx, tx, tenantID, deliveryID, event, receivedAt, processedAt)
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"regexp"
 	"strings"
+	"time"
 )
 
 const RepositoryEventSchemaVersion = 1
@@ -44,11 +45,12 @@ type RepositoryRef struct {
 }
 
 type PullRequestRef struct {
-	Number  int64  `json:"number"`
-	State   string `json:"state"`
-	HeadRef string `json:"head_ref"`
-	HeadSHA string `json:"head_sha"`
-	BaseRef string `json:"base_ref"`
+	Number    int64     `json:"number"`
+	State     string    `json:"state"`
+	HeadRef   string    `json:"head_ref"`
+	HeadSHA   string    `json:"head_sha"`
+	BaseRef   string    `json:"base_ref"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
 }
 
 type WorkflowJobRef struct {
@@ -105,9 +107,10 @@ type githubPayload struct {
 		ID    int64  `json:"id"`
 	} `json:"sender"`
 	PullRequest struct {
-		Number int64  `json:"number"`
-		State  string `json:"state"`
-		Head   struct {
+		Number    int64     `json:"number"`
+		State     string    `json:"state"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Head      struct {
 			Ref string `json:"ref"`
 			SHA string `json:"sha"`
 		} `json:"head"`
@@ -198,7 +201,7 @@ func Normalize(delivery VerifiedDelivery) (RepositoryEvent, error) {
 		event.Type = "repository.pull_request." + delivery.Action
 		event.Repository, event.InstallationID = repository, payload.Installation.ID
 		event.Ref, event.CommitSHA = pr.Head.Ref, strings.ToLower(pr.Head.SHA)
-		event.PullRequest = &PullRequestRef{Number: pr.Number, State: pr.State, HeadRef: pr.Head.Ref, HeadSHA: strings.ToLower(pr.Head.SHA), BaseRef: pr.Base.Ref}
+		event.PullRequest = &PullRequestRef{Number: pr.Number, State: pr.State, HeadRef: pr.Head.Ref, HeadSHA: strings.ToLower(pr.Head.SHA), BaseRef: pr.Base.Ref, UpdatedAt: pr.UpdatedAt.UTC()}
 	case "workflow_job":
 		repository, err := normalizeRepository(payload.Repository)
 		job := payload.WorkflowJob

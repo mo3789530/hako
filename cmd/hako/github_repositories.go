@@ -54,6 +54,19 @@ func manageGitHubRepositoryFactoryCLI(args []string) (api.GitHubRepositoryFactor
 		input.tenantID, input.installationID, input.repositoryID, input.enabled, nil)
 }
 
+func manageGitHubRepositoryPreviewCLI(args []string) (api.GitHubRepositoryPreviewResult, error) {
+	input, err := parseGitHubRepositoryFactoryCLI(args)
+	if err != nil {
+		return api.GitHubRepositoryPreviewResult{}, err
+	}
+	token, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
+	if err != nil {
+		return api.GitHubRepositoryPreviewResult{}, err
+	}
+	return api.SetGitHubRepositoryPreviewEnabled(context.Background(), strings.TrimSpace(os.Getenv("HAKO_API_URL")), token,
+		input.tenantID, input.installationID, input.repositoryID, input.enabled, nil)
+}
+
 type githubRepositoryActionsRunnerCLIInput struct {
 	tenantID       string
 	installationID int64

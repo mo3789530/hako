@@ -84,3 +84,5 @@ prove that a human approved a deployment. Those controls and deployment
 execution remain disabled pending a trusted approval integration, IAM trust
 configuration, Preview lifecycle/routing and production deployment review.
 See [Task 54](../tasks/task-54-preview-catalog-deploy.md).
+For PR Preview opt-in and the currently metadata-only lifecycle, see
+[Preview lifecycle](preview-lifecycle.md).

@@ -190,4 +190,30 @@ func TestRepositoryFactorySettingRequiresTenantOwnerAndActiveRegisteredRepositor
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE tenant_id='tenant_factory_api' AND action='tenant.github_repository.agent_write_policy.configure'`).Scan(&auditCount); err != nil || auditCount != 1 {
 		t.Fatalf("Agent write policy audit count = %d, error = %v", auditCount, err)
 	}
+	previewPath := "/v1/tenants/tenant_factory_api/github/installations/7001/repositories/7002/preview"
+	for _, test := range []struct {
+		subject, tenant, body string
+		want                  int
+	}{
+		{"factory-owner", "tenant_factory_api", `{"enabled":true}`, http.StatusOK},
+		{"factory-member", "tenant_factory_api", `{"enabled":false}`, http.StatusNotFound},
+		{"factory-owner", "tenant_factory_other", `{"enabled":true}`, http.StatusNotFound},
+		{"factory-admin", "tenant_factory_api", `{}`, http.StatusBadRequest},
+		{"factory-admin", "tenant_factory_api", `{"enabled":false}`, http.StatusOK},
+	} {
+		response := call(previewPath, test.subject, test.tenant, test.body)
+		if response.Code != test.want {
+			t.Fatalf("Preview setting for %s/%s returned HTTP %d, want %d: %s", test.subject, test.tenant, response.Code, test.want, response.Body.String())
+		}
+		if response.Code == http.StatusOK && !strings.Contains(response.Body.String(), `"runtime_enabled":false`) {
+			t.Fatalf("Preview API must report runtime allocation disabled: %s", response.Body.String())
+		}
+	}
+	var previewEnabled, previewEnabledAt bool
+	if err := pool.QueryRow(ctx, `SELECT preview_enabled,preview_enabled_at IS NOT NULL FROM tenant_github_repositories WHERE tenant_id='tenant_factory_api' AND installation_id=7001 AND github_repository_id=7002`).Scan(&previewEnabled, &previewEnabledAt); err != nil || previewEnabled || previewEnabledAt {
+		t.Fatalf("final Preview setting = enabled:%v timestamp:%v error:%v", previewEnabled, previewEnabledAt, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE tenant_id='tenant_factory_api' AND action='tenant.github_repository.preview.configure'`).Scan(&auditCount); err != nil || auditCount != 2 {
+		t.Fatalf("Preview configuration audit count = %d, error = %v", auditCount, err)
+	}
 }

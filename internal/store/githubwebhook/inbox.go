@@ -209,6 +209,10 @@ func ProcessInstallationLifecycleDeliveryForIntegration(ctx context.Context, tx 
 
 type RepositoryRunCreator func(context.Context, pgx.Tx, domain.TenantID, string, string, string, time.Time) (bool, error)
 
+// RepositoryPreviewProcessor applies a Tenant-bound PR event to durable
+// Preview desired state in the same transaction as inbox acknowledgement.
+type RepositoryPreviewProcessor func(context.Context, pgx.Tx, domain.TenantID, string, string, githubwebhook.RepositoryEvent, time.Time, time.Time) (bool, error)
+
 // IssueCommentAgentAuthorization is the Hako identity and Tenant scope
 // established for a recognized Issue command. It is not itself permission to
 // create a Run: callers must still resolve and pin an immutable commit before
@@ -305,8 +309,17 @@ func allowedIssueCommentAssociation(association string) bool {
 // Run in this same transaction, so processed status, queued Check and Run
 // Outbox cannot be separated by a crash.
 func ProcessRepositoryTriggerDelivery(ctx context.Context, tx pgx.Tx, integrationID, deliveryID string, processedAt time.Time, createRun RepositoryRunCreator) (bool, bool, error) {
-	if tx == nil || !validStoredIntegrationID(integrationID) || !coreValidDeliveryID(deliveryID) || createRun == nil {
-		return false, false, errors.New("transaction, valid GitHub Delivery ID, and Workload Run creator are required")
+	done, runCreated, _, err := ProcessRepositoryTriggerDeliveryWithPreview(ctx, tx, integrationID, deliveryID, processedAt, createRun, nil)
+	return done, runCreated, err
+}
+
+// ProcessRepositoryTriggerDeliveryWithPreview applies configured CI and
+// Preview policies atomically. Preview processing is gated by an explicit
+// repository opt-in timestamp that predates the webhook receipt.
+func ProcessRepositoryTriggerDeliveryWithPreview(ctx context.Context, tx pgx.Tx, integrationID, deliveryID string, processedAt time.Time,
+	createRun RepositoryRunCreator, processPreview RepositoryPreviewProcessor) (bool, bool, bool, error) {
+	if tx == nil || !validStoredIntegrationID(integrationID) || !coreValidDeliveryID(deliveryID) || (createRun == nil && processPreview == nil) {
+		return false, false, false, errors.New("transaction, valid GitHub Delivery ID, and repository policy processor are required")
 	}
 	if processedAt.IsZero() {
 		processedAt = time.Now().UTC()
@@ -321,77 +334,85 @@ func ProcessRepositoryTriggerDelivery(ctx context.Context, tx pgx.Tx, integratio
 		FROM github_webhook_deliveries WHERE integration_id=$1 AND delivery_id=$2 FOR UPDATE`, integrationID, deliveryID).
 		Scan(&status, &schemaVersion, &eventJSON, &generation, &receivedAt, &correlationID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, false, pgx.ErrNoRows
+		return false, false, false, pgx.ErrNoRows
 	}
 	if err != nil {
-		return false, false, fmt.Errorf("lock GitHub repository trigger delivery: %w", err)
+		return false, false, false, fmt.Errorf("lock GitHub repository trigger delivery: %w", err)
 	}
 	if status == "processed" || status == "failed" {
-		return false, false, nil
+		return false, false, false, nil
 	}
 	if status != "received" || schemaVersion != githubwebhook.RepositoryEventSchemaVersion {
-		return false, false, ErrUnsupportedWebhookEvent
+		return false, false, false, ErrUnsupportedWebhookEvent
 	}
 	var event githubwebhook.RepositoryEvent
 	if err := json.Unmarshal([]byte(eventJSON), &event); err != nil || event.DeliveryID != deliveryID || event.InstallationID <= 0 || event.Repository == nil {
-		return false, false, ErrUnsupportedWebhookEvent
+		return false, false, false, ErrUnsupportedWebhookEvent
 	}
 	if event.GitHubEvent != "push" && event.GitHubEvent != "pull_request" {
-		return false, false, ErrUnsupportedWebhookEvent
+		return false, false, false, ErrUnsupportedWebhookEvent
 	}
 	allowed, err := authorizeStoredTenantEvent(ctx, tx, integrationID, generation, event)
 	if err != nil {
-		return false, false, err
+		return false, false, false, err
 	}
 	if !allowed {
 		if err := failStaleWebhookDelivery(ctx, tx, integrationID, deliveryID); err != nil {
-			return false, false, err
+			return false, false, false, err
 		}
-		return true, false, nil
+		return true, false, false, nil
 	}
 	tenantID, err := resolveRepositoryEventTenant(ctx, tx, integrationID, event.InstallationID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		if err := failStaleWebhookDelivery(ctx, tx, integrationID, deliveryID); err != nil {
-			return false, false, err
+			return false, false, false, err
 		}
-		return true, false, nil
+		return true, false, false, nil
 	}
 	if err != nil {
-		return false, false, fmt.Errorf("resolve Tenant for repository trigger: %w", err)
+		return false, false, false, fmt.Errorf("resolve Tenant for repository trigger: %w", err)
 	}
-	var factoryEnabled bool
-	var factoryEnabledAt *time.Time
-	if err := tx.QueryRow(ctx, `SELECT factory_enabled,factory_enabled_at FROM tenant_github_repositories
-		WHERE tenant_id=$1 AND installation_id=$2 AND github_repository_id=$3`, tenantID, event.InstallationID, event.Repository.GitHubID).Scan(&factoryEnabled, &factoryEnabledAt); err != nil {
+	var factoryEnabled, previewEnabled bool
+	var factoryEnabledAt, previewEnabledAt *time.Time
+	if err := tx.QueryRow(ctx, `SELECT factory_enabled,factory_enabled_at,preview_enabled,preview_enabled_at FROM tenant_github_repositories
+		WHERE tenant_id=$1 AND installation_id=$2 AND github_repository_id=$3`, tenantID, event.InstallationID, event.Repository.GitHubID).Scan(&factoryEnabled, &factoryEnabledAt, &previewEnabled, &previewEnabledAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			if err := failStaleWebhookDelivery(ctx, tx, integrationID, deliveryID); err != nil {
-				return false, false, err
+				return false, false, false, err
 			}
-			return true, false, nil
+			return true, false, false, nil
 		}
-		return false, false, fmt.Errorf("load Tenant repository trigger setting: %w", err)
+		return false, false, false, fmt.Errorf("load Tenant repository trigger setting: %w", err)
 	}
 	runCreated := false
 	// Do not backfill or unexpectedly launch work for deliveries that arrived
 	// before an Owner/Admin explicitly opted this repository into triggers.
 	// The enabled timestamp is cleared on disable and reset on the next enable.
 	optedInBeforeDelivery := factoryEnabledAt != nil && !receivedAt.Before(*factoryEnabledAt)
-	if factoryEnabled && optedInBeforeDelivery && eligibleRepositoryTrigger(event) {
+	if createRun != nil && factoryEnabled && optedInBeforeDelivery && eligibleRepositoryTrigger(event) {
 		runCreated, err = createRun(ctx, tx, domain.TenantID(tenantID), integrationID, deliveryID, correlationID, processedAt)
 		if err != nil {
-			return false, false, fmt.Errorf("create Workload Run from repository delivery: %w", err)
+			return false, false, false, fmt.Errorf("create Workload Run from repository delivery: %w", err)
+		}
+	}
+	previewUpdated := false
+	previewOptedInBeforeDelivery := previewEnabledAt != nil && !receivedAt.Before(*previewEnabledAt)
+	if processPreview != nil && previewEnabled && previewOptedInBeforeDelivery && event.GitHubEvent == "pull_request" {
+		previewUpdated, err = processPreview(ctx, tx, domain.TenantID(tenantID), integrationID, deliveryID, event, receivedAt, processedAt)
+		if err != nil {
+			return false, false, false, fmt.Errorf("apply repository Preview lifecycle: %w", err)
 		}
 	}
 	tag, err := tx.Exec(ctx, `UPDATE github_webhook_deliveries SET processing_status='processed'
 		WHERE integration_id=$1 AND delivery_id=$2 AND processing_status='received' AND event_schema_version=$3`,
 		integrationID, deliveryID, schemaVersion)
 	if err != nil {
-		return false, false, fmt.Errorf("mark repository trigger delivery processed: %w", err)
+		return false, false, false, fmt.Errorf("mark repository trigger delivery processed: %w", err)
 	}
 	if tag.RowsAffected() != 1 {
-		return false, false, errors.New("repository trigger delivery processing state changed concurrently")
+		return false, false, false, errors.New("repository trigger delivery processing state changed concurrently")
 	}
-	return true, runCreated, nil
+	return true, runCreated, previewUpdated, nil
 }
 
 func resolveRepositoryEventTenant(ctx context.Context, tx pgx.Tx, integrationID string, installationID int64) (string, error) {

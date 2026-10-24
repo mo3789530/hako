@@ -118,6 +118,16 @@ scheduled. Even with the repository enabled, webhook trigger processing also
 requires `HAKO_WEBHOOK_WORKLOAD_TRIGGERS_ENABLED=true` and Workload Runs to be
 enabled. The feature flag defaults off.
 
+Tenant Owners/Admins can configure PR Preview metadata tracking independently
+with `PUT /v1/tenants/{tenant_id}/github/installations/{installation_id}/repositories/{repository_id}/preview`
+and `{"enabled":true|false}`. The CLI is
+`hako github repository preview enable|disable --tenant <tenant> --installation
+<id> --repository <id>`. The default is off, opt-in is audited, and old
+deliveries are not backfilled. This only records PR desired lifecycle state;
+the API returns `runtime_enabled:false` until isolated Lambda MicroVM
+allocation, expiring Gateway routes, and cleanup are available. See
+[`Preview lifecycle`](preview-lifecycle.md).
+
 Tenant Owners/Admins can separately enable the per-repository GitHub Actions
 runner admission policy with
 `PUT /v1/tenants/{tenant_id}/github/installations/{installation_id}/repositories/{repository_id}/actions-runner`
