@@ -146,6 +146,12 @@ Add optional repository-level preview environments and service metadata/deploy p
 - The generic cleanup worker now executes the claim/retry/confirmation state
   machine, but Preview-to-runtime binding and provider/Gateway deletion remain
   unimplemented. No delete is inferred from the metadata transition.
+- The default worker test now covers invalid configuration, canceled input,
+  missing dependencies, lease/timeout/batch bounds, and claim-ID failure before
+  opening a database transaction. `go test ./internal/previewcleanup -cover`
+  reports 34.3% statement coverage; the focused PostgreSQL integration target
+  reports 70.0% for the package. Provider/Gateway deletion remains untested
+  because its production binding is not implemented.
 
 ## Preview concurrency admission (2026-10-24)
 
