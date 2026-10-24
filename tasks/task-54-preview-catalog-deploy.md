@@ -170,6 +170,15 @@ Add optional repository-level preview environments and service metadata/deploy p
   runtime allocation, Gateway routing, and provider-backed deletion remain
   unimplemented.
 
+## Software Catalog CLI/API wiring refresh (2026-10-24)
+
+- Added HTTP-backed tests around `hako catalog list` and `hako catalog set`.
+  They verify authenticated Tenant-scoped routes, the built-in
+  `lambda-microvm` metadata payload, repository identity in the returned item,
+  and rejection of EC2 runtime or unknown secret-bearing fields before an API
+  request. These tests cover the metadata surface only; they do not claim
+  Preview runtime allocation or production deployment.
+
 ## Acceptance criteria
 
 - Tests cover PR update/reopen/close races, stale commit preview, cross-Tenant route access, expiry, cleanup retries, and duplicate webhooks.
