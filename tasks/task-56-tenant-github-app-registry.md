@@ -25,3 +25,14 @@ Implement the metadata/API foundation in [ADR 0007](../docs/adr/0007-tenant-gith
 - Added additive metadata tables, API/CLI routes, default-off management flag, API-role read-only binding access, and operator-only SQL registration guidance.
 - Owned configurations remain inert drafts; verify/default selection return `github_app_not_ready` until later tasks provide verification and activation.
 - Unit and PostgreSQL integration tests passed, including Tenant isolation, role checks, duplicate App ownership, idempotency, audit safety, migration application, and concurrent default-row uniqueness. Tests use an isolated schema on the existing local PostgreSQL container; the database remains running after verification.
+
+## CLI/API wiring refresh (2026-10-24)
+
+- Added a local HTTP-backed CLI test for Tenant App list/add/disable/select-default,
+  setup, and failed-delivery listing. It verifies Tenant-scoped endpoint paths,
+  Bearer auth, pagination, expected revision/generation payloads, add
+  idempotency, and that App creation sends an approved credential-binding ID
+  without raw Secret/private-key fields. Setup uses a stubbed browser opener;
+  no real GitHub or AWS calls occur. The same `cmd/hako` suite exercises the
+  existing Repository configuration CLI paths; aggregate statement coverage is
+  now 46.9%.
