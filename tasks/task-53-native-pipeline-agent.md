@@ -424,6 +424,11 @@ Services remain disabled.
 - Unit/client/CLI tests cover policy scope and malformed input. A PostgreSQL
   Owner/Admin integration test verifies dormant configuration, cross-Tenant
   denial, Factory prerequisite, policy clearing, and transactional audit.
+- A CLI-to-local-API test now exercises branch/PR write-policy upload and the
+  Repository model-access toggle. It asserts exact Tenant/Installation/
+  Repository routing and that both API responses keep `execution_enabled`
+  false; malformed policy JSON with an unknown field is rejected before any
+  HTTP request. This remains configuration-only and does not schedule an Agent.
 
 ## Model credential resolver guard coverage (2026-10-24)
 

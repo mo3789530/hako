@@ -241,3 +241,66 @@ func TestManageGitHubRepositoryCLIsCallTenantScopedAPI(t *testing.T) {
 		t.Fatalf("workflow policy CLI request failed: %v", err)
 	}
 }
+
+func TestManageNativeAgentPolicyCLIsKeepExecutionDisabled(t *testing.T) {
+	const writePolicy = `{"enabled":true,"branch_prefixes":["hako/"],"allow_pull_requests":true,"required_checks":["hako/test"],"require_checks_to_pass":true}`
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Method != http.MethodPut || r.Header.Get("Authorization") != "Bearer cli-agent-policy-test" ||
+			r.Header.Get("Content-Type") != "application/json" ||
+			!strings.HasPrefix(r.URL.Path, "/v1/tenants/tenant_agent_cli/github/installations/42/repositories/7/") {
+			t.Errorf("Agent policy request was outside expected Tenant/API scope: %s %s", r.Method, r.URL.String())
+		}
+		switch r.URL.Path {
+		case "/v1/tenants/tenant_agent_cli/github/installations/42/repositories/7/agent-write-policy":
+			var got map[string]any
+			if json.NewDecoder(r.Body).Decode(&got) != nil || got["enabled"] != true {
+				t.Error("Agent write policy request body was invalid")
+			}
+			_, _ = fmt.Fprintf(w, `{"write_policy":%s,"execution_enabled":false}`, writePolicy)
+		case "/v1/tenants/tenant_agent_cli/github/installations/42/repositories/7/agent-model-access":
+			var got struct {
+				Enabled *bool `json:"enabled"`
+			}
+			if json.NewDecoder(r.Body).Decode(&got) != nil || got.Enabled == nil || !*got.Enabled {
+				t.Error("Agent model access request body was invalid")
+			}
+			_, _ = fmt.Fprint(w, `{"agent_model_access":{"enabled":true,"enabled_at":"2026-10-24T12:00:00Z"},"execution_enabled":false}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HAKO_API_URL", server.URL)
+	previous := cliCredentialGetter
+	cliCredentialGetter = repositoryCLICredentials(fmt.Sprintf(`{"access_token":"cli-agent-policy-test","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+		time.Now().UTC().Format(time.RFC3339)))
+	t.Cleanup(func() { cliCredentialGetter = previous })
+
+	policyFile := filepath.Join(t.TempDir(), "write-policy.json")
+	if err := os.WriteFile(policyFile, []byte(writePolicy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeResult, err := manageGitHubRepositoryAgentWritePolicyCLI([]string{"set", "--tenant", "tenant_agent_cli", "--installation", "42", "--repository", "7", "--policy-file", policyFile})
+	if err != nil || writeResult.ExecutionEnabled || !writeResult.Policy.Enabled {
+		t.Fatalf("Agent write policy result = %+v, %v", writeResult, err)
+	}
+	modelResult, err := manageGitHubRepositoryAgentModelAccessCLI([]string{"set", "--tenant", "tenant_agent_cli", "--installation", "42", "--repository", "7", "--enabled", "true"})
+	if err != nil || modelResult.ExecutionEnabled || !modelResult.Access.Enabled || modelResult.Access.EnabledAt == nil {
+		t.Fatalf("Agent model access result = %+v, %v", modelResult, err)
+	}
+	if calls != 2 {
+		t.Fatalf("expected exactly two Tenant-scoped configuration requests, got %d", calls)
+	}
+
+	if err := os.WriteFile(policyFile, []byte(`{"enabled":false,"unexpected":"field"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manageGitHubRepositoryAgentWritePolicyCLI([]string{"set", "--tenant", "tenant_agent_cli", "--installation", "42", "--repository", "7", "--policy-file", policyFile}); err == nil {
+		t.Fatal("unknown Agent write policy field was accepted")
+	}
+	if calls != 2 {
+		t.Fatalf("invalid policy file reached API; request count=%d", calls)
+	}
+}
