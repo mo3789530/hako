@@ -11,6 +11,7 @@ module "control_plane" {
   tenant_github_webhook_reader_role_arns          = var.tenant_github_webhook_reader_role_arns
   github_broker_role_name                         = var.github_broker_role_name
   tenant_github_private_key_reader_role_arns      = var.tenant_github_private_key_reader_role_arns
+  tenant_model_credential_reader_role_arns        = var.tenant_model_credential_reader_role_arns
   resource_plane_health_report_secret_arns        = var.resource_plane_health_report_secret_arns
   resource_plane_workload_spec_secret_arns        = var.resource_plane_workload_spec_secret_arns
   resource_plane_artifact_cleanup_secret_arns     = var.resource_plane_artifact_cleanup_secret_arns

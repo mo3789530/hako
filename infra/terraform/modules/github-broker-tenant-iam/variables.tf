@@ -38,3 +38,24 @@ variable "tenant_webhook_reader_role_arns" {
     error_message = "Webhook-purpose and private-key-purpose reader Roles must be distinct."
   }
 }
+
+variable "tenant_model_credential_reader_role_arns" {
+  description = "Exact operator-approved Tenant model credential reader Role ARNs. These are separate from GitHub App private-key and Webhook readers."
+  type        = set(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for role_arn in var.tenant_model_credential_reader_role_arns : can(regex("^arn:aws:iam::[0-9]{12}:role/hako/tenant-model-credential-reader/[A-Za-z0-9_-]{1,128}$", role_arn))
+    ]) && (length(var.tenant_model_credential_reader_role_arns) == 0 || var.broker_role_name != "")
+    error_message = "Model credential readers must use exact Tenant-specific role ARNs and require an exact Hako GitHub Broker role."
+  }
+
+  validation {
+    condition = length(setintersection(
+      var.tenant_model_credential_reader_role_arns,
+      setunion(var.tenant_private_key_reader_role_arns, var.tenant_webhook_reader_role_arns),
+    )) == 0
+    error_message = "Model credential reader Roles must be distinct from GitHub private-key and Webhook reader Roles."
+  }
+}

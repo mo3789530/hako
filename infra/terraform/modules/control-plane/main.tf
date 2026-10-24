@@ -671,10 +671,11 @@ resource "aws_iam_role_policy" "api_lambda" {
 module "github_broker_tenant_iam" {
   source = "../github-broker-tenant-iam"
 
-  broker_role_name                    = var.github_broker_role_name
-  policy_name_prefix                  = var.api_name
-  tenant_private_key_reader_role_arns = var.tenant_github_private_key_reader_role_arns
-  tenant_webhook_reader_role_arns     = var.tenant_github_webhook_reader_role_arns
+  broker_role_name                         = var.github_broker_role_name
+  policy_name_prefix                       = var.api_name
+  tenant_private_key_reader_role_arns      = var.tenant_github_private_key_reader_role_arns
+  tenant_webhook_reader_role_arns          = var.tenant_github_webhook_reader_role_arns
+  tenant_model_credential_reader_role_arns = var.tenant_model_credential_reader_role_arns
 }
 
 resource "aws_lambda_function" "api" {

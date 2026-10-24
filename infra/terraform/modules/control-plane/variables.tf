@@ -92,6 +92,22 @@ variable "tenant_github_private_key_reader_role_arns" {
   }
 }
 
+variable "tenant_model_credential_reader_role_arns" {
+  description = "Exact, operator-approved per-Tenant model credential reader Role ARNs assumable only by the GitHub Credential Broker. Kept separate from GitHub App private-key and Webhook reader Roles."
+  type        = set(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for role_arn in var.tenant_model_credential_reader_role_arns : can(regex("^arn:aws:iam::[0-9]{12}:role/hako/tenant-model-credential-reader/[A-Za-z0-9_-]{1,128}$", role_arn))
+      ]) && (length(var.tenant_model_credential_reader_role_arns) == 0 || var.github_broker_role_name != "") && (
+      length(setintersection(var.tenant_model_credential_reader_role_arns, var.tenant_github_webhook_reader_role_arns)) == 0 &&
+      length(setintersection(var.tenant_model_credential_reader_role_arns, var.tenant_github_private_key_reader_role_arns)) == 0
+    )
+    error_message = "Tenant model credential readers require the exact Hako broker role, must use the model-credential-reader path, and cannot reuse Webhook or private-key-purpose Roles."
+  }
+}
+
 variable "resource_plane_health_report_secret_arns" {
   description = "Exact per-Resource-Plane HMAC Secret ARNs used by the opt-in signed health ingress. Values are ARNs only; secret contents are never Terraform inputs. Empty keeps the reporter route disabled."
   type        = map(string)

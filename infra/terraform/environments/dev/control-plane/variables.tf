@@ -50,6 +50,19 @@ variable "tenant_github_private_key_reader_role_arns" {
   default     = []
 }
 
+variable "tenant_model_credential_reader_role_arns" {
+  description = "Exact operator-approved per-Tenant model credential reader Role ARNs assumable by the GitHub Credential Broker only."
+  type        = set(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for role_arn in var.tenant_model_credential_reader_role_arns : can(regex("^arn:aws:iam::[0-9]{12}:role/hako/tenant-model-credential-reader/[A-Za-z0-9_-]{1,128}$", role_arn))
+    ])
+    error_message = "Tenant model credential readers must use exact ARNs under role/hako/tenant-model-credential-reader/."
+  }
+}
+
 variable "resource_plane_health_report_secret_arns" {
   description = "Exact Resource Plane ID to HMAC Secret ARN map. Empty disables the unauthenticated-by-Cognito but HMAC-authenticated health ingress."
   type        = map(string)

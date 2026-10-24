@@ -32,4 +32,14 @@ cross-account reader-role trust policies, Tenant Secrets, or KMS grants; those
 must be provisioned and reviewed separately. See the
 [`github-broker-tenant-iam` module](../github-broker-tenant-iam/README.md).
 
+Tenant model credentials use the separate optional
+`tenant_model_credential_reader_role_arns` allowlist under
+`role/hako/tenant-model-credential-reader/`. The Broker receives only
+`sts:AssumeRole` on those exact ARNs through a separate inline policy.
+Terraform rejects wildcard ARNs and reuse across model credential, GitHub
+private-key, and Webhook purposes. The model credential provider further
+scopes the assumed session to the pinned Secret ARN/version. Target-role trust
+and identity policies, Secrets, KMS grants, and Broker certificates remain
+operator-managed; no Secret is read or provisioned by Terraform.
+
 See [`docs/terraform-modules.md`](../../../../docs/terraform-modules.md) for the complete input/output inventory, resource tags, IAM boundaries, and dev environment differences.

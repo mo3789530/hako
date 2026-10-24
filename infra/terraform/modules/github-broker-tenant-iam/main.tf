@@ -13,3 +13,19 @@ resource "aws_iam_role_policy" "tenant_private_key_readers" {
     }]
   })
 }
+
+resource "aws_iam_role_policy" "tenant_model_credential_readers" {
+  count = length(var.tenant_model_credential_reader_role_arns) == 0 ? 0 : 1
+
+  name = "${var.policy_name_prefix}-tenant-model-credential-readers"
+  role = var.broker_role_name
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "AssumeApprovedTenantModelCredentialReaders"
+      Effect   = "Allow"
+      Action   = ["sts:AssumeRole"]
+      Resource = sort(tolist(var.tenant_model_credential_reader_role_arns))
+    }]
+  })
+}
