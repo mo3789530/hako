@@ -94,12 +94,16 @@ credential and an approved same-Tenant Anthropic binding. Forks, unverified
 jobs, disabled/rotated credentials, stale policy, or foreign runtime identities
 are denied before the SecretReader is called.
 
-`native_agent` currently provides purpose-scoped Owner/Admin metadata and
-operator binding management only. The Actions Runner broker resolver is
-hard-coded to `claude_action`; no Native Agent runtime can read this credential.
-Task 53 must add a separate Agent Run policy/provenance resolver and runtime
-resource/network enforcement before any Native Agent credential delivery is
-enabled.
+`native_agent` has purpose-scoped Owner/Admin metadata and operator binding
+management, plus a default-off per-Repository gate. Task 53 also has an
+in-process resolver that checks the exact latest Agent attempt, Tenant/Repo
+provenance, and the current gate before and after SecretReader I/O. The Actions
+Runner broker resolver remains hard-coded to `claude_action`. The Native Agent
+resolver is not connected to a Broker endpoint or guest runtime, and no Agent
+credential is delivered during execution. Runtime resource/network enforcement
+and an isolated model-backed executor are still required before scheduling can
+be enabled. The resolver integration tests use a synthetic SecretReader; they
+do not make AWS calls or retrieve a real Secret.
 
 The Secret read occurs outside the DB transaction. Immediately after the read,
 the resolver repeats the authorization and compares the full binding,

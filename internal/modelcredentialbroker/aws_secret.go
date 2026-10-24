@@ -56,6 +56,7 @@ func newAWSSecretReader(region string, assumer stsAPI, clients assumedClientFact
 
 func (r *AWSSecretReader) ReadSecret(ctx context.Context, access modelcredentials.SecretAccess) ([]byte, error) {
 	if r == nil || ctx == nil || access.TenantID == "" || access.CredentialID == "" || access.Provider != modelcredentials.ProviderAnthropic ||
+		!modelcredentials.ValidPurpose(access.Purpose) ||
 		access.CredentialGeneration <= 0 || !validRoleARN(access.ReaderRoleARN) || !validSecretARN(access.SecretARN) ||
 		!modelcredentials.ValidSecretVersionID(access.SecretVersionID) {
 		return nil, ErrUnavailable
@@ -68,7 +69,7 @@ func (r *AWSSecretReader) ReadSecret(ctx context.Context, access modelcredential
 	if err != nil {
 		return nil, ErrUnavailable
 	}
-	digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%d", access.TenantID, access.CredentialID, access.Provider, access.CredentialGeneration)))
+	digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%d", access.TenantID, access.CredentialID, access.Provider, access.Purpose, access.CredentialGeneration)))
 	assumed, err := r.sts.AssumeRole(ctx, &sts.AssumeRoleInput{RoleArn: aws.String(access.ReaderRoleARN),
 		RoleSessionName: aws.String("hako-model-" + hex.EncodeToString(digest[:8])), DurationSeconds: aws.Int32(900), Policy: aws.String(string(policy))})
 	if err != nil || assumed == nil || assumed.Credentials == nil {

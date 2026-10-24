@@ -53,10 +53,21 @@ type SecretAccess struct {
 	CredentialID         string
 	TenantID             domain.TenantID
 	Provider             string
+	Purpose              string
 	ReaderRoleARN        string
 	SecretARN            string
 	SecretVersionID      string
 	CredentialGeneration int64
+}
+
+// AgentRunIdentity is the exact Workload attempt identity presented by a
+// trusted Resource Plane worker. It is not accepted from a guest or public API.
+type AgentRunIdentity struct {
+	TenantID        domain.TenantID
+	WorkloadRunID   domain.WorkloadRunID
+	AttemptID       string
+	Generation      int64
+	ResourcePlaneID domain.ResourcePlaneID
 }
 
 func (SecretAccess) String() string { return "Tenant model credential access [REDACTED]" }
@@ -115,16 +126,74 @@ func ResolveForRunnerClaim(ctx context.Context, tx pgx.Tx, identity RunnerClaimI
 		return SecretAccess{}, ErrCredentialNotFound
 	}
 	var access SecretAccess
-	err = tx.QueryRow(ctx, `SELECT c.id,c.tenant_id,c.provider,b.reader_role_arn,b.secret_arn,c.secret_version_id,c.credential_generation
+	err = tx.QueryRow(ctx, `SELECT c.id,c.tenant_id,c.provider,c.purpose,b.reader_role_arn,b.secret_arn,c.secret_version_id,c.credential_generation
 		FROM tenant_model_credentials c JOIN tenant_model_credential_bindings b
 		ON b.tenant_id=c.tenant_id AND b.id=c.binding_id AND b.provider=c.provider AND b.purpose=c.purpose AND b.status='approved'
 		WHERE c.tenant_id=$1 AND c.provider='anthropic' AND c.purpose='claude_action' AND c.status='active'`, tenantID).
-		Scan(&access.CredentialID, &access.TenantID, &access.Provider, &access.ReaderRoleARN, &access.SecretARN, &access.SecretVersionID, &access.CredentialGeneration)
+		Scan(&access.CredentialID, &access.TenantID, &access.Provider, &access.Purpose, &access.ReaderRoleARN, &access.SecretARN, &access.SecretVersionID, &access.CredentialGeneration)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return SecretAccess{}, ErrCredentialNotConfigured
 	}
-	if err != nil || access.TenantID != tenantID || access.Provider != ProviderAnthropic || access.CredentialGeneration <= 0 ||
+	if err != nil || access.TenantID != tenantID || access.Provider != ProviderAnthropic || access.Purpose != PurposeClaudeAction || access.CredentialGeneration <= 0 ||
 		!versionIDPattern.MatchString(access.SecretVersionID) || access.SecretARN == "" || access.ReaderRoleARN == "" {
+		return SecretAccess{}, ErrCredentialNotFound
+	}
+	return access, nil
+}
+
+// ResolveForAgentRun returns a purpose-pinned Secret reference only for the
+// latest active Agent attempt whose Tenant, Repository Factory, per-Repository
+// model access, GitHub provenance, and Native Agent credential are still valid.
+// The Resource Plane worker is trusted; this identity must never be accepted
+// from repository code or returned by a public API.
+func ResolveForAgentRun(ctx context.Context, tx pgx.Tx, identity AgentRunIdentity, now time.Time) (SecretAccess, error) {
+	if ctx == nil || tx == nil || identity.TenantID == "" || identity.WorkloadRunID == "" || identity.AttemptID == "" ||
+		identity.Generation <= 0 || identity.ResourcePlaneID == "" || now.IsZero() {
+		return SecretAccess{}, ErrCredentialNotFound
+	}
+	var access SecretAccess
+	err := tx.QueryRow(ctx, `SELECT c.id,c.tenant_id,c.provider,c.purpose,b.reader_role_arn,b.secret_arn,c.secret_version_id,c.credential_generation
+		FROM workload_runs wr
+		JOIN workload_run_attempts a ON a.tenant_id=wr.tenant_id AND a.workload_run_id=wr.id
+		JOIN workload_agent_tasks task ON task.tenant_id=wr.tenant_id AND task.workload_run_id=wr.id
+		JOIN github_webhook_deliveries delivery ON delivery.integration_id=task.integration_id AND delivery.delivery_id=task.delivery_id
+		JOIN tenant_github_integrations integration ON integration.tenant_id=wr.tenant_id AND integration.id=wr.github_integration_id
+		JOIN github_app_registrations registration ON registration.id=integration.app_registration_id AND registration.github_app_id=integration.github_app_id
+		JOIN github_credential_bindings github_credential ON github_credential.tenant_id=integration.tenant_id AND github_credential.id=integration.credential_binding_id
+		  AND github_credential.github_app_id=integration.github_app_id
+		JOIN tenant_github_installations installation ON installation.tenant_id=wr.tenant_id AND installation.installation_id=wr.github_installation_id
+		JOIN github_app_installation_bindings shared_binding ON shared_binding.tenant_id=wr.tenant_id AND shared_binding.installation_id=wr.github_installation_id
+		JOIN tenant_github_app_installation_bindings app_binding ON app_binding.tenant_id=wr.tenant_id AND app_binding.integration_id=integration.id
+		  AND app_binding.installation_id=wr.github_installation_id
+		JOIN tenant_github_repositories repository ON repository.tenant_id=wr.tenant_id AND repository.installation_id=wr.github_installation_id
+		  AND repository.github_repository_id=wr.github_repository_id
+		JOIN tenant_members membership ON membership.tenant_id=wr.tenant_id AND membership.user_id=task.requested_by
+		JOIN tenant_model_credentials c ON c.tenant_id=wr.tenant_id AND c.provider='anthropic' AND c.purpose='native_agent' AND c.status='active'
+		  AND c.created_at<=delivery.received_at
+		JOIN tenant_model_credential_bindings b ON b.tenant_id=c.tenant_id AND b.id=c.binding_id AND b.provider=c.provider
+		  AND b.purpose=c.purpose AND b.status='approved'
+		WHERE wr.tenant_id=$1 AND wr.id=$2 AND a.id=$3 AND a.generation=$4
+		  AND wr.kind='agent' AND wr.trigger_event='issue_comment' AND wr.desired_state='running'
+		  AND wr.state IN ('provisioning','running') AND a.state IN ('dispatch_pending','accepted','running')
+		  AND wr.timeout_at>$5 AND wr.resource_plane_id=$6 AND a.resource_plane_id=$6
+		  AND wr.github_integration_id=task.integration_id AND wr.github_installation_id=task.installation_id
+		  AND wr.github_repository_id=task.repository_id AND wr.commit_sha=task.commit_sha AND wr.trigger_branch=task.default_branch
+		  AND integration.status='active' AND integration.config_revision=wr.github_config_revision
+		  AND integration.credential_generation=wr.github_credential_generation
+		  AND registration.mode='tenant_owned' AND registration.owner_tenant_id=wr.tenant_id
+		  AND github_credential.status='approved' AND installation.status='active' AND installation.suspended_at IS NULL
+		  AND repository.factory_enabled=TRUE AND repository.factory_enabled_at<=delivery.received_at
+		  AND repository.agent_model_access_enabled=TRUE AND repository.agent_model_access_enabled_at<=delivery.received_at
+		  AND delivery.processing_status='processed' AND delivery.credential_generation=integration.credential_generation
+		  AND NOT EXISTS (SELECT 1 FROM workload_run_attempts newer WHERE newer.tenant_id=a.tenant_id
+		    AND newer.workload_run_id=a.workload_run_id AND newer.generation>a.generation)`,
+		identity.TenantID, identity.WorkloadRunID, identity.AttemptID, identity.Generation, now.UTC(), identity.ResourcePlaneID).
+		Scan(&access.CredentialID, &access.TenantID, &access.Provider, &access.Purpose, &access.ReaderRoleARN, &access.SecretARN, &access.SecretVersionID, &access.CredentialGeneration)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SecretAccess{}, ErrCredentialNotFound
+	}
+	if err != nil || access.TenantID != identity.TenantID || access.Provider != ProviderAnthropic || access.Purpose != PurposeNativeAgent ||
+		access.CredentialGeneration <= 0 || !versionIDPattern.MatchString(access.SecretVersionID) || access.SecretARN == "" || access.ReaderRoleARN == "" {
 		return SecretAccess{}, ErrCredentialNotFound
 	}
 	return access, nil

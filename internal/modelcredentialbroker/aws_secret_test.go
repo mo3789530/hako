@@ -65,7 +65,7 @@ func TestAWSSecretReaderUsesExactRoleResourceAndVersion(t *testing.T) {
 	}
 	reader.now = time.Now
 	secret, err := reader.ReadSecret(context.Background(), modelcredentials.SecretAccess{CredentialID: "mcred_testcred1", TenantID: "tenant_a",
-		Provider: modelcredentials.ProviderAnthropic, ReaderRoleARN: roleARN, SecretARN: secretARN, SecretVersionID: version, CredentialGeneration: 1})
+		Provider: modelcredentials.ProviderAnthropic, Purpose: modelcredentials.PurposeClaudeAction, ReaderRoleARN: roleARN, SecretARN: secretARN, SecretVersionID: version, CredentialGeneration: 1})
 	if err != nil || string(secret) != "sk-ant-test-token" {
 		t.Fatalf("ReadSecret() = %q, %v", secret, err)
 	}
@@ -73,7 +73,7 @@ func TestAWSSecretReaderUsesExactRoleResourceAndVersion(t *testing.T) {
 
 func TestAWSSecretReaderRejectsUnpinnedOrOversizedValues(t *testing.T) {
 	version := "0123456789abcdef0123456789abcdef"
-	base := modelcredentials.SecretAccess{CredentialID: "mcred_testcred1", TenantID: "tenant_a", Provider: modelcredentials.ProviderAnthropic,
+	base := modelcredentials.SecretAccess{CredentialID: "mcred_testcred1", TenantID: "tenant_a", Provider: modelcredentials.ProviderAnthropic, Purpose: modelcredentials.PurposeClaudeAction,
 		ReaderRoleARN: "arn:aws:iam::123456789012:role/hako/model-reader-a", SecretARN: "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/model/a-AbCdEf",
 		SecretVersionID: version, CredentialGeneration: 1}
 	for _, response := range []*secretsmanager.GetSecretValueOutput{

@@ -1,6 +1,6 @@
 # Task 53: Native Pipeline and Issue-to-Agent Workflow
 
-Status: In Progress (versioned manifest selection, fixed-catalog execution, durable per-pipeline results, and independent pipeline Checks through the existing Checks consumer are implemented and locally verified. Issue command authorization requires a verified GitHub identity that is a member of the resolved Tenant, an active Installation binding, exact repository identity, and a pre-existing Factory opt-in. A Tenant-App-only read scope, bounded Issue/default-branch SHA reader, Control Plane-only mTLS broker, and an atomic Issue inbox processor that creates one immutable Agent Run plus a bounded task record are locally composed and PostgreSQL-tested. The Resource Plane Worker now retrieves the bounded task over mTLS and validates current attempt and immutable Run/App/Repository/branch/commit pins. A context digest is bound from launch specification through signed Start/Source tickets and guest `/run`; guest checks it before exposing task text in memory to a process factory. Purpose-scoped `native_agent` model credential metadata/API/CLI is implemented, but it has no Broker reader or runtime delivery path. Scheduling remains disabled (dispatcher/batch are Job-only), and the default guest process factory rejects Agent Runs until an isolated model-backed executor, Tenant credential authorization, and runtime resource/network enforcement exist. Service container orchestration and live Agent write execution remain; branch/PR policy is implemented as dormant configuration). Priority: P3.
+Status: In Progress (versioned manifest selection, fixed-catalog execution, durable per-pipeline results, and independent pipeline Checks through the existing Checks consumer are implemented and locally verified. Issue command authorization requires a verified GitHub identity that is a member of the resolved Tenant, an active Installation binding, exact repository identity, and a pre-existing Factory opt-in. A Tenant-App-only read scope, bounded Issue/default-branch SHA reader, Control Plane-only mTLS broker, and an atomic Issue inbox processor that creates one immutable Agent Run plus a bounded task record are locally composed and PostgreSQL-tested. The Resource Plane Worker now retrieves the bounded task over mTLS and validates current attempt and immutable Run/App/Repository/branch/commit pins. A context digest is bound from launch specification through signed Start/Source tickets and guest `/run`; guest checks it before exposing task text in memory to a process factory. Purpose-scoped `native_agent` model credential metadata/API/CLI, a per-Repository default-off gate, and a latest-attempt/provenance-fenced in-process Secret reference resolver are implemented. The resolver is not connected to a Broker endpoint or runtime delivery path. Scheduling remains disabled (dispatcher/batch are Job-only), and the default guest process factory rejects Agent Runs until an isolated model-backed executor and runtime resource/network enforcement exist. Service container orchestration and live Agent write execution remain; branch/PR policy is implemented as dormant configuration). Priority: P3.
 
 Runtime profile follow-up: profiles are now keyed by Workload kind, Runtime Class,
 and trust level. A Job profile cannot be implicitly reused by Agent or Preview;
@@ -205,6 +205,17 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   Owner enable/disable, timestamp consistency, Factory opt-out reset, and
   atomic audit events. API client and CLI parser tests cover the new endpoint
   and explicit boolean flag.
+- Added an in-process Native Agent credential resolver that requires the exact
+  latest active Agent attempt, calling Resource Plane, active Tenant GitHub
+  integration and Installation, immutable Run/Issue delivery pins, current
+  Tenant membership, Repository Factory opt-in, Repository model-access gate,
+  and an approved `native_agent` Anthropic credential. The Tenant/Repository
+  gate and credential must predate the Issue delivery. Authorization is checked
+  again after SecretReader I/O and the byte buffer is cleared after the trusted
+  consumer returns. PostgreSQL tests use only a synthetic reader and cover
+  default-off denial, wrong attempt/Plane, policy disable, and credential
+  rotation during read. This resolver is not exposed through a Broker endpoint
+  or connected to a guest process; Agent execution remains disabled.
 
 - Added a shared `internal/agenttask` canonical digest implementation used by
   Control Plane persistence, Broker validation, Resource Plane Worker, and

@@ -74,6 +74,40 @@ func (r *Resolver) resolve(ctx context.Context, identity modelcredentials.Runner
 	})
 }
 
+// WithAgentRunCredential verifies an exact, latest Agent attempt and the
+// per-Repository Native Agent model-access policy before reading a Tenant
+// credential. It rechecks the authorization after the read, then wipes the
+// credential bytes after the trusted in-process consumer returns.
+func (r *Resolver) WithAgentRunCredential(ctx context.Context, identity modelcredentials.AgentRunIdentity, consume CredentialConsumer) error {
+	if r == nil || ctx == nil || consume == nil {
+		return ErrUnavailable
+	}
+	access, err := r.resolveAgentRun(ctx, identity)
+	if err != nil {
+		return ErrUnavailable
+	}
+	secret, err := r.reader.ReadSecret(ctx, access)
+	if err != nil || !validSecret(secret) {
+		clear(secret)
+		return ErrUnavailable
+	}
+	defer clear(secret)
+	current, err := r.resolveAgentRun(ctx, identity)
+	if err != nil || current != access {
+		return ErrUnavailable
+	}
+	if err := consume(ctx, secret); err != nil {
+		return ErrUnavailable
+	}
+	return nil
+}
+
+func (r *Resolver) resolveAgentRun(ctx context.Context, identity modelcredentials.AgentRunIdentity) (modelcredentials.SecretAccess, error) {
+	return transaction.Within(ctx, r.pool, r.policy, func(ctx context.Context, tx pgx.Tx) (modelcredentials.SecretAccess, error) {
+		return modelcredentials.ResolveForAgentRun(ctx, tx, identity, r.now().UTC())
+	})
+}
+
 func validSecret(value []byte) bool {
 	if len(value) == 0 || len(value) > 8192 {
 		return false
