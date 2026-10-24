@@ -31,7 +31,10 @@ launch request, and passes filesystem/AP IDs, region, root path, POSIX IDs,
 binding; an old terminated journal without one fails closed rather than
 silently starting with empty storage. Delete waits for MicroVM termination,
 deletes only the exact owned AP, then confirms the journal tombstone. A failed
-cleanup remains retryable.
+cleanup remains retryable. A local runtime test confirms a replacement
+allocation reuses the exact journaled AP, POSIX identity, and root path; actual
+file persistence through Lambda MicroVM mount/replacement still needs an
+ARM64 image and live runtime validation.
 
 The hook also carries Tenant, Workspace, and Resource Plane IDs as non-secret
 identity metadata. `NewWorkspaceMountLifecycleHandler` can bind a

@@ -88,6 +88,9 @@ The storage provisioner now tracks whether an Access Point was created by the
 current call. If subsequent IAM execution-role provisioning fails, it removes
 only that newly created AP; an AP discovered from a previous attempt is kept
 for safety. Fake-provider tests cover both compensation and preservation.
+The runtime adapter also has a replacement test proving allocation generation
+2 reuses the exact journaled AP/UID/root binding. This verifies metadata
+continuity, not actual file persistence through a mounted EFS filesystem.
 `go test ./internal/workspacestorage ./internal/workspaceruntime` passes.
 
 An ARM64 image build was attempted with test-only public keys and the pinned

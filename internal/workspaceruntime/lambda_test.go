@@ -277,6 +277,46 @@ func TestEnsureJournalsEFSBindingAndPassesOnlyMountMetadata(t *testing.T) {
 	}
 }
 
+func TestReplacementReusesJournaledWorkspaceEFSBinding(t *testing.T) {
+	api, store := &apiStub{state: types.MicrovmStateRunning}, newMemoryStore()
+	firstCommand := testCommand(domain.OperationEnsureRunning, 1, "op_efs_first")
+	binding := runtimeTestBinding(firstCommand)
+	storage := &storageStub{binding: binding}
+	resolver := resolverFunc(func(context.Context, resourcecontroller.Command) (LaunchSpec, error) { return validSpec(), nil })
+	runtime, err := NewLambdaMicroVMWithStorage(api, store, resolver, storage,
+		Config{SupportedRuntimeClasses: map[string]bool{"standard": true}, PollInterval: 10 * time.Millisecond, PollTimeout: time.Second}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Execute(context.Background(), firstCommand); err != nil {
+		t.Fatal(err)
+	}
+	prior, err := store.Get(context.Background(), firstCommand.TenantID, firstCommand.WorkspaceID, firstCommand.ResourcePlaneID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Model the Resource Plane journal after observing provider termination and
+	// confirming allocation cleanup. The durable AP binding remains unchanged.
+	prior.Journal.State = workspacejournal.Terminated
+	prior.Journal.CleanupState = workspacejournal.CleanupConfirmed
+	prior.Journal.Revision++
+	store.mu.Lock()
+	store.seq++
+	prior.ETag = etag(store.seq)
+	store.data[storeKey(firstCommand.TenantID, firstCommand.WorkspaceID, firstCommand.ResourcePlaneID)] = prior
+	store.mu.Unlock()
+	secondCommand := testCommand(domain.OperationEnsureRunning, 2, "op_efs_replacement")
+	if observed, err := runtime.Execute(context.Background(), secondCommand); err != nil || observed != domain.ObservedWorkspaceRunning {
+		t.Fatalf("replacement Execute() = %q, %v", observed, err)
+	}
+	replacement, err := store.Get(context.Background(), firstCommand.TenantID, firstCommand.WorkspaceID, firstCommand.ResourcePlaneID)
+	if err != nil || replacement.Journal.StorageBinding == nil || *replacement.Journal.StorageBinding != binding ||
+		replacement.Journal.AllocationGeneration != 2 || storage.ensureCalls != 2 || api.runCalls != 2 {
+		t.Fatalf("replacement did not preserve Workspace EFS binding: journal=%+v ensures=%d launches=%d err=%v",
+			replacement.Journal, storage.ensureCalls, api.runCalls, err)
+	}
+}
+
 func TestLambdaMicroVMUsesJournaledWorkspaceExecutionRole(t *testing.T) {
 	api, store := &apiStub{state: types.MicrovmStateRunning}, newMemoryStore()
 	command := testCommand(domain.OperationEnsureRunning, 1, "op_efs_role")
