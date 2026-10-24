@@ -122,6 +122,16 @@ func TestTenantSoftwareCatalogRBACRepositoryAndDependencyFences(t *testing.T) {
 	if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), `"valid":true`) {
 		t.Fatalf("OIDC accepted without Environment approval verifier: %d %s", response.Code, response.Body.String())
 	}
+	unavailableApprovalCheck := NewHandler(verifier, pool, WorkspaceCreateConfig{GitHubOIDCPolicyVerifier: policyVerifier,
+		GitHubEnvironmentApprovalVerifier: catalogUnavailableEnvironmentApprovalVerifier{}})
+	request = httptest.NewRequest(http.MethodPost, policyPath+"/verify", strings.NewReader(`{"token":"synthetic-valid-token"}`))
+	request.Header.Set("Authorization", "Bearer "+tokens["member_a"])
+	request.Header.Set("Content-Type", "application/json")
+	response = httptest.NewRecorder()
+	unavailableApprovalCheck.ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), `"valid":true`) {
+		t.Fatalf("OIDC accepted while Environment approval verifier is unavailable: %d %s", response.Code, response.Body.String())
+	}
 	if got := call("member_a", http.MethodPost, policyPath+"/verify", `{"token":"invalid-token"}`); got.Code != http.StatusForbidden {
 		t.Fatalf("invalid OIDC claims were not rejected: %d %s", got.Code, got.Body.String())
 	}
@@ -163,8 +173,14 @@ type catalogOIDCVerifier struct{}
 
 type catalogEnvironmentApprovalVerifier struct{}
 
-func (catalogEnvironmentApprovalVerifier) Verify(_ context.Context, tenantID domain.TenantID, installationID, repositoryID int64, environment string) error {
-	if tenantID != "tenant_catalog_a" || installationID != 1101 || repositoryID != 11001 || environment != "production" {
+type catalogUnavailableEnvironmentApprovalVerifier struct{}
+
+func (catalogUnavailableEnvironmentApprovalVerifier) Verify(context.Context, domain.TenantID, string, int64, int64, string) error {
+	return deploypolicy.ErrUnavailable
+}
+
+func (catalogEnvironmentApprovalVerifier) Verify(_ context.Context, tenantID domain.TenantID, serviceID string, installationID, repositoryID int64, environment string) error {
+	if tenantID != "tenant_catalog_a" || serviceID != "payments-api" || installationID != 1101 || repositoryID != 11001 || environment != "production" {
 		return deploypolicy.ErrInvalid
 	}
 	return nil

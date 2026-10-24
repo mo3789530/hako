@@ -54,6 +54,10 @@ type tenantMembershipResponse struct {
 	Role     domain.TenantRole `json:"role"`
 }
 
+type GitHubEnvironmentApprovalVerifier interface {
+	Verify(context.Context, domain.TenantID, string, int64, int64, string) error
+}
+
 type WorkspaceCreateConfig struct {
 	Region                                   string
 	RequiredCapabilities                     []string
@@ -74,9 +78,7 @@ type WorkspaceCreateConfig struct {
 	GitHubOIDCPolicyVerifier                 interface {
 		Verify(context.Context, string, deploypolicy.Policy, string, int64) (deploypolicy.Claims, error)
 	}
-	GitHubEnvironmentApprovalVerifier interface {
-		Verify(context.Context, domain.TenantID, int64, int64, string) error
-	}
+	GitHubEnvironmentApprovalVerifier GitHubEnvironmentApprovalVerifier
 }
 
 type workspaceCreateRequest struct {

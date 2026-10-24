@@ -45,10 +45,13 @@ Add optional repository-level preview environments and service metadata/deploy p
   Tenant/Installation/Repository-scoped GitHub Environment approval verifier
   confirms an exact Environment `required_reviewers` rule. A reusable GitHub
   App client verifies a non-empty User/Team reviewer set with a short-lived
-  `actions:read` token. API integration coverage checks configured approval
-  verification and missing-verifier failure. Production API composition to
-  resolve Tenant App credentials and call this verifier remains incomplete;
-  configured protection is not proof that a specific run was approved.
+  `actions:read` token. The production API calls the Control Plane-only
+  mTLS GitHub Credential Broker, which resolves Tenant App credentials and
+  rechecks the policy pin after GitHub I/O. The broker receives read-only
+  Software Catalog DSQL access. Unit/API integration coverage checks configured
+  approval verification and missing-verifier failure; broker service and
+  transport tests cover caller, pin, and denial behavior. Configured protection
+  is not proof that a specific run was approved.
 - Preview allocation/routing and PR lifecycle cleanup remain blocked by the
   listed runtime/deployment prerequisites. Production approval validation,
   IAM trust/exchange and deployment execution remain disabled.

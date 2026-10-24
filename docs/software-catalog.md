@@ -85,10 +85,14 @@ only after it confirms a GitHub `required_reviewers` rule with at least one
 User or Team reviewer. Missing verifier configuration and GitHub API failures
 fail closed; a missing reviewer rule is denied. The reusable GitHub App client
 performs an exact Environment lookup with a short-lived `actions:read` token.
-The production API composition does not yet resolve Tenant App credentials and
-wire this verifier, so the endpoint currently returns unavailable for enabled
-approval policies there. This check verifies configured protection, not that a
-specific deployment run has completed its approval. AWS trust/exchange,
+The production API forwards the verification request over Control Plane mTLS
+to the GitHub Credential Broker. The broker re-resolves the active Tenant App,
+Catalog policy and Repository from DSQL, obtains the scoped token, and verifies
+the GitHub Environment rule; it never returns the token to the API. Configure
+the existing `HAKO_TENANT_GITHUB_OAUTH_BROKER_*` settings on the API and the
+broker's existing AWS/DSQL access. If the broker is not configured, approval
+policies fail closed as unavailable. This check verifies configured
+protection, not that a specific deployment run has completed its approval. AWS trust/exchange,
 deployment execution, Preview lifecycle/routing and production review remain
 disabled. See [Task 54](../tasks/task-54-preview-catalog-deploy.md).
 See [Task 54](../tasks/task-54-preview-catalog-deploy.md).

@@ -27,6 +27,7 @@ The broker's TLS listener requires a trusted client certificate. OAuth setup, Gi
 | `POST /v1/oauth/setup-url` | Pinned Tenant/App setup identity and opaque state | Setup URL only; does not read a Secret |
 | `POST /v1/oauth/authorize-url` | Pinned identity, state, PKCE verifier | Authorization URL only; does not read a Secret |
 | `POST /v1/oauth/verify` | Pinned identity, OAuth code, expected Installation, PKCE verifier | Verified App/Installation identity only; OAuth secret stays in broker |
+| `POST /v1/environment/approval/verify` | Tenant, Software Catalog service, Installation/Repository IDs, Environment | Boolean verification only; broker re-resolves active App/policy, uses a repository-scoped `actions:read` token, and checks `required_reviewers` |
 | `POST /v1/checkout/token` | Tenant ID and persisted Workload Run ID only | Short-lived token and expiry over mTLS with `Cache-Control: no-store` |
 | `POST /v1/actions-runner/registration-token` | Integration ID, workflow job ID, run attempt, and current claim ID only | One repository-scoped registration token over Control Plane-only mTLS with `Cache-Control: no-store` |
 | `POST /v1/actions-runner/launch` | Integration ID, workflow job ID, run attempt, and current claim ID only | Consumes the live claim and pins the caller's allowlisted Resource Plane; returns bounded repository/job metadata, never a runner token |
@@ -89,6 +90,17 @@ The executable accepts these environment variables:
 | `HAKO_GITHUB_BROKER_LISTEN_ADDR` | Listener address; defaults to `:8443` |
 
 The Agent Issue-context route is Control Plane-only and has no separate Plane allowlist. It is currently a read-only broker capability; it does not create or schedule an Agent Run. The inbox processor must still atomically revalidate the command and persist a delivery-idempotent Agent Run with this immutable SHA before execution is enabled.
+
+The Environment approval route is also Control Plane-only. Its caller cannot
+choose App, Secret, or repository names; the broker checks the exact Catalog
+service and OIDC policy, resolves the active Tenant App and Installation from
+DSQL, and re-resolves the same credential generation after the GitHub request.
+The short-lived installation token grants only `actions:read` for the one
+repository. The `hako_github_broker` DSQL role needs `SELECT` on
+`tenant_software_catalog_services` for this lookup; it gains no Catalog write
+permission. Configure the API's existing
+`HAKO_TENANT_GITHUB_OAUTH_BROKER_*` mTLS settings to enable the verifier. With
+those settings absent, enabled approval policies fail closed as unavailable.
 
 TLS certificate, private key, and client CA must be configured together. TLS is at least 1.3, and the server requires a verified client certificate. API/OAuth/Checks clients must present the Control Plane URI SAN. Checkout clients may use the Control Plane URI or an explicitly allowlisted Resource Plane URI, use the broker trust root, and refuse redirects. The checkout client has a bounded 50-second HTTP timeout; the OAuth client has a shorter timeout. Server read/header/write/idle limits are bounded.
 

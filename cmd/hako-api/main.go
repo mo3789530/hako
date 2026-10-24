@@ -97,6 +97,11 @@ func main() {
 		log.Fatal("Tenant GitHub OAuth broker requires HAKO_GITHUB_APP_MANAGEMENT_ENABLED=true")
 	}
 	createConfig.TenantGitHubSetupResolver = tenantSetupResolver
+	environmentApprovalVerifier, err := tenantEnvironmentApprovalBrokerFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
+	createConfig.GitHubEnvironmentApprovalVerifier = environmentApprovalVerifier
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_TENANT_GITHUB_WEBHOOK_ENABLED")), "true") {
 		webhookRateLimit, err := tenantWebhookRateLimitFromEnv()
 		if err != nil {

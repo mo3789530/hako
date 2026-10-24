@@ -106,7 +106,7 @@ AWS IAM GRANT hako_github_broker TO 'REPLACE_WITH_GITHUB_BROKER_ROLE_ARN';
 GRANT USAGE ON SCHEMA public TO hako_github_broker;
 GRANT SELECT ON TABLE tenant_github_integrations, tenant_github_installations, tenant_github_app_installation_bindings,
     github_app_installation_bindings, tenant_github_repositories, github_app_registrations, github_credential_bindings,
-    tenant_members, github_webhook_deliveries TO hako_github_broker;
+    tenant_members, github_webhook_deliveries, tenant_software_catalog_services TO hako_github_broker;
 -- Agent task text is readable only by the trusted broker. The Resource Plane
 -- worker must present its mTLS identity and active Run/attempt coordinates;
 -- the generic Hako API has no direct table privileges.

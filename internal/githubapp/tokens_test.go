@@ -499,6 +499,10 @@ func TestActionsRunnerProvenanceTokenUsesReadOnlyRepositoryScope(t *testing.T) {
 		credentialGeneration: 3, installation: 77, repository: 88, permissionScope: "actions:read"}]; !cached {
 		t.Fatal("read-only provenance token was not cached under its distinct scope")
 	}
+	approvalToken, approvalRepository, err := client.EnvironmentApprovalToken(context.Background(), "tenant_one", 77, 88)
+	if err != nil || approvalToken.Value() != testTokenValue || approvalRepository != (RepositoryAccess{Owner: "acme", Name: "api"}) {
+		t.Fatalf("EnvironmentApprovalToken() = %v, %+v, error = %v", approvalToken, approvalRepository, err)
+	}
 }
 
 func TestDeregisterActionsRunnerUsesExactRepositoryScopeAfterRunnerOptOut(t *testing.T) {

@@ -45,7 +45,7 @@ type softwareCatalogDeployPolicyVerificationResult struct {
 func verifySoftwareCatalogDeployPolicy(pool transaction.Beginner, verifier interface {
 	Verify(context.Context, string, deploypolicy.Policy, string, int64) (deploypolicy.Claims, error)
 }, approvalVerifier interface {
-	Verify(context.Context, domain.TenantID, int64, int64, string) error
+	Verify(context.Context, domain.TenantID, string, int64, int64, string) error
 }) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		user, ok := HakoUserFromContext(c)
@@ -92,7 +92,7 @@ func verifySoftwareCatalogDeployPolicy(pool transaction.Beginner, verifier inter
 			if approvalVerifier == nil {
 				return c.JSON(http.StatusServiceUnavailable, errorResponse{Error: errorBody{Code: "environment_approval_verifier_unavailable", Message: "GitHub Environment approval protection cannot be verified"}})
 			}
-			if err := approvalVerifier.Verify(c.Request().Context(), tenantID, resolved.installationID, resolved.repositoryID, claims.Environment); err != nil {
+			if err := approvalVerifier.Verify(c.Request().Context(), tenantID, serviceID, resolved.installationID, resolved.repositoryID, claims.Environment); err != nil {
 				if errors.Is(err, deploypolicy.ErrUnavailable) {
 					return c.JSON(http.StatusServiceUnavailable, errorResponse{Error: errorBody{Code: "environment_approval_verifier_unavailable", Message: "GitHub Environment approval protection is temporarily unavailable"}})
 				}

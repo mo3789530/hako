@@ -114,6 +114,15 @@ func run() error {
 	if err != nil {
 		return errors.New("configure GitHub Checks broker service")
 	}
+	environmentApprovalReader, err := githubbroker.NewAWSEnvironmentApprovalReader(awsConfig, pool, policy, nil)
+	if err != nil {
+		return errors.New("configure GitHub Environment approval reader")
+	}
+	environmentApproval, err := githubbroker.NewEnvironmentApprovalService(
+		githubbroker.NewPostgresEnvironmentApprovalResolver(pool, policy), environmentApprovalReader)
+	if err != nil {
+		return errors.New("configure GitHub Environment approval service")
+	}
 	runnerChecksTokenMinter, err := githubbroker.NewAWSActionsRunnerChecksTokenMinter(awsConfig, pool, policy, nil)
 	if err != nil {
 		return errors.New("configure GitHub Actions Runner Checks token minter")
@@ -218,6 +227,7 @@ func run() error {
 		addr = defaultListenAddr
 	}
 	handler := githubbroker.HandlerWithActionsRunnerChecksLifecycle(oauth, checkout, checks, checkoutCallers, actionsRunner, runnerCleanup, runnerCleanupCallers, runnerBinding, runnerCleanupCallers, runnerBootstrapToken, runnerCleanupCallers, runnerLaunch, runnerCleanupCallers, runnerStartupFailure, runnerCleanupCallers, runnerModelCredential, runnerChecks)
+	handler = githubbroker.WithEnvironmentApproval(handler, environmentApproval)
 	handler = githubbroker.WithAgentIssueContext(handler, agentIssueContext)
 	if len(agentTaskCallers) > 0 {
 		planeIDs := make([]string, 0, len(agentTaskCallers))

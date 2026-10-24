@@ -501,6 +501,38 @@ func (c *TokenClient) ActionsRunnerProvenanceToken(ctx context.Context, tenant d
 	return token, access, nil
 }
 
+// EnvironmentApprovalToken mints a repository-scoped actions:read token for
+// inspecting GitHub Environment protection. It is available only to an active
+// Tenant-owned App integration and revalidates repository/App authorization
+// around token issuance.
+func (c *TokenClient) EnvironmentApprovalToken(ctx context.Context, tenant domain.TenantID, installationID, repositoryID int64) (InstallationToken, RepositoryAccess, error) {
+	if c == nil || ctx == nil || c.config.IntegrationID == "" || c.tenantAppAuth == nil || tenant == "" || tenant != c.config.TenantID || installationID <= 0 || repositoryID <= 0 {
+		return InstallationToken{}, RepositoryAccess{}, credentialError("invalid_request")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	select {
+	case c.gate <- struct{}{}:
+	case <-ctx.Done():
+		return InstallationToken{}, RepositoryAccess{}, ctx.Err()
+	}
+	defer func() { <-c.gate }()
+	key := tokenCacheKey{tenant: tenant, integration: c.config.IntegrationID, appID: c.config.AppID,
+		configRevision: c.config.ConfigRevision, credentialGeneration: c.config.CredentialGeneration,
+		installation: installationID, repository: repositoryID, permissionScope: "actions:read"}
+	token, err := c.scopedInstallationToken(ctx, key, map[string]string{"actions": "read"})
+	if err != nil {
+		delete(c.cache, key)
+		return InstallationToken{}, RepositoryAccess{}, err
+	}
+	access, err := c.authorize(ctx, key)
+	if err != nil {
+		delete(c.cache, key)
+		return InstallationToken{}, RepositoryAccess{}, err
+	}
+	return token, access, nil
+}
+
 // DeregisterActionsRunner removes one exact repository runner using a
 // short-lived, repository-scoped administration:write Installation token.
 // It deliberately authorizes against the active Tenant App and repository
