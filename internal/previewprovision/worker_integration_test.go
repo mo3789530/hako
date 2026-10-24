@@ -4,6 +4,7 @@ package previewprovision
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -121,15 +122,59 @@ func TestWorkerFencesAndCompensatesStalePreviewProvision(t *testing.T) {
 	if err != nil || stale.Claimed != 1 || stale.StaleClaim != 1 || stale.Compensated != 1 || provisioner.compensated != 2 {
 		t.Fatalf("stale provider result was not compensated: stats=%+v compensated=%d err=%v", stale, provisioner.compensated, err)
 	}
+	provisioner.onProvision = nil
+	currentHead, err := worker.RunOnce(ctx)
+	if err != nil || currentHead.Claimed != 1 || currentHead.Bound != 1 {
+		t.Fatalf("current PR-head generation was not provisioned: stats=%+v err=%v", currentHead, err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO repository_previews
+		(tenant_id,installation_id,github_repository_id,pull_request_number,head_sha,head_ref,desired_state,state,last_delivery_id,last_event_at,expires_at,created_at,updated_at)
+		VALUES ('tenant_preview_provision',9811,9812,33,$1,'feature/compensation-retry','present','awaiting_runtime','70000000-0000-4000-8000-000000000004',$2,$3,$2,$2)`,
+		strings.Repeat("d", 40), clock, clock.Add(time.Hour)); err != nil {
+		t.Fatalf("seed compensation-retry Preview: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO repository_preview_runtime_allocations
+		(tenant_id,installation_id,github_repository_id,pull_request_number,generation,head_sha,head_ref,desired_state,state,expires_at,created_at,updated_at)
+		VALUES ('tenant_preview_provision',9811,9812,33,1,$1,'feature/compensation-retry','present','awaiting_runtime',$2,$3,$3)`,
+		strings.Repeat("d", 40), clock.Add(time.Hour), clock); err != nil {
+		t.Fatalf("seed compensation-retry runtime generation: %v", err)
+	}
+	provisioner.failures = append(provisioner.failures, ErrGatewayRoutePublish)
+	provisioner.failureBindings = append(provisioner.failureBindings, previewstore.RuntimeBinding{ResourcePlaneID: "rp_preview_test", MicroVMID: "microvm_retry_preview_test"})
+	provisioner.compensationFailures = append(provisioner.compensationFailures, errors.New("temporary cleanup failure"))
+	clock = clock.Add(time.Second)
+	compensationFailed, err := worker.RunOnce(ctx)
+	if !errors.Is(err, ErrCompensationFailed) || compensationFailed.Claimed != 1 || compensationFailed.RetryScheduled != 0 {
+		t.Fatalf("compensation failure result = stats %+v error %v", compensationFailed, err)
+	}
+	var leaseExpiresAt time.Time
+	if err := pool.QueryRow(ctx, `SELECT provision_lease_expires_at FROM repository_preview_runtime_allocations
+		WHERE tenant_id='tenant_preview_provision' AND pull_request_number=33 AND generation=1`).Scan(&leaseExpiresAt); err != nil {
+		t.Fatalf("read retained provision lease: %v", err)
+	}
+	if !leaseExpiresAt.After(clock) {
+		t.Fatalf("retained provision lease %s is not after worker time %s", leaseExpiresAt, clock)
+	}
+	clock = leaseExpiresAt.Add(-time.Microsecond)
+	blocked, err := worker.RunOnce(ctx)
+	if err != nil || blocked.Claimed != 0 {
+		t.Fatalf("worker reclaimed before compensation lease expiry: stats=%+v err=%v", blocked, err)
+	}
+	clock = leaseExpiresAt
+	recovered, err := worker.RunOnce(ctx)
+	if err != nil || recovered.Claimed != 1 || recovered.Bound != 1 {
+		t.Fatalf("provision did not recover after lease expiry: stats=%+v err=%v", recovered, err)
+	}
 }
 
 type integrationProvisioner struct {
-	failures            []error
-	failureBindings     []previewstore.RuntimeBinding
-	binding             previewstore.RuntimeBinding
-	onProvision         func(previewstore.ProvisionJob)
-	compensated         int
-	compensatedBindings []previewstore.RuntimeBinding
+	failures             []error
+	failureBindings      []previewstore.RuntimeBinding
+	binding              previewstore.RuntimeBinding
+	onProvision          func(previewstore.ProvisionJob)
+	compensated          int
+	compensatedBindings  []previewstore.RuntimeBinding
+	compensationFailures []error
 }
 
 func (p *integrationProvisioner) Provision(_ context.Context, job previewstore.ProvisionJob) (previewstore.RuntimeBinding, error) {
@@ -157,6 +202,11 @@ func (p *integrationProvisioner) Provision(_ context.Context, job previewstore.P
 func (p *integrationProvisioner) Compensate(_ context.Context, _ previewstore.ProvisionJob, binding previewstore.RuntimeBinding) error {
 	p.compensated++
 	p.compensatedBindings = append(p.compensatedBindings, binding)
+	if len(p.compensationFailures) > 0 {
+		err := p.compensationFailures[0]
+		p.compensationFailures = p.compensationFailures[1:]
+		return err
+	}
 	return nil
 }
 

@@ -129,7 +129,9 @@ fence, it also invokes idempotent compensation. PostgreSQL lifecycle
 integration drives a fake provisioner through partial MicroVM creation followed
 by route-publish failure and cleanup, retry/backoff, successful binding, and a
 PR-head change during provisioning that rejects and compensates the stale
-result. A concrete Resource Plane command, provision-worker
+result. It also verifies that a failed compensation does not schedule a
+duplicate attempt while the lease is active, then recovers after lease expiry.
+A concrete Resource Plane command, provision-worker
 deployment and DSQL role grant, Lambda MicroVM API call, and Gateway route
 publisher are still not wired, so no Preview runtime is allocated.
 

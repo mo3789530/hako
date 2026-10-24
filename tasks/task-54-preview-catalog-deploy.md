@@ -124,8 +124,9 @@ Add optional repository-level preview environments and service metadata/deploy p
   resources after a failed attempt and stale results after a generation race.
   Local PostgreSQL integration covers partial MicroVM creation followed by
   route-publish failure and cleanup, retry, binding, and compensation after a
-  PR head changes during provisioning; unit tests cover bounded config and
-  fixed error classification. A concrete Resource Plane command, deployed
+  PR head changes during provisioning, plus failed-compensation lease recovery;
+  unit tests cover bounded config and fixed error classification. A concrete
+  Resource Plane command, deployed
   worker/DSQL role grant, Lambda
   MicroVM allocation, and Gateway route are not wired yet.
 - Migrations 000161–000162 add claim/lease/retry state and a bounded due index
