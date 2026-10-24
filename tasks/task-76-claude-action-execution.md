@@ -1,6 +1,6 @@
 # Task 76: Claude Action ephemeral execution and result lifecycle
 
-Status: In Progress (guest `/run` runtime and signed identity-bound bootstrap start a one-shot official Actions runner through a fake-tested process consumer. A composed PostgreSQL E2E now covers signed webhook admission→startup worker→model-credential HTTP client/Broker handler→signed Lambda MicroVM guest bootstrap→actual runner process consumer→terminal Check delivery→durable cleanup for success, failure, cancellation, and timeout. The model-credential broker route and DB resolver are real; its test transport supplies a synthetic verified Resource Plane certificate, while Lambda MicroVM launch, runner registration-token issuance, and GitHub providers remain fakes. Configure/start/run failures emit bounded identity+phase+exit metadata. Durable per-attempt GitHub Actions Runner Check state uses transactional admission/status outbox events, the shared Checks dispatcher/consumer, a Control Plane-only mTLS broker token endpoint, and startup-failure terminalization. Terminal webhook cleanup has a bounded scheduled Lambda handler composed into the ARM64 runner binary's `cleanup` mode, using Broker mTLS queue/deregistration APIs and the Lambda MicroVM SDK terminator. A separately opted-in Terraform schedule/function role scopes Secret reads, VPC permissions, and MicroVM lifecycle actions; AWS-mock plan coverage verifies default-off and least-privilege wiring. Pinned image artifact and real AWS/GitHub TLS, IAM, network, and deployment verification remain. No AWS apply or real Secret retrieval was performed). Priority: P2. Parent: Task 73. Depends on: Tasks 40, 41, 52, 74, 75.
+Status: In Progress (guest `/run` runtime and signed identity-bound bootstrap start a one-shot official Actions runner through a fake-tested process consumer. A composed PostgreSQL E2E now covers signed webhook admission→startup worker→model-credential HTTP client/Broker handler→signed Lambda MicroVM guest bootstrap→actual runner process consumer→terminal Check delivery→durable cleanup for success, failure, cancellation, and timeout. The model-credential broker route and DB resolver are real; the composed lifecycle test uses a synthetic verified Resource Plane certificate, while a separate focused test now verifies the real TLS 1.3 mTLS handshake with synthetic CA-issued certificates and rejects a non-allowlisted Plane identity before credential resolution. Lambda MicroVM launch, runner registration-token issuance, and GitHub providers remain fakes. Configure/start/run failures emit bounded identity+phase+exit metadata. Durable per-attempt GitHub Actions Runner Check state uses transactional admission/status outbox events, the shared Checks dispatcher/consumer, a Control Plane-only mTLS broker token endpoint, and startup-failure terminalization. Terminal webhook cleanup has a bounded scheduled Lambda handler composed into the ARM64 runner binary's `cleanup` mode, using Broker mTLS queue/deregistration APIs and the Lambda MicroVM SDK terminator. A separately opted-in Terraform schedule/function role scopes Secret reads, VPC permissions, and MicroVM lifecycle actions; AWS-mock plan coverage verifies default-off and least-privilege wiring. The pinned ARM64 image builds locally and has matching process/credential E2E evidence, but was not executed on this x86_64 host. Production TLS certificate lifecycle, IAM, network, Lambda MicroVM execution, live GitHub APIs, and deployment verification remain. No AWS apply or real Secret retrieval was performed). Priority: P2. Parent: Task 73. Depends on: Tasks 40, 41, 52, 74, 75.
 
 ## Goal
 
@@ -27,7 +27,9 @@ Run one authorized Claude Code Action workflow job on one isolated Lambda MicroV
   and Broker route backed by the PostgreSQL resolver, then the production
   signed bootstrapper, guest `/run` handler, and runner process consumer. A
   synthetic verified SPIFFE certificate exercises Broker authorization at the
-  HTTP boundary; it does not claim a real TLS handshake or AWS MicroVM run.
+  HTTP boundary. A separate focused test verifies a real TLS 1.3 mTLS handshake
+  with synthetic CA-issued certificates; neither test verifies production
+  certificate lifecycle or an AWS MicroVM run.
   Success, failure, cancellation, and timeout each assert the exact workflow
   identity and process result before the existing Check/cleanup path.
 
@@ -50,3 +52,15 @@ Run one authorized Claude Code Action workflow job on one isolated Lambda MicroV
 - Scheduled cleanup Lambda composition and separate schedule/function IAM are
   implemented; Terraform remains default-off and unapplied. Pinned image, full
   authorized-flow E2E and real AWS/GitHub gates remain open.
+
+## Local TLS verification (2026-10-24)
+
+- Added a real local TLS 1.3 mutual-authentication exchange for the model
+  credential endpoint. Synthetic CA-issued Broker and Resource Plane
+  certificates exercise the production HTTPS client, HTTP handler, SPIFFE
+  identity check, and synthetic credential response. A client certificate for
+  a different but otherwise trusted Resource Plane and a client without a
+  certificate are both rejected before the credential issuer is called.
+- This is handshake and route evidence using ephemeral test certificates. It
+  does not verify production certificate issuance, distribution, rotation,
+  network reachability, AWS IAM, Lambda MicroVM execution, or live GitHub APIs.

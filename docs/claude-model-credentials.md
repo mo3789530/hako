@@ -131,9 +131,14 @@ model credential HTTP client and Broker route with the production resolver, a
 synthetic Secret reader, Tenant A/B credential rows, provenance-denial cases,
 signed guest bootstrap, and the runner process consumer. It covers success,
 failure, cancellation, and timeout and proves that a foreign identity cannot
-reach the reader. The Broker test transport supplies a synthetic verified
-SPIFFE certificate, so this is not evidence of a real TLS handshake, built
-image execution, or Lambda MicroVM execution. Lambda MicroVM launch, runner-token
+reach the reader. The composed Broker test transport supplies a synthetic
+verified SPIFFE certificate; it does not perform the TLS handshake. A separate
+focused local test completes a real TLS 1.3 mutual-authentication handshake
+with synthetic CA-issued Broker and Resource Plane certificates, verifies the
+allowed Plane can retrieve only the synthetic model credential, and rejects a
+non-allowlisted Plane and a client without a certificate before credential
+resolution. This does not verify production certificate issuance, rotation,
+or deployment. The image was not executed; Lambda MicroVM launch, runner-token
 issuance, and GitHub APIs remain faked. Broker/Resource Plane IAM, certificate
 provisioning, image verification, restricted egress, and live deployment
 review remain gated follow-up work (Tasks 40, 52, 75–77). The image pins the
