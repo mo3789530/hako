@@ -194,15 +194,25 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   Pipeline and remain retryable. Fake-engine tests cover ephemeral scope,
   health failure cleanup, idempotent close/retry, command environment, cleanup
   failure, and credential redaction.
-- This is lifecycle orchestration only. Production composition deliberately
-  does not inject a provisioner, and the trusted manifest resolver still
-  rejects pipelines declaring Services. A Linux rootless `containerd`/`nerdctl`
-  implementation with internal networking, loopback-only published ports,
-  tmpfs-only database state, exact resource controls, image-pull egress policy,
-  and runtime acceptance tests remains required before enabling the feature.
-  In particular, the host Job process currently lacks an enforced
-  registry-only egress boundary, so this change does not enable Service
-  pipelines or Agent scheduling.
+- Added a separate Linux `NerdctlJobServiceEngine`. It uses a dedicated
+  containerd namespace, `--pull=never`, catalog-only digest images, an
+  `--internal` network, fixed `999:999` service user, read-only rootfs, dropped
+  capabilities, no-new-privileges, CPU/memory/PID limits, loopback-only port
+  publishing, and bounded tmpfs for all database state. Container and network
+  labels are checked before removal; unknown ownership fails closed. Secrets
+  enter only through a mode-0600 environment file in a verified tmpfs and the
+  file is removed after container creation. Fake runner tests verify command
+  construction and foreign-resource refusal. A local Podman smoke run using
+  the available x86_64 PostgreSQL 18 image verified startup, `pg_isready`, and
+  `127.0.0.1` port binding with the same core restrictions. This is not a
+  runtime test of the pinned ARM64 images or nerdctl itself.
+- Production composition still does not inject this provisioner, and the
+  trusted manifest resolver rejects pipelines declaring Services. The Lambda
+  MicroVM image does not yet contain/configure rootless containerd, the runtime
+  socket must be isolated from untrusted job commands, target nerdctl label
+  inspection and pinned ARM64 image behavior need execution tests, and the host
+  Job process still lacks enforced registry-only egress. Those conditions keep
+  Service pipelines and Agent scheduling disabled.
 
 - Tenant model credentials now have an explicit `claude_action` or
   `native_agent` purpose in both the operator-approved binding and Tenant

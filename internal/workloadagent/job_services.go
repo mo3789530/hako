@@ -108,7 +108,11 @@ func (m *CatalogJobServiceManager) Start(ctx context.Context, identity workloadj
 		session.secrets = append(session.secrets, secretValues...)
 		if err := m.engine.EnsureService(ctx, containerNames[name], network, ownershipKey, template, secretMap); err != nil {
 			clearSecretMap(secretMap)
-			return nil, errors.Join(ErrJobServicesUnavailable, session.closeAfterFailure())
+			failure := error(ErrJobServicesUnavailable)
+			if errors.Is(err, ErrJobServiceCleanup) {
+				failure = ErrJobServiceCleanup
+			}
+			return nil, errors.Join(failure, session.closeAfterFailure())
 		}
 		if err := m.waitHealthy(ctx, containerNames[name], template.HealthCheck); err != nil {
 			clearSecretMap(secretMap)
