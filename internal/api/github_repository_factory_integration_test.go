@@ -222,6 +222,13 @@ func TestRepositoryFactorySettingRequiresTenantOwnerAndActiveRegisteredRepositor
 		VALUES ('tenant_factory_api',7001,7002,19,$1,'feature/list','present','awaiting_runtime','30000000-0000-4000-8000-000000000001',now(),now()+interval '1 hour',now(),now())`, previewSHA); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := pool.Exec(ctx, `INSERT INTO repository_preview_runtime_allocations
+		(tenant_id,installation_id,github_repository_id,pull_request_number,generation,head_sha,head_ref,desired_state,state,expires_at,
+		 resource_plane_id,workspace_id,microvm_id,gateway_route_id,created_at,updated_at)
+		VALUES ('tenant_factory_api',7001,7002,19,1,$1,'feature/list','present','running',now()+interval '1 hour',
+		 'rp_preview_secret','ws_preview_secret','lambda-preview-secret','route-preview-secret',now(),now())`, previewSHA); err != nil {
+		t.Fatal(err)
+	}
 	previewsPath := "/v1/tenants/tenant_factory_api/github/installations/7001/repositories/7002/previews"
 	listPreviews := func(subject, tenant, query string) *httptest.ResponseRecorder {
 		token := signTenantAPIToken(t, key, issuer, subject, "openid hako/api")
@@ -246,6 +253,11 @@ func TestRepositoryFactorySettingRequiresTenantOwnerAndActiveRegisteredRepositor
 		if response.Code == http.StatusOK && (!strings.Contains(response.Body.String(), `"pull_request_number":19`) ||
 			!strings.Contains(response.Body.String(), `"generation":1`) || !strings.Contains(response.Body.String(), `"runtime_enabled":false`) || !strings.Contains(response.Body.String(), previewSHA)) {
 			t.Fatalf("Preview listing omitted scoped metadata or claimed runtime readiness: %s", response.Body.String())
+		}
+		if response.Code == http.StatusOK && (strings.Contains(response.Body.String(), "rp_preview_secret") ||
+			strings.Contains(response.Body.String(), "ws_preview_secret") || strings.Contains(response.Body.String(), "lambda-preview-secret") ||
+			strings.Contains(response.Body.String(), "route-preview-secret")) {
+			t.Fatalf("Preview listing exposed private runtime binding identifiers: %s", response.Body.String())
 		}
 	}
 }

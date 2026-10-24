@@ -68,6 +68,13 @@ GRANT SELECT (tenant_id, installation_id, github_repository_id, pull_request_num
     ON TABLE repository_previews TO hako_preview_reconciler;
 GRANT UPDATE (desired_state, state, generation, cleanup_next_attempt_at, cleanup_claim_id, cleanup_lease_expires_at, updated_at)
     ON TABLE repository_previews TO hako_preview_reconciler;
+-- Preview runtime allocations are per immutable PR-head generation. The
+-- expiry reconciler may only move active generations into cleanup; it cannot
+-- read provider bindings or execute Resource Plane commands.
+GRANT SELECT (tenant_id, installation_id, github_repository_id, pull_request_number, generation, desired_state)
+    ON TABLE repository_preview_runtime_allocations TO hako_preview_reconciler;
+GRANT UPDATE (desired_state, state, updated_at)
+    ON TABLE repository_preview_runtime_allocations TO hako_preview_reconciler;
 
 -- The Dispatcher role can claim/publish Outbox rows but cannot alter schema or
 -- access Workspace, Tenant, User, Session, or Operation tables.
@@ -99,6 +106,7 @@ GRANT INSERT (tenant_id, revision, updated_at) ON TABLE tenant_quota_limits TO h
 GRANT UPDATE (revision) ON TABLE tenant_quota_limits TO hako_webhook_processor;
 GRANT SELECT, INSERT ON TABLE workload_runs, workload_run_events TO hako_webhook_processor;
 GRANT SELECT, INSERT, UPDATE ON TABLE repository_previews TO hako_webhook_processor;
+GRANT SELECT, INSERT, UPDATE ON TABLE repository_preview_runtime_allocations TO hako_webhook_processor;
 GRANT SELECT, INSERT ON TABLE workload_agent_tasks TO hako_webhook_processor;
 GRANT SELECT, INSERT, UPDATE ON TABLE workload_github_checks TO hako_webhook_processor;
 -- Actions Runner admission/status events also update the exact durable Check

@@ -103,6 +103,20 @@ func TestRepositoryPreviewWebhookLifecycleFencesStalePRUpdates(t *testing.T) {
 		lastDelivery != deliveries[4].id || attempts != 0 || lifecycleGeneration != 3 || !expiresAt.Equal(now.Add(5*time.Second+time.Hour)) {
 		t.Fatalf("reopened Preview desired state = tenant:%s sha:%s desired:%s state:%s delivery:%s attempts:%d generation:%d expires:%s", tenant, sha, desired, state, lastDelivery, attempts, lifecycleGeneration, expiresAt)
 	}
+	var allocationRows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM repository_preview_runtime_allocations
+		WHERE tenant_id='tenant_preview_hook' AND installation_id=9801 AND github_repository_id=9802 AND pull_request_number=73`).Scan(&allocationRows); err != nil || allocationRows != 2 {
+		t.Fatalf("PR head generation allocation rows = %d, err=%v; want old and reopened generations", allocationRows, err)
+	}
+	var oldDesired, oldState, currentDesired, currentState string
+	if err := pool.QueryRow(ctx, `SELECT desired_state,state FROM repository_preview_runtime_allocations
+		WHERE tenant_id='tenant_preview_hook' AND installation_id=9801 AND github_repository_id=9802 AND pull_request_number=73 AND generation=1`).Scan(&oldDesired, &oldState); err != nil || oldDesired != "absent" || oldState != "cleanup_pending" {
+		t.Fatalf("closed Preview generation remains eligible to run: desired=%s state=%s err=%v", oldDesired, oldState, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT desired_state,state FROM repository_preview_runtime_allocations
+		WHERE tenant_id='tenant_preview_hook' AND installation_id=9801 AND github_repository_id=9802 AND pull_request_number=73 AND generation=3`).Scan(&currentDesired, &currentState); err != nil || currentDesired != "present" || currentState != "awaiting_runtime" {
+		t.Fatalf("reopened Preview generation was not independently recorded: desired=%s state=%s err=%v", currentDesired, currentState, err)
+	}
 	for i := 0; i < 2; i++ {
 		tx, err := pool.Begin(ctx)
 		if err != nil {
@@ -134,6 +148,12 @@ func TestRepositoryPreviewWebhookLifecycleFencesStalePRUpdates(t *testing.T) {
 	}
 	if desired != "absent" || state != "cleanup_pending" {
 		t.Fatalf("expired Preview state = desired:%s state:%s, physical cleanup must remain pending", desired, state)
+	}
+	var cleanupGenerations int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM repository_preview_runtime_allocations
+		WHERE tenant_id='tenant_preview_hook' AND installation_id=9801 AND github_repository_id=9802 AND pull_request_number=73
+		  AND desired_state='absent' AND state='cleanup_pending'`).Scan(&cleanupGenerations); err != nil || cleanupGenerations != 2 {
+		t.Fatalf("expiry did not queue all Preview runtime generations for cleanup: pending=%d err=%v", cleanupGenerations, err)
 	}
 	applyPreview := func(number int64, action, prState, deliveryID string, eventAt time.Time) (bool, error) {
 		tx, err := pool.Begin(ctx)
@@ -291,6 +311,11 @@ func TestRepositoryPreviewWebhookLifecycleFencesStalePRUpdates(t *testing.T) {
 	var cleanupLease *time.Time
 	if err := pool.QueryRow(ctx, `SELECT state,cleanup_attempts,cleanup_last_error,cleanup_claim_id,cleanup_lease_expires_at FROM repository_previews WHERE tenant_id='tenant_preview_hook' AND installation_id=9801 AND github_repository_id=9802 AND pull_request_number=73`).Scan(&cleanupState, &cleanupAttempts, &lastError, &cleanupClaim, &cleanupLease); err != nil || cleanupState != "cleaned" || cleanupAttempts != 3 || lastError != "" || cleanupClaim != nil || cleanupLease != nil {
 		t.Fatalf("persisted Preview cleanup state=%s attempts=%d last_error=%q claim=%v lease=%v err=%v", cleanupState, cleanupAttempts, lastError, cleanupClaim, cleanupLease, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM repository_preview_runtime_allocations
+		WHERE tenant_id='tenant_preview_hook' AND installation_id=9801 AND github_repository_id=9802 AND pull_request_number=73
+		  AND state<>'cleaned'`).Scan(&cleanupGenerations); err != nil || cleanupGenerations != 0 {
+		t.Fatalf("confirmed Preview cleanup left live generation records: count=%d err=%v", cleanupGenerations, err)
 	}
 	usage, err = transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (workspaces.QuotaUsage, error) {
 		return workspaces.ReadQuotaUsage(ctx, tx, "tenant_preview_hook")

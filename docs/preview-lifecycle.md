@@ -51,6 +51,17 @@ they observed, and retry/completion writes require that exact generation in
 addition to the claim ID, attempt, and lease. This fences a delayed cleanup
 worker if the Preview lifecycle has moved on since its claim.
 
+Migration 000159 adds a private `repository_preview_runtime_allocations` row
+for each admitted present PR generation. It pins the immutable head SHA/ref and
+expiry separately for each generation. A head update or close moves every
+older active generation to `cleanup_pending` in the same webhook transaction;
+expiry does the same in its bounded sweep. Reopen creates a new generation
+without overwriting old cleanup records. Provider IDs are reserved for this
+private table and are not included in the Tenant-facing Preview list. The
+existing cleanup confirmation transitions all absent generations to `cleaned`
+only after its executor confirms PR-level runtime deletion. These are durable
+metadata transitions only; no Preview MicroVM or Gateway route is created yet.
+
 Each present Preview records a fixed `expires_at` using the Tenant's configured
 Preview lifetime (24 hours when no quota row exists). `synchronize` deliveries
 update the pinned commit without extending that lifetime; a valid `reopened`

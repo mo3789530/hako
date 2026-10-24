@@ -119,6 +119,13 @@ func MarkCleaned(ctx context.Context, tx pgx.Tx, job CleanupJob, now time.Time) 
 		return false, fmt.Errorf("mark Preview cleanup complete: %w", err)
 	}
 	if tag.RowsAffected() == 1 {
+		if _, err := tx.Exec(ctx, `UPDATE repository_preview_runtime_allocations
+			SET desired_state='absent',state='cleaned',updated_at=$5
+			WHERE tenant_id=$1 AND installation_id=$2 AND github_repository_id=$3 AND pull_request_number=$4
+			  AND desired_state='absent' AND state<>'cleaned'`, job.TenantID, job.InstallationID,
+			job.RepositoryID, job.PullRequestNumber, now.UTC()); err != nil {
+			return false, fmt.Errorf("confirm Preview runtime generations cleaned: %w", err)
+		}
 		return true, nil
 	}
 	var alreadyCleaned bool

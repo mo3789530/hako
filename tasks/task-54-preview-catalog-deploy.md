@@ -105,6 +105,14 @@ Add optional repository-level preview environments and service metadata/deploy p
   coverage for `internal/store/previews`; the current suite reports 45.4% after
   adding more store behavior. Runtime allocation and physical cleanup remain
   outside this coverage.
+- Migration 000159 now records a private runtime-allocation row per admitted
+  PR-head generation. Webhook head changes/close and expiry mark old generations
+  cleanup-pending atomically; reopen creates a new generation without
+  overwriting old rows. Confirmed PR-level cleanup marks all absent generations
+  cleaned. A PostgreSQL lifecycle test covers close/reopen/expiry and confirms
+  the Tenant API still does not expose provider identifiers. This is generation
+  metadata only: provision claims, Lambda MicroVM allocation, Gateway routing,
+  and provider-backed per-generation cleanup are still unimplemented.
 - `go test ./...` passed. PostgreSQL Preview lifecycle E2E passed against the
   local `hako-dev-postgres`, including stale delivery, close/reopen, Tenant
   scoping, and duplicate replay.

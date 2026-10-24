@@ -28,6 +28,25 @@ type RepositoryPreview struct {
 	UpdatedAt         time.Time       `json:"updated_at"`
 }
 
+// RuntimeAllocation is one immutable PR-head generation. Provider identifiers
+// are stored only in this Control Plane record and are intentionally omitted
+// from the user-facing RepositoryPreview response.
+type RuntimeAllocation struct {
+	CleanupIdentity
+	Generation      int64
+	HeadSHA         string
+	HeadRef         string
+	DesiredState    string
+	State           string
+	ExpiresAt       time.Time
+	ResourcePlaneID domain.ResourcePlaneID
+	WorkspaceID     domain.WorkspaceID
+	MicroVMID       string
+	GatewayRouteID  string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
 // ListForRepository returns a bounded, Tenant-scoped view of Preview lifecycle
 // metadata. It intentionally exposes no runtime credentials or provider IDs.
 func ListForRepository(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, installationID, repositoryID int64, limit int) ([]RepositoryPreview, error) {
@@ -157,7 +176,58 @@ func ApplyPullRequestDelivery(ctx context.Context, tx pgx.Tx, tenantID domain.Te
 	if err != nil {
 		return false, fmt.Errorf("upsert repository Preview desired state: %w", err)
 	}
-	return tag.RowsAffected() == 1, nil
+	updated := tag.RowsAffected() == 1
+	if updated {
+		if err := syncRuntimeAllocations(ctx, tx, CleanupIdentity{TenantID: tenantID, InstallationID: event.InstallationID,
+			RepositoryID: event.Repository.GitHubID, PullRequestNumber: event.PullRequest.Number}, now.UTC()); err != nil {
+			return false, err
+		}
+	}
+	return updated, nil
+}
+
+func syncRuntimeAllocations(ctx context.Context, tx pgx.Tx, identity CleanupIdentity, now time.Time) error {
+	if ctx == nil || tx == nil || identity.TenantID == "" || identity.InstallationID <= 0 || identity.RepositoryID <= 0 || identity.PullRequestNumber <= 0 || now.IsZero() {
+		return ErrInvalidDelivery
+	}
+	var generation int64
+	var desired, state, headSHA, headRef string
+	var expiresAt *time.Time
+	err := tx.QueryRow(ctx, `SELECT generation,desired_state,state,head_sha,head_ref,expires_at FROM repository_previews
+		WHERE tenant_id=$1 AND installation_id=$2 AND github_repository_id=$3 AND pull_request_number=$4`,
+		identity.TenantID, identity.InstallationID, identity.RepositoryID, identity.PullRequestNumber).
+		Scan(&generation, &desired, &state, &headSHA, &headRef, &expiresAt)
+	if err != nil {
+		return fmt.Errorf("read accepted Preview generation: %w", err)
+	}
+	if desired == "present" && state == "awaiting_runtime" && expiresAt != nil {
+		if _, err := tx.Exec(ctx, `UPDATE repository_preview_runtime_allocations
+			SET desired_state='absent',state='cleanup_pending',updated_at=$6
+			WHERE tenant_id=$1 AND installation_id=$2 AND github_repository_id=$3 AND pull_request_number=$4
+			  AND generation<$5 AND desired_state='present' AND state<>'cleaned'`,
+			identity.TenantID, identity.InstallationID, identity.RepositoryID, identity.PullRequestNumber, generation, now.UTC()); err != nil {
+			return fmt.Errorf("retire stale Preview runtime generations: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO repository_preview_runtime_allocations
+			(tenant_id,installation_id,github_repository_id,pull_request_number,generation,head_sha,head_ref,desired_state,state,expires_at,created_at,updated_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,'present','awaiting_runtime',$8,$9,$9)
+			ON CONFLICT (tenant_id,installation_id,github_repository_id,pull_request_number,generation) DO NOTHING`,
+			identity.TenantID, identity.InstallationID, identity.RepositoryID, identity.PullRequestNumber,
+			generation, headSHA, headRef, expiresAt.UTC(), now.UTC()); err != nil {
+			return fmt.Errorf("record current Preview runtime generation: %w", err)
+		}
+		return nil
+	}
+	if desired == "absent" {
+		if _, err := tx.Exec(ctx, `UPDATE repository_preview_runtime_allocations
+			SET desired_state='absent',state=CASE WHEN state='cleaned' THEN state ELSE 'cleanup_pending' END,updated_at=$5
+			WHERE tenant_id=$1 AND installation_id=$2 AND github_repository_id=$3 AND pull_request_number=$4
+			  AND desired_state='present'`, identity.TenantID, identity.InstallationID,
+			identity.RepositoryID, identity.PullRequestNumber, now.UTC()); err != nil {
+			return fmt.Errorf("queue Preview runtime generations for cleanup: %w", err)
+		}
+	}
+	return nil
 }
 
 // admitPreview advances the shared Tenant quota OCC guard before counting both
@@ -184,7 +254,7 @@ func ExpireDue(ctx context.Context, tx pgx.Tx, now time.Time, limit int) (int64,
 	if ctx == nil || tx == nil || now.IsZero() || limit < 1 || limit > 500 {
 		return 0, errors.New("invalid Preview expiry sweep")
 	}
-	tag, err := tx.Exec(ctx, `WITH due AS (
+	rows, err := tx.Query(ctx, `WITH due AS (
 		SELECT tenant_id,installation_id,github_repository_id,pull_request_number
 		FROM repository_previews
 		WHERE desired_state='present' AND expires_at IS NOT NULL AND expires_at <= $1
@@ -196,9 +266,39 @@ func ExpireDue(ctx context.Context, tx pgx.Tx, now time.Time, limit int) (int64,
 	FROM due
 	WHERE p.tenant_id=due.tenant_id AND p.installation_id=due.installation_id
 	  AND p.github_repository_id=due.github_repository_id AND p.pull_request_number=due.pull_request_number
-	  AND p.desired_state='present' AND p.expires_at <= $1`, now.UTC(), limit)
+	  AND p.desired_state='present' AND p.expires_at <= $1
+	RETURNING p.tenant_id,p.installation_id,p.github_repository_id,p.pull_request_number`, now.UTC(), limit)
 	if err != nil {
 		return 0, fmt.Errorf("expire due repository Previews: %w", err)
 	}
-	return tag.RowsAffected(), nil
+	type identity struct {
+		tenant         domain.TenantID
+		installationID int64
+		repositoryID   int64
+		pullRequestNo  int64
+	}
+	items := make([]identity, 0, limit)
+	for rows.Next() {
+		var item identity
+		if err := rows.Scan(&item.tenant, &item.installationID, &item.repositoryID, &item.pullRequestNo); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan expired Repository Preview: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("iterate expired Repository Previews: %w", err)
+	}
+	rows.Close()
+	for _, item := range items {
+		if _, err := tx.Exec(ctx, `UPDATE repository_preview_runtime_allocations
+			SET desired_state='absent',state='cleanup_pending',updated_at=$5
+			WHERE tenant_id=$1 AND installation_id=$2 AND github_repository_id=$3 AND pull_request_number=$4
+			  AND desired_state='present' AND state<>'cleaned'`,
+			item.tenant, item.installationID, item.repositoryID, item.pullRequestNo, now.UTC()); err != nil {
+			return 0, fmt.Errorf("queue expired Preview runtime generations for cleanup: %w", err)
+		}
+	}
+	return int64(len(items)), nil
 }
