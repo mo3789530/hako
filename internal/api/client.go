@@ -709,8 +709,8 @@ func RequestWorkspaceServiceAction(ctx context.Context, baseURL, accessToken, te
 	if !validTenantID(tenantID) || !validOpaqueID(workspaceID) || !servicecatalog.ValidateInstanceName(serviceName) {
 		return result, errors.New("Tenant, Workspace, or Service name is invalid")
 	}
-	if action != "start" && action != "stop" && action != "remove" {
-		return result, errors.New("Service action must be start, stop, or remove")
+	if action != "start" && action != "stop" && action != "remove" && action != "rotate-credentials" {
+		return result, errors.New("Service action must be start, stop, remove, or rotate-credentials")
 	}
 	endpoint, err := apiEndpoint(baseURL, "/v1/tenants/"+url.PathEscape(tenantID)+"/workspaces/"+url.PathEscape(workspaceID)+"/services/"+url.PathEscape(serviceName)+"/actions")
 	if err != nil {

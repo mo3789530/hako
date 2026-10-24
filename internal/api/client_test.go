@@ -15,11 +15,15 @@ func TestWorkspaceServiceClientListsAndAddsWithTenantScopedPaths(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/tenants/tenant_123/workspaces/ws_123/services/db/actions" && r.Method == http.MethodPost {
 			body, _ := io.ReadAll(r.Body)
-			if string(body) != `{"action":"stop"}` {
+			if string(body) != `{"action":"stop"}` && string(body) != `{"action":"rotate-credentials"}` {
 				t.Errorf("unexpected service action body: %s", body)
 			}
 			w.WriteHeader(http.StatusAccepted)
-			_, _ = w.Write([]byte(`{"id":"svc_123","workspace_id":"ws_123","name":"db","desired_state":"stopped","observed_state":"pending"}`))
+			if string(body) == `{"action":"rotate-credentials"}` {
+				_, _ = w.Write([]byte(`{"id":"svc_123","workspace_id":"ws_123","name":"db","desired_state":"running","observed_state":"running","credential_generation":2}`))
+			} else {
+				_, _ = w.Write([]byte(`{"id":"svc_123","workspace_id":"ws_123","name":"db","desired_state":"stopped","observed_state":"pending"}`))
+			}
 			return
 		}
 		if r.URL.Path == "/v1/tenants/tenant_123/workspaces/ws_123/services" && r.Method == http.MethodPost {
@@ -54,6 +58,10 @@ func TestWorkspaceServiceClientListsAndAddsWithTenantScopedPaths(t *testing.T) {
 	stopped, err := RequestWorkspaceServiceAction(context.Background(), server.URL, "test-access-token", "tenant_123", "ws_123", "db", "stop", server.Client())
 	if err != nil || stopped.DesiredState != "stopped" || stopped.ObservedState != "pending" {
 		t.Fatalf("unexpected service action result: %+v error=%v", stopped, err)
+	}
+	rotated, err := RequestWorkspaceServiceAction(context.Background(), server.URL, "test-access-token", "tenant_123", "ws_123", "db", "rotate-credentials", server.Client())
+	if err != nil || rotated.DesiredState != "running" || rotated.CredentialGeneration != 2 {
+		t.Fatalf("unexpected credential rotation result: %+v error=%v", rotated, err)
 	}
 }
 
