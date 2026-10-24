@@ -170,7 +170,7 @@ Preview runtime is allocated for user traffic.
 The accepted Preview Outbox envelope and current routing-only status are
 documented in [Preview Runtime command routing contract](preview-runtime-command-contract.md).
 
-Migration 000170 adds an optional Tenant GitHub App identity pin to each
+Migrations 000172–000175 add an optional Tenant GitHub App identity pin to each
 Preview runtime generation. When a new generation is recorded, Hako resolves
 an active, approved, Tenant-owned App integration bound to that repository and
 stores its integration ID, config revision, and credential generation. A
@@ -182,6 +182,18 @@ not silently backfilled, so enabling checkout for them requires a new
 generation or an explicit migration policy. This is credential identity
 metadata only: broker checkout, source transfer into the MicroVM, and Guest
 startup are not yet composed, and the migration has not been applied to AWS.
+
+The Tenant App broker now has a separate mTLS-only
+`POST /v1/preview-checkout/token` endpoint for Resource Plane certificates on
+its explicit checkout allowlist. It accepts only the Preview logical identity,
+generation, claim/attempt, and pinned head SHA. The broker resolves the App
+pin from the private allocation row and issues a Contents-read installation
+token only while the same generation is current, unexpired, and held by the
+calling Plane's active provisioning lease. It rechecks the claim and App
+credential after the GitHub token exchange before returning the token, and the
+response is marked `no-store`. Missing or stale pins fail closed. The endpoint
+does not yet checkout Git data, stage an archive, transfer source to the
+MicroVM, or start the Preview application.
 
 Each present Preview records a fixed `expires_at` using the Tenant's configured
 Preview lifetime (24 hours when no quota row exists). `synchronize` deliveries

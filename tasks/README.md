@@ -30,11 +30,13 @@ Task 41のGitHub Checks delivery（mTLS broker/consumer、idempotent Check更新
 
 Tenant App子タスクのlocal受入条件はTask 70/71まで実装・検証済み。brokerのWorker接続とbroker専用IAM contractもlocal実装済み。cross-account certificate/Role trust/Secret/KMS provisioningと承認済みcutoverは未完了で、次の実装順は下の「整理後の実行キュー」に集約する。Task 68のローカル実装も完了扱いだが、監視・AWS配備レビューは別の運用作業として残る。Terraform配備はAPI/CLIとローカル検証の後段とする。Workspace/EFS/Gateway（43–47）、運用（48–50）、Software Factory拡張（53–55）も未完了。親子タスクは二重計上せず、詳細は各taskの受入条件を参照する。
 
-Preview generation now snapshots the eligible Tenant-owned GitHub App identity
+Preview generation snapshots the eligible Tenant-owned GitHub App identity
 (integration, config revision, and credential generation) when its runtime
-allocation row is first created. The retry and credential-rotation behavior is
-covered by PostgreSQL integration tests. Broker checkout and Guest source
-transfer remain open; see Task 54 and the Preview lifecycle document.
+allocation row is first created. A separate mTLS broker endpoint issues a
+Contents-read token only for the exact current generation and active
+Resource Plane claim. Unit and PostgreSQL tests cover claim fencing and
+rotation. Git checkout, source archive staging, Guest delivery, and app startup
+remain open; see Task 54 and the Preview lifecycle document.
 
 ### ローカル実装と外部承認の境界
 

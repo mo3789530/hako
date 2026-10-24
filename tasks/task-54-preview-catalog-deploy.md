@@ -379,7 +379,7 @@ Add optional repository-level preview environments and service metadata/deploy p
 
 ## Tenant GitHub App pin per Preview generation (2026-10-25)
 
-- Migration 000170 adds nullable integration ID, config revision, and
+- Migrations 000172–000175 add nullable integration ID, config revision, and
   credential generation fields to the immutable Preview runtime generation.
   New generations snapshot only an active, approved Tenant-owned App that is
   bound to the repository; conflict retries preserve the original identity.
@@ -392,3 +392,11 @@ Add optional repository-level preview environments and service metadata/deploy p
 - This change provides identity pinning only. Broker checkout, archive transfer
   into the Guest, MicroVM startup, and production migration/application are
   still open. No AWS resources or migrations were applied.
+- Added the broker's mTLS-only Preview token endpoint. Its PostgreSQL resolver
+  checks the exact current generation/head, active claim and attempt, lease,
+  selected Plane, active Installation, and immutable Tenant App credential
+  pin both before and after minting a Contents-read token. Unit and PostgreSQL
+  tests cover stale/cross-Plane claims and rotation during exchange. The
+  endpoint is composed only when Resource Plane checkout callers are
+  configured. Git checkout, source archive staging, Guest delivery, and app
+  startup remain unimplemented.

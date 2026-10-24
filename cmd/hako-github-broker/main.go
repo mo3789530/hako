@@ -100,6 +100,22 @@ func run() error {
 	if err != nil {
 		return errors.New("configure checkout broker service")
 	}
+	previewPlaneIDs := make([]string, 0, len(checkoutCallers))
+	for _, caller := range checkoutCallers {
+		previewPlaneIDs = append(previewPlaneIDs, strings.TrimPrefix(caller, "spiffe://hako/resource-plane/"))
+	}
+	var previewCheckout *githubbroker.PreviewCheckoutService
+	if len(previewPlaneIDs) > 0 {
+		previewCheckoutMinter, minterErr := githubbroker.NewAWSPreviewCheckoutTokenMinter(awsConfig, pool, policy, nil)
+		if minterErr != nil {
+			return errors.New("configure Preview checkout token minter")
+		}
+		previewCheckout, err = githubbroker.NewPreviewCheckoutService(previewPlaneIDs,
+			githubbroker.NewPostgresPreviewCheckoutResolver(pool, policy, nil), previewCheckoutMinter)
+		if err != nil {
+			return errors.New("configure Preview checkout broker service")
+		}
+	}
 	resolveChecksRun := githubbroker.NewPostgresChecksRunResolver(pool, policy)
 	mintChecksToken, err := githubbroker.NewAWSChecksTokenMinter(awsConfig, pool, policy, nil)
 	if err != nil {
@@ -227,6 +243,7 @@ func run() error {
 		addr = defaultListenAddr
 	}
 	handler := githubbroker.HandlerWithActionsRunnerChecksLifecycle(oauth, checkout, checks, checkoutCallers, actionsRunner, runnerCleanup, runnerCleanupCallers, runnerBinding, runnerCleanupCallers, runnerBootstrapToken, runnerCleanupCallers, runnerLaunch, runnerCleanupCallers, runnerStartupFailure, runnerCleanupCallers, runnerModelCredential, runnerChecks)
+	handler = githubbroker.WithPreviewCheckout(handler, previewCheckout)
 	handler = githubbroker.WithEnvironmentApproval(handler, environmentApproval)
 	handler = githubbroker.WithAgentIssueContext(handler, agentIssueContext)
 	if len(agentTaskCallers) > 0 {
