@@ -73,10 +73,12 @@ classes and bounded exponential retry. `internal/previewprovision.Worker` now
 executes that claim/provision/bind/retry state machine through an injected
 Resource Plane provisioner; if a result loses its generation fence, it invokes
 the provisioner's idempotent compensation method. PostgreSQL lifecycle
-integration drives a fake provisioner through failure/backoff and successful
-binding. A concrete Resource Plane command, provision-worker deployment and
-DSQL role grant, Lambda MicroVM API call, and Gateway route publisher are still
-not wired, so no Preview runtime is allocated.
+integration drives a fake provisioner through failure/backoff, successful
+binding, and a PR-head change during provisioning that rejects and compensates
+the stale result. The focused target reports 72.4% statement coverage for the
+provisioner package. A concrete Resource Plane command, provision-worker
+deployment and DSQL role grant, Lambda MicroVM API call, and Gateway route
+publisher are still not wired, so no Preview runtime is allocated.
 
 Each present Preview records a fixed `expires_at` using the Tenant's configured
 Preview lifetime (24 hours when no quota row exists). `synchronize` deliveries

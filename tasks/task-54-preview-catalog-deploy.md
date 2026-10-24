@@ -118,10 +118,11 @@ Add optional repository-level preview environments and service metadata/deploy p
   IDs only for the current unexpired Preview generation and exact claim/attempt.
   `internal/previewprovision.Worker` now runs the claim/provision/bind/retry
   loop through an injected provisioner and compensates a stale result. Local
-  PostgreSQL integration covers retry and binding; unit tests cover bounded
-  config and fixed error classification. A concrete Resource Plane command,
-  deployed worker/DSQL role grant, Lambda MicroVM allocation, and Gateway route
-  are not wired yet.
+  PostgreSQL integration covers retry, binding, and compensation after a PR
+  head changes during provisioning; unit tests cover bounded config and fixed
+  error classification. The focused target reports 72.4% package coverage. A
+  concrete Resource Plane command, deployed worker/DSQL role grant, Lambda
+  MicroVM allocation, and Gateway route are not wired yet.
 - `go test ./...` passed. PostgreSQL Preview lifecycle E2E passed against the
   local `hako-dev-postgres`, including stale delivery, close/reopen, Tenant
   scoping, and duplicate replay.
