@@ -55,10 +55,13 @@ hako github repository previews open --tenant <tenant> \
 The CLI creates a fresh Preview Session for each Gateway WebSocket connection,
 uses the logical runtime Workspace ID returned by that API response for
 routing, and revokes the Session when the connection closes. The local listener
-binds only to `127.0.0.1`. Until a Resource Plane provisioner binds a running
-Preview generation and publishes its Gateway route, the API rejects session
-creation and `open` cannot connect; this command does not create runtime
-resources. A local API + TLS/WSS Gateway E2E verifies the CLI's loopback tunnel,
+binds only to `127.0.0.1`. Until the Resource Plane binds the running Preview
+generation, the API rejects session creation. The shared Gateway resolves the
+private runtime Workspace through its Resource Plane journal; there is no
+separately published Preview network route. Terraform requires its image,
+journal bucket/prefix, public origin, and Agent ticket signing key to match the
+Preview Resource Controller. This command does not create runtime resources.
+A local API + TLS/WSS Gateway E2E verifies the CLI's loopback tunnel,
 generation-specific Session issuance, byte relay to the authorized Workspace
 ID, cancellation, and Session revocation using a fake Guest stream. This does
 not create a Preview MicroVM or validate a deployed route.

@@ -1,6 +1,12 @@
 .PHONY: fmt lint test test-integration test-integration-local test-webhook-lifecycle-integration test-actions-runner-lifecycle-integration test-software-factory-e2e test-workload-runtime test-workload-runtime-integration test-job-services-podman test-artifact-retention-integration test-workspace-idle-lifecycle-integration test-preview-expiry-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-workspace-service-controller-lambda build-health-reporter-lambda build-workspace-idle-reconciler-lambda build-preview-expiry-lambda build-preview-runtime-dispatch-lambda build-preview-result-consumer-lambda build-workload-controller-lambda build-actions-runner-lambda build-actions-runner-microvm-image build-workload-microvm-artifact build-workload-microvm-services-image build-workspace-microvm-image build-github-checks-consumer-image build-workspace-gateway-image terraform-fmt terraform-validate terraform-test
 
 HAKO_WORKSPACE_SERVICES_ENABLED ?= false
+HAKO_PREVIEW_TICKET_KEY_ID ?=
+
+.PHONY: validate-workspace-agent-keys
+validate-workspace-agent-keys:
+	@test -n "$(HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE)" -a -s "$(HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE)" || (echo "set HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE to a non-empty public-key JSON file" >&2; exit 1)
+	go run ./cmd/hako-workspace-keycheck -file "$(HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE)" -require-id "$(HAKO_PREVIEW_TICKET_KEY_ID)"
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -not -path './.git/*')
@@ -186,6 +192,7 @@ build-workspace-microvm-image:
 	@test -n "$(HAKO_CODE_SERVER_SHA256)" || (echo "set HAKO_CODE_SERVER_SHA256 to the pinned ARM64 archive SHA-256" >&2; exit 1)
 	@test -n "$(HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE)" || (echo "set HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE to a public-key JSON file" >&2; exit 1)
 	@test -s "$(HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE)" || (echo "Workspace Agent public-key JSON file is missing or empty" >&2; exit 1)
+	$(MAKE) validate-workspace-agent-keys HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE="$(HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE)" HAKO_PREVIEW_TICKET_KEY_ID="$(HAKO_PREVIEW_TICKET_KEY_ID)"
 	@test -s "$(HAKO_NERDCTL_FULL_ARCHIVE)" || (echo "nerdctl-full archive is missing or empty" >&2; exit 1)
 	@set -e; archive_entries=$$(tar -tzf "$(HAKO_NERDCTL_FULL_ARCHIVE)"); \
 	for required in bin/nerdctl bin/containerd bin/containerd-rootless.sh bin/rootlesskit; do \

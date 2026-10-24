@@ -10,10 +10,12 @@ Tenant-quota-based expiry metadata, and a bounded idempotent expiry-to-cleanup
 transition. A default-off scheduled Lambda now invokes this metadata sweep;
 production IAM wiring and enabled invocation remain unverified. Preview
 provision/cleanup commands now have a Resource Plane Lambda MicroVM controller
-composition and default-off command/result queue, IAM, alarm, and event-source
-Terraform. No AWS resources or DSQL grants have been applied. PR SHA checkout,
-Guest/application startup, a public application route, and deployed worker
-scheduling remain incomplete; cleanup retry metadata and attempt-fenced leases
+composition, brokered immutable SHA checkout, S3 archive staging, verified
+Guest source installation, and default-off queue/source IAM Terraform. Preview
+deployment requires a matching Workspace Gateway image, journal, origin, and
+Agent-ticket signing key. No AWS resources or DSQL grants have been applied.
+Guest application startup/public route, production schedule/queues, and real
+MicroVM E2E remain incomplete; cleanup retry metadata and attempt-fenced leases
 are implemented.
 The dormant approval verifier checks
 the live Actions run attempt against signed repository, owner, ref, SHA,
@@ -429,7 +431,22 @@ Add optional repository-level preview environments and service metadata/deploy p
   Secret access plus configured MicroVM auth-token and optional KMS actions.
 - Local Go tests pass. OpenTofu validation passes for the dev Resource Plane
   root. No AWS apply or real Secret retrieval occurred. Remaining: provision
-  the matching Guest ticket public key and Preview app startup in the immutable
-  MicroVM image, validate Resource Plane-to-Guest connectivity and Gateway
-  routing, wire confirmed physical cleanup, then run the approved AWS/MicroVM
-  end-to-end acceptance.
+  the matching Guest ticket public key in the immutable MicroVM image, start
+  the Preview application and issue an application URL, then validate the
+  configured Resource Plane/Gateway path and physical cleanup in an approved
+  AWS/MicroVM end-to-end acceptance. The logical Gateway route resolves from
+  the shared journal; Terraform now requires the matching Gateway identity.
+
+## Guest Preview ticket trust check (2026-10-25)
+
+- Added `workloadagent.ValidateTrustedKeySet` and the
+  `cmd/hako-workspace-keycheck` build helper. The Workspace MicroVM image
+  target validates the full Ed25519 public-key JSON and, when
+  `HAKO_PREVIEW_TICKET_KEY_ID` is set, requires that signer ID to be present.
+- Resource Plane Terraform requires Preview and Workspace Gateway to use the
+  same ticket key ID and exact private-key Secret ARN, along with a shared
+  MicroVM image, runtime journal bucket/prefix, and Gateway origin. Terraform
+  tests verify the enabled queue, exact source IAM prefix, and Secret set.
+- This checks key-ID/configuration agreement only; it does not retrieve a real
+  private key or prove its cryptographic pair matches the public key baked into
+  an image. No AWS resources or Secrets were applied/read.

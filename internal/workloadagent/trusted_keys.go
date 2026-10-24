@@ -43,3 +43,22 @@ func LoadTrustedKeys(reader io.Reader) (map[string]ed25519.PublicKey, error) {
 	}
 	return keys, nil
 }
+
+// ValidateTrustedKeySet parses an image-owned public key set and, when
+// requiredKeyID is non-empty, ensures the matching Resource Plane signer key
+// is actually trusted by the Guest image.
+func ValidateTrustedKeySet(reader io.Reader, requiredKeyID string) error {
+	if requiredKeyID != "" && !keyIDPattern.MatchString(requiredKeyID) {
+		return ErrAgentTicket
+	}
+	keys, err := LoadTrustedKeys(reader)
+	if err != nil {
+		return err
+	}
+	if requiredKeyID != "" {
+		if _, ok := keys[requiredKeyID]; !ok {
+			return ErrAgentTicket
+		}
+	}
+	return nil
+}

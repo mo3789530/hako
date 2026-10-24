@@ -164,12 +164,17 @@ Production key rotation/distribution is unresolved. Keep Workspace runtime
 exposure disabled until deployment gates are complete.
 
 Build the dedicated image with
-`make build-workspace-microvm-image HAKO_EFS_UTILS_RPM_VERSION=<pinned-version> HAKO_NERDCTL_FULL_ARCHIVE=<reviewed-linux-arm64-tar.gz> HAKO_NERDCTL_FULL_VERSION=<pinned-version> HAKO_NERDCTL_FULL_SHA256=<reviewed-sha256> HAKO_CODE_SERVER_VERSION=4.141.0 HAKO_CODE_SERVER_SHA256=e5cc78da1d631c6cf6162f9b18eeaa8ee9d3239e1a88bb99d0602cdc5fa1852d HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE=<public-keys.json>`.
+`make build-workspace-microvm-image HAKO_EFS_UTILS_RPM_VERSION=<pinned-version> HAKO_NERDCTL_FULL_ARCHIVE=<reviewed-linux-arm64-tar.gz> HAKO_NERDCTL_FULL_VERSION=<pinned-version> HAKO_NERDCTL_FULL_SHA256=<reviewed-sha256> HAKO_CODE_SERVER_VERSION=4.141.0 HAKO_CODE_SERVER_SHA256=e5cc78da1d631c6cf6162f9b18eeaa8ee9d3239e1a88bb99d0602cdc5fa1852d HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE=<public-keys.json> HAKO_PREVIEW_TICKET_KEY_ID=<matching-key-id>`.
 The code-server archive is fetched from the upstream GitHub release and
 verified against the supplied ARM64 SHA-256 before it is copied into the
 runtime image. Keep both version and digest pinned together when updating it.
 The JSON contains only key-ID to unpadded base64url Ed25519 public-key values;
-the target fails when the file is absent or empty. Configure
+the target validates every encoded key and fails when the file is absent or
+empty. For Preview-enabled images, set `HAKO_PREVIEW_TICKET_KEY_ID` to the same
+ID configured on the Resource Plane Preview Controller and Workspace Gateway;
+the target fails if that ID is absent from the Guest's public-key set. Terraform
+also requires the Gateway and Preview Controller to share the same key ID and
+exact private-key Secret ARN. Configure
 `HAKO_GATEWAY_ORIGIN` in the trusted Resource Plane MicroVM launch environment
 to the exact HTTPS origin; the guest rejects tickets presented with another
 Origin. The root init does not start when this setting or the image-owned key

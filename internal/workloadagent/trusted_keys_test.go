@@ -62,3 +62,25 @@ func TestLoadTrustedKeysRejectsMalformedOversizedOrPrivateMaterial(t *testing.T)
 		})
 	}
 }
+
+func TestValidateTrustedKeySetRequiresRequestedPreviewSigner(t *testing.T) {
+	public, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(map[string]string{"preview-agent-v1": base64.RawURLEncoding.EncodeToString(public)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateTrustedKeySet(strings.NewReader(string(encoded)), "preview-agent-v1"); err != nil {
+		t.Fatalf("matching Preview signer key rejected: %v", err)
+	}
+	for _, keyID := range []string{"other-key", "invalid/key"} {
+		if err := ValidateTrustedKeySet(strings.NewReader(string(encoded)), keyID); err == nil {
+			t.Errorf("key set accepted missing or invalid required key ID %q", keyID)
+		}
+	}
+	if err := ValidateTrustedKeySet(strings.NewReader(string(encoded)), ""); err != nil {
+		t.Fatalf("valid key set rejected without a required ID: %v", err)
+	}
+}

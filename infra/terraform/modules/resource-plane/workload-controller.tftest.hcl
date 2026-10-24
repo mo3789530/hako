@@ -274,6 +274,59 @@ run "workspace_lambda_microvm_controller_uses_scoped_runtime_iam" {
       lambda_memory_size             = 512
       reserved_concurrent_executions = 1
     }
+    preview_runtime_source = {
+      checkout_broker_url    = "https://broker.hako.example"
+      broker_client_cert_arn = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/preview-client-cert-AbCdEf"
+      broker_client_key_arn  = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/preview-client-key-AbCdEf"
+      broker_ca_arn          = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/preview-broker-ca-AbCdEf"
+      source_bucket_arn      = "arn:aws:s3:::hako-preview-source"
+      source_bucket_name     = "hako-preview-source"
+      source_prefix          = "previews/v1"
+      gateway_origin         = "https://gateway.hako.example"
+      ticket_key_id          = "agent-v1"
+      ticket_private_key_arn = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/agent-key-AbCdEf"
+    }
+    workspace_gateway_deployment = {
+      image_uri                 = "123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/hako/gateway@sha256:${join("", [for _ in range(64) : "a"])}"
+      secret_loader_image_uri   = "public.ecr.aws/aws-cli/aws-cli@sha256:${join("", [for _ in range(64) : "b"])}"
+      ecs_cluster_arn           = "arn:aws:ecs:ap-northeast-1:123456789012:cluster/hako-rp"
+      ecs_cluster_name          = "hako-rp"
+      vpc_id                    = "vpc-0123456789abcdef0"
+      vpc_cidr_block            = "10.20.0.0/16"
+      public_subnet_ids         = ["subnet-11111111", "subnet-22222222"]
+      private_subnet_ids        = ["subnet-33333333", "subnet-44444444"]
+      ingress_cidr_blocks       = ["198.51.100.0/24"]
+      egress_cidr_blocks        = ["10.20.0.0/16", "0.0.0.0/0"]
+      acm_certificate_arn       = "arn:aws:acm:ap-northeast-1:123456789012:certificate/12345678-abcd-1234-abcd-123456789012"
+      microvm_image_arn         = "arn:aws:lambda:ap-northeast-1:123456789012:microvm-image:hako-standard"
+      journal_bucket_name       = "hako-rp-journal"
+      journal_bucket_arn        = "arn:aws:s3:::hako-rp-journal"
+      journal_prefix            = "workspace-runtime/v1"
+      session_lookup_endpoint   = "https://api.hako.example"
+      connection_lease_endpoint = "https://api.hako.example"
+      public_origin             = "https://gateway.hako.example"
+      allowed_origins           = ["https://ide.hako.example"]
+      agent_ticket_key_id       = "agent-v1"
+      secret_arns = {
+        tls_certificate          = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/gateway-tls-cert-AbCdEf"
+        tls_private_key          = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/gateway-tls-key-AbCdEf"
+        session_public_keys      = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/session-public-AbCdEf"
+        session_lookup_hmac      = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/session-hmac-AbCdEf"
+        connection_lease_hmac    = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/lease-hmac-AbCdEf"
+        agent_ticket_private_key = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/agent-key-AbCdEf"
+      }
+      kms_key_arns                  = []
+      access_log_bucket             = ""
+      task_cpu                      = 1024
+      task_memory                   = 2048
+      desired_count                 = 2
+      min_capacity                  = 2
+      max_capacity                  = 5
+      max_connections               = 500
+      max_connections_per_workspace = 10
+      log_retention_days            = 30
+      deletion_protection           = true
+    }
   }
 
   assert {
@@ -321,9 +374,35 @@ run "workspace_lambda_microvm_controller_uses_scoped_runtime_iam" {
     condition = (
       aws_lambda_function.workspace_resource_controller[0].environment[0].variables.HAKO_PREVIEW_RUNTIME_COMMAND_QUEUE_ARN == aws_sqs_queue.preview_runtime_commands[0].arn &&
       aws_lambda_function.workspace_resource_controller[0].environment[0].variables.HAKO_PREVIEW_RUNTIME_RESULT_QUEUE_URL == aws_sqs_queue.preview_runtime_results[0].url &&
+      aws_lambda_function.workspace_resource_controller[0].environment[0].variables.HAKO_PREVIEW_SOURCE_BUCKET == "hako-preview-source" &&
+      aws_lambda_function.workspace_resource_controller[0].environment[0].variables.HAKO_PREVIEW_SOURCE_PREFIX == "previews/v1" &&
+      aws_lambda_function.workspace_resource_controller[0].environment[0].variables.HAKO_PREVIEW_TICKET_KEY_ID == "agent-v1" &&
       aws_lambda_event_source_mapping.preview_runtime_controller[0].event_source_arn == aws_sqs_queue.preview_runtime_commands[0].arn
     )
     error_message = "Preview queues must be mapped to the Resource Controller Lambda and passed through the exact environment settings."
+  }
+
+  assert {
+    condition = (
+      anytrue([for statement in jsondecode(aws_iam_role_policy.resource_controller_preview_source[0].policy).Statement :
+        statement.Sid == "StageAndReadOnlyPreviewSourcePrefix" &&
+        statement.Resource == "arn:aws:s3:::hako-preview-source/previews/v1/*" &&
+        statement.Action == ["s3:GetObject", "s3:PutObject"]
+      ]) &&
+      anytrue([for statement in jsondecode(aws_iam_role_policy.resource_controller_preview_source[0].policy).Statement :
+        statement.Sid == "ReadOnlyPreviewRuntimeSecrets" &&
+        statement.Resource == [
+          "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/preview-client-cert-AbCdEf",
+          "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/preview-client-key-AbCdEf",
+          "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/preview-broker-ca-AbCdEf",
+          "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/agent-key-AbCdEf",
+        ]
+      ]) &&
+      alltrue([for statement in jsondecode(aws_iam_role_policy.resource_controller_preview_source[0].policy).Statement :
+        !contains(statement.Action, "s3:ListBucket") && !contains(statement.Action, "s3:DeleteObject")
+      ])
+    )
+    error_message = "Preview source IAM must be restricted to the exact archive prefix, four exact Secrets, and necessary actions only."
   }
 
   assert {

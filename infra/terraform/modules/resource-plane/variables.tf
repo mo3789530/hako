@@ -184,9 +184,17 @@ variable "enable_preview_runtime" {
     condition = !var.enable_preview_runtime || (
       var.workspace_runtime_deployment != null &&
       var.control_plane_preview_result_consumer_role_arn != "" &&
-      var.preview_runtime_source != null
+      var.preview_runtime_source != null &&
+      var.workspace_gateway_deployment != null &&
+      var.preview_runtime_source.ticket_key_id == var.workspace_gateway_deployment.agent_ticket_key_id &&
+      var.preview_runtime_source.ticket_private_key_arn == var.workspace_gateway_deployment.secret_arns.agent_ticket_private_key &&
+      var.workspace_runtime_deployment.microvm_image_arn == var.workspace_gateway_deployment.microvm_image_arn &&
+      var.workspace_runtime_deployment.journal_bucket_name == var.workspace_gateway_deployment.journal_bucket_name &&
+      var.workspace_runtime_deployment.journal_bucket_arn == var.workspace_gateway_deployment.journal_bucket_arn &&
+      trim(var.workspace_runtime_deployment.journal_prefix, "/") == trim(var.workspace_gateway_deployment.journal_prefix, "/") &&
+      var.preview_runtime_source.gateway_origin == var.workspace_gateway_deployment.public_origin
     )
-    error_message = "Preview runtime requires the Lambda MicroVM Workspace runtime, exact Control Plane result consumer role, and pinned source deployment settings."
+    error_message = "Preview runtime requires the Lambda MicroVM Workspace runtime, exact Control Plane result consumer role, source settings, and matching Gateway image/journal/origin/ticket-signing configuration."
   }
 }
 

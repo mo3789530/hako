@@ -63,15 +63,20 @@ from the durable journal before deleting that exact journaled runtime; it does
 not scan or adopt provider resources. The returned `gateway_route_id` is a
 deterministic logical routing identity; the Gateway resolves the current
 MicroVM through the Workspace journal, so this adapter does not publish an
-independent network route.
+independent network route. Preview session tickets use the same Workspace
+Gateway channels and private runtime journal as developer Workspaces. The
+Resource Plane Terraform contract requires Preview and Gateway to use the
+same MicroVM image, journal bucket/prefix, public origin, Agent ticket key ID,
+and exact ticket private-key Secret ARN.
 
 The adapter is locally tested through the Preview controller/result path
 against a fake Resource Controller Runtime. The Resource Controller Lambda
-can optionally compose it with the configured Lambda MicroVM Workspace runtime
-and Preview result sink. It does not checkout the pinned GitHub PR SHA into the
-Preview EFS root or start the application. Those guest bootstrap, queue/IAM
-deployment, route deployment, and end-to-end provider integration pieces
-remain necessary before Preview sessions can be enabled.
+composes it with the configured Lambda MicroVM Workspace runtime, brokered
+checkout, attempt-scoped S3 archive, Guest installer, and Preview result sink.
+The Guest verifies and installs source at `/workspace/src`. It does not yet
+start a repository Preview application or publish an application URL. Guest
+application bootstrap and real provider end-to-end checks remain before
+application Previews can be enabled.
 
 ## Resource Controller Lambda composition
 
@@ -85,17 +90,22 @@ settings unset preserves default-off behavior.
 Resource Plane Terraform now has optional Preview queues, DLQs, exact
 Dispatcher/result-consumer queue policies, controller SQS permissions, an
 event-source mapping, and DLQ/oldest-message alarms. Set
-`enable_preview_runtime` only alongside `workspace_runtime_deployment` and set
+`enable_preview_runtime` only alongside `workspace_runtime_deployment`,
+`preview_runtime_source`, and `workspace_gateway_deployment`; the Gateway must
+share the Runtime's image, journal bucket/prefix, HTTPS origin, and exact
+Agent ticket signing key ID and Secret ARN. The matching public key must be
+included in the immutable Guest image's trusted-key file. Set
 `control_plane_preview_result_consumer_role_arn` to the Control Plane output.
 The Control Plane Dispatcher manifest must use the output
 `preview_runtime_commands_queue_url`; the Control Plane result-consumer
 configuration must map the Plane ID to `preview_runtime_results_queue_arn`.
 Both sides remain default-off and no AWS resources or grants were applied.
 
-Even after queue wiring, a successful result currently means that the
-generation-scoped Lambda MicroVM exists and has a logical Gateway route
-identity. The PR SHA is not checked out and no Guest process or application is
-started, so Preview sessions must remain disabled.
+Even after queue wiring, a successful result means that the generation-scoped
+Lambda MicroVM exists, the pinned PR source is installed, and its logical
+Workspace identity can be resolved by the shared Gateway journal. The Guest
+does not yet start a repository application, and no public application route
+is issued. No AWS resources, Secrets, or runtime access have been applied.
 
 ## Outbox event
 
