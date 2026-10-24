@@ -434,6 +434,10 @@ type GoTestProcessFactory struct {
 	CommandGID uint32
 }
 
+func (f GoTestProcessFactory) SupportsJobServices() bool {
+	return f.JobServices != nil
+}
+
 func (f GoTestProcessFactory) Start(ctx context.Context, plan ExecutionPlan, output io.Writer) (ManagedProcess, error) {
 	if plan.Kind == domain.WorkloadAgent {
 		return nil, ErrAgentExecutorUnavailable

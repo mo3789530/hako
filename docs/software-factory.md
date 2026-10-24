@@ -479,10 +479,13 @@ separate Linux Job Service Engine now provisions only fixed `postgres` and
 catalog CPU/memory limits, loopback-only published ports, generated credentials,
 health checks, and bounded cleanup. It is opt-in: the guest manifest resolver
 admits `services` only when the Agent is explicitly composed with that Job
-Service manager. The default resolver and default workload image continue to
-reject/disable services. This local composition does not establish Lambda
-MicroVM cgroup enforcement, target-image availability, or egress policy. The
-Job command process budget is not yet enforced as an aggregate cgroup limit.
+Service manager. `NewFilesystemAgent` fails construction if Service admission
+is enabled but the configured process factory does not declare Job Service
+support; `GoTestProcessFactory` declares support only when an attempt-scoped
+provisioner is configured. The default resolver and default workload image
+continue to reject/disable services. This local composition does not establish
+Lambda MicroVM cgroup enforcement, target-image availability, or egress policy.
+The Job command process budget is not yet enforced as an aggregate cgroup limit.
 
 `make test-job-services-podman` runs the production service engine against a
 local rootless Podman daemon through a test-only CLI adapter. It requires a

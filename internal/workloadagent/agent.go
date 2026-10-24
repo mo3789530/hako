@@ -19,6 +19,14 @@ type FilesystemAgentConfig struct {
 	AllowJobServices      bool
 }
 
+// JobServiceProcessFactory declares whether its execution path is composed
+// with an attempt-scoped Job Service provisioner. The declaration is required
+// before the resolver admits Service manifests.
+type JobServiceProcessFactory interface {
+	ProcessFactory
+	SupportsJobServices() bool
+}
+
 // FilesystemAgent composes the authenticated protocol, verified source
 // installer, ticket-bound fixed-path resolver, and one-attempt process backend
 // used by a single Lambda MicroVM.
@@ -28,6 +36,12 @@ type FilesystemAgent struct {
 }
 
 func NewFilesystemAgent(config FilesystemAgentConfig) (*FilesystemAgent, error) {
+	if config.AllowJobServices {
+		factory, ok := config.ProcessFactory.(JobServiceProcessFactory)
+		if !ok || !factory.SupportsJobServices() {
+			return nil, ErrJobServicesUnavailable
+		}
+	}
 	resolver, err := NewFilesystemExecutionResolverWithJobServices(config.SourceDirectory, config.Now, config.AllowJobServices)
 	if err != nil {
 		return nil, err
