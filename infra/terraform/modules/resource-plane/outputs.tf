@@ -218,8 +218,18 @@ output "fake_resource_controller_log_group_name" {
   value       = try(aws_cloudwatch_log_group.fake_resource_controller[0].name, null)
 }
 
+output "workspace_resource_controller_lambda_arn" {
+  description = "ARN of the optional default-off Lambda MicroVM Workspace Resource Controller; null unless a reviewed workspace_runtime_deployment is configured."
+  value       = try(aws_lambda_function.workspace_resource_controller[0].arn, null)
+}
+
+output "workspace_resource_controller_event_source_mapping_uuid" {
+  description = "SQS event source mapping UUID for the optional Lambda MicroVM Workspace Resource Controller."
+  value       = try(aws_lambda_event_source_mapping.workspace_resource_controller[0].uuid, null)
+}
+
 output "monitoring_alarm_names" {
-  description = "CloudWatch alarm names for Resource Plane queue, optional health reporter, and optional Fake Resource Controller monitoring."
+  description = "CloudWatch alarm names for Resource Plane queues and optional health, Fake, Workspace MicroVM, Workload, Service, and Gateway controllers."
   value = concat(
     [
       aws_cloudwatch_metric_alarm.commands_dlq_visible.alarm_name,
@@ -247,6 +257,7 @@ output "monitoring_alarm_names" {
     try([aws_cloudwatch_metric_alarm.health_report_probe_failures[0].alarm_name], []),
     try([aws_cloudwatch_metric_alarm.health_reporter_errors[0].alarm_name], []),
     try([aws_cloudwatch_metric_alarm.fake_controller_errors[0].alarm_name], []),
+    try([aws_cloudwatch_metric_alarm.workspace_resource_controller_errors[0].alarm_name], []),
     try([aws_cloudwatch_metric_alarm.workspace_gateway_unhealthy_targets[0].alarm_name], []),
     try([aws_cloudwatch_metric_alarm.workspace_gateway_alb_5xx[0].alarm_name], [])
   )

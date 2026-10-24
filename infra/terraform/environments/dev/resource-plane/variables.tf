@@ -269,6 +269,38 @@ variable "fake_controller_memory_size" {
   default     = 512
 }
 
+variable "workspace_runtime_deployment" {
+  description = "Default-off Lambda MicroVM Workspace controller deployment. Requires a reviewed ARM64 ZIP, exact journal/image/network profile, and dynamic EFS Workspace roles; leave null until Tasks 44/45/61 runtime gates are approved."
+  type = object({
+    zip_path                       = string
+    journal_bucket_arn             = string
+    journal_bucket_name            = string
+    journal_prefix                 = string
+    journal_kms_key_arn            = optional(string, "")
+    runtime_class                  = string
+    microvm_image_arn              = string
+    microvm_image_version          = string
+    egress_network_connectors      = list(string)
+    ingress_network_connectors     = optional(list(string), [])
+    maximum_duration_seconds       = number
+    auto_resume_enabled            = bool
+    max_idle_duration_seconds      = number
+    suspended_duration_seconds     = number
+    lambda_timeout_seconds         = number
+    operation_timeout_seconds      = number
+    lambda_memory_size             = number
+    reserved_concurrent_executions = optional(number, 1)
+  })
+  default = null
+
+  validation {
+    condition = var.workspace_runtime_deployment == null || (
+      var.workspace_storage != null && var.workspace_storage.enable_dynamic_workspace_roles
+    )
+    error_message = "Workspace Runtime Lambda deployment requires workspace_storage with enable_dynamic_workspace_roles=true."
+  }
+}
+
 variable "tags" {
   description = "Additional resource tags."
   type        = map(string)

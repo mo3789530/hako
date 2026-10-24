@@ -27,6 +27,7 @@ module "resource_plane" {
   fake_controller_timeout_seconds                 = var.fake_controller_timeout_seconds
   fake_controller_execution_timeout_seconds       = var.fake_controller_execution_timeout_seconds
   fake_controller_memory_size                     = var.fake_controller_memory_size
+  workspace_runtime_deployment                    = var.workspace_runtime_deployment
   tags                                            = var.tags
   alarm_actions                                   = var.alarm_actions
   oldest_message_age_alarm_seconds                = var.oldest_message_age_alarm_seconds

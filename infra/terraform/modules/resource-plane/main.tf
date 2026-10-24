@@ -2233,8 +2233,63 @@ resource "aws_iam_role_policy" "resource_controller_workspace_storage" {
   }
 }
 
-# This optional Lambda is deliberately fake-runtime-only. The production
-# Workspace runtime is not implemented, so the dev root must opt in explicitly.
+# The production Workspace Resource Controller is explicit and default-off.
+# RunMicrovm lifecycle permissions are restricted to one fixed image; the two
+# permission-only network actions require Resource="*" per AWS authorization
+# metadata, while the launch profile fixes the connector ARNs. S3 journal access
+# is limited to exact objects below one bucket prefix. Dynamic Workspace EFS/IAM
+# permissions are attached separately above and are required by this runtime.
+resource "aws_iam_role_policy" "resource_controller_workspace_runtime" {
+  count = var.workspace_runtime_deployment == null ? 0 : 1
+
+  name = "${var.resource_plane_id}-resource-controller-workspace-runtime"
+  role = aws_iam_role.resource_controller.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = concat([
+      {
+        Sid    = "OperateOnlyConfiguredWorkspaceMicroVMImage"
+        Effect = "Allow"
+        Action = [
+          "lambda:RunMicrovm", "lambda:GetMicrovm", "lambda:SuspendMicrovm",
+          "lambda:ResumeMicrovm", "lambda:TerminateMicrovm"
+        ]
+        Resource = var.workspace_runtime_deployment.microvm_image_arn
+      },
+      {
+        Sid      = "ConnectAndPassConfiguredMicroVMNetworks"
+        Effect   = "Allow"
+        Action   = ["lambda:ConnectMicrovm", "lambda:PassNetworkConnector"]
+        Resource = "*"
+      },
+      {
+        Sid      = "ReadWriteOnlyWorkspaceRuntimeJournalPrefix"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject"]
+        Resource = "${var.workspace_runtime_deployment.journal_bucket_arn}/${var.workspace_runtime_deployment.journal_prefix}/*"
+      },
+      ], var.workspace_runtime_deployment.journal_kms_key_arn == "" ? [] : [{
+        Sid      = "UseOnlyConfiguredWorkspaceJournalKey"
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt", "kms:GenerateDataKey"]
+        Resource = var.workspace_runtime_deployment.journal_kms_key_arn
+    }])
+  })
+
+  lifecycle {
+    precondition {
+      condition = (
+        split(":", var.workspace_runtime_deployment.microvm_image_arn)[3] == data.aws_region.current.name &&
+        split(":", var.workspace_runtime_deployment.microvm_image_arn)[4] == data.aws_caller_identity.current.account_id &&
+        var.workspace_storage_runtime != null
+      )
+      error_message = "Workspace runtime IAM must use an image in this Resource Plane account and Region and have dynamic EFS role management enabled."
+    }
+  }
+}
+
+# The development-only Fake controller remains separate from the opt-in
+# Lambda MicroVM controller below; both cannot consume the shared queue.
 resource "aws_lambda_function" "fake_resource_controller" {
   count = var.enable_fake_resource_controller ? 1 : 0
 
@@ -2284,4 +2339,93 @@ resource "aws_lambda_event_source_mapping" "fake_resource_controller" {
       error_message = "command queue visibility timeout must be at least six times the fake controller Lambda timeout."
     }
   }
+}
+
+resource "aws_lambda_function" "workspace_resource_controller" {
+  count = var.workspace_runtime_deployment == null ? 0 : 1
+
+  function_name                  = "${var.resource_plane_id}-resource-controller"
+  role                           = aws_iam_role.resource_controller.arn
+  handler                        = "bootstrap"
+  runtime                        = "provided.al2023"
+  architectures                  = ["arm64"]
+  filename                       = var.workspace_runtime_deployment.zip_path
+  source_code_hash               = filebase64sha256(var.workspace_runtime_deployment.zip_path)
+  memory_size                    = var.workspace_runtime_deployment.lambda_memory_size
+  timeout                        = var.workspace_runtime_deployment.lambda_timeout_seconds
+  reserved_concurrent_executions = var.workspace_runtime_deployment.reserved_concurrent_executions
+
+  environment {
+    variables = {
+      HAKO_RESOURCE_PLANE_ID                = var.resource_plane_id
+      HAKO_OPERATION_RESULT_QUEUE_URL       = aws_sqs_queue.results.url
+      HAKO_RUNTIME_IMPLEMENTATION           = "lambda-microvm"
+      HAKO_OPERATION_TIMEOUT                = "${var.workspace_runtime_deployment.operation_timeout_seconds}s"
+      HAKO_WORKSPACE_RUNTIME_JOURNAL_BUCKET = var.workspace_runtime_deployment.journal_bucket_name
+      HAKO_WORKSPACE_RUNTIME_JOURNAL_PREFIX = var.workspace_runtime_deployment.journal_prefix
+      HAKO_WORKSPACE_EFS_FILE_SYSTEM_ID     = var.workspace_storage_runtime.file_system_id
+      HAKO_WORKSPACE_RUNTIME_POLL_INTERVAL  = "500ms"
+      HAKO_WORKSPACE_RUNTIME_POLL_TIMEOUT   = "30s"
+      HAKO_WORKSPACE_RUNTIME_LAUNCH_SPEC_JSON = jsonencode({
+        runtime_class               = var.workspace_runtime_deployment.runtime_class
+        image_identifier            = var.workspace_runtime_deployment.microvm_image_arn
+        image_version               = var.workspace_runtime_deployment.microvm_image_version
+        execution_role_arn          = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/hako/workspaces/profile-placeholder"
+        egress_network_connectors   = var.workspace_runtime_deployment.egress_network_connectors
+        ingress_network_connectors  = var.workspace_runtime_deployment.ingress_network_connectors
+        maximum_duration_in_seconds = var.workspace_runtime_deployment.maximum_duration_seconds
+        auto_resume_enabled         = var.workspace_runtime_deployment.auto_resume_enabled
+        max_idle_duration_seconds   = var.workspace_runtime_deployment.max_idle_duration_seconds
+        suspended_duration_seconds  = var.workspace_runtime_deployment.suspended_duration_seconds
+      })
+    }
+  }
+
+  depends_on = [
+    aws_iam_role_policy.resource_controller,
+    aws_iam_role_policy.resource_controller_workspace_storage,
+    aws_iam_role_policy.resource_controller_workspace_runtime
+  ]
+
+  lifecycle {
+    precondition {
+      condition     = var.workspace_storage_runtime != null && !var.enable_fake_resource_controller
+      error_message = "The Workspace Lambda MicroVM controller requires dynamic Workspace EFS/IAM configuration and cannot share the command queue with the Fake controller."
+    }
+    precondition {
+      condition     = var.command_visibility_timeout_seconds >= var.workspace_runtime_deployment.lambda_timeout_seconds * 6
+      error_message = "Command queue visibility timeout must be at least six times the Workspace Resource Controller Lambda timeout."
+    }
+  }
+
+  tags = merge(local.common_tags, { "hako:runtime" = "lambda-microvm" })
+}
+
+resource "aws_lambda_event_source_mapping" "workspace_resource_controller" {
+  count = var.workspace_runtime_deployment == null ? 0 : 1
+
+  event_source_arn        = aws_sqs_queue.commands.arn
+  function_name           = aws_lambda_function.workspace_resource_controller[0].arn
+  batch_size              = 1
+  function_response_types = ["ReportBatchItemFailures"]
+  enabled                 = true
+}
+
+resource "aws_cloudwatch_metric_alarm" "workspace_resource_controller_errors" {
+  count = var.workspace_runtime_deployment == null ? 0 : 1
+
+  alarm_name          = "${var.resource_plane_id}-workspace-resource-controller-errors"
+  alarm_description   = "The Lambda MicroVM Workspace Resource Controller reported invocation errors."
+  namespace           = "AWS/Lambda"
+  metric_name         = "Errors"
+  statistic           = "Sum"
+  period              = 60
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = var.alarm_actions
+  ok_actions          = var.alarm_actions
+  dimensions          = { FunctionName = aws_lambda_function.workspace_resource_controller[0].function_name }
+  tags                = merge(local.common_tags, { "hako:runtime" = "lambda-microvm" })
 }

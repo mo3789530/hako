@@ -176,6 +176,14 @@ output "fake_resource_controller_log_group_name" {
   value = module.resource_plane.fake_resource_controller_log_group_name
 }
 
+output "workspace_resource_controller_lambda_arn" {
+  value = module.resource_plane.workspace_resource_controller_lambda_arn
+}
+
+output "workspace_resource_controller_event_source_mapping_uuid" {
+  value = module.resource_plane.workspace_resource_controller_event_source_mapping_uuid
+}
+
 output "monitoring_alarm_names" {
   value = module.resource_plane.monitoring_alarm_names
 }

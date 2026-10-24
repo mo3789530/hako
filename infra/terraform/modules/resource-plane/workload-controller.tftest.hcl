@@ -217,6 +217,98 @@ run "workspace_storage_runtime_permissions_are_exact_and_opt_in" {
   }
 }
 
+run "workspace_lambda_microvm_controller_is_disabled_by_default" {
+  command = plan
+  providers = {
+    aws = aws.mock
+  }
+
+  variables {
+    resource_plane_id                      = "rp-test"
+    control_plane_dispatcher_role_arn      = "arn:aws:iam::123456789012:role/hako-cp-dispatcher"
+    control_plane_result_consumer_role_arn = "arn:aws:iam::123456789012:role/hako-cp-result-consumer"
+  }
+
+  assert {
+    condition = (length(aws_lambda_function.workspace_resource_controller) == 0 &&
+      length(aws_lambda_event_source_mapping.workspace_resource_controller) == 0 &&
+      length(aws_iam_role_policy.resource_controller_workspace_runtime) == 0 &&
+    output.workspace_resource_controller_lambda_arn == null)
+    error_message = "The Workspace Lambda MicroVM controller, queue mapping, runtime IAM, and output must remain absent unless explicitly configured."
+  }
+}
+
+run "workspace_lambda_microvm_controller_uses_scoped_runtime_iam" {
+  command = plan
+  providers = {
+    aws = aws.mock
+  }
+
+  variables {
+    resource_plane_id                      = "rp-test"
+    control_plane_dispatcher_role_arn      = "arn:aws:iam::123456789012:role/hako-cp-dispatcher"
+    control_plane_result_consumer_role_arn = "arn:aws:iam::123456789012:role/hako-cp-result-consumer"
+    workspace_storage_runtime = {
+      file_system_id  = "fs-0123456789abcdef0"
+      file_system_arn = "arn:aws:elasticfilesystem:ap-northeast-1:123456789012:file-system/fs-0123456789abcdef0"
+    }
+    workspace_runtime_deployment = {
+      zip_path                       = "../../../../build/resource-controller-lambda.zip"
+      journal_bucket_arn             = "arn:aws:s3:::hako-rp-journal"
+      journal_bucket_name            = "hako-rp-journal"
+      journal_prefix                 = "workspace-runtime/v1"
+      runtime_class                  = "standard"
+      microvm_image_arn              = "arn:aws:lambda:ap-northeast-1:123456789012:microvm-image:hako-standard"
+      microvm_image_version          = "1"
+      egress_network_connectors      = ["arn:aws:lambda:ap-northeast-1:123456789012:network-connector:workspace-egress"]
+      maximum_duration_seconds       = 28800
+      auto_resume_enabled            = true
+      max_idle_duration_seconds      = 3600
+      suspended_duration_seconds     = 0
+      lambda_timeout_seconds         = 60
+      operation_timeout_seconds      = 45
+      lambda_memory_size             = 512
+      reserved_concurrent_executions = 1
+    }
+  }
+
+  assert {
+    condition = (length(aws_lambda_function.workspace_resource_controller) == 1 &&
+      length(aws_lambda_event_source_mapping.workspace_resource_controller) == 1 &&
+      length(aws_lambda_function.fake_resource_controller) == 0 &&
+      contains(aws_lambda_function.workspace_resource_controller[0].architectures, "arm64") &&
+      length(aws_lambda_function.workspace_resource_controller[0].architectures) == 1 &&
+    aws_lambda_function.workspace_resource_controller[0].reserved_concurrent_executions == 1)
+    error_message = "The production Workspace controller must be one ARM64 Lambda consumer and cannot share the queue with the Fake controller."
+  }
+
+  assert {
+    condition = (anytrue([for statement in jsondecode(aws_iam_role_policy.resource_controller_workspace_runtime[0].policy).Statement :
+      statement.Sid == "OperateOnlyConfiguredWorkspaceMicroVMImage" &&
+      statement.Resource == "arn:aws:lambda:ap-northeast-1:123456789012:microvm-image:hako-standard" &&
+      alltrue([for action in statement.Action : contains(["lambda:RunMicrovm", "lambda:GetMicrovm", "lambda:SuspendMicrovm", "lambda:ResumeMicrovm", "lambda:TerminateMicrovm"], action)]) &&
+      length(statement.Action) == 5
+      ]) && anytrue([for statement in jsondecode(aws_iam_role_policy.resource_controller_workspace_runtime[0].policy).Statement :
+      statement.Sid == "ReadWriteOnlyWorkspaceRuntimeJournalPrefix" &&
+      statement.Resource == "arn:aws:s3:::hako-rp-journal/workspace-runtime/v1/*" &&
+      statement.Action == ["s3:GetObject", "s3:PutObject"]
+      ]) && alltrue([for statement in jsondecode(aws_iam_role_policy.resource_controller_workspace_runtime[0].policy).Statement :
+      statement.Sid != "ListOnlyWorkspaceRuntimeJournalPrefix" &&
+      !contains(statement.Action, "s3:ListBucket") &&
+      !contains(statement.Action, "s3:DeleteObject")
+    ]))
+    error_message = "Runtime IAM must be limited to the configured image and exact Workspace journal objects without list/delete permissions."
+  }
+
+  assert {
+    condition = (jsondecode(aws_lambda_function.workspace_resource_controller[0].environment[0].variables.HAKO_WORKSPACE_RUNTIME_LAUNCH_SPEC_JSON).image_identifier == "arn:aws:lambda:ap-northeast-1:123456789012:microvm-image:hako-standard" &&
+      jsondecode(aws_lambda_function.workspace_resource_controller[0].environment[0].variables.HAKO_WORKSPACE_RUNTIME_LAUNCH_SPEC_JSON).execution_role_arn == "arn:aws:iam::123456789012:role/hako/workspaces/profile-placeholder" &&
+      contains(aws_lambda_event_source_mapping.workspace_resource_controller[0].function_response_types, "ReportBatchItemFailures") &&
+    length(aws_lambda_event_source_mapping.workspace_resource_controller[0].function_response_types) == 1)
+    error_message = "The Lambda environment must receive only the trusted static launch profile and use per-record SQS failure reporting."
+  }
+}
+
 run "workspace_service_controller_isolated_and_opt_in" {
   command = plan
   providers = {

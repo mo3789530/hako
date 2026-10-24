@@ -45,8 +45,11 @@ resources. The Resource Plane Lambda execution role supplies AWS credentials.
 
 The Resource Controller Lambda now has a local `lambda-microvm` composition
 using this adapter, the S3 journal, and a strict Resource Plane-owned static
-profile. Terraform still fixes the deployed development function to `fake`
-and grants no MicroVM or journal permissions; the adapter is not enabled by a
-deployment. Image/container/network isolation and real AWS lifecycle PoCs
-remain required before deployment. Tests use SDK stubs and local conditional-
-store fakes; they do not make AWS calls.
+profile. Resource Plane Terraform now defines a default-off ARM64 deployment
+input for this composition. It requires dynamic Workspace EFS roles, limits
+MicroVM operations to one image and journal writes to one S3 object prefix,
+and is mutually exclusive with the fake controller on the shared command
+queue. The dev root leaves the input `null`; no MicroVM/journal permissions or
+resources have been applied. Image/container/network isolation and real AWS
+lifecycle PoCs remain required before deployment. Tests use SDK stubs,
+conditional-store fakes, and OpenTofu mock plans; they do not make AWS calls.

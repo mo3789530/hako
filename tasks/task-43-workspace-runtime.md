@@ -1,6 +1,6 @@
 # Task 43: Production Workspace Runtime
 
-Status: Implemented locally through Tasks 80–83 (contract, durable journal, Lambda MicroVM adapter, SDK HTTP/recovery and PostgreSQL result/binding E2E). The Resource Controller Lambda now composes the AWS runtime behind an explicit `HAKO_RUNTIME_IMPLEMENTATION=lambda-microvm` mode with strict static launch-profile parsing and the S3 journal; Terraform still selects only `fake` and does not grant production runtime permissions. Real AWS image/network/lifecycle PoC, EFS/agent recovery, and deployment remain unverified. Priority: P1.
+Status: Implemented locally through Tasks 80–83 (contract, durable journal, Lambda MicroVM adapter, SDK HTTP/recovery and PostgreSQL result/binding E2E). The Resource Controller Lambda composes the AWS runtime behind an explicit `HAKO_RUNTIME_IMPLEMENTATION=lambda-microvm` mode with strict static launch-profile parsing and the S3 journal. Resource Plane Terraform now has a default-off ARM64 Lambda deployment contract with exact image/journal permissions, dynamic EFS-role prerequisite, and mutually exclusive command-queue mapping; it remains unset in the dev root. Real AWS image/network/lifecycle PoC, EFS/agent recovery, and deployment remain unverified and gated by Tasks 44/45/61. Priority: P1.
 
 ## Goal
 
@@ -12,7 +12,10 @@ Replace the production gap behind the current fake-only Resource Controller with
   It composes the official MicroVM SDK client, S3 conditional Workspace
   journal, a strict launch contract, and the existing revision-fenced
   runtime. Terraform remains hard-coded to the development Fake Runtime and
-  its IAM policy grants neither S3 journal nor MicroVM API access.
+  its IAM policy grants neither S3 journal nor MicroVM API access. A separate
+  Terraform opt-in now composes the same handler with the Lambda MicroVM
+  runtime, but the dev environment leaves it unset and no AWS permissions or
+  resources have been applied.
 - The launch profile is strict, bounded Resource Plane configuration; commands
   cannot select an image, execution role, or connector. Profile validation
   requires the image/connectors to match the Lambda region and execution-role

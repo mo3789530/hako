@@ -607,6 +607,60 @@ variable "fake_controller_memory_size" {
   }
 }
 
+variable "workspace_runtime_deployment" {
+  description = "Default-off Workspace Resource Controller Lambda MicroVM deployment. Requires a reviewed ARM64 ZIP and dynamic EFS Workspace roles; configuring it attaches exact image/journal IAM permissions and consumes the Resource Plane command queue."
+  type = object({
+    zip_path                       = string
+    journal_bucket_arn             = string
+    journal_bucket_name            = string
+    journal_prefix                 = string
+    journal_kms_key_arn            = optional(string, "")
+    runtime_class                  = string
+    microvm_image_arn              = string
+    microvm_image_version          = string
+    egress_network_connectors      = list(string)
+    ingress_network_connectors     = optional(list(string), [])
+    maximum_duration_seconds       = number
+    auto_resume_enabled            = bool
+    max_idle_duration_seconds      = number
+    suspended_duration_seconds     = number
+    lambda_timeout_seconds         = number
+    operation_timeout_seconds      = number
+    lambda_memory_size             = number
+    reserved_concurrent_executions = optional(number, 1)
+  })
+  default = null
+
+  validation {
+    condition = var.workspace_runtime_deployment == null || (
+      fileexists(var.workspace_runtime_deployment.zip_path) &&
+      var.workspace_storage_runtime != null &&
+      !var.enable_fake_resource_controller &&
+      can(regex("^arn:(aws|aws-us-gov|aws-cn):s3:::[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.workspace_runtime_deployment.journal_bucket_arn)) &&
+      split(":", var.workspace_runtime_deployment.journal_bucket_arn)[5] == var.workspace_runtime_deployment.journal_bucket_name &&
+      can(regex("^[A-Za-z0-9/_=-]{1,512}$", var.workspace_runtime_deployment.journal_prefix)) &&
+      !startswith(var.workspace_runtime_deployment.journal_prefix, "/") && !endswith(var.workspace_runtime_deployment.journal_prefix, "/") && !can(regex("\\.\\.|//", var.workspace_runtime_deployment.journal_prefix)) &&
+      (var.workspace_runtime_deployment.journal_kms_key_arn == "" || can(regex("^arn:(aws|aws-us-gov|aws-cn):kms:[a-z0-9-]+:[0-9]{12}:key/[A-Fa-f0-9-]+$", var.workspace_runtime_deployment.journal_kms_key_arn))) &&
+      var.workspace_runtime_deployment.runtime_class != "" &&
+      can(regex("^arn:(aws|aws-us-gov|aws-cn):lambda:[a-z0-9-]+:[0-9]{12}:microvm-image:[A-Za-z0-9_-]+$", var.workspace_runtime_deployment.microvm_image_arn)) &&
+      can(regex("^[1-9][0-9]*$", var.workspace_runtime_deployment.microvm_image_version)) &&
+      length(var.workspace_runtime_deployment.egress_network_connectors) >= 1 && length(var.workspace_runtime_deployment.egress_network_connectors) <= 10 &&
+      length(var.workspace_runtime_deployment.egress_network_connectors) == length(toset(var.workspace_runtime_deployment.egress_network_connectors)) &&
+      alltrue([for arn in concat(var.workspace_runtime_deployment.egress_network_connectors, var.workspace_runtime_deployment.ingress_network_connectors) : can(regex("^arn:(aws|aws-us-gov|aws-cn):lambda:[a-z0-9-]+:[0-9]{12}:network-connector:[A-Za-z0-9_-]+$", arn))]) &&
+      alltrue([for arn in concat(var.workspace_runtime_deployment.egress_network_connectors, var.workspace_runtime_deployment.ingress_network_connectors) : split(":", arn)[3] == split(":", var.workspace_runtime_deployment.microvm_image_arn)[3] && split(":", arn)[4] == split(":", var.workspace_runtime_deployment.microvm_image_arn)[4]]) &&
+      var.workspace_runtime_deployment.maximum_duration_seconds >= 1 && var.workspace_runtime_deployment.maximum_duration_seconds <= 28800 && floor(var.workspace_runtime_deployment.maximum_duration_seconds) == var.workspace_runtime_deployment.maximum_duration_seconds &&
+      var.workspace_runtime_deployment.max_idle_duration_seconds >= 60 && floor(var.workspace_runtime_deployment.max_idle_duration_seconds) == var.workspace_runtime_deployment.max_idle_duration_seconds &&
+      var.workspace_runtime_deployment.suspended_duration_seconds >= 0 && floor(var.workspace_runtime_deployment.suspended_duration_seconds) == var.workspace_runtime_deployment.suspended_duration_seconds &&
+      var.workspace_runtime_deployment.lambda_timeout_seconds >= 10 && var.workspace_runtime_deployment.lambda_timeout_seconds <= 900 && floor(var.workspace_runtime_deployment.lambda_timeout_seconds) == var.workspace_runtime_deployment.lambda_timeout_seconds &&
+      var.workspace_runtime_deployment.operation_timeout_seconds >= 1 && var.workspace_runtime_deployment.operation_timeout_seconds < var.workspace_runtime_deployment.lambda_timeout_seconds && floor(var.workspace_runtime_deployment.operation_timeout_seconds) == var.workspace_runtime_deployment.operation_timeout_seconds &&
+      var.command_visibility_timeout_seconds >= var.workspace_runtime_deployment.lambda_timeout_seconds * 6 &&
+      var.workspace_runtime_deployment.lambda_memory_size >= 512 && var.workspace_runtime_deployment.lambda_memory_size <= 10240 && floor(var.workspace_runtime_deployment.lambda_memory_size) == var.workspace_runtime_deployment.lambda_memory_size &&
+      var.workspace_runtime_deployment.reserved_concurrent_executions >= 1 && var.workspace_runtime_deployment.reserved_concurrent_executions <= 1000 && floor(var.workspace_runtime_deployment.reserved_concurrent_executions) == var.workspace_runtime_deployment.reserved_concurrent_executions
+    )
+    error_message = "Workspace runtime deployment requires an existing ZIP, dynamic EFS roles, an exact journal bucket/prefix, fixed same-account image/connectors, bounded Lambda/MicroVM settings, and queue visibility at least six times the Lambda timeout; it cannot run beside the fake controller."
+  }
+}
+
 variable "workspace_service_controller_vpc_config" {
   description = "Pre-provisioned private subnets and dedicated security group for the optional Workspace Service controller. Routes/endpoints are owned and reviewed by the Resource Plane account."
   type = object({
