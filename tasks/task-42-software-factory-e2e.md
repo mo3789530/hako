@@ -19,6 +19,20 @@ the asynchronous `202 Accepted` cancel contract. The test uses only a local
 fake API and synthetic CLI token; it does not schedule a real Workload or call
 AWS. `go test ./cmd/hako -cover` reports 48.4% statement coverage.
 
+## Poisoned Workload message / DLQ handling (2026-10-24)
+
+Extended the PostgreSQL-backed composed Lambda Worker E2E with a mixed SQS
+batch containing a valid dispatch and a schema-invalid command carrying a synthetic
+credential in an unsupported field. The valid command is processed while the
+handler returns only the poison message ID in `BatchItemFailures`; the poison
+body is absent from Worker logs. After Worker reconstruction, replaying the
+valid command remains idempotently acknowledged without a second MicroVM or
+Agent process, while the poison record remains retryable. The configured SQS
+redrive policy moves repeatedly failed records to the DLQ after its receive
+threshold; that AWS-managed transition is not simulated locally. The test uses
+the production handler with local PostgreSQL/fake AWS dependencies and does
+not call AWS.
+
 ## Goal
 
 Prove one Tenant-owned GitHub Repository can go from installation through one isolated Go test Job to a GitHub Check and retained redacted logs.
@@ -80,3 +94,4 @@ Prove one Tenant-owned GitHub Repository can go from installation through one is
   The test leaves no cancelled-work artifact. This verifies local control flow,
   not live AWS MicroVM termination behavior.
 - The success/restart E2E now uses the production `workloadjournal.S3Store` over a conditional in-memory S3 API fake instead of an in-memory journal. After the Worker handler is reconstructed and its signed Agent process finishes, the scheduled `RecoveryLambdaHandler` lists the recoverable S3 journal and replays the result into PostgreSQL. The first publish applies to PostgreSQL but loses its acknowledgement; a second recovery invocation reloads the frozen result after another handler recreation and confirms idempotent duplicate handling and confirmed MicroVM cleanup. No AWS endpoint or credential is used. Verified with `go test -tags=integration -run '^TestComposedLambdaWorkerResultAndCleanupProjectIntoPostgres$' ./internal/workloadcontroller -count=1` against local PostgreSQL.
+- The same composed Worker E2E now sends a malformed secret-bearing command beside a valid dispatch, verifies only the poison message is returned for SQS redrive and its body is not logged, then repeats after handler reconstruction to prove the valid command is acknowledged without relaunch while poison remains retryable. This validates Lambda partial-batch response behavior; actual SQS DLQ movement is AWS-managed and remains unverified locally.

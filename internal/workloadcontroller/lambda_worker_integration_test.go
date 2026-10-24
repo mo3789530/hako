@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -321,10 +322,24 @@ func TestComposedLambdaWorkerResultAndCleanupProjectIntoPostgres(t *testing.T) {
 	}
 	eventType := "workload_attempt.dispatch"
 	body := delivery.event.Payload
-	response, err := worker.Handle(ctx, events.SQSEvent{Records: []events.SQSMessage{{MessageId: delivery.event.ID, Body: string(body),
-		MessageAttributes: map[string]events.SQSMessageAttribute{"HakoEventType": {DataType: "String", StringValue: &eventType}}}}})
-	if err != nil || len(response.BatchItemFailures) != 0 || processFactory.starts != 1 || len(api.inputs) != 1 {
-		t.Fatalf("Worker command did not launch exactly one MicroVM/Agent: response=%+v starts=%d launches=%d err=%v", response, processFactory.starts, len(api.inputs), err)
+	var workerLogs bytes.Buffer
+	worker.logger = slog.New(slog.NewTextHandler(&workerLogs, nil))
+	poisonSecret := "ghp_poisoned_sqs_message_secret"
+	poisonBody := []byte(fmt.Sprintf(`{"schema_version":1,"tenant_id":%q,"workload_run_id":%q,"attempt_id":%q,"generation":%d,"resource_plane_id":%q,"idempotency_token":%q,"token":%q}`,
+		command.TenantID, command.WorkloadRunID, command.AttemptID, command.Generation, command.ResourcePlane, command.IdempotencyToken, poisonSecret))
+	response, err := worker.Handle(ctx, events.SQSEvent{Records: []events.SQSMessage{
+		{MessageId: delivery.event.ID, Body: string(body), MessageAttributes: map[string]events.SQSMessageAttribute{
+			"HakoEventType": {DataType: "String", StringValue: &eventType},
+		}},
+		{MessageId: "poison-message", Body: string(poisonBody), MessageAttributes: map[string]events.SQSMessageAttribute{
+			"HakoEventType": {DataType: "String", StringValue: &eventType},
+		}},
+	}})
+	if err != nil || len(response.BatchItemFailures) != 1 || response.BatchItemFailures[0].ItemIdentifier != "poison-message" || processFactory.starts != 1 || len(api.inputs) != 1 {
+		t.Fatalf("Worker must process valid command and return only poison record for redrive: response=%+v starts=%d launches=%d err=%v", response, processFactory.starts, len(api.inputs), err)
+	}
+	if strings.Contains(workerLogs.String(), poisonSecret) {
+		t.Fatalf("poison message body leaked to worker logs: %s", workerLogs.String())
 	}
 	if processFactory.process == nil {
 		t.Fatal("Worker Agent did not retain the running execution")
@@ -336,10 +351,17 @@ func TestComposedLambdaWorkerResultAndCleanupProjectIntoPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recreate Lambda Worker after process restart: %v", err)
 	}
-	restartedResponse, err := restartedWorker.Handle(ctx, events.SQSEvent{Records: []events.SQSMessage{{MessageId: delivery.event.ID + "-retry", Body: string(body),
-		MessageAttributes: map[string]events.SQSMessageAttribute{"HakoEventType": {DataType: "String", StringValue: &eventType}}}}})
-	if err != nil || len(restartedResponse.BatchItemFailures) != 0 || processFactory.starts != 1 || len(api.inputs) != 1 {
-		t.Fatalf("duplicate dispatch after Worker restart relaunched execution: response=%+v starts=%d launches=%d err=%v", restartedResponse, processFactory.starts, len(api.inputs), err)
+	restartedWorker.logger = worker.logger
+	restartedResponse, err := restartedWorker.Handle(ctx, events.SQSEvent{Records: []events.SQSMessage{
+		{MessageId: delivery.event.ID + "-retry", Body: string(body), MessageAttributes: map[string]events.SQSMessageAttribute{
+			"HakoEventType": {DataType: "String", StringValue: &eventType},
+		}},
+		{MessageId: "poison-message-retry", Body: string(poisonBody), MessageAttributes: map[string]events.SQSMessageAttribute{
+			"HakoEventType": {DataType: "String", StringValue: &eventType},
+		}},
+	}})
+	if err != nil || len(restartedResponse.BatchItemFailures) != 1 || restartedResponse.BatchItemFailures[0].ItemIdentifier != "poison-message-retry" || processFactory.starts != 1 || len(api.inputs) != 1 {
+		t.Fatalf("duplicate valid dispatch should be acknowledged while poison stays retryable after restart: response=%+v starts=%d launches=%d err=%v", restartedResponse, processFactory.starts, len(api.inputs), err)
 	}
 	worker = restartedWorker
 	processFactory.process.finish(0, nil)
