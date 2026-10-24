@@ -15,9 +15,16 @@ import (
 
 func main() {
 	if err := run(); err != nil {
-		slog.Error("database migration failed", "error", err)
+		logMigrationFailure(slog.Default(), err)
 		os.Exit(1)
 	}
+}
+
+func logMigrationFailure(logger *slog.Logger, _ error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Error("database migration failed", "failure_class", "migration")
 }
 
 func run() error {

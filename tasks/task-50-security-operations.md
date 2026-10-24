@@ -130,6 +130,13 @@ affected command packages pass. A source scan found no remaining `log.Fatal(err)
 `log.Fatalf(...%v...)`, or `log.Printf(...%v...)` patterns under `cmd/`.
 This does not verify deployed CloudWatch retention or alert operations.
 
+The migration command now logs only the fixed `failure_class=migration` on
+startup/DDL failure; it does not include the underlying database error, SQL,
+or connection details. A regression test supplies a sentinel error and verifies
+that it is absent from the structured log. Local migration diagnosis remains
+available from the database/operator side; production log retention and alert
+review are still outstanding.
+
 The deferred architecture requirements are now recorded as four separate
 ADRs: [BYOC](../docs/adr/0010-customer-owned-resource-planes.md),
 [multi-Region placement](../docs/adr/0011-multi-region-resource-planes.md),
