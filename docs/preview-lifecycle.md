@@ -68,6 +68,11 @@ cleanup claims so crashed workers can be recovered and stale workers cannot
 acknowledge a newer claim. The worker that resolves Preview-to-runtime binding
 and performs physical deletion, route authorization, and Preview quota
 reservation is still required before Preview can be enabled for user traffic.
+`make test-preview-expiry-integration` exercises the store's claim, active-lease
+exclusion, fixed retry backoff, crash recovery, stale-claim rejection, confirmed
+completion, and duplicate acknowledgement against an isolated local PostgreSQL
+schema. This verifies the metadata fence only; it does not simulate provider
+deletion or prove runtime cleanup.
 
 When runtime execution is added, it must bind the immutable PR head SHA to an
 isolated Workspace, enforce Tenant authorization on every route, respect the

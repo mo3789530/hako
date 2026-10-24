@@ -83,6 +83,12 @@ Add optional repository-level preview environments and service metadata/deploy p
   schedule invoke the transactional bounded sweep; it has only a dedicated
   DSQL role and can update Preview cleanup metadata. Physical runtime cleanup
   worker remains unimplemented; no infrastructure was applied.
+- Added a direct Preview store PostgreSQL test for cleanup claim exclusion,
+  fixed backoff, expired-lease recovery, stale claimant rejection, confirmed
+  completion, and duplicate acknowledgement. `make test-preview-expiry-integration`
+  now runs it with the webhook lifecycle E2E; integration statement coverage
+  for `internal/store/previews` is 37.4% (unit-only coverage is 21.2%). This
+  remains metadata-store coverage, not a provider cleanup test.
 - `go test ./...` passed. PostgreSQL Preview lifecycle E2E passed against the
   local `hako-dev-postgres`, including stale delivery, close/reopen, Tenant
   scoping, and duplicate replay.
