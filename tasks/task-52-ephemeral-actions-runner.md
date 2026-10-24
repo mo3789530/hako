@@ -209,8 +209,10 @@ Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Action
   Secrets Manager and Lambda APIs; no AWS endpoint or real Secret was accessed.
   `make build-actions-runner-lambda` packages the ARM64 custom-runtime ZIP.
   The Terraform deployment, queue/DLQ, cross-account policy, exact worker IAM,
-  and event-source mapping are default-off and have not been applied. Guest
-  listener packaging and live AWS/GitHub verification remain acceptance gaps.
+  and event-source mapping are default-off and have not been applied. The guest
+  listener is included in the digest-pinned ARM64 image, and image build/inspect
+  succeeds locally; execution in an ARM64 environment or Lambda MicroVM, plus
+  live AWS/GitHub verification, remains unverified.
   Durable GitHub Check delivery is locally implemented
   and PostgreSQL/fake-GitHub tested; Runner admission stays default-off. The dispatch
   queue contract and its single-Plane limitation are recorded in
