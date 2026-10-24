@@ -114,6 +114,10 @@ per-Workspace allocation cap and rejects concurrent reuse of the same Session
 Ticket across replicas with HTTP 409, and applies a shared fixed-window limit
 of 30 new lease admissions per Workspace per minute. The VS Code process bridge
 and Lambda MicroVM end-to-end stream PoC also remain open Task 46/47 work.
+If an active Session recheck fails, the stream closes and the connection metric
+uses the bounded `session_recheck_failed` outcome instead of grouping it with a
+normal `disconnected` result. The metric still excludes Tenant, Workspace,
+ticket, and raw error details.
 
 ## Resource Plane Gateway process
 

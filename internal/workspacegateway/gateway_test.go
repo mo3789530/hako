@@ -644,11 +644,12 @@ func TestGatewayRechecksAndClosesActiveStreamAfterSessionRevocation(t *testing.T
 func TestGatewayFailsClosedWhenActiveSessionRecheckIsUnavailable(t *testing.T) {
 	lookup := &revokingActiveLookup{err: errors.New("synthetic lookup failure")}
 	var logs lockedBuffer
+	var metrics lockedBuffer
 	verifier := &workspacesession.Verifier{Keys: map[string]ed25519.PublicKey{"gateway-test": testPublicKey()},
 		Audience: workspacesession.AudienceGateway, Lookup: lookup}
 	gateway, err := New(Config{ResourcePlaneID: "rp_gateway_a", Verifier: verifier, Dialer: &testDialer{},
 		AllowedOrigins: []string{"https://ide.example.test"}, MaxConnections: 2, MaxConnectionsPerWorkspace: 2,
-		SessionRecheckInterval: 20 * time.Millisecond, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+		SessionRecheckInterval: 20 * time.Millisecond, Logger: slog.New(slog.NewTextHandler(&logs, nil)), MetricsWriter: &metrics})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -672,11 +673,16 @@ func TestGatewayFailsClosedWhenActiveSessionRecheckIsUnavailable(t *testing.T) {
 		t.Fatalf("active Session lookup calls=%d, want initial authorization and stream recheck", got)
 	}
 	deadline := time.Now().Add(time.Second)
-	for !strings.Contains(logs.String(), "event=workspace_gateway.connection") && time.Now().Before(deadline) {
+	for (!strings.Contains(logs.String(), "event=workspace_gateway.connection") || !strings.Contains(metrics.String(), `"Outcome":"session_recheck_failed"`)) && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
 	if !strings.Contains(logs.String(), "failure_class=session_recheck") || !strings.Contains(logs.String(), "workspace_id=ws_gateway_a") || strings.Contains(logs.String(), "ticket_id=") || strings.Contains(logs.String(), "synthetic lookup failure") {
 		t.Fatalf("Gateway failure log must include trusted identity without credentials/raw errors: %s", logs.String())
+	}
+	if !strings.Contains(metrics.String(), `"Outcome":"session_recheck_failed"`) ||
+		strings.Contains(metrics.String(), "tenant_gateway") || strings.Contains(metrics.String(), "ws_gateway_a") ||
+		strings.Contains(metrics.String(), "ticket_id") || strings.Contains(metrics.String(), "synthetic lookup failure") {
+		t.Fatalf("Gateway lifecycle metric must classify recheck failure without identity or raw errors: %s", metrics.String())
 	}
 }
 

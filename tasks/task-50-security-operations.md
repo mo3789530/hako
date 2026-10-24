@@ -156,3 +156,11 @@ ADRs: [BYOC](../docs/adr/0010-customer-owned-resource-planes.md),
 and [usage metering/billing](../docs/adr/0013-usage-metering-and-billing.md).
 Each names an accountable owner role, scope, requirements, non-goals, and
 revisit conditions. They defer implementation and do not approve AWS changes.
+
+Gateway observability follow-up: an active Session lookup failure already closed
+the WSS stream and emitted a redacted failure log, but was indistinguishable
+from a normal client disconnect in the lifecycle metric. It now emits the
+bounded `session_recheck_failed` outcome. Local tests assert the classification
+and ensure the metric contains no Tenant/Workspace identity, ticket, or raw
+lookup error. Production CloudWatch retention, alarms, and escalation review
+remain operational gates.

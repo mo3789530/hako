@@ -285,6 +285,7 @@ func (g *Gateway) serveChecked(w http.ResponseWriter, r *http.Request, permissio
 		return
 	}
 	defer upstream.Close()
+	sessionRecheckFailed := false
 	server := websocket.Server{
 		Config: websocket.Config{},
 		Handshake: func(config *websocket.Config, request *http.Request) error {
@@ -311,6 +312,7 @@ func (g *Gateway) serveChecked(w http.ResponseWriter, r *http.Request, permissio
 				g.config.SessionRecheckInterval, func(ctx context.Context) error {
 					_, err := g.config.Verifier.Authorize(ctx, token, permission)
 					if err != nil {
+						sessionRecheckFailed = true
 						g.logFailure(ctx, claims, permission, "session_recheck")
 					}
 					return err
@@ -318,7 +320,11 @@ func (g *Gateway) serveChecked(w http.ResponseWriter, r *http.Request, permissio
 		},
 	}
 	server.ServeHTTP(w, r)
-	outcome = "disconnected"
+	if sessionRecheckFailed {
+		outcome = "session_recheck_failed"
+	} else {
+		outcome = "disconnected"
+	}
 }
 
 type gatewayMetricEvent struct {
