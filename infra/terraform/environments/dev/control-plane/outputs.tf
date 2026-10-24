@@ -122,6 +122,22 @@ output "preview_runtime_dispatcher_error_alarm_name" {
   value = module.control_plane.preview_runtime_dispatcher_error_alarm_name
 }
 
+output "preview_result_consumer_role_arn" {
+  value = module.control_plane.preview_result_consumer_role_arn
+}
+
+output "preview_result_consumer_lambda_arn" {
+  value = module.control_plane.preview_result_consumer_lambda_arn
+}
+
+output "preview_result_consumer_event_source_mapping_uuids" {
+  value = module.control_plane.preview_result_consumer_event_source_mapping_uuids
+}
+
+output "preview_result_consumer_error_alarm_name" {
+  value = module.control_plane.preview_result_consumer_error_alarm_name
+}
+
 output "github_checks_queue_url" {
   value = module.control_plane.github_checks_queue_url
 }

@@ -4,8 +4,10 @@ The `infra/terraform/modules/resource-plane` module defines the initial AWS
 message boundary for a Resource Plane. The development root requires explicit
 Control Plane role ARNs and must be configured for the intended Resource Plane
 AWS account before anyone runs `plan` or `apply`. A development-only fake
-Lambda can be enabled for transport tests; the production runtime and Control
-Plane dispatcher/consumer deployment remain external.
+Lambda can be enabled for transport tests; the production runtime remains
+external. The Control Plane has default-off Dispatcher and Preview result
+consumer compositions, but they are separate from queue creation and have not
+been applied.
 
 ## Topology
 
@@ -43,6 +45,13 @@ Control Plane Dispatcher role --SendMessage--> actions-runner-startup queue
 
 Actions Runner Lambda role --Receive/Delete--> actions-runner-startup queue
 ```
+
+The Preview result consumer role ARN is exported by the Control Plane module.
+Pass that exact ARN as `control_plane_result_consumer_role_arn` when creating
+each Resource Plane's queue policy. SQS event-source mappings require the
+queue and Lambda to be in the same Region, so the current Control Plane
+consumer accepts only same-Region Resource Plane result queues. Cross-Region
+result delivery needs a regional consumer or relay design.
 
 The optional `actions_runner_deployment` object (`null` by default) creates a
 separate encrypted Actions Runner startup queue/DLQ, exact cross-account

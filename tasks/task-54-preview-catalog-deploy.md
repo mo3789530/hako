@@ -11,6 +11,9 @@ transition. A default-off scheduled Lambda now invokes this metadata sweep;
 production IAM wiring and enabled invocation remain unverified. Preview
 MicroVM allocation, Gateway routing, and physical cleanup execution remain
 incomplete; cleanup retry metadata and attempt-fenced leases are implemented.
+The Preview command producer and result consumer now have default-off Lambda
+compositions and Terraform wiring; no AWS resources or DSQL role grants have
+been applied.
 The dormant approval verifier checks
 the live Actions run attempt against signed repository, owner, ref, SHA,
 workflow and event claims, checks pending deployments and approval history,
@@ -181,14 +184,13 @@ Add optional repository-level preview environments and service metadata/deploy p
 - `go test ./...` passed. PostgreSQL Preview lifecycle E2E passed against the
   local `hako-dev-postgres`, including stale delivery, close/reopen, Tenant
   scoping, and duplicate replay.
-- Remaining: connect producer and result handlers to their scheduled/queue
-  Lambda compositions; implement durable MicroVM/Gateway provider operations;
+- Remaining: implement durable Lambda MicroVM/Gateway provider operations;
   Preview Workspace/Run binding to Lambda MicroVM, expiring
   Tenant-scoped Gateway route, timeout/merge sweep, provider-backed MicroVM /
-  route cleanup executor, scheduled provision/cleanup composition and DSQL
-  grants, and lifecycle wiring into `hako open`. Placement
-  selection/reservation is implemented locally but is not yet connected to a
-  provider-backed runtime. See
+  route cleanup executor, activate the scheduled producer/result consumer only
+  after AWS queue policies and DSQL role grants are reviewed, and add lifecycle
+  wiring into `hako open`. Placement selection/reservation is implemented
+  locally but is not yet connected to a provider-backed runtime. See
   [`Preview lifecycle`](../docs/preview-lifecycle.md).
 
 ## Preview result Lambda composition (2026-10-25)
@@ -201,8 +203,13 @@ Add optional repository-level preview environments and service metadata/deploy p
 - Unit tests cover partial-batch response forwarding, handler errors, missing
   dependencies, and canceled invocation. The PostgreSQL end-to-end test drives
   provisioning and cleanup acknowledgements through the same result Lambda
-  handler. No queue mapping, DSQL grant, or AWS resource was applied; those
-  deployment pieces remain open.
+  handler.
+- Added default-off Control Plane Terraform for one `ReportBatchItemFailures`
+  SQS mapping per configured same-Region Resource Plane result queue, SQS
+  receive IAM scoped to those exact queue ARNs, a stable consumer role output,
+  and a DSQL IAM connection policy. Added a dedicated DSQL bootstrap role with
+  column-scoped Preview result and confirmed-capacity-release grants. No queue mapping,
+  database grant, or AWS resource was applied.
 
 ## Preview lifecycle read API/CLI (2026-10-24)
 

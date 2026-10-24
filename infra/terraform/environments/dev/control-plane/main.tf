@@ -65,5 +65,9 @@ module "control_plane" {
   preview_runtime_dispatcher_lambda_zip_path      = var.preview_runtime_dispatcher_lambda_zip_path
   preview_runtime_dispatcher_batch_size           = var.preview_runtime_dispatcher_batch_size
   preview_runtime_dispatcher_schedule_expression  = var.preview_runtime_dispatcher_schedule_expression
+  enable_preview_result_consumer                  = var.enable_preview_result_consumer
+  preview_result_consumer_lambda_zip_path         = var.preview_result_consumer_lambda_zip_path
+  preview_result_consumer_batch_size              = var.preview_result_consumer_batch_size
+  preview_result_queue_arns                       = var.preview_result_queue_arns
   resource_plane_manifest_json                    = var.resource_plane_manifest_json
 }

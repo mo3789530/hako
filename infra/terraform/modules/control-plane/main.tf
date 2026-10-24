@@ -1417,6 +1417,117 @@ resource "aws_cloudwatch_metric_alarm" "preview_runtime_dispatcher_errors" {
   tags                = local.common_tags
 }
 
+resource "aws_iam_role" "preview_result_consumer" {
+  name = "${var.api_name}-preview-result-consumer"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+  tags = local.common_tags
+}
+
+resource "aws_iam_role_policy" "preview_result_consumer" {
+  count = var.enable_preview_result_consumer ? 1 : 0
+
+  name = "${var.api_name}-preview-result-consumer-runtime"
+  role = aws_iam_role.preview_result_consumer.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "WriteFunctionLogs"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "${aws_cloudwatch_log_group.preview_result_consumer[0].arn}:*"
+      },
+      {
+        Sid      = "ConnectAsPreviewResultConsumer"
+        Effect   = "Allow"
+        Action   = ["dsql:DbConnect"]
+        Resource = aws_dsql_cluster.control_plane.arn
+      },
+      {
+        Sid    = "ConsumeOnlyConfiguredPreviewResultQueues"
+        Effect = "Allow"
+        Action = [
+          "sqs:ChangeMessageVisibility",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes",
+          "sqs:ReceiveMessage",
+        ]
+        Resource = values(var.preview_result_queue_arns)
+      },
+    ]
+  })
+}
+
+resource "aws_cloudwatch_log_group" "preview_result_consumer" {
+  count = var.enable_preview_result_consumer ? 1 : 0
+
+  name              = "/aws/lambda/${var.api_name}-preview-result-consumer"
+  retention_in_days = var.lambda_log_retention_days
+  tags              = local.common_tags
+}
+
+resource "aws_lambda_function" "preview_result_consumer" {
+  count = var.enable_preview_result_consumer ? 1 : 0
+
+  function_name    = "${var.api_name}-preview-result-consumer"
+  role             = aws_iam_role.preview_result_consumer.arn
+  runtime          = "provided.al2023"
+  handler          = "bootstrap"
+  architectures    = ["arm64"]
+  filename         = var.preview_result_consumer_lambda_zip_path
+  source_code_hash = filebase64sha256(var.preview_result_consumer_lambda_zip_path)
+  memory_size      = 256
+  timeout          = 60
+
+  environment {
+    variables = {
+      HAKO_DSQL_HOST     = "${aws_dsql_cluster.control_plane.identifier}.dsql.${var.aws_region}.on.aws"
+      HAKO_DSQL_USER     = "hako_preview_result_consumer"
+      HAKO_DSQL_DATABASE = "postgres"
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.preview_result_consumer,
+    aws_iam_role_policy.preview_result_consumer,
+  ]
+  tags = local.common_tags
+}
+
+resource "aws_lambda_event_source_mapping" "preview_result_consumer" {
+  for_each = var.enable_preview_result_consumer ? var.preview_result_queue_arns : {}
+
+  event_source_arn        = each.value
+  function_name           = aws_lambda_function.preview_result_consumer[0].arn
+  batch_size              = var.preview_result_consumer_batch_size
+  function_response_types = ["ReportBatchItemFailures"]
+  enabled                 = true
+}
+
+resource "aws_cloudwatch_metric_alarm" "preview_result_consumer_errors" {
+  count = var.enable_preview_result_consumer ? 1 : 0
+
+  alarm_name          = "${var.api_name}-preview-result-consumer-errors"
+  alarm_description   = "The Preview result consumer Lambda failed. Check its logs and Resource Plane result queues."
+  namespace           = "AWS/Lambda"
+  metric_name         = "Errors"
+  statistic           = "Sum"
+  period              = 60
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  dimensions          = { FunctionName = aws_lambda_function.preview_result_consumer[0].function_name }
+  tags                = local.common_tags
+}
+
 resource "aws_apigatewayv2_api" "control_plane" {
   name          = var.api_name
   protocol_type = "HTTP"

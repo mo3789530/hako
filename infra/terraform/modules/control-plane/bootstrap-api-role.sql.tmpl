@@ -110,6 +110,37 @@ GRANT SELECT, UPDATE ON TABLE resource_plane_capacities TO hako_preview_runtime_
 GRANT SELECT ON TABLE runtime_class_resources TO hako_preview_runtime_dispatcher;
 GRANT SELECT, INSERT, DELETE ON TABLE preview_resource_plane_reservations TO hako_preview_runtime_dispatcher;
 
+-- The result consumer applies only claim-fenced Preview provider results. It
+-- can update runtime binding/cleanup metadata and release capacity after a
+-- confirmed provider cleanup; it cannot claim work or access tenant secrets.
+CREATE ROLE hako_preview_result_consumer WITH LOGIN;
+AWS IAM GRANT hako_preview_result_consumer TO 'REPLACE_WITH_PREVIEW_RESULT_CONSUMER_LAMBDA_ROLE_ARN';
+GRANT USAGE ON SCHEMA public TO hako_preview_result_consumer;
+GRANT SELECT (tenant_id, installation_id, github_repository_id, pull_request_number, generation,
+    desired_state, state, target_resource_plane_id, resource_plane_id, workspace_id, microvm_id,
+    gateway_route_id, provision_claim_id, provision_attempts, provision_lease_expires_at,
+    runtime_cleanup_claim_id, runtime_cleanup_attempts, runtime_cleanup_lease_expires_at, expires_at,
+    head_sha, head_ref)
+    ON TABLE repository_preview_runtime_allocations TO hako_preview_result_consumer;
+GRANT UPDATE (state, resource_plane_id, workspace_id, microvm_id, gateway_route_id,
+    provision_claim_id, provision_lease_expires_at, provision_next_attempt_at, provision_last_error,
+    runtime_cleanup_claim_id, runtime_cleanup_lease_expires_at, runtime_cleanup_next_attempt_at,
+    runtime_cleanup_last_error, updated_at)
+    ON TABLE repository_preview_runtime_allocations TO hako_preview_result_consumer;
+GRANT SELECT (tenant_id, installation_id, github_repository_id, pull_request_number, generation,
+    desired_state, state, expires_at)
+    ON TABLE repository_previews TO hako_preview_result_consumer;
+GRANT UPDATE (state, cleanup_claim_id, cleanup_lease_expires_at, cleanup_next_attempt_at,
+    cleanup_last_error, updated_at)
+    ON TABLE repository_previews TO hako_preview_result_consumer;
+GRANT SELECT (runtime_workspace_id, resource_plane_id, runtime_class, cpu_millicores, memory_mib, capacity_charged)
+    ON TABLE preview_resource_plane_reservations TO hako_preview_result_consumer;
+GRANT DELETE ON TABLE preview_resource_plane_reservations TO hako_preview_result_consumer;
+GRANT SELECT (resource_plane_id, reserved_workspaces, reserved_cpu_millicores, reserved_memory_mib)
+    ON TABLE resource_plane_capacities TO hako_preview_result_consumer;
+GRANT UPDATE (reserved_workspaces, reserved_cpu_millicores, reserved_memory_mib, updated_at)
+    ON TABLE resource_plane_capacities TO hako_preview_result_consumer;
+
 -- The Dispatcher role can claim/publish Outbox rows but cannot alter schema or
 -- access Workspace, Tenant, User, Session, or Operation tables.
 CREATE ROLE hako_dispatcher WITH LOGIN;

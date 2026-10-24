@@ -2,9 +2,9 @@
 
 Creates a Cognito-protected HTTP API, an arm64 API Lambda, an encrypted Aurora DSQL cluster, scoped IAM permissions, and a separate migration-admin policy. It also creates a stable least-privilege Outbox Dispatcher role by default, with an optional scheduled arm64 Dispatcher Lambda.
 
-It does not create the Cognito User Pool, run SQL migrations, create Resource Plane messaging/compute, or deploy the Scheduler/Reconciler/Result Consumer. The Dispatcher publishes directly to Resource Plane command queues; the optional Checks queue is a separate Control Plane result-delivery queue. The optional `enable_github_checks_delivery` (default `false`) creates a dedicated encrypted Checks queue/DLQ, a send-only Dispatcher grant, an ECS/Fargate task role with receive-only queue and DSQL-connect permissions, and queue age/depth/DLQ alarms. Optional `github_checks_alarm_actions` SNS topics receive alarm/OK actions. The separate `enable_github_checks_consumer_service` (default `false`) optionally deploys the ARM64 Fargate service/task definition, private-subnet network attachment, restricted execution/task roles, and exact Secrets Manager references for broker mTLS. It requires a pre-created ECS cluster, network/security groups, a digest-pinned ECR image whose account/Region/repository must match the exact repository ARN allowed by the task execution role, broker URL, and operator-provisioned Secrets.
+It does not create the Cognito User Pool, run SQL migrations, create Resource Plane messaging/compute, or deploy the Workload Scheduler. The Dispatcher publishes directly to Resource Plane command queues; the optional Checks queue is a separate Control Plane result-delivery queue. The optional `enable_github_checks_delivery` (default `false`) creates a dedicated encrypted Checks queue/DLQ, a send-only Dispatcher grant, an ECS/Fargate task role with receive-only queue and DSQL-connect permissions, and queue age/depth/DLQ alarms. Optional `github_checks_alarm_actions` SNS topics receive alarm/OK actions. The separate `enable_github_checks_consumer_service` (default `false`) optionally deploys the ARM64 Fargate service/task definition, private-subnet network attachment, restricted execution/task roles, and exact Secrets Manager references for broker mTLS. It requires a pre-created ECS cluster, network/security groups, a digest-pinned ECR image whose account/Region/repository must match the exact repository ARN allowed by the task execution role, broker URL, and operator-provisioned Secrets.
 
-Build the API package with `make build-api-lambda` before planning/applying. If enabling the scheduled Dispatcher, also run `make build-dispatcher-lambda`, configure `enable_outbox_dispatcher` and the versioned Resource Plane manifest. Checks delivery additionally requires `enable_github_checks_delivery=true`, which is validated to require the Dispatcher; the module creates a dedicated ECS task role and exports `github_checks_consumer_task_role_arn`. Configure optional SNS notifications through `github_checks_alarm_actions`. If enabling the GitHub Webhook Processor, run `make build-webhook-processor-lambda` and set `enable_github_webhook_processor`. Automatic Workspace idle suspension is independently opt-in through `enable_workspace_idle_reconciler` (default `false`); build `make build-workspace-idle-reconciler-lambda` before enabling it. The stable `workspace_idle_reconciler_role_arn` exists while disabled so an operator can map the dedicated `hako_workspace_idle_reconciler` DSQL role and apply its table grants before activating the one-minute default schedule. The Lambda only creates normal suspend Operations and never calls Resource Plane/provider APIs. Tenant policy is separately disabled by default. To enable tenant GitHub App setup, configure the App slug/ID/client ID, HTTPS OAuth callback URL, and client-secret ARN, then set `github_app_setup_enabled=true`; see [`docs/github-installation-setup.md`](../../../../docs/github-installation-setup.md). Follow [`docs/control-plane-terraform.md`](../../../../docs/control-plane-terraform.md) for the safe deployment order. SQL role bootstrap and migrations are operator-run. The API Lambda uses `dsql:DbConnect` only; the API role must not receive the separate `dsql:DbConnectAdmin` migration policy. The Dispatcher, Webhook Processor, idle reconciler, and Checks consumer have separate least-privilege DSQL roles; the Dispatcher also sends to manifest-listed command queues and, when enabled, the Checks queue.
+Build the API package with `make build-api-lambda` before planning/applying. If enabling the scheduled Dispatcher, also run `make build-dispatcher-lambda`, configure `enable_outbox_dispatcher` and the versioned Resource Plane manifest. Checks delivery additionally requires `enable_github_checks_delivery=true`, which is validated to require the Dispatcher; the module creates a dedicated ECS task role and exports `github_checks_consumer_task_role_arn`. Configure optional SNS notifications through `github_checks_alarm_actions`. If enabling the GitHub Webhook Processor, run `make build-webhook-processor-lambda` and set `enable_github_webhook_processor`. Automatic Workspace idle suspension is independently opt-in through `enable_workspace_idle_reconciler` (default `false`); build `make build-workspace-idle-reconciler-lambda` before enabling it. The stable `workspace_idle_reconciler_role_arn` exists while disabled so an operator can map the dedicated `hako_workspace_idle_reconciler` DSQL role and apply its table grants before activating the one-minute default schedule. The Lambda only creates normal suspend Operations and never calls Resource Plane/provider APIs. Tenant policy is separately disabled by default. To enable tenant GitHub App setup, configure the App slug/ID/client ID, HTTPS OAuth callback URL, and client-secret ARN, then set `github_app_setup_enabled=true`; see [`docs/github-installation-setup.md`](../../../../docs/github-installation-setup.md). Follow [`docs/control-plane-terraform.md`](../../../../docs/control-plane-terraform.md) for the safe deployment order. SQL role bootstrap and migrations are operator-run. The API Lambda uses `dsql:DbConnect` only; the API role must not receive the separate `dsql:DbConnectAdmin` migration policy. The Dispatcher, Webhook Processor, idle reconciler, Checks consumer, and Preview result consumer have separate least-privilege DSQL roles. The Preview result consumer is column-scoped and receives only configured same-Region result queues. The Dispatcher also sends to manifest-listed command queues and, when enabled, the Checks queue.
 
 The module also creates a private ECR repository for API images. Setting `api_lambda_image_uri` to a digest creates a distinct image Lambda candidate but leaves ZIP active. After candidate validation, set `api_lambda_image_active=true` to switch API Gateway; set it back to `false` to roll back while retaining the candidate. Build with `make build-api-lambda-image`, but publish only from an authorized release environment. The image uses AWS Lambda Web Adapter; see [`docs/api-gateway-lambda.md`](../../../../docs/api-gateway-lambda.md) for local HTTP smoke testing, deployment, and rollback.
 
@@ -23,6 +23,36 @@ schedule create Outbox work only; the existing Dispatcher publishes commands
 to the configured Plane queue. The stable role ARN is exported for DSQL IAM
 mapping. This schedule is independent from expiry reconciliation and remains
 disabled by default; infrastructure has not been applied.
+
+Preview result consumption is separately opt-in through
+`enable_preview_result_consumer` (default `false`). Build
+`make build-preview-result-consumer-lambda`, configure
+`preview_result_queue_arns` as a map from stable Resource Plane IDs to exact
+same-Region Resource Plane result queue ARNs, and allow the stable
+`preview_result_consumer_role_arn` in each Resource Plane result queue policy.
+The module creates one partial-batch SQS event-source mapping per configured
+Plane, restricts SQS receive permissions to those ARNs, and attaches DSQL
+`DbConnect` only to its dedicated role. Map that role to
+`hako_preview_result_consumer` using the bootstrap SQL; its column grants can
+apply fenced Preview results and release reserved capacity only after confirmed
+cleanup. Set the opt-in only after migrations, role mapping, grants, and
+Resource Plane queue policies are ready. This infrastructure is default-off and
+has not been applied.
+
+Preview result consumption is separately opt-in through
+`enable_preview_result_consumer` (default `false`). Build
+`make build-preview-result-consumer-lambda`, configure
+`preview_result_queue_arns` as a map from stable Resource Plane IDs to exact
+Resource Plane result queue ARNs, and allow the stable
+`preview_result_consumer_role_arn` in each Resource Plane result queue policy.
+The module creates one partial-batch SQS event-source mapping per configured
+Plane, restricts SQS receive permissions to those ARNs, and attaches DSQL
+`DbConnect` only to its dedicated role. Map that role to
+`hako_preview_result_consumer` using the bootstrap SQL; its column grants can
+apply fenced Preview results and release reserved capacity only after confirmed
+cleanup. Set the opt-in only after migrations, role mapping, grants, and
+Resource Plane queue policies are ready. This infrastructure is default-off and
+has not been applied.
 
 The optional `resource_plane_artifact_cleanup_secret_arns` map enables the
 HMAC-authenticated artifact cleanup API for exact Resource Plane IDs. Each

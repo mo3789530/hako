@@ -68,6 +68,7 @@ variable "actions_runner_deployment" {
   type = object({
     zip_path                       = string
     broker_url                     = string
+    diagnostics_upload_base_url    = string
     broker_client_cert_secret_arn  = string
     broker_client_key_secret_arn   = string
     broker_ca_secret_arn           = string

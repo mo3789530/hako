@@ -223,6 +223,26 @@ output "preview_runtime_dispatcher_error_alarm_name" {
   value       = try(aws_cloudwatch_metric_alarm.preview_runtime_dispatcher_errors[0].alarm_name, null)
 }
 
+output "preview_result_consumer_role_arn" {
+  description = "Stable IAM role ARN to map to the least-privilege hako_preview_result_consumer DSQL user and allow in Resource Plane result queue policies."
+  value       = aws_iam_role.preview_result_consumer.arn
+}
+
+output "preview_result_consumer_lambda_arn" {
+  description = "ARN of the optional SQS-triggered Preview result consumer Lambda; null unless enabled."
+  value       = try(aws_lambda_function.preview_result_consumer[0].arn, null)
+}
+
+output "preview_result_consumer_event_source_mapping_uuids" {
+  description = "SQS event-source mapping UUIDs keyed by Resource Plane ID."
+  value       = { for plane_id, mapping in aws_lambda_event_source_mapping.preview_result_consumer : plane_id => mapping.uuid }
+}
+
+output "preview_result_consumer_error_alarm_name" {
+  description = "CloudWatch invocation error alarm for the optional Preview result consumer; null unless enabled."
+  value       = try(aws_cloudwatch_metric_alarm.preview_result_consumer_errors[0].alarm_name, null)
+}
+
 output "http_api_endpoint" {
   description = "Invoke URL of the Hako Control Plane HTTP API default stage."
   value       = aws_apigatewayv2_api.control_plane.api_endpoint
