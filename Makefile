@@ -1,4 +1,4 @@
-.PHONY: fmt lint test test-integration test-integration-local test-webhook-lifecycle-integration test-actions-runner-lifecycle-integration test-software-factory-e2e test-workload-runtime test-workload-runtime-integration test-artifact-retention-integration test-workspace-idle-lifecycle-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-workspace-service-controller-lambda build-health-reporter-lambda build-workspace-idle-reconciler-lambda build-workload-controller-lambda build-actions-runner-lambda build-actions-runner-microvm-image build-workload-microvm-artifact build-workspace-microvm-image build-github-checks-consumer-image build-workspace-gateway-image terraform-fmt terraform-validate terraform-test
+.PHONY: fmt lint test test-integration test-integration-local test-webhook-lifecycle-integration test-actions-runner-lifecycle-integration test-software-factory-e2e test-workload-runtime test-workload-runtime-integration test-artifact-retention-integration test-workspace-idle-lifecycle-integration test-preview-expiry-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-workspace-service-controller-lambda build-health-reporter-lambda build-workspace-idle-reconciler-lambda build-preview-expiry-lambda build-workload-controller-lambda build-actions-runner-lambda build-actions-runner-microvm-image build-workload-microvm-artifact build-workspace-microvm-image build-github-checks-consumer-image build-workspace-gateway-image terraform-fmt terraform-validate terraform-test
 
 HAKO_WORKSPACE_SERVICES_ENABLED ?= false
 
@@ -43,6 +43,9 @@ test-artifact-retention-integration:
 # Composes Gateway WSS, signed connection lease API, PostgreSQL idle sweep, and CLI resume option tests.
 test-workspace-idle-lifecycle-integration:
 	HAKO_TEST_DATABASE_URL="$${HAKO_TEST_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" go test -tags=integration ./internal/api ./cmd/hako -run 'TestWorkspaceGatewayDisconnectReconnectFencesIdleSuspendEndToEnd|TestParseWorkspaceActionOptions' -count=1
+
+test-preview-expiry-integration:
+	HAKO_TEST_DATABASE_URL="$${HAKO_TEST_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" go test -tags=integration ./internal/workloadjobs -run '^TestRepositoryPreviewWebhookLifecycleFencesStalePRUpdates$$' -count=1
 
 test-coverage:
 	@test -n "$${HAKO_TEST_DATABASE_URL:-}" || (echo "set HAKO_TEST_DATABASE_URL to a disposable PostgreSQL database" >&2; exit 1)
@@ -93,6 +96,11 @@ build-workspace-idle-reconciler-lambda:
 	mkdir -p build/workspace-idle-reconciler
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o build/workspace-idle-reconciler/bootstrap ./cmd/hako-workspace-idle-reconciler-lambda
 	cd build/workspace-idle-reconciler && zip -q ../hako-workspace-idle-reconciler.zip bootstrap
+
+build-preview-expiry-lambda:
+	mkdir -p build/preview-expiry
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o build/preview-expiry/bootstrap ./cmd/hako-preview-expiry-lambda
+	cd build/preview-expiry && zip -q ../hako-preview-expiry.zip bootstrap
 
 build-workload-controller-lambda:
 	mkdir -p build/workload-controller-lambda

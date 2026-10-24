@@ -7,9 +7,10 @@ implemented locally; no STS exchange or deployment execution is enabled.
 Tenant-scoped Preview opt-in and transactional PR desired-state tracking are
 implemented locally, including stale GitHub `updated_at` fencing, fixed
 Tenant-quota-based expiry metadata, and a bounded idempotent expiry-to-cleanup
-transition. Preview MicroVM allocation, Gateway routing, scheduled sweep,
-physical cleanup execution/retries, and
-production IAM wiring remain incomplete. The dormant approval verifier checks
+transition. A default-off scheduled Lambda now invokes this metadata sweep;
+production IAM wiring and enabled invocation remain unverified. Preview
+MicroVM allocation, Gateway routing, and physical cleanup execution/retries
+remain incomplete. The dormant approval verifier checks
 the live Actions run attempt against signed repository, owner, ref, SHA,
 workflow and event claims, checks pending deployments and approval history,
 and requires Environment reviewers with self-review disabled. Priority: P3.
@@ -77,8 +78,10 @@ Add optional repository-level preview environments and service metadata/deploy p
   fallback), and bounded `previews.ExpireDue` moves expired present records to
   `cleanup_pending` without claiming physical deletion. Reopen starts a new
   lifetime; synchronize does not extend it. PostgreSQL E2E verifies expiry and
-  duplicate sweep idempotency. Scheduled invocation and a runtime cleanup
-  worker remain unimplemented.
+  duplicate sweep idempotency. A default-off ARM64 Lambda and EventBridge
+  schedule invoke the transactional bounded sweep; it has only a dedicated
+  DSQL role and can update Preview cleanup metadata. Physical runtime cleanup
+  worker remains unimplemented; no infrastructure was applied.
 - `go test ./...` passed. PostgreSQL Preview lifecycle E2E passed against the
   local `hako-dev-postgres`, including stale delivery, close/reopen, Tenant
   scoping, and duplicate replay.

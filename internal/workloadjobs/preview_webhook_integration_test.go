@@ -119,6 +119,9 @@ func TestRepositoryPreviewWebhookLifecycleFencesStalePRUpdates(t *testing.T) {
 	if desired != "absent" || state != "cleanup_pending" {
 		t.Fatalf("expired Preview state = desired:%s state:%s, physical cleanup must remain pending", desired, state)
 	}
+	if expired, err := previewstore.ExpireBatch(ctx, pool, now.Add(4*time.Hour), 10); err != nil || expired != 0 {
+		t.Fatalf("transactional Preview expiry wrapper = %d, %v", expired, err)
+	}
 	var records int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM repository_previews WHERE tenant_id <> 'tenant_preview_hook' AND installation_id=9801 AND github_repository_id=9802 AND pull_request_number=73`).Scan(&records); err != nil || records != 0 {
 		t.Fatalf("Preview state escaped Tenant scope: records=%d error=%v", records, err)

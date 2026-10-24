@@ -90,6 +90,22 @@ output "github_webhook_processor_error_alarm_name" {
   value = module.control_plane.github_webhook_processor_error_alarm_name
 }
 
+output "preview_expiry_reconciler_role_arn" {
+  value = module.control_plane.preview_expiry_reconciler_role_arn
+}
+
+output "preview_expiry_reconciler_lambda_arn" {
+  value = module.control_plane.preview_expiry_reconciler_lambda_arn
+}
+
+output "preview_expiry_reconciler_schedule_arn" {
+  value = module.control_plane.preview_expiry_reconciler_schedule_arn
+}
+
+output "preview_expiry_reconciler_error_alarm_name" {
+  value = module.control_plane.preview_expiry_reconciler_error_alarm_name
+}
+
 output "github_checks_queue_url" {
   value = module.control_plane.github_checks_queue_url
 }

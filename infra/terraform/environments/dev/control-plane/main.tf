@@ -56,5 +56,9 @@ module "control_plane" {
   workspace_idle_reconciler_lambda_zip_path       = var.workspace_idle_reconciler_lambda_zip_path
   workspace_idle_reconciler_batch_size            = var.workspace_idle_reconciler_batch_size
   workspace_idle_reconciler_schedule_expression   = var.workspace_idle_reconciler_schedule_expression
+  enable_preview_expiry_reconciler                = var.enable_preview_expiry_reconciler
+  preview_expiry_reconciler_lambda_zip_path       = var.preview_expiry_reconciler_lambda_zip_path
+  preview_expiry_reconciler_batch_size            = var.preview_expiry_reconciler_batch_size
+  preview_expiry_reconciler_schedule_expression   = var.preview_expiry_reconciler_schedule_expression
   resource_plane_manifest_json                    = var.resource_plane_manifest_json
 }

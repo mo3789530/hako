@@ -1166,6 +1166,131 @@ resource "aws_cloudwatch_metric_alarm" "workspace_idle_reconciler_errors" {
   tags                = local.common_tags
 }
 
+resource "aws_iam_role" "preview_expiry_reconciler" {
+  name = "${var.api_name}-preview-expiry-reconciler"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+  tags = local.common_tags
+}
+
+resource "aws_iam_role_policy" "preview_expiry_reconciler" {
+  count = var.enable_preview_expiry_reconciler ? 1 : 0
+
+  name = "${var.api_name}-preview-expiry-reconciler-runtime"
+  role = aws_iam_role.preview_expiry_reconciler.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "WriteFunctionLogs"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "${aws_cloudwatch_log_group.preview_expiry_reconciler[0].arn}:*"
+      },
+      {
+        Sid      = "ConnectAsPreviewExpiryReconciler"
+        Effect   = "Allow"
+        Action   = ["dsql:DbConnect"]
+        Resource = aws_dsql_cluster.control_plane.arn
+      }
+    ]
+  })
+}
+
+resource "aws_cloudwatch_log_group" "preview_expiry_reconciler" {
+  count = var.enable_preview_expiry_reconciler ? 1 : 0
+
+  name              = "/aws/lambda/${var.api_name}-preview-expiry-reconciler"
+  retention_in_days = var.lambda_log_retention_days
+  tags              = local.common_tags
+}
+
+resource "aws_lambda_function" "preview_expiry_reconciler" {
+  count = var.enable_preview_expiry_reconciler ? 1 : 0
+
+  function_name    = "${var.api_name}-preview-expiry-reconciler"
+  role             = aws_iam_role.preview_expiry_reconciler.arn
+  runtime          = "provided.al2023"
+  handler          = "bootstrap"
+  architectures    = ["arm64"]
+  filename         = var.preview_expiry_reconciler_lambda_zip_path
+  source_code_hash = filebase64sha256(var.preview_expiry_reconciler_lambda_zip_path)
+  memory_size      = 256
+  timeout          = 60
+
+  environment {
+    variables = {
+      HAKO_DSQL_HOST                 = "${aws_dsql_cluster.control_plane.identifier}.dsql.${var.aws_region}.on.aws"
+      HAKO_DSQL_USER                 = "hako_preview_reconciler"
+      HAKO_DSQL_DATABASE             = "postgres"
+      HAKO_PREVIEW_EXPIRY_BATCH_SIZE = tostring(var.preview_expiry_reconciler_batch_size)
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.preview_expiry_reconciler,
+    aws_iam_role_policy.preview_expiry_reconciler,
+  ]
+
+  tags = local.common_tags
+}
+
+resource "aws_cloudwatch_event_rule" "preview_expiry_reconciler" {
+  count = var.enable_preview_expiry_reconciler ? 1 : 0
+
+  name                = "${var.api_name}-preview-expiry-reconciler"
+  description         = "Transition expired Preview metadata to the durable cleanup queue."
+  schedule_expression = var.preview_expiry_reconciler_schedule_expression
+  state               = "ENABLED"
+  tags                = local.common_tags
+}
+
+resource "aws_cloudwatch_event_target" "preview_expiry_reconciler" {
+  count = var.enable_preview_expiry_reconciler ? 1 : 0
+
+  rule      = aws_cloudwatch_event_rule.preview_expiry_reconciler[0].name
+  target_id = "hako-preview-expiry-reconciler"
+  arn       = aws_lambda_function.preview_expiry_reconciler[0].arn
+
+  retry_policy {
+    maximum_event_age_in_seconds = 3600
+    maximum_retry_attempts       = 2
+  }
+}
+
+resource "aws_lambda_permission" "preview_expiry_reconciler_eventbridge" {
+  count = var.enable_preview_expiry_reconciler ? 1 : 0
+
+  statement_id  = "AllowPreviewExpiryReconcilerSchedule"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.preview_expiry_reconciler[0].function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.preview_expiry_reconciler[0].arn
+}
+
+resource "aws_cloudwatch_metric_alarm" "preview_expiry_reconciler_errors" {
+  count = var.enable_preview_expiry_reconciler ? 1 : 0
+
+  alarm_name          = "${var.api_name}-preview-expiry-reconciler-errors"
+  alarm_description   = "The Preview expiry reconciler failed. Check its logs and pending cleanup metadata."
+  namespace           = "AWS/Lambda"
+  metric_name         = "Errors"
+  statistic           = "Sum"
+  period              = 60
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  dimensions          = { FunctionName = aws_lambda_function.preview_expiry_reconciler[0].function_name }
+  tags                = local.common_tags
+}
+
 resource "aws_apigatewayv2_api" "control_plane" {
   name          = var.api_name
   protocol_type = "HTTP"

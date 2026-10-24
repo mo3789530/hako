@@ -183,6 +183,26 @@ output "workspace_idle_reconciler_error_alarm_name" {
   value       = try(aws_cloudwatch_metric_alarm.workspace_idle_reconciler_errors[0].alarm_name, null)
 }
 
+output "preview_expiry_reconciler_role_arn" {
+  description = "Stable IAM role ARN to map to the least-privilege hako_preview_reconciler DSQL user; its DbConnect policy is attached only when enabled."
+  value       = aws_iam_role.preview_expiry_reconciler.arn
+}
+
+output "preview_expiry_reconciler_lambda_arn" {
+  description = "ARN of the optional scheduled Preview expiry reconciler Lambda; null unless enabled."
+  value       = try(aws_lambda_function.preview_expiry_reconciler[0].arn, null)
+}
+
+output "preview_expiry_reconciler_schedule_arn" {
+  description = "EventBridge schedule ARN for the optional Preview expiry reconciler; null unless enabled."
+  value       = try(aws_cloudwatch_event_rule.preview_expiry_reconciler[0].arn, null)
+}
+
+output "preview_expiry_reconciler_error_alarm_name" {
+  description = "CloudWatch invocation error alarm for the optional Preview expiry reconciler; null unless enabled."
+  value       = try(aws_cloudwatch_metric_alarm.preview_expiry_reconciler_errors[0].alarm_name, null)
+}
+
 output "http_api_endpoint" {
   description = "Invoke URL of the Hako Control Plane HTTP API default stage."
   value       = aws_apigatewayv2_api.control_plane.api_endpoint

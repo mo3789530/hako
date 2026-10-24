@@ -55,6 +55,17 @@ GRANT SELECT, UPDATE (desired_state, updated_at, reconcile_revision) ON TABLE wo
 GRANT INSERT, UPDATE (idempotency_key) ON TABLE operations TO hako_workspace_idle_reconciler;
 GRANT INSERT ON TABLE operation_events, outbox_events, audit_events TO hako_workspace_idle_reconciler;
 
+-- Preview expiry is metadata reconciliation only. It can select and transition
+-- expired Preview rows, but has no permission to delete rows or touch runtime
+-- bindings, Workspaces, Gateway routes, or provider resources.
+CREATE ROLE hako_preview_reconciler WITH LOGIN;
+AWS IAM GRANT hako_preview_reconciler TO 'REPLACE_WITH_PREVIEW_EXPIRY_RECONCILER_LAMBDA_ROLE_ARN';
+GRANT USAGE ON SCHEMA public TO hako_preview_reconciler;
+GRANT SELECT (tenant_id, installation_id, github_repository_id, pull_request_number, desired_state, expires_at)
+    ON TABLE repository_previews TO hako_preview_reconciler;
+GRANT UPDATE (desired_state, state, cleanup_next_attempt_at, updated_at)
+    ON TABLE repository_previews TO hako_preview_reconciler;
+
 -- The Dispatcher role can claim/publish Outbox rows but cannot alter schema or
 -- access Workspace, Tenant, User, Session, or Operation tables.
 CREATE ROLE hako_dispatcher WITH LOGIN;

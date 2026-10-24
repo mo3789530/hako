@@ -42,10 +42,11 @@ This is lifecycle metadata only. No MicroVM is created and no Gateway route is
 published: responses report `runtime_enabled: false`, and records remain in
 `awaiting_runtime` or `cleanup_pending`. The existing Lambda MicroVM Workspace
 runtime does not yet provision a PR-scoped Workspace binding or expiring
-Tenant-scoped Gateway route. Scheduled invocation of the expiry sweep, a
-cleanup worker with retry/backoff transition to `cleaned`, route authorization,
-and Preview quota reservation are still required before Preview can be enabled
-for user traffic.
+Tenant-scoped Gateway route. A default-off scheduled Lambda invokes the bounded
+expiry sweep, but it is not enabled by default and only updates DSQL metadata.
+A cleanup worker with retry/backoff transition to `cleaned`, route
+authorization, and Preview quota reservation are still required before Preview
+can be enabled for user traffic.
 
 When runtime execution is added, it must bind the immutable PR head SHA to an
 isolated Workspace, enforce Tenant authorization on every route, respect the
