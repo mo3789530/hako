@@ -195,16 +195,34 @@ response is marked `no-store`. Missing or stale pins fail closed. The endpoint
 returns the broker-validated Repository owner/name with the token, and the
 Resource Plane has a bounded HTTPS client for that response. The client sends
 no Resource Plane ID in its body; the server derives it from the mTLS URI SAN.
-This is prepared for checkout, but the worker does not yet fetch Git data,
-transfer source to the MicroVM, or start the Preview application. The
-`previewcontroller.PreviewSourceMaterializer` now composes the provider grant
+This is prepared for checkout. The
+`previewcontroller.PreviewSourceMaterializer` composes the provider grant
 with the existing immutable Git checkout and S3 source archive stager. It pins
 the exact PR head SHA, stores the archive under the runtime Workspace,
 generation, and active claim identity, rejects a returned prefix outside that
 identity, and removes the temporary checkout tree. It never executes
-repository code. This materializer is locally unit tested but is not yet wired
-into the Preview `Runtime.Ensure` composition, so the Guest still receives no
-source files.
+repository code. The Lambda MicroVM Resource Controller now requires this
+materializer and a source installer whenever its Preview queue is configured.
+After the exact runtime binding is resolved, it reads only that attempt's S3
+archive and transfers it over the Guest's one-use, file-transfer-ticket WSS
+endpoint. The Guest verifies the archive SHA-256, extracts only regular files
+and directories, and atomically installs it at `/workspace/src`; an idempotent
+retry is accepted only when the existing tree has the same deterministic
+archive digest. Other destinations and invalid digests are rejected. Local
+tests cover archive staging, protocol validation, Guest installation, retry,
+conflict, and the controller source-install sequence.
+
+The Resource Plane controller's Preview composition reads four distinct,
+explicit Secrets Manager ARNs (broker mTLS certificate/key/CA and Guest ticket
+signing key), stages and reads archives under one configured S3 bucket prefix,
+and uses the configured Lambda MicroVM image for VM lookup/auth-token scope.
+Terraform models these settings and exact-prefix/secret IAM permissions in the
+default-off `preview_runtime_source` object. No Secret was retrieved and no
+Terraform apply was performed. The deploy gate still requires the matching
+ticket public key and file-transfer endpoint in the immutable Guest image,
+Resource Plane egress/connectivity validation, Gateway routing/publication,
+and an end-to-end real MicroVM test. The resource adapter prepares source only;
+it does not yet start the Preview application.
 
 Each present Preview records a fixed `expires_at` using the Tenant's configured
 Preview lifetime (24 hours when no quota row exists). `synchronize` deliveries

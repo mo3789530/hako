@@ -3,6 +3,7 @@ package workspaceprotocol
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -26,6 +27,7 @@ type FileRequest struct {
 	Operation string `json:"operation"`
 	Path      string `json:"path"`
 	Size      int64  `json:"size"`
+	Digest    string `json:"digest,omitempty"`
 }
 
 type FileResponse struct {
@@ -73,9 +75,12 @@ func validFileRequest(request FileRequest) bool {
 	}
 	switch request.Operation {
 	case "upload":
-		return request.Path != "/workspace" && request.Size >= 0 && request.Size <= FileMaxBytes
+		return request.Path != "/workspace" && request.Size >= 0 && request.Size <= FileMaxBytes && request.Digest == ""
 	case "download":
-		return request.Size == 0
+		return request.Size == 0 && request.Digest == ""
+	case "install_archive":
+		digest, err := hex.DecodeString(request.Digest)
+		return request.Path == "/workspace/src" && request.Size > 0 && request.Size <= FileMaxBytes && err == nil && len(digest) == 32 && hex.EncodeToString(digest) == request.Digest
 	default:
 		return false
 	}

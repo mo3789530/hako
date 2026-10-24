@@ -298,6 +298,13 @@ func (a *WorkspaceShellAgent) serveFiles(w http.ResponseWriter, r *http.Request)
 				return
 			}
 			switch request.Operation {
+			case "install_archive":
+				err := files.InstallSourceArchive(r.Context(), request.Size, request.Digest, io.LimitReader(conn, request.Size))
+				response := workspaceprotocol.FileResponse{OK: err == nil, Size: request.Size}
+				if err != nil {
+					response = workspaceprotocol.FileResponse{Code: "transfer_failed"}
+				}
+				_ = workspaceprotocol.WriteFileResponse(conn, response)
 			case "upload":
 				err := files.Write(r.Context(), request.Path, request.Size, conn)
 				response := workspaceprotocol.FileResponse{OK: err == nil, Size: request.Size}

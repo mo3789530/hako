@@ -3,6 +3,7 @@
 package workspaceagent
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mo3789530/hako/internal/workloadsource"
 	"github.com/mo3789530/hako/internal/workspaceprotocol"
 	"github.com/mo3789530/hako/internal/workspacesession"
 )
@@ -89,6 +91,33 @@ func TestWorkspaceFileRouteUsesOneUseTicketAndStreamsBoundedFiles(t *testing.T) 
 		t.Fatalf("download body=%q error=%v", downloaded, err)
 	}
 	_ = client.Close()
+	if err := os.RemoveAll(filepath.Join(root, "src")); err != nil {
+		t.Fatal(err)
+	}
+	repository := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repository, "nested"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "nested", "main.go"), []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	archive, err := workloadsource.CreateArchive(context.Background(), repository, workloadsource.DefaultMaxArchiveBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.Close()
+	client, err = dialWorkspaceAgentChannel(server.URL, "https://gateway.hako.test", issue(workspacesession.PermissionFileTransfer), "files")
+	if err != nil {
+		t.Fatalf("connect for Preview source installation: %v", err)
+	}
+	if err := TransferSourceArchive(context.Background(), client, workloadsource.SourceArchive{Body: io.NopCloser(archive.Reader()), Size: archive.Size()}, archive.SHA256()); err != nil {
+		t.Fatalf("transfer Preview source archive: %v", err)
+	}
+	_ = client.Close()
+	installed, err := os.ReadFile(filepath.Join(root, "src", "nested", "main.go"))
+	if err != nil || string(installed) != "package main\n" {
+		t.Fatalf("Preview source file=%q error=%v", installed, err)
+	}
 	if replay, err := dialWorkspaceAgentChannel(server.URL, "https://gateway.hako.test", issue(workspacesession.PermissionFileTransfer), "files"); err != nil {
 		t.Fatal(err)
 	} else {
@@ -107,8 +136,5 @@ func TestWorkspaceFileRouteUsesOneUseTicketAndStreamsBoundedFiles(t *testing.T) 
 	if unauthorized, err := dialWorkspaceAgentChannel(server.URL, "https://gateway.hako.test", issue(workspacesession.PermissionShell), "files"); err == nil {
 		_ = unauthorized.Close()
 		t.Fatal("shell ticket was accepted on file-transfer endpoint")
-	}
-	if _, err := os.Stat(filepath.Join(root, "src", "data.txt")); err != nil {
-		t.Fatalf("uploaded file missing: %v", err)
 	}
 }

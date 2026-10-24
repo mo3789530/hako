@@ -63,9 +63,17 @@ func main() {
 		if !ok {
 			log.Fatal("Preview runtime requires the durable Workspace runtime binding reporter (failure_class=runtime_configuration)")
 		}
-		adapter, err := previewcontroller.NewWorkspaceRuntimeAdapter(resourcePlaneID, previewRuntime, nil)
+		previewSourceConfig, err := configuredPreviewSource(os.Getenv)
 		if err != nil {
-			log.Fatal("configure Preview Workspace runtime adapter failed (failure_class=runtime_configuration)")
+			log.Fatal("configure Preview source dependencies failed (failure_class=source_configuration)")
+		}
+		materializer, installer, err := composePreviewSource(ctx, awsCfg, resourcePlaneID, previewSourceConfig)
+		if err != nil {
+			log.Fatal("compose Preview source dependencies failed (failure_class=source_configuration)")
+		}
+		adapter, err := previewcontroller.NewWorkspaceRuntimeAdapterWithSource(resourcePlaneID, previewRuntime, materializer, installer, nil)
+		if err != nil {
+			log.Fatal("configure Preview Workspace runtime source adapter failed (failure_class=runtime_configuration)")
 		}
 		previewSink, err := previewcontroller.NewSQSResultSink(sqs.NewFromConfig(awsCfg), previewResultURL)
 		if err != nil {

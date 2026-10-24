@@ -13,7 +13,9 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
+	"github.com/mo3789530/hako/internal/workloadsource"
 	"golang.org/x/sys/unix"
 )
 
@@ -28,6 +30,7 @@ var ErrWorkspaceFile = errors.New("invalid or unavailable Workspace file")
 type WorkspaceFiles struct {
 	mu     sync.RWMutex
 	rootFD int
+	root   string
 	max    int64
 }
 
@@ -54,7 +57,111 @@ func newWorkspaceFilesAt(root string, uid, gid uint32) (*WorkspaceFiles, error) 
 	if err != nil {
 		return nil, ErrWorkspaceFile
 	}
-	return &WorkspaceFiles{rootFD: fd, max: MaxWorkspaceFileBytes}, nil
+	return &WorkspaceFiles{rootFD: fd, root: root, max: MaxWorkspaceFileBytes}, nil
+}
+
+// InstallSourceArchive atomically installs a verified repository archive at
+// the fixed Preview source path. An EFS-visible advisory lock serializes
+// installers while allowing the OS to release it if the Guest process exits.
+// The Preview Workspace is not published until this operation returns. A
+// retry succeeds only when existing content has the same deterministic hash.
+func (f *WorkspaceFiles) InstallSourceArchive(ctx context.Context, size int64, digest string, src io.Reader) error {
+	decoded, digestErr := hex.DecodeString(digest)
+	if f == nil || ctx == nil || src == nil || size < 1 || size > MaxWorkspaceFileBytes || digestErr != nil ||
+		len(decoded) != 32 || hex.EncodeToString(decoded) != digest {
+		return ErrWorkspaceFile
+	}
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	if f.rootFD < 0 || ctx.Err() != nil {
+		return ErrWorkspaceFile
+	}
+	if err := f.verifyExistingSource(ctx, digest); err == nil {
+		return nil
+	} else if !errors.Is(err, unix.ENOENT) {
+		return ErrWorkspaceFile
+	}
+	lockFD, err := f.lockPreviewSource(ctx)
+	if err != nil {
+		return ErrWorkspaceFile
+	}
+	defer func() {
+		_ = unix.Flock(lockFD, unix.LOCK_UN)
+		_ = unix.Close(lockFD)
+	}()
+	if err := f.verifyExistingSource(ctx, digest); err == nil {
+		return nil
+	} else if !errors.Is(err, unix.ENOENT) {
+		return ErrWorkspaceFile
+	}
+	temporary, err := os.MkdirTemp(f.root, ".hako-preview-source-")
+	if err != nil {
+		return ErrWorkspaceFile
+	}
+	defer os.RemoveAll(temporary)
+	if err := os.Chmod(temporary, 0700); err != nil {
+		return ErrWorkspaceFile
+	}
+	content := path.Join(temporary, "content")
+	if err := workloadsource.ExtractArchive(ctx, io.LimitReader(src, size), size, digest, content, f.max); err != nil {
+		return ErrWorkspaceFile
+	}
+	if err := unix.Renameat(unix.AT_FDCWD, content, f.rootFD, "src"); err != nil {
+		return ErrWorkspaceFile
+	}
+	if err := unix.Fsync(f.rootFD); err != nil {
+		return ErrWorkspaceFile
+	}
+	return nil
+}
+
+func (f *WorkspaceFiles) lockPreviewSource(ctx context.Context) (int, error) {
+	fd, err := unix.Openat(f.rootFD, ".hako-preview-source-install.lock", unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
+	if err != nil {
+		return -1, ErrWorkspaceFile
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG {
+		_ = unix.Close(fd)
+		return -1, ErrWorkspaceFile
+	}
+	for {
+		if ctx.Err() != nil {
+			_ = unix.Close(fd)
+			return -1, ErrWorkspaceFile
+		}
+		if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err == nil {
+			return fd, nil
+		} else if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
+			_ = unix.Close(fd)
+			return -1, ErrWorkspaceFile
+		}
+		timer := time.NewTimer(20 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			_ = unix.Close(fd)
+			return -1, ErrWorkspaceFile
+		case <-timer.C:
+		}
+	}
+}
+
+func (f *WorkspaceFiles) verifyExistingSource(ctx context.Context, digest string) error {
+	fd, err := unix.Openat(f.rootFD, "src", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return err
+	}
+	_ = unix.Close(fd)
+	archive, err := workloadsource.CreateArchive(ctx, path.Join(f.root, "src"), f.max)
+	if err != nil {
+		return ErrWorkspaceFile
+	}
+	defer archive.Close()
+	if archive.SHA256() != digest {
+		return ErrWorkspaceFile
+	}
+	return nil
 }
 
 func (f *WorkspaceFiles) Close() error {

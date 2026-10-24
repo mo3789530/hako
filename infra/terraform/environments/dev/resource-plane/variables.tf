@@ -318,6 +318,24 @@ variable "enable_preview_runtime" {
   default     = false
 }
 
+variable "preview_runtime_source" {
+  description = "Default-off Preview checkout broker, exact source archive prefix, Gateway origin, and Guest ticket secret configuration. Required when enable_preview_runtime is true."
+  type = object({
+    checkout_broker_url    = string
+    broker_client_cert_arn = string
+    broker_client_key_arn  = string
+    broker_ca_arn          = string
+    source_bucket_arn      = string
+    source_bucket_name     = string
+    source_prefix          = string
+    source_kms_key_arn     = optional(string, "")
+    gateway_origin         = string
+    ticket_key_id          = string
+    ticket_private_key_arn = string
+  })
+  default = null
+}
+
 variable "tags" {
   description = "Additional resource tags."
   type        = map(string)

@@ -2422,6 +2422,49 @@ resource "aws_iam_role_policy" "resource_controller_workspace_runtime" {
   }
 }
 
+# Preview source access is attached only when the dedicated Preview queue is
+# enabled. Checkout tokens stay in memory; archive access is limited to one
+# generation/claim prefix below the configured S3 source namespace.
+resource "aws_iam_role_policy" "resource_controller_preview_source" {
+  count = var.enable_preview_runtime ? 1 : 0
+
+  name = "${var.resource_plane_id}-resource-controller-preview-source"
+  role = aws_iam_role.resource_controller.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = concat([
+      {
+        Sid      = "ReadOnlyConfiguredPreviewMicroVM"
+        Effect   = "Allow"
+        Action   = ["lambda:GetMicrovm", "lambda:CreateMicrovmAuthToken"]
+        Resource = var.workspace_runtime_deployment.microvm_image_arn
+      },
+      {
+        Sid      = "StageAndReadOnlyPreviewSourcePrefix"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject"]
+        Resource = "${var.preview_runtime_source.source_bucket_arn}/${var.preview_runtime_source.source_prefix}/*"
+      },
+      {
+        Sid    = "ReadOnlyPreviewRuntimeSecrets"
+        Effect = "Allow"
+        Action = ["secretsmanager:GetSecretValue"]
+        Resource = [
+          var.preview_runtime_source.broker_client_cert_arn,
+          var.preview_runtime_source.broker_client_key_arn,
+          var.preview_runtime_source.broker_ca_arn,
+          var.preview_runtime_source.ticket_private_key_arn,
+        ]
+      },
+      ], var.preview_runtime_source.source_kms_key_arn == "" ? [] : [{
+        Sid      = "UseOnlyPreviewSourceArchiveKey"
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt", "kms:GenerateDataKey"]
+        Resource = var.preview_runtime_source.source_kms_key_arn
+    }])
+  })
+}
+
 # The development-only Fake controller remains separate from the opt-in
 # Lambda MicroVM controller below; both cannot consume the shared queue.
 resource "aws_lambda_function" "fake_resource_controller" {
@@ -2491,17 +2534,27 @@ resource "aws_lambda_function" "workspace_resource_controller" {
 
   environment {
     variables = {
-      HAKO_RESOURCE_PLANE_ID                 = var.resource_plane_id
-      HAKO_OPERATION_RESULT_QUEUE_URL        = aws_sqs_queue.results.url
-      HAKO_RUNTIME_IMPLEMENTATION            = "lambda-microvm"
-      HAKO_OPERATION_TIMEOUT                 = "${var.workspace_runtime_deployment.operation_timeout_seconds}s"
-      HAKO_PREVIEW_RUNTIME_COMMAND_QUEUE_ARN = var.enable_preview_runtime ? aws_sqs_queue.preview_runtime_commands[0].arn : ""
-      HAKO_PREVIEW_RUNTIME_RESULT_QUEUE_URL  = var.enable_preview_runtime ? aws_sqs_queue.preview_runtime_results[0].url : ""
-      HAKO_WORKSPACE_RUNTIME_JOURNAL_BUCKET  = var.workspace_runtime_deployment.journal_bucket_name
-      HAKO_WORKSPACE_RUNTIME_JOURNAL_PREFIX  = var.workspace_runtime_deployment.journal_prefix
-      HAKO_WORKSPACE_EFS_FILE_SYSTEM_ID      = var.workspace_storage_runtime.file_system_id
-      HAKO_WORKSPACE_RUNTIME_POLL_INTERVAL   = "500ms"
-      HAKO_WORKSPACE_RUNTIME_POLL_TIMEOUT    = "30s"
+      HAKO_RESOURCE_PLANE_ID                     = var.resource_plane_id
+      HAKO_OPERATION_RESULT_QUEUE_URL            = aws_sqs_queue.results.url
+      HAKO_RUNTIME_IMPLEMENTATION                = "lambda-microvm"
+      HAKO_OPERATION_TIMEOUT                     = "${var.workspace_runtime_deployment.operation_timeout_seconds}s"
+      HAKO_PREVIEW_RUNTIME_COMMAND_QUEUE_ARN     = var.enable_preview_runtime ? aws_sqs_queue.preview_runtime_commands[0].arn : ""
+      HAKO_PREVIEW_RUNTIME_RESULT_QUEUE_URL      = var.enable_preview_runtime ? aws_sqs_queue.preview_runtime_results[0].url : ""
+      HAKO_PREVIEW_CHECKOUT_BROKER_URL           = var.enable_preview_runtime ? var.preview_runtime_source.checkout_broker_url : ""
+      HAKO_PREVIEW_BROKER_CLIENT_CERT_SECRET_ARN = var.enable_preview_runtime ? var.preview_runtime_source.broker_client_cert_arn : ""
+      HAKO_PREVIEW_BROKER_CLIENT_KEY_SECRET_ARN  = var.enable_preview_runtime ? var.preview_runtime_source.broker_client_key_arn : ""
+      HAKO_PREVIEW_BROKER_CA_SECRET_ARN          = var.enable_preview_runtime ? var.preview_runtime_source.broker_ca_arn : ""
+      HAKO_PREVIEW_SOURCE_BUCKET                 = var.enable_preview_runtime ? var.preview_runtime_source.source_bucket_name : ""
+      HAKO_PREVIEW_SOURCE_PREFIX                 = var.enable_preview_runtime ? var.preview_runtime_source.source_prefix : ""
+      HAKO_PREVIEW_SOURCE_KMS_KEY_ID             = var.enable_preview_runtime ? var.preview_runtime_source.source_kms_key_arn : ""
+      HAKO_PREVIEW_GATEWAY_ORIGIN                = var.enable_preview_runtime ? var.preview_runtime_source.gateway_origin : ""
+      HAKO_PREVIEW_TICKET_KEY_ID                 = var.enable_preview_runtime ? var.preview_runtime_source.ticket_key_id : ""
+      HAKO_PREVIEW_TICKET_PRIVATE_KEY_SECRET_ARN = var.enable_preview_runtime ? var.preview_runtime_source.ticket_private_key_arn : ""
+      HAKO_WORKSPACE_RUNTIME_JOURNAL_BUCKET      = var.workspace_runtime_deployment.journal_bucket_name
+      HAKO_WORKSPACE_RUNTIME_JOURNAL_PREFIX      = var.workspace_runtime_deployment.journal_prefix
+      HAKO_WORKSPACE_EFS_FILE_SYSTEM_ID          = var.workspace_storage_runtime.file_system_id
+      HAKO_WORKSPACE_RUNTIME_POLL_INTERVAL       = "500ms"
+      HAKO_WORKSPACE_RUNTIME_POLL_TIMEOUT        = "30s"
       HAKO_WORKSPACE_RUNTIME_LAUNCH_SPEC_JSON = jsonencode({
         runtime_class               = var.workspace_runtime_deployment.runtime_class
         image_identifier            = var.workspace_runtime_deployment.microvm_image_arn
@@ -2520,7 +2573,8 @@ resource "aws_lambda_function" "workspace_resource_controller" {
   depends_on = [
     aws_iam_role_policy.resource_controller,
     aws_iam_role_policy.resource_controller_workspace_storage,
-    aws_iam_role_policy.resource_controller_workspace_runtime
+    aws_iam_role_policy.resource_controller_workspace_runtime,
+    aws_iam_role_policy.resource_controller_preview_source
   ]
 
   lifecycle {

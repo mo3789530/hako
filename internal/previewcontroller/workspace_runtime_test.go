@@ -3,12 +3,14 @@ package previewcontroller
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/previewprotocol"
 	"github.com/mo3789530/hako/internal/resourcecontroller"
+	"github.com/mo3789530/hako/internal/workloadsource"
 )
 
 type previewWorkspaceRuntimeFake struct {
@@ -23,6 +25,31 @@ type previewWorkspaceRuntimeFake struct {
 
 type previewRuntimeResultCapture struct {
 	results []Result
+}
+
+type previewSourceMaterializerFake struct {
+	source workloadsource.MaterializedSource
+	err    error
+	calls  int
+}
+
+func (f *previewSourceMaterializerFake) Materialize(_ context.Context, _ previewprotocol.Command) (workloadsource.MaterializedSource, error) {
+	f.calls++
+	return f.source, f.err
+}
+
+type previewSourceInstallerFake struct {
+	calls   int
+	command previewprotocol.Command
+	binding Binding
+	source  workloadsource.MaterializedSource
+	err     error
+}
+
+func (f *previewSourceInstallerFake) Install(_ context.Context, command previewprotocol.Command, binding Binding, source workloadsource.MaterializedSource) error {
+	f.calls++
+	f.command, f.binding, f.source = command, binding, source
+	return f.err
 }
 
 func (s *previewRuntimeResultCapture) Report(_ context.Context, result Result) error {
@@ -91,6 +118,35 @@ func TestWorkspaceRuntimeAdapterFencesProvisionAndCleanup(t *testing.T) {
 	}
 	if runtime.commands[len(runtime.commands)-1] != delete {
 		t.Fatal("cleanup retry did not preserve the deterministic delete Operation")
+	}
+}
+
+func TestWorkspaceRuntimeAdapterInstallsPinnedSourceAfterRuntimeBinding(t *testing.T) {
+	now := time.Now().UTC()
+	command := validCommand(now, previewprotocol.ActionProvision)
+	command.ResourcePlaneID = "rp-test"
+	source := &previewSourceMaterializerFake{source: workloadsource.MaterializedSource{Digest: strings.Repeat("b", 64),
+		ArtifactPrefix: "s3://hako-source/previews/tenant_1/prvws_0123456789abcdef0123456789abcdef/preview-claim-1234/"}}
+	installer := &previewSourceInstallerFake{}
+	runtime := &previewWorkspaceRuntimeFake{state: domain.ObservedWorkspaceRunning, kind: previewRuntimeResourceKind,
+		externalID: "microvm-preview-source", generation: 1}
+	adapter, err := NewWorkspaceRuntimeAdapterWithSource("rp-test", runtime, source, installer, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := adapter.Ensure(context.Background(), command)
+	if err != nil {
+		t.Fatalf("provision and install pinned Preview source: %v", err)
+	}
+	if source.calls != 1 || installer.calls != 1 || installer.command != command || installer.binding != binding || installer.source != source.source ||
+		binding.MicroVMID != runtime.externalID {
+		t.Fatalf("Preview source was not installed against the exact runtime binding: source_calls=%d installer=%+v binding=%+v", source.calls, installer, binding)
+	}
+	if err := adapter.Compensate(context.Background(), command, binding); err != nil {
+		t.Fatalf("compensate provision without requiring fresh source credentials: %v", err)
+	}
+	if source.calls != 1 || installer.calls != 1 {
+		t.Fatalf("compensation attempted to rematerialize source: source_calls=%d install_calls=%d", source.calls, installer.calls)
 	}
 }
 

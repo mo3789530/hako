@@ -183,9 +183,47 @@ variable "enable_preview_runtime" {
   validation {
     condition = !var.enable_preview_runtime || (
       var.workspace_runtime_deployment != null &&
-      var.control_plane_preview_result_consumer_role_arn != ""
+      var.control_plane_preview_result_consumer_role_arn != "" &&
+      var.preview_runtime_source != null
     )
-    error_message = "Preview runtime requires the Lambda MicroVM Workspace runtime and an exact Control Plane Preview result consumer role."
+    error_message = "Preview runtime requires the Lambda MicroVM Workspace runtime, exact Control Plane result consumer role, and pinned source deployment settings."
+  }
+}
+
+variable "preview_runtime_source" {
+  description = "Default-off Preview source checkout, archive, and Guest-ticket configuration. Required when Preview runtime is enabled."
+  type = object({
+    checkout_broker_url    = string
+    broker_client_cert_arn = string
+    broker_client_key_arn  = string
+    broker_ca_arn          = string
+    source_bucket_arn      = string
+    source_bucket_name     = string
+    source_prefix          = string
+    source_kms_key_arn     = optional(string, "")
+    gateway_origin         = string
+    ticket_key_id          = string
+    ticket_private_key_arn = string
+  })
+  default = null
+
+  validation {
+    condition = var.preview_runtime_source == null || (
+      can(regex("^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$", var.preview_runtime_source.checkout_broker_url)) &&
+      can(regex("^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$", var.preview_runtime_source.gateway_origin)) &&
+      can(regex("^arn:(aws|aws-us-gov|aws-cn):secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$", var.preview_runtime_source.broker_client_cert_arn)) &&
+      can(regex("^arn:(aws|aws-us-gov|aws-cn):secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$", var.preview_runtime_source.broker_client_key_arn)) &&
+      can(regex("^arn:(aws|aws-us-gov|aws-cn):secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$", var.preview_runtime_source.broker_ca_arn)) &&
+      can(regex("^arn:(aws|aws-us-gov|aws-cn):secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$", var.preview_runtime_source.ticket_private_key_arn)) &&
+      length(toset([var.preview_runtime_source.broker_client_cert_arn, var.preview_runtime_source.broker_client_key_arn, var.preview_runtime_source.broker_ca_arn, var.preview_runtime_source.ticket_private_key_arn])) == 4 &&
+      can(regex("^arn:(aws|aws-us-gov|aws-cn):s3:::[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.preview_runtime_source.source_bucket_arn)) &&
+      split(":", var.preview_runtime_source.source_bucket_arn)[5] == var.preview_runtime_source.source_bucket_name &&
+      can(regex("^[A-Za-z0-9/_=-]{1,512}$", var.preview_runtime_source.source_prefix)) &&
+      !startswith(var.preview_runtime_source.source_prefix, "/") && !endswith(var.preview_runtime_source.source_prefix, "/") && !can(regex("\\.\\.|//", var.preview_runtime_source.source_prefix)) &&
+      (var.preview_runtime_source.source_kms_key_arn == "" || can(regex("^arn:(aws|aws-us-gov|aws-cn):kms:[a-z0-9-]+:[0-9]{12}:key/[A-Fa-f0-9-]+$", var.preview_runtime_source.source_kms_key_arn))) &&
+      can(regex("^[A-Za-z0-9_-]{1,64}$", var.preview_runtime_source.ticket_key_id))
+    )
+    error_message = "Preview source requires HTTPS origins, four distinct exact Secret ARNs, an exact S3 bucket/prefix, optional exact KMS key, and a valid ticket key ID."
   }
 }
 

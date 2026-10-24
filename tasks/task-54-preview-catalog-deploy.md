@@ -404,5 +404,32 @@ Add optional repository-level preview environments and service metadata/deploy p
   with the immutable Git checkout and existing S3 archive stager, tied to the
   exact PR head SHA, runtime Workspace, generation, and claim. It removes the
   temporary checkout and executes no repository code. Unit tests cover its
-  pinning, archive identity, failure cleanup, and malformed results. Runtime
-  composition, Guest source delivery, and app startup remain unimplemented.
+  pinning, archive identity, failure cleanup, and malformed results.
+
+## Preview source installation in Lambda MicroVM (2026-10-25)
+
+- `WorkspaceRuntimeAdapter.Ensure` now resolves the durable Lambda MicroVM
+  binding, materializes the exact generation/claim-pinned repository source,
+  and calls an injected installer. Compensation only recovers/deletes the
+  deterministic runtime binding; it does not need a fresh checkout credential.
+- Added a Preview installer using the Resource Plane S3 archive reader, exact
+  MicroVM lookup, short-lived `CreateMicrovmAuthToken`, a one-use Ed25519
+  Guest file-transfer ticket, and the bounded WSS file channel. The Guest
+  protocol accepts `install_archive` only for `/workspace/src`; it verifies
+  SHA-256, rejects unsafe archive entries, installs atomically without
+  overwriting existing content, and accepts retries only when the installed
+  tree digest matches. Tests cover WSS transfer, atomic install, same-content
+  retry, conflicting content, invalid digest, and runtime adapter sequencing.
+- The Resource Controller Lambda now fails startup if Preview commands are
+  enabled without broker/S3/Gateway/ticket configuration. Its source
+  composition reads four distinct, bounded Secret Manager values, uses the
+  existing Resource Plane mTLS checkout broker, and stages/reads only the
+  configured S3 prefix. Terraform's default-off `preview_runtime_source`
+  contract injects those settings and grants exact-prefix S3 and exact-ARN
+  Secret access plus configured MicroVM auth-token and optional KMS actions.
+- Local Go tests pass. OpenTofu validation passes for the dev Resource Plane
+  root. No AWS apply or real Secret retrieval occurred. Remaining: provision
+  the matching Guest ticket public key and Preview app startup in the immutable
+  MicroVM image, validate Resource Plane-to-Guest connectivity and Gateway
+  routing, wire confirmed physical cleanup, then run the approved AWS/MicroVM
+  end-to-end acceptance.

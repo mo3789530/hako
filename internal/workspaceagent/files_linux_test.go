@@ -6,10 +6,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/mo3789530/hako/internal/workloadsource"
 )
 
 func TestWorkspaceFilesReadWriteAndAtomicallyReplaceWithinRoot(t *testing.T) {
@@ -100,5 +104,105 @@ func TestWorkspaceFilesEnforcesSizeAndCancellation(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "canceled")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("canceled upload left a file: %v", err)
+	}
+}
+
+func TestWorkspaceFilesInstallsVerifiedPreviewSourceAtomicallyAndIdempotently(t *testing.T) {
+	workspace := t.TempDir()
+	repository := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repository, "nested"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "nested", "main.go"), []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	archive, err := workloadsource.CreateArchive(context.Background(), repository, workloadsource.DefaultMaxArchiveBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.Close()
+	files, err := newWorkspaceFilesAt(workspace, uint32(os.Getuid()), uint32(os.Getgid()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	install := func() error {
+		if _, err := archive.Reader().Seek(0, 0); err != nil {
+			return err
+		}
+		return files.InstallSourceArchive(context.Background(), archive.Size(), archive.SHA256(), archive.Reader())
+	}
+	if err := install(); err != nil {
+		t.Fatalf("install verified Preview source: %v", err)
+	}
+	if err := install(); err != nil {
+		t.Fatalf("same-archive retry was not idempotent: %v", err)
+	}
+	installed, err := os.ReadFile(filepath.Join(workspace, "src", "nested", "main.go"))
+	if err != nil || string(installed) != "package main\n" {
+		t.Fatalf("installed source=%q error=%v", installed, err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "src", "nested", "main.go"), []byte("modified"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := install(); !errors.Is(err, ErrWorkspaceFile) {
+		t.Fatalf("retry replaced or accepted modified source: %v", err)
+	}
+}
+
+func TestWorkspaceFilesRejectsInvalidPreviewSourceArchiveWithoutInstalling(t *testing.T) {
+	workspace := t.TempDir()
+	files, err := newWorkspaceFilesAt(workspace, uint32(os.Getuid()), uint32(os.Getgid()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	if err := files.InstallSourceArchive(context.Background(), 4, strings.Repeat("0", 64), strings.NewReader("evil")); !errors.Is(err, ErrWorkspaceFile) {
+		t.Fatalf("invalid digest-bound archive error=%v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(workspace, "src")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("invalid source created destination: %v", err)
+	}
+}
+
+func TestWorkspaceFilesSerializesConcurrentPreviewSourceInstallers(t *testing.T) {
+	workspace := t.TempDir()
+	repository := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repository, "main.go"), []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	archive, err := workloadsource.CreateArchive(context.Background(), repository, workloadsource.DefaultMaxArchiveBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.Close()
+	archiveBytes, err := io.ReadAll(archive.Reader())
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := newWorkspaceFilesAt(workspace, uint32(os.Getuid()), uint32(os.Getgid()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	var wait sync.WaitGroup
+	errors := make(chan error, 2)
+	for range 2 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			errors <- files.InstallSourceArchive(context.Background(), int64(len(archiveBytes)), archive.SHA256(), bytes.NewReader(archiveBytes))
+		}()
+	}
+	wait.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatalf("concurrent same-content source installation failed: %v", err)
+		}
+	}
+	installed, err := os.ReadFile(filepath.Join(workspace, "src", "main.go"))
+	if err != nil || string(installed) != "package main\n" {
+		t.Fatalf("concurrently installed source=%q error=%v", installed, err)
 	}
 }

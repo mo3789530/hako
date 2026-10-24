@@ -9,6 +9,8 @@ import (
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/previewprotocol"
 	"github.com/mo3789530/hako/internal/resourcecontroller"
+	"github.com/mo3789530/hako/internal/workloadjournal"
+	"github.com/mo3789530/hako/internal/workloadsource"
 )
 
 const (
@@ -30,7 +32,17 @@ type WorkspaceRuntime interface {
 type WorkspaceRuntimeAdapter struct {
 	resourcePlaneID domain.ResourcePlaneID
 	runtime         WorkspaceRuntime
+	source          PreviewSourceMaterializerProvider
+	installer       PreviewSourceInstaller
 	now             func() time.Time
+}
+
+type PreviewSourceMaterializerProvider interface {
+	Materialize(context.Context, previewprotocol.Command) (workloadsource.MaterializedSource, error)
+}
+
+type PreviewSourceInstaller interface {
+	Install(context.Context, previewprotocol.Command, Binding, workloadsource.MaterializedSource) error
 }
 
 func NewWorkspaceRuntimeAdapter(resourcePlaneID domain.ResourcePlaneID, runtime WorkspaceRuntime, now func() time.Time) (*WorkspaceRuntimeAdapter, error) {
@@ -43,16 +55,43 @@ func NewWorkspaceRuntimeAdapter(resourcePlaneID domain.ResourcePlaneID, runtime 
 	return &WorkspaceRuntimeAdapter{resourcePlaneID: resourcePlaneID, runtime: runtime, now: now}, nil
 }
 
+func NewWorkspaceRuntimeAdapterWithSource(resourcePlaneID domain.ResourcePlaneID, runtime WorkspaceRuntime,
+	source PreviewSourceMaterializerProvider, installer PreviewSourceInstaller, now func() time.Time) (*WorkspaceRuntimeAdapter, error) {
+	if source == nil || installer == nil {
+		return nil, ErrConfiguration
+	}
+	adapter, err := NewWorkspaceRuntimeAdapter(resourcePlaneID, runtime, now)
+	if err != nil {
+		return nil, err
+	}
+	adapter.source, adapter.installer = source, installer
+	return adapter, nil
+}
+
 func (r *WorkspaceRuntimeAdapter) Ensure(ctx context.Context, command previewprotocol.Command) (Binding, error) {
 	if err := r.validateCommand(ctx, command, previewprotocol.ActionProvision); err != nil {
 		return Binding{}, err
 	}
+	binding, err := r.ensureRuntime(ctx, command)
+	if err != nil {
+		return Binding{}, err
+	}
+	if r.source != nil && r.installer != nil {
+		source, err := r.source.Materialize(ctx, command)
+		if err != nil || !validPreviewSource(source, workloadjournalIdentity(command)) {
+			return Binding{}, ErrPreviewSourceUnavailable
+		}
+		if err := r.installer.Install(ctx, command, binding, source); err != nil {
+			return Binding{}, ErrPreviewSourceUnavailable
+		}
+	}
+	return binding, nil
+}
+
+func (r *WorkspaceRuntimeAdapter) ensureRuntime(ctx context.Context, command previewprotocol.Command) (Binding, error) {
 	workspaceCommand := r.workspaceCommand(command, domain.OperationEnsureRunning)
 	state, err := r.runtime.Execute(ctx, workspaceCommand)
-	if err != nil {
-		return Binding{}, ErrMicroVMLaunch
-	}
-	if state != domain.ObservedWorkspaceRunning {
+	if err != nil || state != domain.ObservedWorkspaceRunning {
 		return Binding{}, ErrMicroVMLaunch
 	}
 	kind, microVMID, allocationGeneration, err := r.runtime.ResourceBinding(ctx, workspaceCommand)
@@ -86,7 +125,7 @@ func (r *WorkspaceRuntimeAdapter) Compensate(ctx context.Context, command previe
 	if binding.MicroVMID != "" && !safeProviderID(binding.MicroVMID) {
 		return ErrRuntimeUnavailable
 	}
-	recovered, err := r.Ensure(ctx, command)
+	recovered, err := r.ensureRuntime(ctx, command)
 	if err != nil {
 		return err
 	}
@@ -94,6 +133,11 @@ func (r *WorkspaceRuntimeAdapter) Compensate(ctx context.Context, command previe
 		return ErrRuntimeUnavailable
 	}
 	return r.Cleanup(ctx, cleanupCommand(command))
+}
+
+func workloadjournalIdentity(command previewprotocol.Command) workloadjournal.Command {
+	return workloadjournal.Command{TenantID: command.TenantID, WorkloadRunID: command.RuntimeWorkspaceID,
+		AttemptID: command.ClaimID, Generation: command.Generation, ResourcePlaneID: command.ResourcePlaneID}
 }
 
 func (r *WorkspaceRuntimeAdapter) validateCommand(ctx context.Context, command previewprotocol.Command, action string) error {

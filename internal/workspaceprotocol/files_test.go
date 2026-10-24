@@ -3,6 +3,7 @@ package workspaceprotocol
 import (
 	"bytes"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -38,6 +39,7 @@ func TestFileControlFramesRoundTripAndHandleShortWrites(t *testing.T) {
 }
 
 func TestFileControlFramesRejectUnsafeRequestsAndMalformedResponses(t *testing.T) {
+	validDigest := strings.Repeat("a", 64)
 	for _, request := range []FileRequest{
 		{Operation: "upload", Path: "/etc/passwd", Size: 1},
 		{Operation: "upload", Path: "/workspace/../etc/passwd", Size: 1},
@@ -45,10 +47,17 @@ func TestFileControlFramesRejectUnsafeRequestsAndMalformedResponses(t *testing.T
 		{Operation: "upload", Path: "/workspace/file", Size: FileMaxBytes + 1},
 		{Operation: "download", Path: "/workspace/file", Size: 1},
 		{Operation: "delete", Path: "/workspace/file"},
+		{Operation: "install_archive", Path: "/workspace/src", Size: 1},
+		{Operation: "install_archive", Path: "/workspace/other", Size: 1, Digest: validDigest},
+		{Operation: "install_archive", Path: "/workspace/src", Size: 0, Digest: validDigest},
+		{Operation: "install_archive", Path: "/workspace/src", Size: 1, Digest: strings.ToUpper(validDigest)},
 	} {
 		if err := WriteFileRequest(&bytes.Buffer{}, request); !errors.Is(err, ErrInvalidFileTransfer) {
 			t.Errorf("unsafe request %+v error=%v", request, err)
 		}
+	}
+	if err := WriteFileRequest(&bytes.Buffer{}, FileRequest{Operation: "install_archive", Path: "/workspace/src", Size: 1, Digest: validDigest}); err != nil {
+		t.Fatalf("valid Preview source install request rejected: %v", err)
 	}
 	for _, response := range []FileResponse{
 		{OK: true, Size: -1},
