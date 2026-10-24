@@ -489,6 +489,13 @@ locally cached PostgreSQL image (`docker.io/library/postgres:18` by default;
 override with `HAKO_JOB_SERVICES_PODMAN_IMAGE`). This checks host-side container
 flags and lifecycle, not the pinned ARM64 nerdctl runtime or a Lambda MicroVM.
 
+After a service is created, the Linux engine also inspects its runtime metadata
+and fails closed unless the fixed catalog memory/CPU/PID limits, read-only
+rootfs, `999:999` user, exact loopback port bindings, and tmpfs paths/options
+were applied. Podman's known `rprivate` and `tmpcopyup` tmpfs additions are
+allowed. The integration check verifies the host Podman configuration only; it
+does not establish actual kernel/cgroup enforcement or target MicroVM behavior.
+
 The validated configuration is converted to a deterministic execution plan
 inside the Workload Agent, after it verifies the installed source archive
 against the Run's commit-bound digest. `checkout` is handled as source staging,

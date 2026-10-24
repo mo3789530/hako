@@ -192,15 +192,96 @@ func (e *NerdctlJobServiceEngine) EnsureService(ctx context.Context, name, netwo
 	if runErr != nil {
 		return ErrJobServicesUnavailable
 	}
-	return e.verifyCreatedService(ctx, name, owner, template.Name)
-}
-
-func (e *NerdctlJobServiceEngine) verifyCreatedService(ctx context.Context, name, owner, serviceName string) error {
-	labels, err := e.inspectContainerLabels(ctx, name)
-	if err != nil || labels["hako.managed-by"] != "hako" || labels[jobScopeLabel] != owner || labels["hako.service-name"] != serviceName {
+	if err := e.verifyCreatedService(ctx, name, owner, template); err != nil {
+		if cleanupErr := e.RemoveService(ctx, name, owner); cleanupErr != nil {
+			return ErrJobServiceCleanup
+		}
 		return ErrJobServicesUnavailable
 	}
 	return nil
+}
+
+func (e *NerdctlJobServiceEngine) verifyCreatedService(ctx context.Context, name, owner string, template servicecatalog.Template) error {
+	output, err := e.run(ctx, "inspect", "--format", "{{json .}}", name)
+	if err != nil {
+		return ErrJobServicesUnavailable
+	}
+	var actual struct {
+		Config struct {
+			User   string            `json:"User"`
+			Labels map[string]string `json:"Labels"`
+		} `json:"Config"`
+		HostConfig struct {
+			Memory       int64 `json:"Memory"`
+			NanoCPUs     int64 `json:"NanoCpus"`
+			PidsLimit    int64 `json:"PidsLimit"`
+			ReadonlyRoot bool  `json:"ReadonlyRootfs"`
+			PortBindings map[string][]struct {
+				HostIP   string `json:"HostIp"`
+				HostPort string `json:"HostPort"`
+			} `json:"PortBindings"`
+			Tmpfs map[string]string `json:"Tmpfs"`
+		} `json:"HostConfig"`
+	}
+	if json.Unmarshal(output, &actual) != nil || actual.Config.Labels == nil {
+		return ErrJobServicesUnavailable
+	}
+	labels := actual.Config.Labels
+	wantTmpfs := make(map[string]string)
+	for _, entry := range jobServiceTmpfs(template) {
+		mountPath, options, ok := strings.Cut(entry, ":")
+		if !ok {
+			return ErrJobServicesUnavailable
+		}
+		wantTmpfs[mountPath] = options
+	}
+	wantPorts := make(map[string][]struct {
+		HostIP   string `json:"HostIp"`
+		HostPort string `json:"HostPort"`
+	})
+	for _, port := range template.Ports {
+		key := fmt.Sprintf("%d/%s", port.Number, port.Protocol)
+		wantPorts[key] = []struct {
+			HostIP   string `json:"HostIp"`
+			HostPort string `json:"HostPort"`
+		}{{HostIP: "127.0.0.1", HostPort: strconv.Itoa(int(port.Number))}}
+	}
+	if labels["hako.managed-by"] != "hako" || labels[jobScopeLabel] != owner || labels["hako.service-name"] != template.Name ||
+		actual.Config.User != "999:999" || actual.HostConfig.Memory != template.Resources.MemoryBytes ||
+		actual.HostConfig.NanoCPUs != int64(template.Resources.MilliCPU)*1_000_000 || actual.HostConfig.PidsLimit != 256 ||
+		!actual.HostConfig.ReadonlyRoot || !reflect.DeepEqual(actual.HostConfig.PortBindings, wantPorts) ||
+		!jobServiceTmpfsMatches(actual.HostConfig.Tmpfs, wantTmpfs) {
+		return ErrJobServicesUnavailable
+	}
+	return nil
+}
+
+func jobServiceTmpfsMatches(actual, expected map[string]string) bool {
+	if len(actual) != len(expected) {
+		return false
+	}
+	for path, options := range expected {
+		actualOptions, ok := actual[path]
+		if !ok {
+			return false
+		}
+		got := make(map[string]struct{})
+		for _, option := range strings.Split(actualOptions, ",") {
+			got[option] = struct{}{}
+		}
+		for _, option := range strings.Split(options, ",") {
+			if _, ok := got[option]; !ok {
+				return false
+			}
+			delete(got, option)
+		}
+		for option := range got {
+			if option != "rprivate" && option != "tmpcopyup" {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (e *NerdctlJobServiceEngine) Healthy(ctx context.Context, name string, check servicecatalog.HealthCheck) (bool, error) {

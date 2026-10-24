@@ -214,6 +214,15 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   remapped to an ephemeral loopback port because `hako-dev-postgres` keeps
   port 5432 occupied; the development database is not stopped. This exercises
   Podman on the host, not nerdctl/cgroup enforcement in Lambda MicroVM.
+- The Linux Job Service Engine now inspects each created container and fails
+  closed unless its observed memory, NanoCPU, PID limit, read-only rootfs,
+  `999:999` user, exact loopback port bindings, and catalog tmpfs paths/options
+  match the fixed template. The tmpfs verifier permits only Podman's known
+  `rprivate` and `tmpcopyup` additions. Unit tests reject a runtime that ignores
+  a requested memory limit and verify the failed container is removed; the
+  Podman acceptance exercises the inspect contract. This confirms configured
+  container metadata on host Podman; it does not prove kernel/cgroup enforcement
+  or validate nerdctl inside Lambda MicroVM.
 - Extended that Podman integration to build a connection from the exact
   per-attempt `DATABASE_URL`/`PGPASSWORD` returned to the Job process, connect
   through the ephemeral loopback port, authenticate to PostgreSQL, and execute

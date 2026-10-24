@@ -80,6 +80,37 @@ func (r *podmanJobServiceCommandRunner) run(ctx context.Context, binary string, 
 			return nil, errors.New("Podman network inspection conversion failed")
 		}
 	}
+	if len(args) >= 3 && args[0] == "inspect" && args[1] == "--format" && args[2] == "{{json .}}" {
+		var inspection map[string]any
+		if err := json.Unmarshal(output, &inspection); err != nil {
+			return nil, errors.New("Podman container inspection output is invalid")
+		}
+		hostConfig, ok := inspection["HostConfig"].(map[string]any)
+		if !ok {
+			return nil, errors.New("Podman container host configuration is missing")
+		}
+		bindings, ok := hostConfig["PortBindings"].(map[string]any)
+		if !ok {
+			return nil, errors.New("Podman container port bindings are missing")
+		}
+		for _, entries := range bindings {
+			list, ok := entries.([]any)
+			if !ok {
+				return nil, errors.New("Podman container port binding entries are invalid")
+			}
+			for _, entry := range list {
+				binding, ok := entry.(map[string]any)
+				if !ok {
+					return nil, errors.New("Podman container port binding is invalid")
+				}
+				binding["HostPort"] = "5432"
+			}
+		}
+		output, err = json.Marshal(inspection)
+		if err != nil {
+			return nil, errors.New("Podman container inspection conversion failed")
+		}
+	}
 	return output, nil
 }
 

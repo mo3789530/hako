@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -15,15 +16,17 @@ import (
 )
 
 type fakeJobNerdctlRunner struct {
-	commands        [][]string
-	networkName     string
-	networkOwner    string
-	containerName   string
-	containerLabel  map[string]string
-	networkInternal bool
-	envFileContents string
-	envFilePath     string
-	failRun         bool
+	commands              [][]string
+	networkName           string
+	networkOwner          string
+	containerName         string
+	containerLabel        map[string]string
+	containerInspect      map[string]any
+	networkInternal       bool
+	envFileContents       string
+	envFilePath           string
+	failRun               bool
+	inspectMemoryOverride int64
 }
 
 func (r *fakeJobNerdctlRunner) Run(_ context.Context, _ string, args, _ []string) ([]byte, error) {
@@ -60,11 +63,17 @@ func (r *fakeJobNerdctlRunner) Run(_ context.Context, _ string, args, _ []string
 		}
 		return []byte("\n"), nil
 	case len(command) >= 3 && command[0] == "inspect":
-		payload, _ := json.Marshal(r.containerLabel)
+		if command[1] == "--format" && command[2] == "{{json .Config.Labels}}" {
+			payload, _ := json.Marshal(r.containerLabel)
+			return payload, nil
+		}
+		payload, _ := json.Marshal(r.containerInspect)
 		return payload, nil
 	case len(command) > 0 && command[0] == "run":
 		r.containerName = argValue(command, "--name")
 		r.containerLabel = make(map[string]string)
+		portBindings := make(map[string][]map[string]string)
+		tmpfs := make(map[string]string)
 		for i := 0; i < len(command)-1; i++ {
 			if command[i] == "--label" {
 				parts := strings.SplitN(command[i+1], "=", 2)
@@ -80,14 +89,36 @@ func (r *fakeJobNerdctlRunner) Run(_ context.Context, _ string, args, _ []string
 				}
 				r.envFileContents = string(content)
 			}
+			if command[i] == "--publish" {
+				parts := strings.Split(command[i+1], ":")
+				port := strings.Split(parts[2], "/")
+				portBindings[port[0]+"/"+port[1]] = []map[string]string{{"HostIp": parts[0], "HostPort": parts[1]}}
+			}
+			if command[i] == "--tmpfs" {
+				mount, options, _ := strings.Cut(command[i+1], ":")
+				tmpfs[mount] = options
+			}
 		}
 		if r.failRun {
 			return nil, errors.New("synthetic container create failure")
+		}
+		memory, _ := strconv.ParseInt(argValue(command, "--memory"), 10, 64)
+		if r.inspectMemoryOverride != 0 {
+			memory = r.inspectMemoryOverride
+		}
+		cpu, _ := strconv.ParseFloat(argValue(command, "--cpus"), 64)
+		pids, _ := strconv.ParseInt(argValue(command, "--pids-limit"), 10, 64)
+		r.containerInspect = map[string]any{
+			"Config": map[string]any{"User": argValue(command, "--user"), "Labels": r.containerLabel},
+			"HostConfig": map[string]any{"Memory": memory, "NanoCpus": int64(cpu * 1_000_000_000),
+				"PidsLimit": pids, "ReadonlyRootfs": containsArg(command, "--read-only"),
+				"PortBindings": portBindings, "Tmpfs": tmpfs},
 		}
 		return []byte("container-id\n"), nil
 	case len(command) > 0 && command[0] == "rm":
 		r.containerName = ""
 		r.containerLabel = nil
+		r.containerInspect = nil
 		return []byte("\n"), nil
 	case len(command) > 1 && command[0] == "exec":
 		return []byte("ok\n"), nil
@@ -178,6 +209,29 @@ func TestNerdctlJobServiceEngineRefusesForeignOwnershipAndMutableCatalog(t *test
 	}
 	if len(runner.commands) != 2 || commandPrefixSeen(runner.commands, "network", "create") || commandPrefixSeen(runner.commands, "run") {
 		t.Fatalf("invalid service caused runtime mutations: %v", runner.commands)
+	}
+}
+
+func TestNerdctlJobServiceEngineRejectsRuntimeThatIgnoresResourceLimit(t *testing.T) {
+	const owner = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	const network = "hako-jn-0123456789abcdef01234567"
+	const container = "hako-js-0123456789abcdef0123-redis"
+	runner := &fakeJobNerdctlRunner{networkName: network, networkOwner: owner, networkInternal: true,
+		inspectMemoryOverride: 1 << 30}
+	engine, err := NewNerdctlJobServiceEngine(NerdctlJobServiceEngineConfig{ContainerdSocket: "/run/user/65532/containerd/containerd.sock",
+		RuntimeDirectory: "/run/user/65532", EnvFileDirectory: t.TempDir(), Runner: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.isTmpfs = func(string) bool { return true }
+	if err := engine.EnsureService(context.Background(), container, network, owner, mustResolveService(t, "redis"), nil); !errors.Is(err, ErrJobServicesUnavailable) {
+		t.Fatalf("service with a mismatched inspected memory limit was accepted: %v", err)
+	}
+	if !commandPrefixSeen(runner.commands, "run") || !commandPrefixSeen(runner.commands, "inspect") {
+		t.Fatalf("runtime settings were not checked after creation: %v", runner.commands)
+	}
+	if runner.containerName != "" {
+		t.Fatal("service with an unverified runtime limit was left running")
 	}
 }
 
