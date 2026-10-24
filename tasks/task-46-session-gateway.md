@@ -1,6 +1,6 @@
 # Task 46: Hako Session Tickets and Gateway
 
-Status: In Progress (Ed25519 Gateway-audience ticket claims, RBAC-backed session API, HTTPS/HMAC active-session lookup, TLS/WSS core, shell/port local E2E, fixed-port VS Code bridge, idle-lease reporting, structured connection logs, CloudWatch EMF metrics, an OCC-fenced shared cap of ten active connection leases per Workspace, cross-replica same-Session connection exclusion, and a shared limit of 30 new lease admissions per Workspace per minute are implemented. `cmd/hako-workspace-gateway` composes the verifier, HTTPS session/lease clients, S3 runtime journal, Lambda MicroVM SDK/token provider, Agent ticket signer, and journal-backed shell/VS Code directory into a non-root HTTPS service. A default-off Resource Plane Terraform contract now creates the 443-only ALB with a 60-minute WebSocket idle timeout, private ARM64 Fargate tasks, ephemeral Secret loader volume, exact journal/MicroVM/Secret IAM, CPU scaling, and health/5xx alarms; OpenTofu mock-plan tests cover disabled and enabled configurations. Actual AWS deployment, production key/secret/certificate/DNS/network provisioning, idle-sweep-to-Dispatcher runtime E2E, and live MicroVM connectivity remain. Priority: P1.
+Status: In Progress (Ed25519 Gateway-audience ticket claims, RBAC-backed session API, HTTPS/HMAC active-session lookup, TLS/WSS core, shell/port local E2E, fixed-port VS Code bridge, idle-lease reporting, structured connection logs, CloudWatch EMF metrics, an OCC-fenced shared cap of ten active connection leases per Workspace, cross-replica same-Session connection exclusion, and a shared limit of 30 new lease admissions per Workspace per minute are implemented. `cmd/hako-workspace-gateway` composes the verifier, HTTPS session/lease clients, S3 runtime journal, Lambda MicroVM SDK/token provider, Agent ticket signer, and journal-backed shell/VS Code directory into a non-root HTTPS service. A default-off Resource Plane Terraform contract now creates the 443-only ALB with a 60-minute WebSocket idle timeout, private ARM64 Fargate tasks, ephemeral Secret loader volume, exact journal/MicroVM/Secret IAM, CPU scaling, and health/5xx alarms; OpenTofu mock-plan tests cover disabled and enabled configurations. The Gateway disconnect/reconnect → idle grace → transactional suspend → Outbox Dispatcher → fake Resource Controller → result projection PostgreSQL E2E is implemented and passes locally. Actual AWS deployment, production key/secret/certificate/DNS/network provisioning, and live MicroVM connectivity remain. Priority: P1.
 
 ## Goal
 
@@ -49,6 +49,18 @@ guest port-forward is not implemented by this adapter. See
 - End-to-end stream tests cover shell/PTY and one forwarded localhost port without Control Plane data proxying.
 - Terraform ingress is HTTPS/WSS 443 only with least-privilege Runtime connectivity; logs exclude ticket values and terminal contents unless explicitly audited policy allows.
 - Document key rotation and incident revocation.
+
+## Idle suspend lifecycle E2E (2026-10-24)
+
+`make test-workspace-idle-lifecycle-integration` composes a real local TLS/WSS
+Gateway stream and signed connection-lease reporting with PostgreSQL disconnect
+and reconnect fencing, idle grace expiry, the transactional suspend Operation,
+the normal Outbox Dispatcher route for the Workspace Placement, a fake Resource
+Controller runtime, and the normal Operation result consumer. It verifies that
+a reconnect prevents stale idle suspension and that an expired disconnect
+produces exactly one routed suspend whose result projects `observed_state` to
+`suspended`. The Resource Plane provider is fake; this is not proof of deployed
+Lambda MicroVM behavior or AWS networking.
 
 ## Progress update (2026-10-17, Gateway service composition)
 
