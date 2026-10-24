@@ -243,10 +243,15 @@ Add optional repository-level preview environments and service metadata/deploy p
   `previewcontroller` tests exercise the adapter through the controller's
   provision/cleanup result path and cover retry identity, operation fencing,
   compensation, foreign Plane rejection, and provider-binding validation.
-- This adapter is not yet composed into a Preview Lambda entry point or
-  deployed. PR SHA checkout into the generation's `/workspace`, app startup,
-  scheduled command wiring, and deployed Gateway route remain necessary before
-  enabling Preview sessions.
+- `hako-resource-controller-lambda` can optionally compose the adapter over its
+  configured Lambda MicroVM runtime and publish Preview results to a dedicated
+  result queue. Preview records are routed by exact configured SQS
+  `EventSourceARN`, with unrecognized Preview queue deliveries returned as
+  per-record failures. Both environment variables are unset by default.
+- This handler composition is not yet deployed: Resource Plane Preview queue,
+  IAM, and event-source Terraform wiring remain open. PR SHA checkout into the
+  generation's `/workspace`, app startup, scheduled command deployment, and a
+  deployed Gateway route also remain necessary before enabling Preview sessions.
 
 ## Preview lifecycle read API/CLI (2026-10-24)
 

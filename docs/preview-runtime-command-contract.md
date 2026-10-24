@@ -66,12 +66,28 @@ MicroVM through the Workspace journal, so this adapter does not publish an
 independent network route.
 
 The adapter is locally tested through the Preview controller/result path
-against a fake Resource Controller Runtime, but is not yet composed into a
-Preview Lambda entry point or deployed with a Preview command queue. It also
-does not checkout the pinned GitHub PR SHA into the Preview EFS root or start
-the application. Those guest bootstrap, route deployment, and end-to-end
-provider integration pieces remain necessary before Preview sessions can be
-enabled.
+against a fake Resource Controller Runtime. The Resource Controller Lambda
+can optionally compose it with the configured Lambda MicroVM Workspace runtime
+and Preview result sink. It does not checkout the pinned GitHub PR SHA into the
+Preview EFS root or start the application. Those guest bootstrap, queue/IAM
+deployment, route deployment, and end-to-end provider integration pieces
+remain necessary before Preview sessions can be enabled.
+
+## Resource Controller Lambda composition
+
+Set both `HAKO_PREVIEW_RUNTIME_COMMAND_QUEUE_ARN` and
+`HAKO_PREVIEW_RUNTIME_RESULT_QUEUE_URL` to opt in the Lambda composition.
+Preview messages are selected by exact SQS `EventSourceARN`; a Preview
+envelope delivered from any other queue is returned as a partial batch failure
+and never falls through to the Workspace Operation handler. Leaving both
+settings unset preserves default-off behavior.
+
+This is handler composition only. Resource Plane Preview queues, queue
+policies, IAM permissions, and the event-source mapping are not yet wired.
+Even after queue wiring, a successful result currently means that the
+generation-scoped Lambda MicroVM exists and has a logical Gateway route
+identity. The PR SHA is not checked out and no Guest process or application is
+started, so Preview sessions must remain disabled.
 
 ## Outbox event
 
