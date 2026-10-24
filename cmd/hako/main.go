@@ -624,6 +624,11 @@ func workspaceIDE(ctx context.Context, tenantID, workspaceID, localPortText stri
 }
 
 func openGitHubRepositoryPreview(ctx context.Context, args []string, stderr io.Writer) error {
+	return openGitHubRepositoryPreviewWith(ctx, args, stderr, nil, nil, cliBrowserOpener)
+}
+
+func openGitHubRepositoryPreviewWith(ctx context.Context, args []string, stderr io.Writer, apiHTTPClient *http.Client,
+	gatewayTLSConfig *tls.Config, browserOpener func(string) error) error {
 	if ctx == nil || stderr == nil {
 		return errors.New("Preview open context and status output are required")
 	}
@@ -648,23 +653,23 @@ func openGitHubRepositoryPreview(ctx context.Context, args []string, stderr io.W
 	localAddr := listener.Addr().(*net.TCPAddr)
 	previewURL := "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(localAddr.Port)) + "/"
 	fmt.Fprintf(stderr, "Opening Preview IDE at %s. Press Ctrl-C to stop.\n", previewURL)
-	if cliBrowserOpener != nil {
-		if err := cliBrowserOpener(previewURL); err != nil {
+	if browserOpener != nil {
+		if err := browserOpener(previewURL); err != nil {
 			return fmt.Errorf("open Preview IDE in browser: %w", err)
 		}
 	}
-	return serveWorkspaceTunnelWithSession(ctx, listener, workspacesession.PermissionVSCode, 0, gatewayURL, stderr, nil, nil,
+	return serveWorkspaceTunnelWithSession(ctx, listener, workspacesession.PermissionVSCode, 0, gatewayURL, stderr, apiHTTPClient, gatewayTLSConfig,
 		func(sessionCtx context.Context) (workspaceTunnelSession, func(context.Context) error, error) {
 			session, err := api.CreateRepositoryPreviewSession(sessionCtx, apiURL, accessToken, input.tenantID,
 				input.installationID, input.repositoryID, input.pullRequest,
-				[]workspacesession.Permission{workspacesession.PermissionVSCode}, nil)
+				[]workspacesession.Permission{workspacesession.PermissionVSCode}, apiHTTPClient)
 			if err != nil {
 				return workspaceTunnelSession{}, nil, err
 			}
 			workspaceID := string(session.WorkspaceID)
 			return workspaceTunnelSession{ID: string(session.SessionID), WorkspaceID: workspaceID, Ticket: session.Ticket}, func(revokeCtx context.Context) error {
 				return api.RevokeRepositoryPreviewSession(revokeCtx, apiURL, accessToken, input.tenantID,
-					input.installationID, input.repositoryID, input.pullRequest, string(session.SessionID), nil)
+					input.installationID, input.repositoryID, input.pullRequest, string(session.SessionID), apiHTTPClient)
 			}, nil
 		})
 }

@@ -58,7 +58,10 @@ routing, and revokes the Session when the connection closes. The local listener
 binds only to `127.0.0.1`. Until a Resource Plane provisioner binds a running
 Preview generation and publishes its Gateway route, the API rejects session
 creation and `open` cannot connect; this command does not create runtime
-resources.
+resources. A local API + TLS/WSS Gateway E2E verifies the CLI's loopback tunnel,
+generation-specific Session issuance, byte relay to the authorized Workspace
+ID, cancellation, and Session revocation using a fake Guest stream. This does
+not create a Preview MicroVM or validate a deployed route.
 
 Preview session records are separate from developer Workspace sessions because
 Preview runtime identities are not rows in the public `workspaces` table.

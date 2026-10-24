@@ -1,15 +1,27 @@
 package main
 
 import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/mo3789530/hako/internal/api"
+	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/workspacegateway"
+	"github.com/mo3789530/hako/internal/workspacesession"
 )
 
 func TestParseGitHubRepositoryAgentWritePolicyCLI(t *testing.T) {
@@ -318,6 +330,138 @@ func TestGitHubRepositoryPreviewSessionCLIsCallTenantScopedAPI(t *testing.T) {
 	}
 	if err := revokeGitHubRepositoryPreviewSessionCLI(append(args, "--session", string(createdSession.SessionID))); err != nil || !revoked {
 		t.Fatalf("Preview session revoke revoked=%v, error=%v", revoked, err)
+	}
+}
+
+func TestOpenGitHubRepositoryPreviewUsesSessionAndTLSGateway(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuer := &workspacesession.Ed25519Issuer{KeyID: "preview-open-test", PrivateKey: privateKey, TTL: time.Minute}
+	workspaceID := domain.WorkspaceID("prvws_0123456789abcdef0123456789abcdef")
+	ticket, claims, err := issuer.Issue(workspacesession.Claims{UserID: "usr_cli", TenantID: "tenant_cli", WorkspaceID: workspaceID,
+		ResourcePlane: "rp_cli", Permissions: []workspacesession.Permission{workspacesession.PermissionVSCode}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created, revoked atomic.Int32
+	apiServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer preview-open-access" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		const createPath = "/v1/tenants/tenant_cli/github/installations/42/repositories/7/previews/19/sessions"
+		if r.Method == http.MethodPost && r.URL.Path == createPath {
+			var request struct {
+				Permissions []workspacesession.Permission `json:"permissions"`
+			}
+			if json.NewDecoder(r.Body).Decode(&request) != nil || len(request.Permissions) != 1 || request.Permissions[0] != workspacesession.PermissionVSCode {
+				http.Error(w, "unexpected Preview permissions", http.StatusBadRequest)
+				return
+			}
+			created.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(api.RepositoryPreviewSession{SessionID: domain.SessionID(claims.TicketID), WorkspaceID: workspaceID,
+				Ticket: ticket, ExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC(), Permissions: []workspacesession.Permission{workspacesession.PermissionVSCode}})
+			return
+		}
+		if r.Method == http.MethodDelete && r.URL.Path == createPath+"/"+claims.TicketID {
+			revoked.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer apiServer.Close()
+	gateway, err := workspacegateway.New(workspacegateway.Config{ResourcePlaneID: "rp_cli",
+		Verifier: &workspacesession.Verifier{Keys: map[string]ed25519.PublicKey{"preview-open-test": publicKey}, Audience: workspacesession.AudienceGateway, Lookup: activeWorkspaceSession{}},
+		Dialer:   vscodeTestDialer{}, MaxConnections: 2, MaxConnectionsPerWorkspace: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatewayServer := httptest.NewTLSServer(gateway.Handler())
+	defer gatewayServer.Close()
+	gatewayTLS := gatewayServer.Client().Transport.(*http.Transport).TLSClientConfig
+	previousGetter := cliCredentialGetter
+	cliCredentialGetter = workspaceShellCredentials(fmt.Sprintf(`{"access_token":"preview-open-access","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+		time.Now().UTC().Format(time.RFC3339)))
+	t.Cleanup(func() { cliCredentialGetter = previousGetter })
+	t.Setenv("HAKO_API_URL", apiServer.URL)
+	t.Setenv("HAKO_GATEWAY_URL", gatewayServer.URL)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	openedURL := make(chan string, 1)
+	serverDone := make(chan error, 1)
+	args := []string{"--tenant", "tenant_cli", "--installation", "42", "--repository", "7", "--pull-request", "19", "--local-port", "0"}
+	go func() {
+		serverDone <- openGitHubRepositoryPreviewWith(ctx, args, io.Discard, apiServer.Client(),
+			&tls.Config{RootCAs: gatewayTLS.RootCAs}, func(value string) error {
+				openedURL <- value
+				return nil
+			})
+	}()
+	localURL := ""
+	select {
+	case localURL = <-openedURL:
+	case err := <-serverDone:
+		cancel()
+		t.Fatalf("Preview tunnel exited before opening: %v", err)
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("Preview browser tunnel did not start")
+	}
+	address := strings.TrimPrefix(strings.TrimPrefix(localURL, "http://"), "https://")
+	conn, err := net.DialTimeout("tcp", address[:strings.IndexByte(address, '/')], time.Second)
+	if err != nil {
+		cancel()
+		t.Fatalf("connect to loopback Preview tunnel: %v", err)
+	}
+	if _, err := conn.Write([]byte("preview-browser-stream")); err != nil {
+		cancel()
+		_ = conn.Close()
+		t.Fatalf("write browser stream: %v", err)
+	}
+	response := make([]byte, len("preview-browser-stream"))
+	_ = conn.SetDeadline(time.Now().Add(time.Second))
+	if _, err := io.ReadFull(conn, response); err != nil || string(response) != "preview-browser-stream" {
+		cancel()
+		_ = conn.Close()
+		t.Fatalf("Preview stream response = %q, error=%v", response, err)
+	}
+	_ = conn.Close()
+	cancel()
+	select {
+	case err := <-serverDone:
+		if err != nil {
+			t.Fatalf("Preview tunnel returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Preview tunnel did not stop after cancellation")
+	}
+	if created.Load() != 1 || revoked.Load() != 1 {
+		t.Fatalf("Preview session create=%d revoke=%d", created.Load(), revoked.Load())
+	}
+}
+
+func TestOpenGitHubRepositoryPreviewRequiresBothEndpoints(t *testing.T) {
+	previousGetter := cliCredentialGetter
+	cliCredentialGetter = repositoryCLICredentials(fmt.Sprintf(`{"access_token":"preview-open-access","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+		time.Now().UTC().Format(time.RFC3339)))
+	t.Cleanup(func() { cliCredentialGetter = previousGetter })
+	args := []string{"--tenant", "tenant_cli", "--installation", "42", "--repository", "7", "--pull-request", "19"}
+	for _, endpoints := range []struct {
+		api, gateway string
+	}{
+		{api: "", gateway: "https://gateway.example.test"},
+		{api: "https://api.example.test", gateway: ""},
+	} {
+		t.Setenv("HAKO_API_URL", endpoints.api)
+		t.Setenv("HAKO_GATEWAY_URL", endpoints.gateway)
+		if err := openGitHubRepositoryPreview(context.Background(), args, io.Discard); err == nil {
+			t.Errorf("accepted incomplete endpoints: api=%q gateway=%q", endpoints.api, endpoints.gateway)
+		}
 	}
 }
 

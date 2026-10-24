@@ -213,6 +213,21 @@ Add optional repository-level preview environments and service metadata/deploy p
   column-scoped Preview result and confirmed-capacity-release grants. No queue mapping,
   database grant, or AWS resource was applied.
 
+## Preview `open` CLI Gateway E2E (2026-10-25)
+
+- Added a local authenticated API + TLS/WSS Gateway test for
+  `hako github repository previews open`. It verifies Tenant/Installation/
+  Repository/PR-scoped Session creation with only `vscode`, uses the logical
+  generation Workspace ID returned by the API for Gateway routing, relays
+  browser bytes through a loopback listener to a fake Guest, revokes the
+  Session, and shuts down on cancellation. Endpoint configuration fails
+  closed when either API or Gateway URL is absent.
+- `go test ./cmd/hako -count=1 -coverprofile=...` reports 60.2% package
+  statement coverage; `openGitHubRepositoryPreview` is 100% and the injected
+  implementation path is 79.3%. This verifies CLI routing/session behavior
+  only; the Resource Plane MicroVM provisioner, public preview route, and
+  deployed Gateway remain unimplemented.
+
 ## Preview lifecycle read API/CLI (2026-10-24)
 
 - Added a bounded Tenant-member read endpoint and `hako github repository
