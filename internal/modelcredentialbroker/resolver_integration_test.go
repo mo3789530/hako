@@ -79,7 +79,7 @@ func TestModelCredentialResolverRequiresLiveProvenanceAndRechecksRotation(t *tes
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO tenant_model_credential_bindings(id,tenant_id,provider,secret_arn,reader_role_arn,status,created_at,updated_at)
 		VALUES ('binding_model_run','tenant_model_run','anthropic','arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/model/run-AbCdEf',
-		'arn:aws:iam::123456789012:role/hako/model-reader-run','approved',now(),now())`); err != nil {
+		'arn:aws:iam::123456789012:role/hako/tenant-model-credential-reader/tenant-tenant_model_run','approved',now(),now())`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO tenant_model_credentials(id,tenant_id,provider,binding_id,secret_version_id,status,credential_generation,created_by,updated_by,created_at,updated_at)
@@ -88,7 +88,7 @@ func TestModelCredentialResolverRequiresLiveProvenanceAndRechecksRotation(t *tes
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO tenant_model_credential_bindings(id,tenant_id,provider,purpose,secret_arn,reader_role_arn,status,created_at,updated_at)
 		VALUES ('binding_model_agent','tenant_model_run','anthropic','native_agent','arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/model/agent-AbCdEf',
-		'arn:aws:iam::123456789012:role/hako/model-agent-reader','approved',now(),now())`); err != nil {
+		'arn:aws:iam::123456789012:role/hako/tenant-model-credential-reader/tenant-tenant_model_run','approved',now(),now())`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO tenant_model_credentials(id,tenant_id,provider,purpose,binding_id,secret_version_id,status,credential_generation,created_by,updated_by,created_at,updated_at)

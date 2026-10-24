@@ -79,7 +79,7 @@ func TestRepositoryAgentModelAccessRequiresOwnerFactoryAndNativeAgentCredential(
 	}
 	for _, query := range []string{
 		`INSERT INTO tenant_model_credential_bindings (id,tenant_id,provider,purpose,secret_arn,reader_role_arn,status,created_at,updated_at)
-		 VALUES ('binding_agent_model','tenant_agent_model_access','anthropic','native_agent','arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/model/agent-AbCdEf','arn:aws:iam::123456789012:role/hako/model-agent-reader','approved',now(),now())`,
+		 VALUES ('binding_agent_model','tenant_agent_model_access','anthropic','native_agent','arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/model/agent-AbCdEf','arn:aws:iam::123456789012:role/hako/tenant-model-credential-reader/tenant-tenant_agent_model_access','approved',now(),now())`,
 		`INSERT INTO tenant_model_credentials (id,tenant_id,provider,purpose,binding_id,secret_version_id,status,credential_generation,created_by,updated_by,created_at,updated_at)
 		 VALUES ('credential_agent_model','tenant_agent_model_access','anthropic','native_agent','binding_agent_model','11111111111111111111111111111111','active',1,'usr_agent_model_owner','usr_agent_model_owner',now(),now())`,
 	} {

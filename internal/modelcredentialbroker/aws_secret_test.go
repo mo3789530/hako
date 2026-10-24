@@ -27,7 +27,7 @@ func (f testSecretClient) GetSecretValue(ctx context.Context, input *secretsmana
 
 func TestAWSSecretReaderUsesExactRoleResourceAndVersion(t *testing.T) {
 	version := "0123456789abcdef0123456789abcdef"
-	const roleARN = "arn:aws:iam::123456789012:role/hako/model-reader-a"
+	const roleARN = "arn:aws:iam::123456789012:role/hako/tenant-model-credential-reader/tenant-a"
 	const secretARN = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/model/a-AbCdEf"
 	assumer := testAssumer(func(_ context.Context, input *sts.AssumeRoleInput, _ ...func(*sts.Options)) (*sts.AssumeRoleOutput, error) {
 		if aws.ToString(input.RoleArn) != roleARN || aws.ToInt32(input.DurationSeconds) != 900 || len(aws.ToString(input.RoleSessionName)) > 64 {
@@ -74,7 +74,7 @@ func TestAWSSecretReaderUsesExactRoleResourceAndVersion(t *testing.T) {
 func TestAWSSecretReaderRejectsUnpinnedOrOversizedValues(t *testing.T) {
 	version := "0123456789abcdef0123456789abcdef"
 	base := modelcredentials.SecretAccess{CredentialID: "mcred_testcred1", TenantID: "tenant_a", Provider: modelcredentials.ProviderAnthropic, Purpose: modelcredentials.PurposeClaudeAction,
-		ReaderRoleARN: "arn:aws:iam::123456789012:role/hako/model-reader-a", SecretARN: "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/model/a-AbCdEf",
+		ReaderRoleARN: "arn:aws:iam::123456789012:role/hako/tenant-model-credential-reader/tenant-a", SecretARN: "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/model/a-AbCdEf",
 		SecretVersionID: version, CredentialGeneration: 1}
 	for _, response := range []*secretsmanager.GetSecretValueOutput{
 		{SecretString: aws.String("sk-ant-token"), VersionId: aws.String("ffffffffffffffffffffffffffffffff")},
@@ -95,5 +95,34 @@ func TestAWSSecretReaderRejectsUnpinnedOrOversizedValues(t *testing.T) {
 		if secret, err := reader.ReadSecret(context.Background(), base); err == nil || len(secret) > 0 {
 			t.Fatal("unversioned/oversized value was accepted")
 		}
+	}
+}
+
+func TestAWSSecretReaderRejectsRoleOutsideModelCredentialPurposePathBeforeAssumeRole(t *testing.T) {
+	for _, roleARN := range []string{
+		"arn:aws:iam::123456789012:role/hako/model-reader/tenant-a",
+		"arn:aws:iam::123456789012:role/hako/tenant-private-key-reader/tenant-a",
+		"arn:aws:iam::123456789012:role/hako/tenant-model-credential-reader/*",
+		"arn:aws:iam::123456789012:role/hako/tenant-model-credential-reader/tenant/a",
+	} {
+		t.Run(roleARN, func(t *testing.T) {
+			assumeRoleCalled := false
+			reader, err := newAWSSecretReader("us-east-1", testAssumer(func(context.Context, *sts.AssumeRoleInput, ...func(*sts.Options)) (*sts.AssumeRoleOutput, error) {
+				assumeRoleCalled = true
+				return nil, nil
+			}), func(string, aws.Credentials) secretsAPI { return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = reader.ReadSecret(context.Background(), modelcredentials.SecretAccess{
+				CredentialID: "mcred_testcred1", TenantID: "tenant_a", Provider: modelcredentials.ProviderAnthropic,
+				Purpose: modelcredentials.PurposeClaudeAction, ReaderRoleARN: roleARN,
+				SecretARN:       "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/model/a-AbCdEf",
+				SecretVersionID: "0123456789abcdef0123456789abcdef", CredentialGeneration: 1,
+			})
+			if err == nil || assumeRoleCalled {
+				t.Fatalf("ReadSecret accepted disallowed Role ARN (err=%v, AssumeRole called=%v)", err, assumeRoleCalled)
+			}
+		})
 	}
 }

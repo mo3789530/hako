@@ -20,6 +20,7 @@ Make model credentials Tenant-owned, purpose-specific and available only to expl
 - [x] Specify redaction, timeout, rotation, revocation, operator provisioning, and incident response boundaries in `docs/claude-model-credentials.md`.
 - [x] Add a production Broker IAM input for exact Tenant model credential reader Roles, separate from GitHub private-key and Webhook reader purposes; validate default-off, purpose-specific paths, exact ARNs, and non-overlap in Terraform mock plans. This is policy configuration only; no target Role, Secret, or certificate is provisioned.
 - [x] Add a reusable target-account Terraform module for one Tenant model credential reader Role, exact Broker trust, exact Secret `GetSecretValue`, optional exact-key/context KMS decrypt, and mock plan tests. No Secret values are accessed.
+- [x] Align Terraform, the Broker's pre-STS Role ARN validation, the DSQL binding constraint, integration fixtures, and operator SQL documentation on the exact `role/hako/tenant-model-credential-reader/<role-name>` purpose path.
 - [ ] Provision and review target Tenant reader Roles and required KMS grants in the owning Resource Plane/account, then apply the reviewed Broker allowlist. No AWS apply or real Secret retrieval is included in local implementation.
 - [ ] Provision Broker mTLS certificates and add production Broker/Worker deployment configuration after the final runtime delivery protocol is reviewed.
 

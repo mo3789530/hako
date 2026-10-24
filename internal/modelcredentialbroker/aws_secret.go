@@ -96,8 +96,21 @@ func (r *AWSSecretReader) ReadSecret(ctx context.Context, access modelcredential
 
 func validRoleARN(value string) bool {
 	parts := strings.SplitN(value, ":", 6)
-	return len(parts) == 6 && parts[0] == "arn" && validPartition(parts[1]) && parts[2] == "iam" && parts[3] == "" && validAccount(parts[4]) &&
-		strings.HasPrefix(parts[5], "role/") && len(parts[5]) > len("role/") && !strings.ContainsAny(value, "*?\r\n")
+	const rolePrefix = "role/hako/tenant-model-credential-reader/"
+	if len(parts) != 6 || parts[0] != "arn" || parts[1] != "aws" || parts[2] != "iam" || parts[3] != "" || !validAccount(parts[4]) ||
+		!strings.HasPrefix(parts[5], rolePrefix) {
+		return false
+	}
+	name := strings.TrimPrefix(parts[5], rolePrefix)
+	if len(name) < 1 || len(name) > 128 {
+		return false
+	}
+	for _, char := range name {
+		if !((char >= 'A' && char <= 'Z') || (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '_' || char == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 func validSecretARN(value string) bool {

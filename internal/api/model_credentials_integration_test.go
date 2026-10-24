@@ -32,9 +32,9 @@ func TestTenantModelCredentialAPIIsOwnerScopedAndNeverReturnsSecretReferences(t 
 		`INSERT INTO tenant_members(tenant_id,user_id,role,joined_at) VALUES ('tenant_model_api_a','usr_model_api_owner','owner',now()),('tenant_model_api_a','usr_model_api_member','member',now())`,
 		`INSERT INTO tenant_model_credential_bindings(id,tenant_id,provider,secret_arn,reader_role_arn,status,created_at,updated_at)
 		 VALUES ('binding_model_api_a','tenant_model_api_a','anthropic','arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/model/a-AbCdEf',
-		 'arn:aws:iam::123456789012:role/hako/model-reader-a','approved',now(),now()),
+			 'arn:aws:iam::123456789012:role/hako/tenant-model-credential-reader/tenant-tenant_model_api_a','approved',now(),now()),
 		 ('binding_model_api_b','tenant_model_api_b','anthropic','arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/model/b-GhIjKl',
-		 'arn:aws:iam::123456789012:role/hako/model-reader-b','approved',now(),now())`,
+			 'arn:aws:iam::123456789012:role/hako/tenant-model-credential-reader/tenant-tenant_model_api_b','approved',now(),now())`,
 	} {
 		if _, err := pool.Exec(ctx, query); err != nil {
 			t.Fatal(err)
@@ -44,7 +44,7 @@ func TestTenantModelCredentialAPIIsOwnerScopedAndNeverReturnsSecretReferences(t 
 		(id,tenant_id,provider,purpose,secret_arn,reader_role_arn,status,created_at,updated_at)
 		VALUES ('binding_model_api_agent','tenant_model_api_a','anthropic','native_agent',
 		'arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/model/agent-XyZaBc',
-		'arn:aws:iam::123456789012:role/hako/model-agent-reader','approved',now(),now())`); err != nil {
+		'arn:aws:iam::123456789012:role/hako/tenant-model-credential-reader/tenant-tenant_model_api_a','approved',now(),now())`); err != nil {
 		t.Fatal(err)
 	}
 	key, err := rsa.GenerateKey(rand.Reader, 2048)

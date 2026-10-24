@@ -167,7 +167,7 @@ func TestPostgresNativeAgentCredentialRequiresExactRunAndRepositoryOptIn(t *test
 		{`INSERT INTO workload_agent_tasks(tenant_id,workload_run_id,requested_by,integration_id,delivery_id,installation_id,repository_id,issue_number,comment_id,default_branch,commit_sha,issue_title,issue_body,context_sha256,created_at)
 		 VALUES ('tenant_agent_credential','run_agent_credential','usr_agent_credential','integration_agent_credential',$2,27,28,29,30,'main',$3,'Fix bug','details',$4,$1)`, []any{now, deliveryID, commitSHA, contextSHA256}},
 		{`INSERT INTO tenant_model_credential_bindings(id,tenant_id,provider,purpose,secret_arn,reader_role_arn,status,created_at,updated_at)
-		 VALUES ('binding_agent_model_credential','tenant_agent_credential','anthropic','native_agent','arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/model/agent-AbCdEf','arn:aws:iam::123456789012:role/hako/model-agent-reader','approved',$1,$1)`, []any{now}},
+		 VALUES ('binding_agent_model_credential','tenant_agent_credential','anthropic','native_agent','arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/model/agent-AbCdEf','arn:aws:iam::123456789012:role/hako/tenant-model-credential-reader/tenant-tenant_agent_credential','approved',$1,$1)`, []any{now}},
 		{`INSERT INTO tenant_model_credentials(id,tenant_id,provider,purpose,binding_id,secret_version_id,status,credential_generation,created_by,updated_by,created_at,updated_at)
 		 VALUES ('mcred_agentcredential','tenant_agent_credential','anthropic','native_agent','binding_agent_model_credential','11111111111111111111111111111111','active',1,'usr_agent_credential','usr_agent_credential',$1,$1)`, []any{now}},
 	}
