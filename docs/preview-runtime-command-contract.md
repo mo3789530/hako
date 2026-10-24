@@ -53,6 +53,26 @@ entry point is `cmd/hako-preview-result-consumer-lambda` and builds with
 database IAM grants are not deployed. The Lambda MicroVM/Gateway provider is
 also not wired.
 
+`previewcontroller.WorkspaceRuntimeAdapter` now maps a Preview provision to
+the existing Resource Plane Workspace Runtime using the generation-derived
+`runtime_workspace_id`. It uses a stable ensure Operation at workspace
+revision 1 and a stable delete Operation at revision 2, then reads the
+MicroVM ID through `ResourceBindingReporter`. Provision compensation replays
+the same ensure identity to recover an ambiguous Lambda `RunMicrovm` response
+from the durable journal before deleting that exact journaled runtime; it does
+not scan or adopt provider resources. The returned `gateway_route_id` is a
+deterministic logical routing identity; the Gateway resolves the current
+MicroVM through the Workspace journal, so this adapter does not publish an
+independent network route.
+
+The adapter is locally tested through the Preview controller/result path
+against a fake Resource Controller Runtime, but is not yet composed into a
+Preview Lambda entry point or deployed with a Preview command queue. It also
+does not checkout the pinned GitHub PR SHA into the Preview EFS root or start
+the application. Those guest bootstrap, route deployment, and end-to-end
+provider integration pieces remain necessary before Preview sessions can be
+enabled.
+
 ## Outbox event
 
 The Dispatcher accepts only these event identities:

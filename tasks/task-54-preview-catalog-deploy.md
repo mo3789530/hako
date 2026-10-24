@@ -228,6 +228,26 @@ Add optional repository-level preview environments and service metadata/deploy p
   only; the Resource Plane MicroVM provisioner, public preview route, and
   deployed Gateway remain unimplemented.
 
+## Preview-to-Workspace MicroVM adapter (2026-10-25)
+
+- Added `previewcontroller.WorkspaceRuntimeAdapter` to map a Preview generation
+  onto the existing durable Workspace Runtime journal. Each generation uses
+  its deterministic runtime Workspace ID, stable ensure revision 1 and delete
+  revision 2; MicroVM identity is read through the existing
+  `ResourceBindingReporter`. Compensation replays the same ensure operation to
+  recover an ambiguous `RunMicrovm` response before deleting the exact
+  journaled runtime. No provider scan or adoption is used.
+- The returned Gateway route ID is a deterministic logical identifier. The
+  Gateway resolves the actual MicroVM by the same runtime Workspace ID and
+  journal; no independent route is published by this adapter. Focused
+  `previewcontroller` tests exercise the adapter through the controller's
+  provision/cleanup result path and cover retry identity, operation fencing,
+  compensation, foreign Plane rejection, and provider-binding validation.
+- This adapter is not yet composed into a Preview Lambda entry point or
+  deployed. PR SHA checkout into the generation's `/workspace`, app startup,
+  scheduled command wiring, and deployed Gateway route remain necessary before
+  enabling Preview sessions.
+
 ## Preview lifecycle read API/CLI (2026-10-24)
 
 - Added a bounded Tenant-member read endpoint and `hako github repository
