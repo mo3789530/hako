@@ -147,9 +147,11 @@ Add optional repository-level preview environments and service metadata/deploy p
   capacity in the same claim transaction. Migration 000169 tracks private
   Preview capacity reservations and releases them only after confirmed cleanup;
   a lost conditional claim reverses its provisional reservation. PostgreSQL
-  integration covers capacity filtering and release. The concrete tag
-  discovery/deletion adapter, Resource Plane command transport, worker
-  deployment, and scheduled composition are not wired.
+  integration covers capacity filtering and release. The manifest/Dispatcher
+  now defines a dedicated strict Preview provision/cleanup route with no
+  Workspace queue fallback. The durable command producer, Resource Plane
+  consumer/result consumer, tag discovery/deletion adapter, queue
+  infrastructure, worker deployment, and scheduled composition are not wired.
 - Migrations 000163–000164 add a separate Preview Gateway session registry
   because deterministic Preview runtime Workspace IDs are intentionally absent
   from the public Workspace table. Tenant members can request/revoke scoped
@@ -170,8 +172,8 @@ Add optional repository-level preview environments and service metadata/deploy p
   scoping, and duplicate replay.
 - Remaining: Preview Workspace/Run binding to Lambda MicroVM, expiring
   Tenant-scoped Gateway route, timeout/merge sweep, provider-backed MicroVM /
-  route cleanup executor, CP-to-Resource Plane command/result transport,
-  scheduled provision/cleanup composition and DSQL grants, and lifecycle wiring
+  route cleanup executor, transactional command producer and Resource Plane
+  result consumer, scheduled provision/cleanup composition and DSQL grants, and lifecycle wiring
   into `hako open`. Placement selection/reservation is implemented locally but
   is not yet connected to a provider-backed runtime. See
   [`Preview lifecycle`](../docs/preview-lifecycle.md).
@@ -271,5 +273,5 @@ Add optional repository-level preview environments and service metadata/deploy p
   cleanup confirmation. `make test-preview-expiry-integration` includes this
   coverage.
 - This does not provision a MicroVM or Gateway route. Resource Plane command
-  transport, the provider adapter, and scheduled worker/deployment composition
-  remain open.
+  production, the provider adapter, and scheduled worker/deployment composition
+  remain open. The Dispatcher route is a local transport contract only.

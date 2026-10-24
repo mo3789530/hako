@@ -3,11 +3,14 @@
 package dispatcher
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/mo3789530/hako/internal/store/outbox"
@@ -43,7 +46,9 @@ type Config struct {
 	// WorkspaceServiceQueueURLs routes service reconciliation to a dedicated
 	// queue. It remains optional until the Resource Plane executor is deployed.
 	WorkspaceServiceQueueURLs map[string]string
-	Now                       func() time.Time
+	// PreviewRuntimeCommandQueueURLs routes Preview provision/cleanup messages.
+	PreviewRuntimeCommandQueueURLs map[string]string
+	Now                            func() time.Time
 }
 
 type Dispatcher struct {
@@ -118,6 +123,29 @@ type workspaceServiceEnvelope struct {
 	Config          json.RawMessage `json:"config"`
 }
 
+type previewRuntimeCommandEnvelope struct {
+	SchemaVersion      int       `json:"schema_version"`
+	Action             string    `json:"action"`
+	TenantID           string    `json:"tenant_id"`
+	InstallationID     int64     `json:"installation_id"`
+	RepositoryID       int64     `json:"repository_id"`
+	PullRequestNumber  int64     `json:"pull_request_number"`
+	Generation         int64     `json:"generation"`
+	RuntimeWorkspaceID string    `json:"runtime_workspace_id"`
+	ResourcePlaneID    string    `json:"resource_plane_id"`
+	ClaimID            string    `json:"claim_id"`
+	ClaimAttempt       int       `json:"claim_attempt"`
+	LeaseExpiresAt     time.Time `json:"lease_expires_at"`
+	HeadSHA            string    `json:"head_sha,omitempty"`
+	HeadRef            string    `json:"head_ref,omitempty"`
+	ExpiresAt          time.Time `json:"expires_at"`
+}
+
+var previewHeadSHAPattern = regexp.MustCompile(`^[a-fA-F0-9]{40}$`)
+var previewRuntimeWorkspaceIDPattern = regexp.MustCompile(`^prvws_[a-f0-9]{32}$`)
+var previewResourcePlaneIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+var previewRuntimeClaimIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`)
+
 func New(store Store, publisher Publisher, queueURLs map[string]string, config Config) (*Dispatcher, error) {
 	if store == nil || publisher == nil {
 		return nil, errors.New("outbox store and publisher are required")
@@ -174,6 +202,14 @@ func New(store Store, publisher Publisher, queueURLs map[string]string, config C
 		serviceURLs[id] = value
 	}
 	config.WorkspaceServiceQueueURLs = serviceURLs
+	previewURLs := make(map[string]string, len(config.PreviewRuntimeCommandQueueURLs))
+	for id, value := range config.PreviewRuntimeCommandQueueURLs {
+		if id == "" || value == "" {
+			return nil, errors.New("Preview runtime Resource Plane IDs and command queue URLs must not be empty")
+		}
+		previewURLs[id] = value
+	}
+	config.PreviewRuntimeCommandQueueURLs = previewURLs
 	return &Dispatcher{store: store, publish: publisher, queues: copyURLs, config: config}, nil
 }
 
@@ -214,6 +250,33 @@ func (d *Dispatcher) RunOnce(ctx context.Context) (Stats, error) {
 }
 
 func (d *Dispatcher) route(event outbox.Event) (string, error) {
+	if event.AggregateType == "repository_preview_runtime" &&
+		(event.EventType == "repository_preview_runtime.provision" || event.EventType == "repository_preview_runtime.cleanup") {
+		var command previewRuntimeCommandEnvelope
+		decoder := json.NewDecoder(bytes.NewReader(event.Payload))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&command); err != nil {
+			return "", fmt.Errorf("decode Preview runtime command: %w", err)
+		}
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			return "", errors.New("Preview runtime command must contain exactly one JSON object")
+		}
+		wantAction := strings.TrimPrefix(event.EventType, "repository_preview_runtime.")
+		if command.SchemaVersion != 1 || command.Action != wantAction || command.TenantID == "" ||
+			command.InstallationID <= 0 || command.RepositoryID <= 0 || command.PullRequestNumber <= 0 || command.Generation <= 0 ||
+			!previewRuntimeWorkspaceIDPattern.MatchString(command.RuntimeWorkspaceID) || command.RuntimeWorkspaceID != event.AggregateID ||
+			!previewResourcePlaneIDPattern.MatchString(command.ResourcePlaneID) || !previewRuntimeClaimIDPattern.MatchString(command.ClaimID) ||
+			command.ClaimAttempt < 1 || command.LeaseExpiresAt.IsZero() || command.ExpiresAt.IsZero() ||
+			(command.Action == "provision" && (!previewHeadSHAPattern.MatchString(command.HeadSHA) || command.HeadRef == "")) ||
+			(command.Action == "cleanup" && (command.HeadSHA != "" || command.HeadRef != "")) {
+			return "", errors.New("Preview runtime command has an unsupported or inconsistent envelope")
+		}
+		queueURL := d.config.PreviewRuntimeCommandQueueURLs[command.ResourcePlaneID]
+		if queueURL == "" {
+			return "", fmt.Errorf("no Preview runtime command queue configured for Resource Plane %q", command.ResourcePlaneID)
+		}
+		return queueURL, nil
+	}
 	if event.AggregateType == "workspace_service" && event.EventType == "workspace_service.reconcile_requested" {
 		var command workspaceServiceEnvelope
 		if err := json.Unmarshal(event.Payload, &command); err != nil {

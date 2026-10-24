@@ -146,12 +146,19 @@ placement policy and requires the `microvm` capability. Capacity remains charged
 retries and is released only after cleanup confirmation. A conditional claim
 race reverses its provisional capacity reservation in the same transaction.
 The claim uses conditional writes and OCC retries rather than row-locking
-syntax, keeping it compatible with Aurora DSQL. PostgreSQL integration covers
+syntax, keeping it compatible with Aurora DSQL. The Outbox Dispatcher now has
+a dedicated Preview provision/cleanup queue route with strict generation,
+claim, logical identity, and Plane validation; it never falls back to the
+Workspace command queue. The producer, Resource Plane consumer/result path,
+and queue infrastructure are still missing. PostgreSQL integration covers
 Tenant region/Plane filters, full-capacity exclusion, pinned placement, and
 capacity release after cleanup. Resource Plane command transport, worker
 deployment and DSQL role grants, Lambda MicroVM API calls, Gateway route
 publication, and tag-based provider executor are still missing, so no Preview
 runtime is allocated for user traffic.
+
+The accepted Preview Outbox envelope and current routing-only status are
+documented in [Preview Runtime command routing contract](preview-runtime-command-contract.md).
 
 Each present Preview records a fixed `expires_at` using the Tenant's configured
 Preview lifetime (24 hours when no quota row exists). `synchronize` deliveries

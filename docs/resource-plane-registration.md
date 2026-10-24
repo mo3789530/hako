@@ -22,6 +22,7 @@ Each registration contains:
 | `workload_command_queue_url` | Optional SQS queue URL dedicated to Workload attempt dispatch/cancel. Must be configured together with `workload_result_queue_url`. |
 | `workload_result_queue_url` | Optional SQS queue URL dedicated to Workload execution results. |
 | `actions_runner_startup_queue_url` | Optional SQS queue URL for ephemeral Actions Runner startup claims. At most one Resource Plane may configure this field until runner placement is implemented. |
+| `preview_runtime_command_queue_url` | Optional dedicated SQS queue URL for Preview generation provision/cleanup commands. |
 
 The v1 capability vocabulary is `microvm`, `container`, `private-network`, and
 `persistent-volume`. Capability strings are trimmed and lowercased during
@@ -44,6 +45,13 @@ Dispatcher routes Workspace commands to `command_queue_url` and Workload
 attempt dispatch/cancel to the dedicated Workload queue when configured. It
 does not fall back to a Workspace queue for Workload messages; missing routing
 leaves the Outbox item retryable. Both use Region-specific SQS clients. The
+Dispatcher also routes `repository_preview_runtime.provision` and
+`repository_preview_runtime.cleanup` events to the dedicated
+`preview_runtime_command_queue_url`, after validating generation, claim,
+logical runtime identity, head (for provision), and pinned Plane. It never
+falls back to the Workspace command queue. This is currently a routing
+contract only: no Preview command producer, Resource Plane consumer, result
+consumer, or Terraform queue is connected yet. The
 runner startup publisher uses `actions_runner_startup_queue_url` when present,
 claims a durable runner admission with a bounded lease, and publishes only the
 integration/job/attempt/claim key. The Control Plane Dispatcher IAM role is

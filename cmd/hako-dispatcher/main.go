@@ -41,6 +41,7 @@ func main() {
 	queueURLs := make(map[string]string, len(queues))
 	workloadQueueURLs := make(map[string]string, len(queues))
 	workspaceServiceQueueURLs := make(map[string]string, len(queues))
+	previewRuntimeQueueURLs := make(map[string]string, len(queues))
 	regionalClients := make(map[string]dispatcher.SQSAPI, len(queues))
 	for resourcePlaneID, queue := range queues {
 		queueURLs[resourcePlaneID] = queue.URL
@@ -49,6 +50,9 @@ func main() {
 		}
 		if queue.WorkspaceServiceURL != "" {
 			workspaceServiceQueueURLs[resourcePlaneID] = queue.WorkspaceServiceURL
+		}
+		if queue.PreviewRuntimeURL != "" {
+			previewRuntimeQueueURLs[resourcePlaneID] = queue.PreviewRuntimeURL
 		}
 		if queue.Region != "" {
 			regionalConfig := awsCfg
@@ -60,6 +64,9 @@ func main() {
 			if queue.WorkspaceServiceURL != "" {
 				regionalClients[queue.WorkspaceServiceURL] = sqs.NewFromConfig(regionalConfig)
 			}
+			if queue.PreviewRuntimeURL != "" {
+				regionalClients[queue.PreviewRuntimeURL] = sqs.NewFromConfig(regionalConfig)
+			}
 		}
 	}
 	publisher, err := dispatcher.NewRegionalSQSPublisher(sqs.NewFromConfig(awsCfg), regionalClients)
@@ -68,10 +75,11 @@ func main() {
 	}
 	engine, err := dispatcher.New(dispatcher.StoreAdapter{Pool: pool, Policy: transaction.DefaultPolicy()}, publisher, queueURLs, dispatcher.Config{
 		BatchSize: 10, LeaseDuration: 30 * time.Second, BaseBackoff: time.Second, MaxBackoff: time.Minute,
-		WorkloadSchedulerQueueURL: strings.TrimSpace(os.Getenv("HAKO_WORKLOAD_SCHEDULER_QUEUE_URL")),
-		WorkloadCommandQueueURLs:  workloadQueueURLs,
-		GitHubChecksQueueURL:      strings.TrimSpace(os.Getenv("HAKO_GITHUB_CHECKS_QUEUE_URL")),
-		WorkspaceServiceQueueURLs: workspaceServiceQueueURLs,
+		WorkloadSchedulerQueueURL:      strings.TrimSpace(os.Getenv("HAKO_WORKLOAD_SCHEDULER_QUEUE_URL")),
+		WorkloadCommandQueueURLs:       workloadQueueURLs,
+		GitHubChecksQueueURL:           strings.TrimSpace(os.Getenv("HAKO_GITHUB_CHECKS_QUEUE_URL")),
+		WorkspaceServiceQueueURLs:      workspaceServiceQueueURLs,
+		PreviewRuntimeCommandQueueURLs: previewRuntimeQueueURLs,
 	})
 	if err != nil {
 		log.Fatal("configure Outbox dispatcher failed (failure_class=dispatcher_configuration)")
@@ -99,6 +107,7 @@ type queueConfiguration struct {
 	URL                 string
 	WorkloadURL         string
 	WorkspaceServiceURL string
+	PreviewRuntimeURL   string
 	Region              string
 }
 
@@ -141,7 +150,7 @@ func configuredQueues() (map[string]queueConfiguration, error) {
 		queues := make(map[string]queueConfiguration, len(manifest.ResourcePlanes))
 		for _, registration := range manifest.ResourcePlanes {
 			queues[registration.ID] = queueConfiguration{URL: registration.CommandQueueURL, WorkloadURL: registration.WorkloadCommandQueueURL,
-				WorkspaceServiceURL: registration.WorkspaceServiceCommandQueueURL, Region: registration.Region}
+				WorkspaceServiceURL: registration.WorkspaceServiceCommandQueueURL, PreviewRuntimeURL: registration.PreviewRuntimeCommandQueueURL, Region: registration.Region}
 		}
 		return queues, nil
 	}

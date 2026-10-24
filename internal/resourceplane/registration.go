@@ -50,6 +50,9 @@ type Registration struct {
 	// ActionsRunnerStartupQueueURL is optional and remains single-plane until
 	// runner placement can select a Resource Plane from capacity/policy.
 	ActionsRunnerStartupQueueURL string `json:"actions_runner_startup_queue_url,omitempty"`
+	// PreviewRuntimeCommandQueueURL carries generation-fenced Preview runtime
+	// provision/cleanup commands. It has no fallback to Workspace queues.
+	PreviewRuntimeCommandQueueURL string `json:"preview_runtime_command_queue_url,omitempty"`
 }
 
 var supportedCapabilities = map[string]struct{}{
@@ -137,6 +140,18 @@ func (manifest Manifest) WorkspaceServiceCommandQueueURLs() map[string]string {
 	for _, registration := range manifest.ResourcePlanes {
 		if registration.WorkspaceServiceCommandQueueURL != "" {
 			queueURLs[registration.ID] = registration.WorkspaceServiceCommandQueueURL
+		}
+	}
+	return queueURLs
+}
+
+// PreviewRuntimeCommandQueueURLs returns the optional per-Plane Preview
+// runtime command routing table.
+func (manifest Manifest) PreviewRuntimeCommandQueueURLs() map[string]string {
+	queueURLs := make(map[string]string, len(manifest.ResourcePlanes))
+	for _, registration := range manifest.ResourcePlanes {
+		if registration.PreviewRuntimeCommandQueueURL != "" {
+			queueURLs[registration.ID] = registration.PreviewRuntimeCommandQueueURL
 		}
 	}
 	return queueURLs
@@ -260,6 +275,12 @@ func (manifest *Manifest) Validate() error {
 				return fmt.Errorf("resource_planes[%d].actions_runner_startup_queue_url: %w", i, err)
 			}
 			queues = append(queues, struct{ role, url string }{role: "Actions runner startup", url: registration.ActionsRunnerStartupQueueURL})
+		}
+		if registration.PreviewRuntimeCommandQueueURL != "" {
+			if err := validateQueueURL(registration.PreviewRuntimeCommandQueueURL, registration.Region, registration.AccountID); err != nil {
+				return fmt.Errorf("resource_planes[%d].preview_runtime_command_queue_url: %w", i, err)
+			}
+			queues = append(queues, struct{ role, url string }{role: "Preview runtime command", url: registration.PreviewRuntimeCommandQueueURL})
 		}
 		seenPlaneQueueURLs := make(map[string]struct{}, len(queues))
 		for _, queue := range queues {

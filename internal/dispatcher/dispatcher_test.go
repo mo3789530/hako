@@ -250,6 +250,63 @@ func TestRunOnceRoutesWorkspaceServiceToDedicatedPinnedPlaneQueue(t *testing.T) 
 	}
 }
 
+func TestRunOnceRoutesPreviewRuntimeCommandsToDedicatedPinnedPlaneQueue(t *testing.T) {
+	for _, action := range []string{"provision", "cleanup"} {
+		t.Run(action, func(t *testing.T) {
+			payload := `{"schema_version":1,"action":"` + action + `","tenant_id":"tenant_1","installation_id":17,"repository_id":23,"pull_request_number":4,"generation":2,"runtime_workspace_id":"prvws_0123456789abcdef0123456789abcdef","resource_plane_id":"rp-tokyo","claim_id":"preview-claim-1234","claim_attempt":3,"lease_expires_at":"2026-10-25T02:00:00Z","expires_at":"2026-10-26T02:00:00Z"}`
+			if action == "provision" {
+				payload = strings.TrimSuffix(payload, "}") + `,"head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","head_ref":"feature/preview"}`
+			}
+			store := &fakeStore{events: []outbox.Event{{ID: "evt_preview", AggregateType: "repository_preview_runtime",
+				AggregateID: "prvws_0123456789abcdef0123456789abcdef", EventType: "repository_preview_runtime." + action,
+				Attempt: 1, Payload: []byte(payload)}}}
+			publisher := &fakePublisher{}
+			d, err := New(store, publisher, map[string]string{"rp-tokyo": "workspace-queue"}, Config{
+				PreviewRuntimeCommandQueueURLs: map[string]string{"rp-tokyo": "preview-runtime-queue"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			stats, err := d.RunOnce(context.Background())
+			if err != nil || stats != (Stats{Claimed: 1, Published: 1}) || len(publisher.queueURLs) != 1 || publisher.queueURLs[0] != "preview-runtime-queue" {
+				t.Fatalf("Preview %s command was not routed to its dedicated Plane queue: stats=%+v queues=%v err=%v", action, stats, publisher.queueURLs, err)
+			}
+		})
+	}
+}
+
+func TestPreviewRuntimeDispatcherRejectsInvalidOrUnmappedCommandsWithoutFallback(t *testing.T) {
+	valid := `{"schema_version":1,"action":"provision","tenant_id":"tenant_1","installation_id":17,"repository_id":23,"pull_request_number":4,"generation":2,"runtime_workspace_id":"prvws_0123456789abcdef0123456789abcdef","resource_plane_id":"rp-missing","claim_id":"preview-claim-1234","claim_attempt":3,"lease_expires_at":"2026-10-25T02:00:00Z","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","head_ref":"feature/preview","expires_at":"2026-10-26T02:00:00Z"}`
+	tests := []struct {
+		name    string
+		event   outbox.Event
+		payload string
+	}{
+		{name: "no dedicated queue fallback", event: outbox.Event{AggregateType: "repository_preview_runtime", AggregateID: "prvws_0123456789abcdef0123456789abcdef", EventType: "repository_preview_runtime.provision"}, payload: valid},
+		{name: "event action mismatch", event: outbox.Event{AggregateType: "repository_preview_runtime", AggregateID: "prvws_0123456789abcdef0123456789abcdef", EventType: "repository_preview_runtime.cleanup"}, payload: valid},
+		{name: "aggregate identity mismatch", event: outbox.Event{AggregateType: "repository_preview_runtime", AggregateID: "prvws_other", EventType: "repository_preview_runtime.provision"}, payload: valid},
+		{name: "unknown field", event: outbox.Event{AggregateType: "repository_preview_runtime", AggregateID: "prvws_0123456789abcdef0123456789abcdef", EventType: "repository_preview_runtime.provision"}, payload: strings.TrimSuffix(valid, "}") + `,"secret":"no"}`},
+		{name: "invalid head", event: outbox.Event{AggregateType: "repository_preview_runtime", AggregateID: "prvws_0123456789abcdef0123456789abcdef", EventType: "repository_preview_runtime.provision"}, payload: strings.Replace(valid, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bad", 1)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			test.event.ID, test.event.Attempt, test.event.Payload = "evt_preview", 1, []byte(test.payload)
+			store := &fakeStore{events: []outbox.Event{test.event}}
+			publisher := &fakePublisher{}
+			d, err := New(store, publisher, map[string]string{"rp_tokyo": "workspace-queue"}, Config{
+				PreviewRuntimeCommandQueueURLs: map[string]string{"rp_tokyo": "preview-runtime-queue"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			stats, err := d.RunOnce(context.Background())
+			if err == nil || stats != (Stats{Claimed: 1, Failed: 1}) || len(publisher.queueURLs) != 0 || len(store.published) != 0 {
+				t.Fatalf("invalid Preview command should stay pending and never fallback: stats=%+v queues=%v err=%v", stats, publisher.queueURLs, err)
+			}
+		})
+	}
+}
+
 func TestRunOnceDefersWorkspaceServiceWhenDedicatedQueueIsNotConfigured(t *testing.T) {
 	store := &fakeStore{events: []outbox.Event{{
 		ID: "evt_service", AggregateType: "workspace_service", AggregateID: "svc_1",
