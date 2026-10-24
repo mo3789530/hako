@@ -28,7 +28,7 @@ func main() {
 	ctx := context.Background()
 	handler, err := buildHandler(ctx)
 	if err != nil {
-		log.Fatalf("configure Hako Outbox Dispatcher Lambda: %v", err)
+		log.Fatal("configure Hako Outbox Dispatcher Lambda failed (failure_class=handler_configuration)")
 	}
 	lambda.Start(handler)
 }

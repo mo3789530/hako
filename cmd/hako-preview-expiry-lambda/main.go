@@ -27,7 +27,7 @@ func main() {
 	}
 	batchSize, err := parseBatchSize(os.Getenv("HAKO_PREVIEW_EXPIRY_BATCH_SIZE"))
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("invalid Preview expiry batch size (failure_class=configuration)")
 	}
 	lambda.Start(newHandler(batchSize, time.Now, func(ctx context.Context, now time.Time, limit int) (int64, error) {
 		return previews.ExpireBatch(ctx, pool, now, limit)
@@ -42,7 +42,7 @@ func newHandler(batchSize int, clock func() time.Time, sweep expirySweep) func(c
 		expired, err := sweep(ctx, clock().UTC(), batchSize)
 		if err != nil {
 			log.Printf("Preview expiry sweep failed (expired=%d)", expired)
-			return err
+			return errors.New("Preview expiry sweep failed")
 		}
 		log.Printf("Preview expiry sweep completed (expired=%d)", expired)
 		return nil

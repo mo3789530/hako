@@ -21,7 +21,7 @@ func main() {
 	defer stop()
 	pool, err := openDatabase(ctx)
 	if err != nil {
-		log.Fatalf("connect Hako Reconciler database: %v", err)
+		log.Fatal("connect Hako Reconciler database failed (failure_class=database_configuration)")
 	}
 	defer pool.Close()
 
@@ -30,7 +30,7 @@ func main() {
 		OperationTimeout: durationEnv("HAKO_RECONCILER_OPERATION_TIMEOUT", 30*time.Minute),
 	})
 	if err != nil {
-		log.Fatalf("configure Hako Reconciler: %v", err)
+		log.Fatal("configure Hako Reconciler failed (failure_class=reconciler_configuration)")
 	}
 	interval := durationEnv("HAKO_RECONCILER_INTERVAL", 10*time.Second)
 	ticker := time.NewTicker(interval)

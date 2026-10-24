@@ -25,17 +25,28 @@ func main() {
 	}
 	batchSize, err := parseBatchSize(os.Getenv("HAKO_WORKSPACE_IDLE_RECONCILER_BATCH_SIZE"))
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("invalid Workspace idle reconciler batch size (failure_class=configuration)")
 	}
-	lambda.Start(func(ctx context.Context, _ events.CloudWatchEvent) error {
-		stats, err := workspaceactivity.RunIdleSweep(ctx, pool, time.Now().UTC(), batchSize)
+	lambda.Start(newIdleHandler(batchSize, func(ctx context.Context, now time.Time, limit int) (workspaceactivity.SweepStats, error) {
+		return workspaceactivity.RunIdleSweep(ctx, pool, now, limit)
+	}))
+}
+
+type idleSweep func(context.Context, time.Time, int) (workspaceactivity.SweepStats, error)
+
+func newIdleHandler(batchSize int, sweep idleSweep) func(context.Context, events.CloudWatchEvent) error {
+	return func(ctx context.Context, _ events.CloudWatchEvent) error {
+		if ctx == nil || batchSize < 1 || batchSize > 1000 || sweep == nil {
+			return errors.New("Workspace idle reconciliation is not configured")
+		}
+		stats, err := sweep(ctx, time.Now().UTC(), batchSize)
 		if err != nil {
-			log.Printf("Workspace idle reconciliation failed (checked=%d suspended=%d)", stats.Checked, stats.Suspended)
-			return err
+			log.Printf("Workspace idle reconciliation failed (failure_class=sweep checked=%d suspended=%d)", stats.Checked, stats.Suspended)
+			return errors.New("Workspace idle reconciliation failed")
 		}
 		log.Printf("Workspace idle reconciliation completed (checked=%d suspended=%d)", stats.Checked, stats.Suspended)
 		return nil
-	})
+	}
 }
 
 func parseBatchSize(value string) (int, error) {

@@ -37,7 +37,7 @@ type deploymentConfig struct {
 func main() {
 	config, err := loadDeploymentConfig(os.Getenv)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("configure Workspace Service controller failed (failure_class=configuration)")
 	}
 	handler, err := buildHandler(context.Background(), config)
 	if err != nil {

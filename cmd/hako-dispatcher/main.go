@@ -26,17 +26,17 @@ func main() {
 	defer stop()
 	pool, err := openDatabase(ctx)
 	if err != nil {
-		log.Fatalf("connect Hako dispatcher database: %v", err)
+		log.Fatal("connect Hako dispatcher database failed (failure_class=database_configuration)")
 	}
 	defer pool.Close()
 
 	queues, err := configuredQueues()
 	if err != nil {
-		log.Fatalf("configure Resource Plane queues: %v", err)
+		log.Fatal("configure Resource Plane queues failed (failure_class=queue_configuration)")
 	}
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
 	if err != nil {
-		log.Fatalf("load AWS SDK configuration: %v", err)
+		log.Fatal("load AWS SDK configuration failed (failure_class=aws_configuration)")
 	}
 	queueURLs := make(map[string]string, len(queues))
 	workloadQueueURLs := make(map[string]string, len(queues))
@@ -64,7 +64,7 @@ func main() {
 	}
 	publisher, err := dispatcher.NewRegionalSQSPublisher(sqs.NewFromConfig(awsCfg), regionalClients)
 	if err != nil {
-		log.Fatalf("configure SQS publisher: %v", err)
+		log.Fatal("configure SQS publisher failed (failure_class=publisher_configuration)")
 	}
 	engine, err := dispatcher.New(dispatcher.StoreAdapter{Pool: pool, Policy: transaction.DefaultPolicy()}, publisher, queueURLs, dispatcher.Config{
 		BatchSize: 10, LeaseDuration: 30 * time.Second, BaseBackoff: time.Second, MaxBackoff: time.Minute,
@@ -74,7 +74,7 @@ func main() {
 		WorkspaceServiceQueueURLs: workspaceServiceQueueURLs,
 	})
 	if err != nil {
-		log.Fatalf("configure Outbox dispatcher: %v", err)
+		log.Fatal("configure Outbox dispatcher failed (failure_class=dispatcher_configuration)")
 	}
 	interval := durationEnv("HAKO_DISPATCHER_INTERVAL", 2*time.Second)
 	ticker := time.NewTicker(interval)

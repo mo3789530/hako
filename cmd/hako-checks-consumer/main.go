@@ -26,7 +26,7 @@ import (
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatal(err)
+		log.Fatal("Hako GitHub Checks consumer stopped (failure_class=process_exit)")
 	}
 }
 

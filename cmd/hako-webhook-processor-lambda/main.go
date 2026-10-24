@@ -22,7 +22,7 @@ func main() {
 	ctx := context.Background()
 	handler, err := buildHandler(ctx)
 	if err != nil {
-		log.Fatalf("configure Hako GitHub Webhook Processor Lambda: %v", err)
+		log.Fatal("configure Hako GitHub Webhook Processor Lambda failed (failure_class=handler_configuration)")
 	}
 	lambda.Start(handler)
 }

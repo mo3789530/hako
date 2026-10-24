@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,9 +41,17 @@ func TestHandlerUsesUTCAndBoundedSweep(t *testing.T) {
 }
 
 func TestHandlerReturnsSweepFailure(t *testing.T) {
-	want := errors.New("transaction failed")
+	want := errors.New("sensitive transaction connection details")
+	var logs bytes.Buffer
+	previousOutput := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previousOutput) })
 	handler := newHandler(10, time.Now, func(context.Context, time.Time, int) (int64, error) { return 1, want })
-	if err := handler(context.Background(), events.CloudWatchEvent{}); !errors.Is(err, want) {
-		t.Fatalf("handler error=%v, want %v", err, want)
+	err := handler(context.Background(), events.CloudWatchEvent{})
+	if err == nil || err.Error() != "Preview expiry sweep failed" || errors.Is(err, want) {
+		t.Fatalf("handler error=%v, want a fixed retry error", err)
+	}
+	if strings.Contains(logs.String(), want.Error()) {
+		t.Fatalf("raw sweep error leaked to logs: %s", logs.String())
 	}
 }

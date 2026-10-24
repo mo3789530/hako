@@ -79,7 +79,7 @@ type deploymentConfig struct {
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatal(err)
+		log.Fatal("Hako Workload controller Lambda stopped (failure_class=process_exit)")
 	}
 }
 

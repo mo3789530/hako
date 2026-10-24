@@ -37,7 +37,7 @@ func main() {
 	defer stop()
 	databasePool, err := openDatabase(ctx)
 	if err != nil {
-		log.Fatalf("connect Hako API database: %v", err)
+		log.Fatal("connect Hako API database failed (failure_class=database_configuration)")
 	}
 	defer databasePool.Close()
 
@@ -45,7 +45,7 @@ func main() {
 	clientID := os.Getenv("HAKO_COGNITO_CLIENT_ID")
 	verifier, err := auth.NewCognitoVerifier(auth.CognitoVerifierConfig{Issuer: issuer, ClientID: clientID})
 	if err != nil {
-		log.Fatalf("configure Cognito verifier: %v", err)
+		log.Fatal("configure Cognito verifier failed (failure_class=authentication_configuration)")
 	}
 	runtimeClass := strings.TrimSpace(os.Getenv("HAKO_DEFAULT_WORKSPACE_RUNTIME_CLASS"))
 	if runtimeClass == "" {
@@ -91,7 +91,7 @@ func main() {
 	}
 	tenantSetupResolver, err := tenantOAuthBrokerFromEnv()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("configure Tenant GitHub OAuth broker failed (failure_class=broker_configuration)")
 	}
 	if tenantSetupResolver != nil && !createConfig.GitHubAppManagementEnabled {
 		log.Fatal("Tenant GitHub OAuth broker requires HAKO_GITHUB_APP_MANAGEMENT_ENABLED=true")
@@ -99,13 +99,13 @@ func main() {
 	createConfig.TenantGitHubSetupResolver = tenantSetupResolver
 	environmentApprovalVerifier, err := tenantEnvironmentApprovalBrokerFromEnv()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("configure GitHub Environment approval verifier failed (failure_class=broker_configuration)")
 	}
 	createConfig.GitHubEnvironmentApprovalVerifier = environmentApprovalVerifier
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_TENANT_GITHUB_WEBHOOK_ENABLED")), "true") {
 		webhookRateLimit, err := tenantWebhookRateLimitFromEnv()
 		if err != nil {
-			log.Fatal(err)
+			log.Fatal("configure Tenant GitHub Webhook rate limit failed (failure_class=configuration)")
 		}
 		awsConfig, err := config.LoadDefaultConfig(ctx)
 		if err != nil {
@@ -115,7 +115,7 @@ func main() {
 		limiter := api.TenantGitHubWebhookAttemptLimiter{Pool: databasePool, Policy: transaction.DefaultPolicy(), MaxAttempts: webhookRateLimit}
 		handler, err := githubwebhook.NewTenantHTTPHandler(resolver, githubregistry.CredentialAuthorizer{Pool: databasePool, Policy: transaction.DefaultPolicy()}, webhookinbox.Inbox{Pool: databasePool, Policy: transaction.DefaultPolicy()}, githubwebhook.DefaultMaxBodyBytes, limiter)
 		if err != nil {
-			log.Fatalf("configure Tenant GitHub webhook handler: %v", err)
+			log.Fatal("configure Tenant GitHub webhook handler failed (failure_class=handler_configuration)")
 		}
 		createConfig.TenantGitHubWebhookHandler = handler
 	}
@@ -124,11 +124,11 @@ func main() {
 	if secretARN != "" {
 		secret, err := loadGitHubWebhookSecret(ctx, secretARN)
 		if err != nil {
-			log.Fatalf("load GitHub webhook secret: %v", err)
+			log.Fatal("load GitHub webhook secret failed (failure_class=secret_configuration)")
 		}
 		webhookHandler, err = githubwebhook.NewHTTPHandler(secret, webhookinbox.Inbox{Pool: databasePool, Policy: transaction.DefaultPolicy()}, githubwebhook.DefaultMaxBodyBytes)
 		if err != nil {
-			log.Fatalf("configure GitHub webhook handler: %v", err)
+			log.Fatal("configure GitHub webhook handler failed (failure_class=handler_configuration)")
 		}
 	}
 	var setupVerifier githubapp.SetupVerifier
@@ -154,11 +154,11 @@ func main() {
 		}
 		clientSecret, err := loadSecretString(ctx, appClientSecretARN, "GitHub App OAuth client secret")
 		if err != nil {
-			log.Fatalf("load GitHub App OAuth client secret: %v", err)
+			log.Fatal("load GitHub App OAuth client secret failed (failure_class=secret_configuration)")
 		}
 		setupVerifier, err = githubapp.NewSetupClient(githubapp.SetupConfig{Slug: appSlug, AppID: appID, ClientID: appClientID, ClientSecret: string(clientSecret), CallbackURL: appCallbackURL})
 		if err != nil {
-			log.Fatalf("configure GitHub App setup verifier: %v", err)
+			log.Fatal("configure GitHub App setup verifier failed (failure_class=integration_configuration)")
 		}
 	}
 	handler := api.NewHandlerWithGitHubApp(verifier, databasePool, webhookHandler, setupVerifier, createConfig)
@@ -187,13 +187,13 @@ func main() {
 	select {
 	case err := <-errCh:
 		if !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("serve Hako API: %v", err)
+			log.Fatal("serve Hako API failed (failure_class=http_server)")
 		}
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
-			log.Printf("shutdown Hako API: %v", err)
+			log.Printf("shutdown Hako API failed (failure_class=http_shutdown)")
 		}
 	}
 }

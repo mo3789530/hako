@@ -25,18 +25,18 @@ import (
 func main() {
 	queueURLs, err := configuredResultQueues()
 	if err != nil {
-		log.Fatalf("configure Resource Plane result queues: %v", err)
+		log.Fatal("configure Resource Plane result queues failed (failure_class=queue_configuration)")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	pool, err := openDatabase(ctx)
 	if err != nil {
-		log.Fatalf("connect Hako result consumer database: %v", err)
+		log.Fatal("connect Hako result consumer database failed (failure_class=database_configuration)")
 	}
 	defer pool.Close()
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
 	if err != nil {
-		log.Fatalf("load AWS SDK configuration: %v", err)
+		log.Fatal("load AWS SDK configuration failed (failure_class=aws_configuration)")
 	}
 	store := operationresults.StoreAdapter{Pool: pool, Policy: transaction.DefaultPolicy()}
 	var workers sync.WaitGroup

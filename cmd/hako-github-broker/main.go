@@ -30,7 +30,7 @@ const defaultListenAddr = ":8443"
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatal(err)
+		log.Fatal("Hako GitHub broker stopped (failure_class=process_exit)")
 	}
 }
 

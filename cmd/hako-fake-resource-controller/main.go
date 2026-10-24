@@ -35,7 +35,7 @@ func main() {
 	}
 	maxCommandAge, err := parseCommandMaxAge(os.Getenv("HAKO_COMMAND_MAX_AGE"))
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("invalid command age (failure_class=configuration)")
 	}
 	visibilityTimeout := 60 * time.Second
 	if raw := strings.TrimSpace(os.Getenv("HAKO_SQS_VISIBILITY_TIMEOUT")); raw != "" {
@@ -49,32 +49,32 @@ func main() {
 	defer stop()
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
 	if err != nil {
-		log.Fatalf("load AWS SDK configuration: %v", err)
+		log.Fatal("load AWS SDK configuration failed (failure_class=aws_configuration)")
 	}
 	sqsClient := sqs.NewFromConfig(awsCfg)
 	queue, err := resourcecontroller.NewSQSQueue(sqsClient, commandQueueURL)
 	if err != nil {
-		log.Fatalf("configure Resource Plane command queue: %v", err)
+		log.Fatal("configure Resource Plane command queue failed (failure_class=queue_configuration)")
 	}
 	resultSink, err := resourcecontroller.NewSQSResultSink(sqsClient, resultQueueURL)
 	if err != nil {
-		log.Fatalf("configure Operation result queue: %v", err)
+		log.Fatal("configure Operation result queue failed (failure_class=queue_configuration)")
 	}
 	controller, err := resourcecontroller.NewWithExecutionTimeoutAndMaxCommandAge(resourcePlaneID, fakeruntime.New(), resultSink, nil, executionTimeout, maxCommandAge)
 	if err != nil {
-		log.Fatalf("configure fake Resource Controller: %v", err)
+		log.Fatal("configure fake Resource Controller failed (failure_class=controller_configuration)")
 	}
 	worker, err := resourcecontroller.NewWorker(queue, controller, resourcecontroller.WorkerConfig{
 		MaxMessages: 10, WaitTime: 20 * time.Second, VisibilityTimeout: visibilityTimeout,
 	})
 	if err != nil {
-		log.Fatalf("configure Resource Plane SQS worker: %v", err)
+		log.Fatal("configure Resource Plane SQS worker failed (failure_class=worker_configuration)")
 	}
 	log.Printf("Fake Resource Controller started for %s (operation timeout=%s, max command age=%s, SQS visibility=%s)", resourcePlaneID, executionTimeout, maxCommandAge, visibilityTimeout)
 	for {
 		stats, err := worker.RunOnce(ctx)
 		if err != nil {
-			log.Printf("process Resource Plane command batch: %v (received=%d handled=%d failed=%d)", err, stats.Received, stats.Handled, stats.Failed)
+			log.Printf("Resource Plane command batch failed (failure_class=process_batch received=%d handled=%d failed=%d)", stats.Received, stats.Handled, stats.Failed)
 		} else if stats.Received > 0 {
 			log.Printf("processed Resource Plane command batch (received=%d handled=%d)", stats.Received, stats.Handled)
 		}

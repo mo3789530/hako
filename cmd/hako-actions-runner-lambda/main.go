@@ -54,7 +54,7 @@ type runnerLambdaAPI interface {
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatal(err)
+		log.Fatal("Hako Actions runner Lambda stopped (failure_class=process_exit)")
 	}
 }
 

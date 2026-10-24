@@ -118,3 +118,14 @@ being copied into CloudWatch. Preview cleanup still has no physical worker, so
 there is no provider cleanup log path to claim as implemented; the runtime
 binding/deletion worker remains Task 54 work. Production retention, alert
 delivery, and escalation review remain unverified.
+
+The follow-up process-wide scan removed raw startup errors from API, Dispatcher,
+Webhook Processor, result consumer, Reconciler, GitHub Checks consumer, GitHub
+broker, Actions Runner, Workload Controller, Workspace Service Controller, and
+local Resource Controller entrypoints. Preview expiry and Workspace idle
+scheduled handlers also return fixed retry errors while their logs retain only
+bounded failure classes and counters. Focused tests assert that synthetic DB
+error details do not enter those scheduled-handler logs or return values; the
+affected command packages pass. A source scan found no remaining `log.Fatal(err)`,
+`log.Fatalf(...%v...)`, or `log.Printf(...%v...)` patterns under `cmd/`.
+This does not verify deployed CloudWatch retention or alert operations.
