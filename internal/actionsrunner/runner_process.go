@@ -1,13 +1,20 @@
 package actionsrunner
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
+	"io/fs"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,17 +23,34 @@ import (
 
 var ErrRunnerProcess = errors.New("ephemeral GitHub Actions runner process failed")
 
+const maxRunnerDiagnosticBytes = 64 << 10
+
+var (
+	runnerDiagnosticAuthorization = regexp.MustCompile(`(?i)(authorization\s*:\s*(?:bearer|token)\s+)[^\s"'<>]+`)
+	runnerDiagnosticSecret        = regexp.MustCompile(`(?i)((?:token|password|api[_-]?key|secret)\s*[:=]\s*)[^\s"'&,;]+`)
+	runnerDiagnosticGitHubToken   = regexp.MustCompile(`\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b`)
+	runnerDiagnosticAnthropicKey  = regexp.MustCompile(`\bsk-ant-[A-Za-z0-9_-]{12,}\b`)
+	runnerDiagnosticAWSKey        = regexp.MustCompile(`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`)
+	runnerDiagnosticNPMToken      = regexp.MustCompile(`\bnpm_[A-Za-z0-9]{20,}\b`)
+)
+
 type RunnerProcessResult struct {
-	IntegrationID string
-	WorkflowJobID int64
-	WorkflowRunID int64
-	RunAttempt    int64
-	ExitCode      int
-	FailurePhase  string
-	Cancelled     bool
-	TimedOut      bool
-	CleanupFailed bool
+	IntegrationID        string
+	WorkflowJobID        int64
+	WorkflowRunID        int64
+	RunAttempt           int64
+	ExitCode             int
+	FailurePhase         string
+	Cancelled            bool
+	TimedOut             bool
+	CleanupFailed        bool
+	Diagnostics          []byte
+	DiagnosticsSHA256    string
+	DiagnosticsTruncated bool
 }
+
+func (RunnerProcessResult) String() string   { return "[REDACTED runner process result]" }
+func (RunnerProcessResult) GoString() string { return "[REDACTED runner process result]" }
 
 type RunnerProcessConfig struct {
 	RootDirectory string
@@ -111,6 +135,7 @@ func (c *RunnerProcessConsumer) Consume(ctx context.Context, claims RunnerBootst
 	}
 	c.started = true
 	c.mu.Unlock()
+	diagnosticSecrets := [][]byte{[]byte(claims.Token), append([]byte(nil), claims.ModelCredential...)}
 
 	setupCtx, setupCancel := context.WithTimeout(ctx, c.config.SetupTimeout)
 	defer setupCancel()
@@ -121,8 +146,10 @@ func (c *RunnerProcessConsumer) Consume(ctx context.Context, claims RunnerBootst
 	setRunnerProcessGroup(configure)
 	if err := configure.Run(); err != nil {
 		result := runnerProcessFailureResult(claims, "configure", err)
+		result.setDiagnostics(c.collectDiagnostics(diagnosticSecrets...))
 		result.CleanupFailed = c.cleanupLocalRunnerState() != nil
 		c.reportExit(result)
+		clearRunnerDiagnosticSecrets(diagnosticSecrets)
 		return ErrRunnerProcess
 	}
 
@@ -136,8 +163,10 @@ func (c *RunnerProcessConsumer) Consume(ctx context.Context, claims RunnerBootst
 	if err := command.Start(); err != nil {
 		cancel()
 		result := runnerProcessFailureResult(claims, "start", err)
+		result.setDiagnostics(c.collectDiagnostics(diagnosticSecrets...))
 		result.CleanupFailed = c.cleanupLocalRunnerState() != nil
 		c.reportExit(result)
+		clearRunnerDiagnosticSecrets(diagnosticSecrets)
 		return ErrRunnerProcess
 	}
 	command.Env = nil
@@ -161,9 +190,11 @@ func (c *RunnerProcessConsumer) Consume(ctx context.Context, claims RunnerBootst
 				result.ExitCode = -1
 			}
 		}
+		result.setDiagnostics(c.collectDiagnostics(diagnosticSecrets...))
 		cancel()
 		result.CleanupFailed = c.cleanupLocalRunnerState() != nil
 		c.reportExit(result)
+		clearRunnerDiagnosticSecrets(diagnosticSecrets)
 		c.mu.Lock()
 		c.cancel = nil
 		c.mu.Unlock()
@@ -183,6 +214,146 @@ func (c *RunnerProcessConsumer) reportExit(result RunnerProcessResult) {
 	if c != nil && c.config.OnExit != nil {
 		c.config.OnExit(result)
 	}
+}
+
+func clearRunnerDiagnosticSecrets(secrets [][]byte) {
+	for _, secret := range secrets {
+		clear(secret)
+	}
+}
+
+func (r *RunnerProcessResult) setDiagnostics(diagnostics runnerDiagnosticCollection) {
+	if r == nil {
+		return
+	}
+	r.Diagnostics = diagnostics.content
+	r.DiagnosticsTruncated = diagnostics.truncated
+	if len(r.Diagnostics) > 0 {
+		digest := sha256.Sum256(r.Diagnostics)
+		r.DiagnosticsSHA256 = hex.EncodeToString(digest[:])
+	}
+}
+
+type runnerDiagnosticCollection struct {
+	content   []byte
+	truncated bool
+}
+
+func (c *RunnerProcessConsumer) collectDiagnostics(secrets ...[]byte) runnerDiagnosticCollection {
+	if c == nil {
+		return runnerDiagnosticCollection{}
+	}
+	directory := filepath.Join(c.root, "_diag")
+	info, err := os.Lstat(directory)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return runnerDiagnosticCollection{}
+	}
+	var paths []string
+	visited := 0
+	_ = filepath.WalkDir(directory, func(path string, entry fs.DirEntry, walkErr error) error {
+		visited++
+		if visited > 1024 {
+			return fs.SkipAll
+		}
+		if walkErr != nil {
+			return nil
+		}
+		if entry.IsDir() {
+			relative, _ := filepath.Rel(directory, path)
+			if relative != "." && strings.Count(relative, string(filepath.Separator)) >= 2 {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if len(paths) >= 64 || entry.Type()&fs.ModeSymlink != 0 || !strings.EqualFold(filepath.Ext(entry.Name()), ".log") {
+			return nil
+		}
+		paths = append(paths, path)
+		return nil
+	})
+	sort.Strings(paths)
+	var output bytes.Buffer
+	truncated := visited > 1024 || len(paths) >= 64
+	for _, path := range paths {
+		if output.Len() >= maxRunnerDiagnosticBytes {
+			truncated = true
+			break
+		}
+		fileInfo, err := os.Lstat(path)
+		if err != nil || !fileInfo.Mode().IsRegular() || fileInfo.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		remaining := maxRunnerDiagnosticBytes - output.Len()
+		data, readErr := io.ReadAll(io.LimitReader(file, int64(remaining)+1))
+		_ = file.Close()
+		if readErr != nil {
+			clear(data)
+			continue
+		}
+		if len(data) > remaining {
+			clear(data)
+			truncated = true
+			continue
+		}
+		redacted := redactRunnerDiagnostic(data, secrets...)
+		clear(data)
+		redacted = append([]byte("[runner diagnostic file]\n"), redacted...)
+		if output.Len() > 0 && output.Len() < maxRunnerDiagnosticBytes {
+			output.WriteByte('\n')
+		}
+		available := maxRunnerDiagnosticBytes - output.Len()
+		if len(redacted) > available {
+			redacted = redacted[:available]
+			truncated = true
+		}
+		output.Write(redacted)
+		clear(redacted)
+	}
+	return runnerDiagnosticCollection{content: output.Bytes(), truncated: truncated}
+}
+
+func redactRunnerDiagnostic(input []byte, exactSecrets ...[]byte) []byte {
+	result := append([]byte(nil), input...)
+	for _, secret := range exactSecrets {
+		if len(secret) >= 4 {
+			result = bytes.ReplaceAll(result, secret, []byte("[REDACTED]"))
+		}
+	}
+	result = runnerDiagnosticAuthorization.ReplaceAll(result, []byte("$1[REDACTED]"))
+	result = runnerDiagnosticSecret.ReplaceAll(result, []byte("$1[REDACTED]"))
+	result = runnerDiagnosticGitHubToken.ReplaceAll(result, []byte("[REDACTED]"))
+	result = runnerDiagnosticAnthropicKey.ReplaceAll(result, []byte("[REDACTED]"))
+	result = runnerDiagnosticAWSKey.ReplaceAll(result, []byte("[REDACTED]"))
+	result = runnerDiagnosticNPMToken.ReplaceAll(result, []byte("[REDACTED]"))
+	for index, value := range result {
+		if value < 0x20 && value != '\n' && value != '\r' && value != '\t' {
+			result[index] = ' '
+		}
+	}
+	return result
+}
+
+func (r RunnerProcessResult) DiagnosticSummary(maxBytes int) string {
+	if maxBytes <= 0 || len(r.Diagnostics) == 0 {
+		return ""
+	}
+	if maxBytes > maxRunnerDiagnosticBytes {
+		maxBytes = maxRunnerDiagnosticBytes
+	}
+	content := r.Diagnostics
+	truncated := r.DiagnosticsTruncated
+	if len(content) > maxBytes {
+		content = content[len(content)-maxBytes:]
+		truncated = true
+	}
+	if truncated {
+		return fmt.Sprintf("[runner diagnostics truncated]\n%s", content)
+	}
+	return string(content)
 }
 
 func (c *RunnerProcessConsumer) cleanupLocalRunnerState() error {
