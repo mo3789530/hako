@@ -33,6 +33,13 @@ threshold; that AWS-managed transition is not simulated locally. The test uses
 the production handler with local PostgreSQL/fake AWS dependencies and does
 not call AWS.
 
+The `make test-software-factory-e2e` target now runs the Podman webhook-to-Check
+flow, the authenticated PostgreSQL Workload API test (including create replay,
+conflict, Tenant/requester visibility, and single Outbox assertion), and the
+composed Lambda Worker success/cancel E2Es. This keeps the task's API and worker
+acceptance checks in the named local verification command rather than relying
+on separate broad integration-suite invocation.
+
 ## Goal
 
 Prove one Tenant-owned GitHub Repository can go from installation through one isolated Go test Job to a GitHub Check and retained redacted logs.

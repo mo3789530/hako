@@ -29,6 +29,8 @@ test-actions-runner-lifecycle-integration:
 # Requires the cached pinned Go image and the already-running local PostgreSQL.
 test-software-factory-e2e:
 	HAKO_TEST_DATABASE_URL="$${HAKO_TEST_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" HAKO_E2E_REQUIRE_PODMAN=1 go test -tags=integration ./internal/workloadjobs -run '^TestSoftwareFactoryPodmanPostgresAndGitHubCheck$$' -count=1
+	HAKO_TEST_DATABASE_URL="$${HAKO_TEST_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" go test -tags=integration ./internal/api -run '^TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility$$' -count=1
+	HAKO_TEST_DATABASE_URL="$${HAKO_TEST_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" go test -tags=integration ./internal/workloadcontroller -run '^TestComposedLambdaWorker(ResultAndCleanupProjectsIntoPostgres|CancellationOutboxTerminatesAndProjectsIntoPostgres)$$' -count=1
 
 test-workload-runtime:
 	go test -race ./internal/workloadcontroller ./internal/workloadjournal ./internal/dispatcher
