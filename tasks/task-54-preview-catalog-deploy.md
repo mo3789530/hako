@@ -151,18 +151,14 @@ Add optional repository-level preview environments and service metadata/deploy p
   now defines a dedicated strict Preview provision/cleanup route with no
   Workspace queue fallback. `internal/previewdispatch.Worker` now atomically
   claims eligible generations, pins/reserves placement, and inserts strict
-  provision commands into the DSQL/PostgreSQL Outbox. Its integration test
-  verifies a duplicate pass does not enqueue twice and follows the committed
-  command through the Dispatcher into the dedicated Plane queue. The Resource
-  Plane now has a strict SQS Lambda handler core, generation/claim-aware result
-  envelope, bounded execution deadline, fixed failure classes, partial-success
-  compensation contract, and SQS result sink. Unit tests cover event attribute
-  binding, lease expiry, safe compensation, and FIFO result deduplication. The
-  Lambda MicroVM provider adapter, durable fencing across duplicate receives,
-  Control Plane now has a strict result Lambda handler and transactional
-  generation/claim/attempt/lease/Plane-fenced projection. PostgreSQL E2E composes
-  producer→Dispatcher→fake Resource Plane controller→result projection and
-  verifies duplicate results are no-ops. The Lambda MicroVM provider adapter,
+  provision/cleanup commands into the DSQL/PostgreSQL Outbox. Cleanup for a
+  generation with no provider attempt is confirmed locally; other retired
+  generations go to their pinned Plane. PostgreSQL E2E follows provision and
+  cleanup through the Dispatcher, fake Resource Plane controller, and fenced
+  result projection; duplicate producer/result delivery is idempotent. The
+  Resource Plane has a strict SQS Lambda handler core, bounded execution
+  deadline, fixed failure classes, partial-success compensation, and SQS result
+  sink. Lambda MicroVM/Gateway provider operations, durable provider fencing,
   tag discovery/deletion, queue infrastructure, worker deployment, and
   scheduled composition remain unwired.
 - Migrations 000163–000164 add a separate Preview Gateway session registry
@@ -187,10 +183,10 @@ Add optional repository-level preview environments and service metadata/deploy p
   Lambda compositions; implement durable MicroVM/Gateway provider operations;
   Preview Workspace/Run binding to Lambda MicroVM, expiring
   Tenant-scoped Gateway route, timeout/merge sweep, provider-backed MicroVM /
-  route cleanup executor, cleanup command producer and Resource Plane result
-  consumer, scheduled provision/cleanup composition and DSQL grants, and lifecycle wiring
-  into `hako open`. Placement selection/reservation is implemented locally but
-  is not yet connected to a provider-backed runtime. See
+  route cleanup executor, scheduled provision/cleanup composition and DSQL
+  grants, and lifecycle wiring into `hako open`. Placement
+  selection/reservation is implemented locally but is not yet connected to a
+  provider-backed runtime. See
   [`Preview lifecycle`](../docs/preview-lifecycle.md).
 
 ## Preview lifecycle read API/CLI (2026-10-24)

@@ -16,15 +16,75 @@ import (
 )
 
 var (
-	ErrWorkerConfiguration = errors.New("Preview command producer configuration is invalid")
-	ErrEnqueueFailed       = errors.New("Preview runtime command enqueue failed")
+	ErrWorkerConfiguration  = errors.New("Preview command producer configuration is invalid")
+	ErrEnqueueFailed        = errors.New("Preview runtime command enqueue failed")
+	ErrCleanupEnqueueFailed = errors.New("Preview runtime cleanup command enqueue failed")
 )
 
 var resourcePlaneIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`)
 
 type Stats struct {
-	Claimed  int
-	Enqueued int
+	Claimed                int
+	Enqueued               int
+	CleanedWithoutProvider int
+}
+
+// RunCleanupOnce claims retired Preview generations and atomically records
+// cleanup commands. Generations that were never submitted to a provider are
+// acknowledged clean locally by the store transaction.
+func (w Worker) RunCleanupOnce(ctx context.Context) (Stats, error) {
+	var stats Stats
+	if ctx == nil || ctx.Err() != nil || w.Pool == nil {
+		return stats, ErrWorkerConfiguration
+	}
+	now := w.Now
+	if now == nil {
+		now = time.Now
+	}
+	lease := w.Lease
+	if lease == 0 {
+		lease = 2 * time.Minute
+	}
+	batchSize := w.BatchSize
+	if batchSize == 0 {
+		batchSize = 1
+	}
+	if lease < 5*time.Second || lease > 10*time.Minute || batchSize < 1 || batchSize > 100 {
+		return stats, ErrWorkerConfiguration
+	}
+	newClaimID := w.NewClaimID
+	if newClaimID == nil {
+		newClaimID = func() (string, error) { return idgen.New("preview-cleanup-") }
+	}
+	claimID, err := newClaimID()
+	if err != nil || len(claimID) < 8 {
+		return stats, ErrWorkerConfiguration
+	}
+	newEventID := w.NewEventID
+	if newEventID == nil {
+		newEventID = func() (string, error) { return idgen.New("evt_") }
+	}
+	eventIDs := make([]string, batchSize)
+	for i := range eventIDs {
+		eventIDs[i], err = newEventID()
+		if err != nil || eventIDs[i] == "" {
+			return stats, ErrWorkerConfiguration
+		}
+	}
+	claimedAt := now().UTC()
+	counts, err := transaction.Within(ctx, w.Pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (struct {
+		claimed, enqueued, locallyCleaned int
+	}, error) {
+		claimed, enqueued, locallyCleaned, err := previews.ClaimRuntimeCleanupAndEnqueue(ctx, tx, claimID, eventIDs, claimedAt, lease, batchSize)
+		return struct {
+			claimed, enqueued, locallyCleaned int
+		}{claimed, enqueued, locallyCleaned}, err
+	})
+	if err != nil {
+		return stats, ErrCleanupEnqueueFailed
+	}
+	stats.Claimed, stats.Enqueued, stats.CleanedWithoutProvider = counts.claimed, counts.enqueued, counts.locallyCleaned
+	return stats, nil
 }
 
 // Worker does database-only work. It atomically pins/reserves the generation,

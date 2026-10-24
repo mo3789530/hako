@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/previewprotocol"
 	"github.com/mo3789530/hako/internal/store/resourcecapacity"
 )
 
@@ -15,6 +16,7 @@ type RuntimeCleanupJob struct {
 	Generation           int64
 	HeadSHA              string
 	HeadRef              string
+	ExpiresAt            time.Time
 	RuntimeWorkspaceID   domain.WorkspaceID
 	ResourcePlaneID      domain.ResourcePlaneID
 	BoundResourcePlaneID domain.ResourcePlaneID
@@ -26,6 +28,57 @@ type RuntimeCleanupJob struct {
 	ClaimID              string
 	LeaseExpiresAt       time.Time
 	Attempt              int
+}
+
+// ClaimRuntimeCleanupAndEnqueue atomically leases retired generations and
+// records one cleanup command for every generation that may own provider
+// resources. Generations with no provision attempt have nothing to discover;
+// they are confirmed clean in the same transaction without a Resource Plane
+// round trip.
+func ClaimRuntimeCleanupAndEnqueue(ctx context.Context, tx pgx.Tx, claimID string, eventIDs []string, now time.Time, lease time.Duration, limit int) (claimed, enqueued, locallyCleaned int, err error) {
+	if ctx == nil || tx == nil || len(eventIDs) != limit || limit < 1 || limit > 100 {
+		return 0, 0, 0, ErrInvalidRuntimeAllocation
+	}
+	jobs, err := ClaimRuntimeCleanupDue(ctx, tx, claimID, now, lease, limit)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	claimed = len(jobs)
+	for index, job := range jobs {
+		if !job.ProviderBound && job.ProvisionAttempts == 0 {
+			cleaned, err := MarkRuntimeAllocationCleaned(ctx, tx, job, now)
+			if err != nil {
+				return 0, 0, 0, err
+			}
+			if !cleaned {
+				return 0, 0, 0, ErrInvalidRuntimeAllocation
+			}
+			locallyCleaned++
+			continue
+		}
+		if eventIDs[index] == "" || job.ResourcePlaneID == "" {
+			return 0, 0, 0, ErrInvalidRuntimeAllocation
+		}
+		command := previewprotocol.Command{
+			SchemaVersion: 1, Action: previewprotocol.ActionCleanup,
+			TenantID: string(job.TenantID), InstallationID: job.InstallationID, RepositoryID: job.RepositoryID,
+			PullRequestNumber: job.PullRequestNumber, Generation: job.Generation,
+			RuntimeWorkspaceID: string(job.RuntimeWorkspaceID), ResourcePlaneID: string(job.ResourcePlaneID),
+			ClaimID: job.ClaimID, ClaimAttempt: job.Attempt, LeaseExpiresAt: job.LeaseExpiresAt, ExpiresAt: job.ExpiresAt,
+		}
+		payload, err := previewprotocol.Encode(command)
+		if err != nil {
+			return 0, 0, 0, err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO outbox_events
+			(id,aggregate_type,aggregate_id,event_type,payload_json,created_at,published_at,attempt)
+			VALUES ($1,$2,$3,$4,$5,$6,NULL,0)`, eventIDs[index], previewprotocol.AggregateType,
+			string(job.RuntimeWorkspaceID), previewprotocol.EventType(previewprotocol.ActionCleanup), string(payload), now.UTC()); err != nil {
+			return 0, 0, 0, fmt.Errorf("enqueue Preview runtime cleanup command: %w", err)
+		}
+		enqueued++
+	}
+	return claimed, enqueued, locallyCleaned, nil
 }
 
 // ClaimRuntimeCleanupDue leases retired generations with either a durable
@@ -66,7 +119,7 @@ func ClaimRuntimeCleanupDue(ctx context.Context, tx pgx.Tx, claimID string, now 
 	          COALESCE(a.target_resource_plane_id,a.resource_plane_id,''),COALESCE(a.resource_plane_id,''),
 	          COALESCE(a.workspace_id,''),COALESCE(a.microvm_id,''),COALESCE(a.gateway_route_id,''),
 	          a.resource_plane_id IS NOT NULL,a.provision_attempts,a.runtime_cleanup_claim_id,
-	          a.runtime_cleanup_lease_expires_at,a.runtime_cleanup_attempts`, now.UTC(), limit, claimID, now.UTC().Add(lease))
+	          a.runtime_cleanup_lease_expires_at,a.runtime_cleanup_attempts,a.expires_at`, now.UTC(), limit, claimID, now.UTC().Add(lease))
 	if err != nil {
 		return nil, fmt.Errorf("claim retired Preview runtime generations: %w", err)
 	}
@@ -76,10 +129,11 @@ func ClaimRuntimeCleanupDue(ctx context.Context, tx pgx.Tx, claimID string, now 
 		var job RuntimeCleanupJob
 		if err := rows.Scan(&job.TenantID, &job.InstallationID, &job.RepositoryID, &job.PullRequestNumber,
 			&job.Generation, &job.HeadSHA, &job.HeadRef, &job.ResourcePlaneID, &job.BoundResourcePlaneID, &job.WorkspaceID, &job.MicroVMID,
-			&job.GatewayRouteID, &job.ProviderBound, &job.ProvisionAttempts, &job.ClaimID, &job.LeaseExpiresAt, &job.Attempt); err != nil {
+			&job.GatewayRouteID, &job.ProviderBound, &job.ProvisionAttempts, &job.ClaimID, &job.LeaseExpiresAt, &job.Attempt, &job.ExpiresAt); err != nil {
 			return nil, fmt.Errorf("scan claimed Preview runtime cleanup: %w", err)
 		}
 		job.LeaseExpiresAt = job.LeaseExpiresAt.UTC()
+		job.ExpiresAt = job.ExpiresAt.UTC()
 		job.RuntimeWorkspaceID = runtimeWorkspaceID(job.CleanupIdentity, job.Generation)
 		jobs = append(jobs, job)
 	}

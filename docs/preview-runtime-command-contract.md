@@ -2,20 +2,23 @@
 
 This document defines the Control Plane Outbox event envelope accepted by the
 Resource Plane queue router. A local database-only producer now commits Preview
-claims and these events atomically, and PostgreSQL integration coverage follows
-the committed event through the Dispatcher. The Resource Plane consumer,
-provider adapter, and result consumer are not deployed.
+claims and provision/cleanup events atomically. PostgreSQL integration follows
+the committed commands through the Dispatcher, fake Resource Plane controller,
+and generation-fenced result projection. Provider adapters and AWS queue/Lambda
+deployment are not wired.
 
 ## Producer transaction
 
-`internal/previewdispatch.Worker` calls the Preview store claim operation and
-inserts one `repository_preview_runtime.provision` event for every returned
-claim inside the same PostgreSQL/DSQL transaction. The transaction also pins
-the generation to its Resource Plane and reserves configured capacity. If
-command encoding or Outbox insertion fails, the transaction rolls back the
-claim and reservation together. The Worker performs no network calls; a
-separate Outbox Dispatcher publishes after commit. Re-running while the claim
-lease is active does not enqueue a second command.
+`internal/previewdispatch.Worker` calls the Preview store claim operations and
+inserts provision/cleanup events inside the same PostgreSQL/DSQL transaction.
+Provision transactions also pin the generation to its Resource Plane and
+reserve configured capacity. Cleanup transactions lease retired generations;
+they enqueue provider cleanup only when a provider may own resources, and mark
+never-attempted generations clean locally. If command encoding or Outbox
+insertion fails, the transaction rolls back the claim, reservation, and local
+cleanup transition together. A separate Outbox Dispatcher publishes after
+commit. Re-running while a claim lease is active does not enqueue a second
+command.
 
 Event IDs and the claim ID are allocated before entering the OCC-retried
 transaction callback, so transaction retries reuse stable identifiers without
@@ -36,14 +39,15 @@ into results or logs.
 The Resource Plane result Queue receives a generation- and claim-fenced result
 envelope with fixed status/error codes and optional provider binding. FIFO
 queues use Workspace generation ordering and a deterministic deduplication key
-for `(action, workspace, generation, claim, attempt)`. The Control Plane result
-  `internal/previewresult.LambdaHandler` and `store/previews.ApplyRuntimeResult`
-  compare the result with the active generation, claim, attempt, lease, derived
-  runtime Workspace ID, and pinned Plane before applying it. Stale or duplicate
-  claims are ackable no-ops; malformed or mismatched results remain retryable.
-  PostgreSQL integration composes producer, Dispatcher, fake Resource Plane
-  controller, and result projection. The Lambda MicroVM/Gateway provider and
-  result queue deployment are not wired.
+for `(action, workspace, generation, claim, attempt)`. The Control Plane
+`internal/previewresult.LambdaHandler` and
+`store/previews.ApplyRuntimeResult` compare the result with the active
+generation, claim, attempt, lease, derived runtime Workspace ID, and pinned
+Plane before applying it. Stale or duplicate claims are ackable no-ops;
+malformed or mismatched results remain retryable. PostgreSQL integration
+composes producer, Dispatcher, fake Resource Plane controller, and result
+projection. The Lambda MicroVM/Gateway provider and result queue deployment are
+not wired.
 
 ## Outbox event
 

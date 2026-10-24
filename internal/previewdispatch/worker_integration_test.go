@@ -128,6 +128,76 @@ func TestPreviewCommandProducerOutboxAndDispatcherEndToEnd(t *testing.T) {
 		finalState != "running" || microvmID != runtime.binding.MicroVMID || routeID != runtime.binding.GatewayRouteID {
 		t.Fatalf("Preview binding projection = %q %q %q err=%v", finalState, microvmID, routeID, err)
 	}
+	closedAt := now.Add(5 * time.Second)
+	if _, err := pool.Exec(ctx, `UPDATE repository_previews SET desired_state='absent',state='cleanup_pending',updated_at=$1
+		WHERE tenant_id='tenant_preview_dispatch' AND pull_request_number=41`, closedAt); err != nil {
+		t.Fatalf("retire Preview: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE repository_preview_runtime_allocations SET desired_state='absent',state='cleanup_pending',updated_at=$1
+		WHERE tenant_id='tenant_preview_dispatch' AND pull_request_number=41 AND generation=1`, closedAt); err != nil {
+		t.Fatalf("retire Preview generation: %v", err)
+	}
+	cleanupWorker := Worker{Pool: pool, Now: func() time.Time { return closedAt.Add(time.Second) }, Lease: time.Minute, BatchSize: 1,
+		NewClaimID: func() (string, error) { return "preview-cleanup-dispatch", nil },
+		NewEventID: func() (string, error) { return "evt_preview_cleanup_1", nil }}
+	cleanupStats, err := cleanupWorker.RunCleanupOnce(ctx)
+	if err != nil || cleanupStats != (Stats{Claimed: 1, Enqueued: 1}) {
+		t.Fatalf("enqueue retired Preview cleanup: stats=%+v err=%v", cleanupStats, err)
+	}
+	cleanupPublisher := &capturePublisher{}
+	cleanupDispatcher, err := dispatcher.New(dispatcher.StoreAdapter{Pool: pool}, cleanupPublisher,
+		map[string]string{"rp-preview-dispatch": "workspace-queue"}, dispatcher.Config{
+			PreviewRuntimeCommandQueueURLs: map[string]string{"rp-preview-dispatch": "preview-command-queue"},
+			Now:                            func() time.Time { return closedAt.Add(2 * time.Second) },
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupDispatchStats, err := cleanupDispatcher.RunOnce(ctx)
+	if err != nil || cleanupDispatchStats != (dispatcher.Stats{Claimed: 1, Published: 1}) || cleanupPublisher.event.ID != "evt_preview_cleanup_1" {
+		t.Fatalf("dispatch Preview cleanup command: stats=%+v event=%+v err=%v", cleanupDispatchStats, cleanupPublisher.event, err)
+	}
+	cleanupController, err := previewcontroller.New("rp-preview-dispatch", runtime, resultSink,
+		func() time.Time { return closedAt.Add(3 * time.Second) }, 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanupController.Handle(ctx, cleanupPublisher.event.Payload, cleanupPublisher.event.EventType, cleanupPublisher.event.AggregateID); err != nil {
+		t.Fatalf("execute Preview cleanup command: %v", err)
+	}
+	cleanupResult := resultSink.results[len(resultSink.results)-1]
+	if cleanupResult.Action != previewprotocol.ActionCleanup || cleanupResult.Status != "succeeded" || runtime.cleanupCalls != 1 {
+		t.Fatalf("cleanup result = %+v cleanup calls=%d", cleanupResult, runtime.cleanupCalls)
+	}
+	cleanupPayload, err := previewprotocol.EncodeResult(cleanupResult)
+	if err != nil {
+		t.Fatalf("encode cleanup result: %v", err)
+	}
+	cleanupConsumer := previewresult.Consumer{Pool: pool, Now: func() time.Time { return closedAt.Add(4 * time.Second) }}
+	cleaned, err := cleanupConsumer.Handle(ctx, cleanupPayload, cleanupResult.ClaimID, cleanupResult.Action, cleanupResult.ResourcePlaneID)
+	if err != nil || !cleaned {
+		t.Fatalf("apply Preview cleanup result: cleaned=%v err=%v", cleaned, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT state FROM repository_preview_runtime_allocations
+		WHERE tenant_id='tenant_preview_dispatch' AND pull_request_number=41 AND generation=1`).Scan(&finalState); err != nil || finalState != "cleaned" {
+		t.Fatalf("Preview runtime was not cleaned: state=%q err=%v", finalState, err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO repository_preview_runtime_allocations
+		(tenant_id,installation_id,github_repository_id,pull_request_number,generation,head_sha,head_ref,desired_state,state,expires_at,created_at,updated_at)
+		VALUES ('tenant_preview_dispatch',9911,9912,41,2,$1,'feature/unstarted','absent','cleanup_pending',$2,$3,$3)`,
+		strings.Repeat("b", 40), closedAt.Add(time.Hour), closedAt); err != nil {
+		t.Fatalf("seed never-provisioned retired generation: %v", err)
+	}
+	cleanupWorker.NewClaimID = func() (string, error) { return "preview-cleanup-no-provider", nil }
+	cleanupWorker.NewEventID = func() (string, error) { return "evt_preview_cleanup_unused", nil }
+	noProvider, err := cleanupWorker.RunCleanupOnce(ctx)
+	if err != nil || noProvider != (Stats{Claimed: 1, CleanedWithoutProvider: 1}) {
+		t.Fatalf("never-provisioned generation was not cleaned locally: stats=%+v err=%v", noProvider, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT state FROM repository_preview_runtime_allocations
+		WHERE tenant_id='tenant_preview_dispatch' AND pull_request_number=41 AND generation=2`).Scan(&finalState); err != nil || finalState != "cleaned" {
+		t.Fatalf("never-provisioned generation state=%q err=%v", finalState, err)
+	}
 }
 
 type capturePublisher struct {
@@ -145,13 +215,17 @@ func (p *capturePublisher) Publish(_ context.Context, queueURL string, event out
 }
 
 type previewRuntimeFake struct {
-	binding previewcontroller.Binding
+	binding      previewcontroller.Binding
+	cleanupCalls int
 }
 
 func (r *previewRuntimeFake) Ensure(context.Context, previewprotocol.Command) (previewcontroller.Binding, error) {
 	return r.binding, nil
 }
-func (*previewRuntimeFake) Cleanup(context.Context, previewprotocol.Command) error { return nil }
+func (r *previewRuntimeFake) Cleanup(context.Context, previewprotocol.Command) error {
+	r.cleanupCalls++
+	return nil
+}
 func (*previewRuntimeFake) Compensate(context.Context, previewprotocol.Command, previewcontroller.Binding) error {
 	return nil
 }

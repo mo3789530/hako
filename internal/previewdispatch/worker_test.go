@@ -31,6 +31,14 @@ func TestRunOnceRejectsInvalidConfigurationBeforeDatabaseAccess(t *testing.T) {
 	}
 }
 
+func TestRunCleanupOnceRejectsInvalidConfigurationBeforeDatabaseAccess(t *testing.T) {
+	worker := Worker{Pool: rejectingPool{}, BatchSize: 101}
+	stats, err := worker.RunCleanupOnce(context.Background())
+	if !errors.Is(err, ErrWorkerConfiguration) || stats != (Stats{}) {
+		t.Fatalf("RunCleanupOnce() = %+v, %v; want empty stats and configuration error", stats, err)
+	}
+}
+
 // Begin panics if validation accidentally reaches database access.
 type rejectingPool struct{}
 
