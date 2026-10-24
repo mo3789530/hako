@@ -1,6 +1,6 @@
 # Task 46: Hako Session Tickets and Gateway
 
-Status: In Progress (Ed25519 Gateway-audience ticket claims, RBAC-backed session API, HTTPS/HMAC active-session lookup, TLS/WSS core, shell/port local E2E, fixed-port VS Code bridge, idle-lease reporting, structured connection logs, and CloudWatch EMF metrics are implemented. `cmd/hako-workspace-gateway` composes the verifier, HTTPS session/lease clients, S3 runtime journal, Lambda MicroVM SDK/token provider, Agent ticket signer, and journal-backed shell/VS Code directory into a non-root HTTPS service. A default-off Resource Plane Terraform contract now creates the 443-only ALB with a 60-minute WebSocket idle timeout, private ARM64 Fargate tasks, ephemeral Secret loader volume, exact journal/MicroVM/Secret IAM, CPU scaling, and health/5xx alarms; OpenTofu mock-plan tests cover disabled and enabled configurations. Actual AWS deployment, production key/secret/certificate/DNS/network provisioning, idle-sweep-to-Dispatcher runtime E2E, fleet-wide connection/rate limits, and live MicroVM connectivity remain. Priority: P1.
+Status: In Progress (Ed25519 Gateway-audience ticket claims, RBAC-backed session API, HTTPS/HMAC active-session lookup, TLS/WSS core, shell/port local E2E, fixed-port VS Code bridge, idle-lease reporting, structured connection logs, CloudWatch EMF metrics, and an OCC-fenced shared cap of ten active connection leases per Workspace are implemented. `cmd/hako-workspace-gateway` composes the verifier, HTTPS session/lease clients, S3 runtime journal, Lambda MicroVM SDK/token provider, Agent ticket signer, and journal-backed shell/VS Code directory into a non-root HTTPS service. A default-off Resource Plane Terraform contract now creates the 443-only ALB with a 60-minute WebSocket idle timeout, private ARM64 Fargate tasks, ephemeral Secret loader volume, exact journal/MicroVM/Secret IAM, CPU scaling, and health/5xx alarms; OpenTofu mock-plan tests cover disabled and enabled configurations. Actual AWS deployment, production key/secret/certificate/DNS/network provisioning, idle-sweep-to-Dispatcher runtime E2E, distributed request-rate limiting and ticket replay coordination, and live MicroVM connectivity remain. Priority: P1.
 
 ## Goal
 
@@ -98,3 +98,20 @@ fixed outcome; Tenant, Workspace, ticket, and error text are not dimensions.
 The focused Gateway and service-entrypoint Go tests pass. These metrics are
 process-local snapshots and do not implement fleet-wide connection/rate
 coordination or prove production CloudWatch ingestion.
+
+## Progress update (2026-10-24, shared connection admission)
+
+The Control Plane now enforces a maximum of ten active connection leases per
+Workspace allocation. The lease transaction reads the current
+`workspace_status` row `FOR UPDATE`, counts unexpired, unreleased leases for
+that exact MicroVM/allocation generation, and inserts only below the cap.
+Aurora DSQL evaluates `FOR UPDATE` through OCC conflict adjudication rather
+than blocking row locks, so concurrent Gateway replicas conflict on this
+shared row and the existing transaction retry reruns the count before insert.
+An existing lease can renew at capacity; expired/released leases do not count.
+The API returns HTTP 429 when admission is full, and the Gateway preserves
+that response through its Lambda MicroVM stream directory. PostgreSQL tests
+race twenty independent lease admissions, verify exactly ten succeed, check
+renewal at capacity, and verify a slot is available after release. Fleet-wide
+request-rate limiting and global single-ticket replay coordination remain
+separate work.

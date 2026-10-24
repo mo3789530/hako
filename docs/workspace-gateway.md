@@ -77,13 +77,16 @@ connectivity remain unverified.
 
 The Gateway bounds concurrent total and per-Workspace connections in-process,
 and applies a maximum payload size to every incoming WebSocket frame and every
-outgoing chunk (64 KiB default, 1 MiB maximum). Stream contents and tickets are
-not logged. `/healthz` returns only static readiness status. Limits are
-per-process, not fleet-wide. A ticket ID can hold only one concurrent stream
-per Gateway process; after that stream closes, the ticket can reconnect until
-expiry/revocation. Multiple Gateway replicas still need shared active-connection
-coordination and load-balancer/API throttles. TLS termination, private Gateway-to-runtime transport,
-and task/service health wiring are deployment responsibilities.
+outgoing chunk (64 KiB default, 1 MiB maximum). Separately, the signed lease API
+admits at most ten unexpired connections for the current Workspace allocation
+across Gateway replicas. It returns HTTP 429 at capacity; the Gateway preserves
+that status for clients. The cap is enforced transactionally against shared
+Control Plane metadata, not application data. Stream contents and tickets are
+not logged. `/healthz` returns only static readiness status. Per-process caps
+remain local, and same-ticket replay coordination across replicas plus
+fleet-wide request-rate limiting remain open. TLS termination, private
+Gateway-to-runtime transport, and task/service health wiring are deployment
+responsibilities.
 
 Local WSS tests exercise shell byte relay and a Gateway → WorkspaceRouter →
 Workspace-bound PTY command path, dedicated SSH-proxy permission and fixed `127.0.0.1:22` routing, a
@@ -98,9 +101,10 @@ entrypoint also emits CloudWatch Embedded Metric Format records for connection
 events, rejected connections, active process connections, and duration. Metric
 dimensions are limited to Resource Plane, fixed channel, and fixed outcome;
 Tenant/Workspace IDs, tickets, and stream contents are excluded. These are
-process-local metrics and do not coordinate limits across Gateway replicas.
-Distributed limits, the VS Code process bridge, and the Lambda MicroVM
-end-to-end stream PoC remain open Task 46/47 work.
+process-local metrics. The signed lease API enforces the shared ten-connection
+per-Workspace allocation cap across replicas; global ticket-replay coordination
+and fleet-wide request-rate limiting remain open. The VS Code process bridge
+and Lambda MicroVM end-to-end stream PoC also remain open Task 46/47 work.
 
 ## Resource Plane Gateway process
 

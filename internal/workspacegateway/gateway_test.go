@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -87,6 +88,11 @@ type testDialer struct {
 	port  atomic.Uint32
 	err   error
 }
+
+type testGatewayStatusError int
+
+func (e testGatewayStatusError) Error() string              { return "test connection admission error" }
+func (e testGatewayStatusError) GatewayHTTPStatusCode() int { return int(e) }
 
 func (d *testDialer) OpenShell(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error) {
 	return d.open()
@@ -514,6 +520,28 @@ func TestGatewayConnectionLimitAndUpstreamFailure(t *testing.T) {
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusBadGateway {
 		t.Fatalf("upstream failure status=%d body=%s", response.StatusCode, response.Body)
+	}
+}
+
+func TestGatewayReturnsTooManyRequestsForSharedWorkspaceConnectionLimit(t *testing.T) {
+	dialer := &testDialer{err: testGatewayStatusError(http.StatusTooManyRequests)}
+	gateway, err := New(Config{ResourcePlaneID: "rp_gateway_a", Verifier: newTestVerifier(t), Dialer: dialer,
+		AllowedOrigins: []string{"https://ide.example.test"}, MaxConnections: 2, MaxConnectionsPerWorkspace: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "https://gateway.example.test/v1/workspaces/ws_gateway_a/shell", nil)
+	request.Header.Set("Authorization", "Bearer "+issueTestTicket(t, []workspacesession.Permission{workspacesession.PermissionShell}))
+	request.Header.Set("Origin", "https://ide.example.test")
+	request.Header.Set("Upgrade", "websocket")
+	request.Header.Set("Connection", "Upgrade")
+	request.Header.Set("Sec-WebSocket-Version", "13")
+	request.Header.Set("Sec-WebSocket-Key", base64.StdEncoding.EncodeToString([]byte("1234567890123456")))
+	request.Header.Set("Sec-WebSocket-Protocol", "hako.workspace.v1")
+	response := httptest.NewRecorder()
+	gateway.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusTooManyRequests {
+		t.Fatalf("Gateway status=%d body=%s, want 429", response.Code, response.Body.String())
 	}
 }
 

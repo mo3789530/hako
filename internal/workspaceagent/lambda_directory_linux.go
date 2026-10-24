@@ -4,6 +4,7 @@ package workspaceagent
 
 import (
 	"context"
+	"errors"
 	"io"
 	"time"
 
@@ -36,6 +37,7 @@ type WorkspaceLambdaMicroVMStreamDirectory struct {
 	MicroVMs        WorkspaceLambdaMicroVMReader
 	Tokens          WorkspaceAgentTokenProvider
 	Tickets         WorkspaceAgentTicketIssuer
+	Leases          WorkspaceConnectionLeaseReporter
 	Region          string
 	Origin          string
 	WebSocket       WorkspaceWebSocketDialer
@@ -43,6 +45,14 @@ type WorkspaceLambdaMicroVMStreamDirectory struct {
 
 func (d *WorkspaceLambdaMicroVMStreamDirectory) OpenShell(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
 	return d.open(ctx, claims, workspacesession.PermissionShell, 0)
+}
+
+func (d *WorkspaceLambdaMicroVMStreamDirectory) OpenExec(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
+	return d.open(ctx, claims, workspacesession.PermissionExec, 0)
+}
+
+func (d *WorkspaceLambdaMicroVMStreamDirectory) OpenFileTransfer(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
+	return d.open(ctx, claims, workspacesession.PermissionFileTransfer, 0)
 }
 
 func (d *WorkspaceLambdaMicroVMStreamDirectory) OpenVSCode(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
@@ -62,7 +72,8 @@ func (d *WorkspaceLambdaMicroVMStreamDirectory) open(ctx context.Context, claims
 	if d == nil || ctx == nil || claims.UserID == "" || claims.TenantID == "" || claims.WorkspaceID == "" ||
 		claims.ResourcePlane == "" || d.ResourcePlaneID == "" || claims.ResourcePlane != d.ResourcePlaneID ||
 		!hasWorkspacePermission(claims.Permissions, permission) ||
-		(permission != workspacesession.PermissionShell && permission != workspacesession.PermissionVSCode && permission != workspacesession.PermissionSSHProxy && permission != workspacesession.PermissionPortForward) || d.Journal == nil || d.MicroVMs == nil ||
+		(permission != workspacesession.PermissionShell && permission != workspacesession.PermissionExec && permission != workspacesession.PermissionVSCode && permission != workspacesession.PermissionSSHProxy &&
+			permission != workspacesession.PermissionPortForward && permission != workspacesession.PermissionFileTransfer) || d.Journal == nil || d.MicroVMs == nil ||
 		d.Tokens == nil || d.Tickets == nil || !validWorkspaceRegion(d.Region) || !validGatewayOrigin(d.Origin) {
 		return nil, ErrInteractiveChannelUnavailable
 	}
@@ -89,7 +100,30 @@ func (d *WorkspaceLambdaMicroVMStreamDirectory) open(ctx context.Context, claims
 	if err != nil {
 		return nil, ErrInteractiveChannelUnavailable
 	}
-	return dialer.open(lookupCtx, claims, permission, port)
+	var lease WorkspaceConnectionLeaseHandle
+	if d.Leases != nil {
+		lease, err = d.Leases.Open(lookupCtx, WorkspaceConnectionLeaseIdentity{TenantID: claims.TenantID,
+			WorkspaceID: claims.WorkspaceID, ResourcePlaneID: claims.ResourcePlane, MicroVMID: journal.ProviderID,
+			AllocationGeneration: journal.AllocationGeneration})
+		if err != nil {
+			var status interface{ GatewayHTTPStatusCode() int }
+			if errors.As(err, &status) && status.GatewayHTTPStatusCode() == 429 {
+				return nil, ErrWorkspaceConnectionLimit
+			}
+			return nil, ErrInteractiveChannelUnavailable
+		}
+	}
+	stream, err := dialer.open(lookupCtx, claims, permission, port)
+	if err != nil {
+		if lease != nil {
+			_ = lease.Close()
+		}
+		return nil, err
+	}
+	if lease != nil {
+		return newLeasedWorkspaceStream(ctx, stream, lease), nil
+	}
+	return stream, nil
 }
 
 var _ WorkspaceStreamDialer = (*WorkspaceLambdaMicroVMStreamDirectory)(nil)

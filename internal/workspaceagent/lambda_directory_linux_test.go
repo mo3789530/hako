@@ -175,6 +175,72 @@ func TestWorkspaceLambdaMicroVMDirectoryFailsClosedForStateAndProviderMismatch(t
 	}
 }
 
+type workspaceLeaseReporterStub struct {
+	identity WorkspaceConnectionLeaseIdentity
+	opened   int
+	lease    *workspaceLeaseHandleStub
+	err      error
+}
+
+func (s *workspaceLeaseReporterStub) Open(_ context.Context, identity WorkspaceConnectionLeaseIdentity) (WorkspaceConnectionLeaseHandle, error) {
+	s.identity = identity
+	s.opened++
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.lease == nil {
+		s.lease = &workspaceLeaseHandleStub{}
+	}
+	return s.lease, nil
+}
+
+func TestWorkspaceLambdaDirectoryPreservesSharedConnectionLimit(t *testing.T) {
+	claims := workspacesession.Claims{UserID: "user-1", TenantID: "tenant-1", WorkspaceID: "workspace-1", ResourcePlane: "rp-1",
+		Permissions: []workspacesession.Permission{workspacesession.PermissionShell}}
+	reporter := &workspaceLeaseReporterStub{err: workspaceLeaseHTTPError{status: 429}}
+	tokens := &gatewayTokenProviderStub{}
+	ws := &gatewayWebSocketStub{}
+	directory := &WorkspaceLambdaMicroVMStreamDirectory{ResourcePlaneID: "rp-1",
+		Journal: &workspaceJournalReaderStub{snapshot: workspacejournal.Snapshot{Journal: newRunningWorkspaceJournal(t, claims, "microvm-1"), ETag: `"running"`}},
+		MicroVMs: &workspaceMicroVMReaderStub{output: &lambdamicrovms.GetMicrovmOutput{MicrovmId: aws.String("microvm-1"),
+			State: types.MicrovmStateRunning, Endpoint: aws.String("https://microvm-1.lambda-microvm.us-east-1.on.aws")}},
+		Tokens: tokens, Tickets: &AgentTicketIssuer{KeyID: "k1", PrivateKey: makePrivateKey(t), TTL: time.Minute},
+		Leases: reporter, Region: "us-east-1", Origin: "https://gateway.hako.test", WebSocket: ws}
+	if _, err := directory.OpenShell(context.Background(), claims); !errors.Is(err, ErrWorkspaceConnectionLimit) {
+		t.Fatalf("connection lease limit error=%v, want ErrWorkspaceConnectionLimit", err)
+	}
+	if tokens.calls != 0 || ws.calls != 0 {
+		t.Fatalf("rate-limited request reached MicroVM auth/dial: token=%d websocket=%d", tokens.calls, ws.calls)
+	}
+}
+
+type workspaceLeaseHandleStub struct{ refreshed, closed int }
+
+func (s *workspaceLeaseHandleStub) Refresh(context.Context) error { s.refreshed++; return nil }
+func (s *workspaceLeaseHandleStub) Close() error                  { s.closed++; return nil }
+
+func TestWorkspaceLambdaDirectoryCreatesAndReleasesAllocationBoundLease(t *testing.T) {
+	claims := workspacesession.Claims{UserID: "user-1", TenantID: "tenant-1", WorkspaceID: "workspace-1", ResourcePlane: "rp-1",
+		Permissions: []workspacesession.Permission{workspacesession.PermissionShell}}
+	journal := newRunningWorkspaceJournal(t, claims, "microvm-1")
+	reporter := &workspaceLeaseReporterStub{}
+	stream := &gatewayTestStream{}
+	directory := &WorkspaceLambdaMicroVMStreamDirectory{ResourcePlaneID: "rp-1",
+		Journal: &workspaceJournalReaderStub{snapshot: workspacejournal.Snapshot{Journal: journal, ETag: `"running"`}},
+		MicroVMs: &workspaceMicroVMReaderStub{output: &lambdamicrovms.GetMicrovmOutput{MicrovmId: aws.String("microvm-1"),
+			State: types.MicrovmStateRunning, Endpoint: aws.String("https://microvm-1.lambda-microvm.us-east-1.on.aws")}},
+		Tokens: &gatewayTokenProviderStub{token: "token"}, Tickets: &AgentTicketIssuer{KeyID: "k1", PrivateKey: makePrivateKey(t), TTL: time.Minute},
+		Leases: reporter, Region: "us-east-1", Origin: "https://gateway.hako.test", WebSocket: &gatewayWebSocketStub{stream: stream}}
+	opened, err := directory.OpenShell(context.Background(), claims)
+	if err != nil || reporter.opened != 1 || reporter.identity != (WorkspaceConnectionLeaseIdentity{TenantID: claims.TenantID,
+		WorkspaceID: claims.WorkspaceID, ResourcePlaneID: claims.ResourcePlane, MicroVMID: "microvm-1", AllocationGeneration: 1}) {
+		t.Fatalf("connection lease was not bound to current allocation before stream: identity=%+v opened=%d err=%v", reporter.identity, reporter.opened, err)
+	}
+	if err := opened.Close(); err != nil || reporter.lease.closed != 1 {
+		t.Fatalf("closing Gateway stream did not release lease: closed=%d err=%v", reporter.lease.closed, err)
+	}
+}
+
 func newRunningWorkspaceJournal(t *testing.T, claims workspacesession.Claims, providerID string) workspacejournal.Journal {
 	t.Helper()
 	now := time.Now().UTC()

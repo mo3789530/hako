@@ -258,8 +258,17 @@ func (g *Gateway) serveChecked(w http.ResponseWriter, r *http.Request, permissio
 	}
 	upstream, err := open(r.Context(), claims)
 	if err != nil || upstream == nil {
+		status := http.StatusBadGateway
+		var statusError interface{ GatewayHTTPStatusCode() int }
+		if errors.As(err, &statusError) && statusError.GatewayHTTPStatusCode() == http.StatusTooManyRequests {
+			status = http.StatusTooManyRequests
+		}
 		g.logFailure(r.Context(), claims, permission, "runtime_dial")
-		http.Error(w, "Workspace runtime is unavailable", http.StatusBadGateway)
+		if status == http.StatusTooManyRequests {
+			http.Error(w, "Workspace connection limit reached", status)
+			return
+		}
+		http.Error(w, "Workspace runtime is unavailable", status)
 		return
 	}
 	defer upstream.Close()
