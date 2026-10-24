@@ -215,3 +215,9 @@ also verifies that its journal still names the same running MicroVM and
 generation after Guest reconciliation, and retries if allocation changed.
 The signed report sink inspects the Control Plane's `accepted` response and
 returns rejected reports to SQS instead of acknowledging them.
+
+The Resource Plane SQS handler records failed records with a fixed
+`command_delivery` failure class and the SQS message ID, then returns that
+record for retry. It never logs the command body or raw provider/Guest error.
+The local adapter test injects a sensitive sentinel error and verifies the log
+does not contain it.

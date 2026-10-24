@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -445,13 +446,21 @@ func (s *SignedWorkspaceServiceReportSink) Report(ctx context.Context, report Wo
 
 type WorkspaceServiceLambdaHandler struct {
 	consumer WorkspaceServiceCommandRuntime
+	logger   *slog.Logger
 }
 
 func NewWorkspaceServiceLambdaHandler(consumer WorkspaceServiceCommandRuntime) (*WorkspaceServiceLambdaHandler, error) {
+	return NewWorkspaceServiceLambdaHandlerWithLogger(consumer, nil)
+}
+
+func NewWorkspaceServiceLambdaHandlerWithLogger(consumer WorkspaceServiceCommandRuntime, logger *slog.Logger) (*WorkspaceServiceLambdaHandler, error) {
 	if consumer == nil {
 		return nil, errors.New("Workspace Service command consumer is required")
 	}
-	return &WorkspaceServiceLambdaHandler{consumer: consumer}, nil
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &WorkspaceServiceLambdaHandler{consumer: consumer, logger: logger}, nil
 }
 
 func (h *WorkspaceServiceLambdaHandler) Handle(ctx context.Context, event events.SQSEvent) (events.SQSEventResponse, error) {
@@ -461,6 +470,7 @@ func (h *WorkspaceServiceLambdaHandler) Handle(ctx context.Context, event events
 	response := events.SQSEventResponse{BatchItemFailures: make([]events.SQSBatchItemFailure, 0)}
 	for _, record := range event.Records {
 		if err := h.consumer.Handle(ctx, []byte(record.Body)); err != nil {
+			h.logger.ErrorContext(ctx, "Workspace Service command failed", "failure_class", "command_delivery", "sqs_message_id", record.MessageId)
 			response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: record.MessageId})
 		}
 	}

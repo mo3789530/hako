@@ -43,7 +43,10 @@ now log trusted Ticket/Tenant/Workspace/Plane identifiers and a bounded failure
 class, and artifact cleanup failures log Run/artifact/correlation identifiers;
 neither includes raw errors or storage references. Tests cover active Session
 recheck failure and S3 cleanup failure. Remaining work is the wider
-Gateway/cleanup worker inventory and production log/alert review.
+Gateway/cleanup worker inventory and production log/alert review. The
+Workspace Service SQS adapter now logs a fixed failure class and AWS message ID
+without logging the command body or raw runtime/provider errors; a regression
+test checks this redaction boundary.
 
 ## Goal
 

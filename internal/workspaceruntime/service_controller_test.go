@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -576,11 +577,12 @@ func TestWorkspaceServiceLambdaAdapterUsesPartialBatchFailures(t *testing.T) {
 	// discarding the successful record's acknowledgement.
 	consumer := serviceCommandRuntimeFunc(func(_ context.Context, payload []byte) error {
 		if string(payload) == "retry" {
-			return errors.New("transient runtime failure")
+			return errors.New("sensitive provider response: secret reference leaked")
 		}
 		return nil
 	})
-	handler, err := NewWorkspaceServiceLambdaHandler(consumer)
+	var logs bytes.Buffer
+	handler, err := NewWorkspaceServiceLambdaHandlerWithLogger(consumer, slog.New(slog.NewTextHandler(&logs, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -589,6 +591,10 @@ func TestWorkspaceServiceLambdaAdapterUsesPartialBatchFailures(t *testing.T) {
 	}})
 	if err != nil || len(response.BatchItemFailures) != 1 || response.BatchItemFailures[0].ItemIdentifier != "retry-2" {
 		t.Fatalf("partial batch failure response = %+v, %v", response, err)
+	}
+	if !strings.Contains(logs.String(), "failure_class=command_delivery") || !strings.Contains(logs.String(), "sqs_message_id=retry-2") ||
+		strings.Contains(logs.String(), "sensitive provider response") || strings.Contains(logs.String(), "secret reference leaked") {
+		t.Fatalf("Workspace Service failure log leaked raw details or omitted identifiers: %q", logs.String())
 	}
 }
 
