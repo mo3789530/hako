@@ -232,6 +232,11 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   `SELECT 1`. The fixture does not print the generated credential or provider
   error text. This verifies the local handoff and port path, not target
   MicroVM/nerdctl enforcement.
+- Extended the Podman acceptance to read `memory.max`, `cpu.max`, and
+  `pids.max` from the running PostgreSQL container's cgroup v2 filesystem. The
+  host Podman acceptance passed with the expected 1 GiB, 0.75 CPU, and 256 PID
+  limits. This verifies local cgroup v2 application, not the pinned ARM64
+  nerdctl runtime or Lambda MicroVM kernel.
 - The guest resolver admits Service declarations only when image-owned
   configuration explicitly enables the Job Service manager; its default
   constructor and the default image remain disabled. Rootless containerd is

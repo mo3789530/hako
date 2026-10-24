@@ -232,6 +232,13 @@ func TestNerdctlJobServicePodmanRuntimeContract(t *testing.T) {
 		!strings.Contains(inspection, "/var/lib/postgresql") || !strings.Contains(inspection, "/run/postgresql") {
 		t.Fatalf("Job Service runtime limits or ephemeral mounts differ from the catalog contract: inspection=%q err=%v", inspection, err)
 	}
+	output, err = exec.CommandContext(ctx, podman, "exec", "--user", "999:999", container,
+		"cat", "/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/cpu.max", "/sys/fs/cgroup/pids.max").CombinedOutput()
+	cgroupLimits := strings.Fields(string(output))
+	if err != nil || len(cgroupLimits) != 4 || cgroupLimits[0] != "1073741824" ||
+		cgroupLimits[1] != "75000" || cgroupLimits[2] != "100000" || cgroupLimits[3] != "256" {
+		t.Fatalf("Job Service effective cgroup v2 limits differ from the catalog contract: values=%q err=%v", strings.TrimSpace(string(output)), err)
+	}
 	if entries, err := os.ReadDir(envDir); err != nil || len(entries) != 0 {
 		t.Fatalf("temporary credential env file was not removed after container creation: entries=%d err=%v", len(entries), err)
 	}

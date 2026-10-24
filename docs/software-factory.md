@@ -490,17 +490,20 @@ The Job command process budget is not yet enforced as an aggregate cgroup limit.
 `make test-job-services-podman` runs the production service engine against a
 local rootless Podman daemon through a test-only CLI adapter. It requires a
 locally cached PostgreSQL image (`docker.io/library/postgres:18` by default;
-override with `HAKO_JOB_SERVICES_PODMAN_IMAGE`). This checks host-side container
-flags and lifecycle, not the pinned ARM64 nerdctl runtime or a Lambda MicroVM.
+override with `HAKO_JOB_SERVICES_PODMAN_IMAGE`). It checks host-side container
+flags, lifecycle, and effective cgroup v2 memory/CPU/PID limits from inside the
+container. This does not validate the pinned ARM64 nerdctl runtime or cgroup
+enforcement in a Lambda MicroVM.
 
 After a service is created, the Linux engine also inspects its runtime metadata
 and fails closed unless the fixed catalog memory/CPU/PID limits, read-only
 rootfs, non-privileged mode, absence of added capabilities and bind mounts,
 `no-new-privileges`, `999:999` user, exact loopback port bindings, and tmpfs
 paths/options were applied. Podman's known `rprivate` and `tmpcopyup` tmpfs
-additions are allowed. The integration check verifies the host Podman
-configuration only; it does not establish actual kernel/cgroup enforcement or
-target MicroVM behavior.
+additions are allowed. The integration also reads `memory.max`, `cpu.max`, and
+`pids.max` inside the running container, verifying that those limits reached
+the host cgroup v2 runtime. This does not establish enforcement by nerdctl or
+the target Lambda MicroVM kernel.
 
 The validated configuration is converted to a deterministic execution plan
 inside the Workload Agent, after it verifies the installed source archive
