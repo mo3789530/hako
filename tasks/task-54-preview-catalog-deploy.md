@@ -116,9 +116,12 @@ Add optional repository-level preview environments and service metadata/deploy p
 - Migration 000160 adds provisioning lease/claim metadata, attempt tracking,
   fixed error classes with retry deadlines, and a store API that binds provider
   IDs only for the current unexpired Preview generation and exact claim/attempt.
-  Local PostgreSQL integration covers retry, stale-attempt rejection, and
-  successful binding. No provision worker, DSQL role grant, Resource Plane
-  command, Lambda MicroVM allocation, or Gateway route is wired yet.
+  `internal/previewprovision.Worker` now runs the claim/provision/bind/retry
+  loop through an injected provisioner and compensates a stale result. Local
+  PostgreSQL integration covers retry and binding; unit tests cover bounded
+  config and fixed error classification. A concrete Resource Plane command,
+  deployed worker/DSQL role grant, Lambda MicroVM allocation, and Gateway route
+  are not wired yet.
 - `go test ./...` passed. PostgreSQL Preview lifecycle E2E passed against the
   local `hako-dev-postgres`, including stale delivery, close/reopen, Tenant
   scoping, and duplicate replay.

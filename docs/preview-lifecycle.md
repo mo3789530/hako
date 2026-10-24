@@ -69,10 +69,14 @@ and can reclaim an expired worker lease. `BindRuntimeAllocation` records
 provider IDs only while the same generation, claim, attempt, and lease are
 still current; a stale result is rejected and its caller must compensate any
 provider resources it already created. Provision failures use fixed error
-classes and bounded exponential retry. The claim/bind/failure store contract is
-covered by the PostgreSQL lifecycle integration test. It is not yet connected
-to a provision worker, Resource Plane command, DSQL role grant, MicroVM API,
-or Gateway route publisher, so no Preview runtime is allocated.
+classes and bounded exponential retry. `internal/previewprovision.Worker` now
+executes that claim/provision/bind/retry state machine through an injected
+Resource Plane provisioner; if a result loses its generation fence, it invokes
+the provisioner's idempotent compensation method. PostgreSQL lifecycle
+integration drives a fake provisioner through failure/backoff and successful
+binding. A concrete Resource Plane command, provision-worker deployment and
+DSQL role grant, Lambda MicroVM API call, and Gateway route publisher are still
+not wired, so no Preview runtime is allocated.
 
 Each present Preview records a fixed `expires_at` using the Tenant's configured
 Preview lifetime (24 hours when no quota row exists). `synchronize` deliveries

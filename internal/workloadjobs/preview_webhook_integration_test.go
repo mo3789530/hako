@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/githubwebhook"
+	"github.com/mo3789530/hako/internal/previewprovision"
 	"github.com/mo3789530/hako/internal/store/dsql"
 	webhookstore "github.com/mo3789530/hako/internal/store/githubwebhook"
 	previewstore "github.com/mo3789530/hako/internal/store/previews"
@@ -118,70 +119,46 @@ func TestRepositoryPreviewWebhookLifecycleFencesStalePRUpdates(t *testing.T) {
 		t.Fatalf("reopened Preview generation was not independently recorded: desired=%s state=%s err=%v", currentDesired, currentState, err)
 	}
 	provisionTime := now.Add(10 * time.Second)
-	claimProvision := func(at time.Time, claimID string) ([]previewstore.ProvisionJob, error) {
-		tx, err := pool.Begin(ctx)
-		if err != nil {
-			return nil, err
-		}
-		jobs, err := previewstore.ClaimRuntimeAllocations(ctx, tx, claimID, at, 30*time.Second, 10)
-		if err != nil {
-			_ = tx.Rollback(ctx)
-			return nil, err
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return nil, err
-		}
-		return jobs, nil
+	provisioner := &previewProvisionFake{failures: []error{previewprovision.ErrMicroVMLaunch}, binding: previewstore.RuntimeBinding{
+		ResourcePlaneID: "rp_preview_01", WorkspaceID: "ws_preview_01", MicroVMID: "microvm_preview_01", GatewayRouteID: "route_preview_01"}}
+	workerNow := provisionTime
+	claimIDs := []string{"preview-provision-a1", "preview-provision-early", "preview-provision-a2"}
+	worker := previewprovision.Worker{Pool: pool, Provisioner: provisioner, Lease: 30 * time.Second, Timeout: 5 * time.Second, BatchSize: 1,
+		Now: func() time.Time { return workerNow }, NewClaimID: func() (string, error) {
+			claimID := claimIDs[0]
+			claimIDs = claimIDs[1:]
+			return claimID, nil
+		}}
+	firstStats, err := worker.RunOnce(ctx)
+	if err != nil || firstStats.Claimed != 1 || firstStats.RetryScheduled != 1 || len(provisioner.jobs) != 1 || provisioner.jobs[0].Attempt != 1 {
+		t.Fatalf("first Preview provision worker pass = %+v, jobs=%+v, err=%v", firstStats, provisioner.jobs, err)
 	}
-	firstProvision, err := claimProvision(provisionTime, "preview-provision-a1")
-	if err != nil || len(firstProvision) != 1 || firstProvision[0].Generation != 3 || firstProvision[0].Attempt != 1 ||
-		firstProvision[0].LeaseExpiresAt != provisionTime.Add(30*time.Second) {
-		t.Fatalf("initial Preview provision claim = %+v, err=%v", firstProvision, err)
+	firstProvisionJob := provisioner.jobs[0]
+	var provisionRetryAt time.Time
+	var retryError string
+	if err := pool.QueryRow(ctx, `SELECT provision_next_attempt_at,provision_last_error FROM repository_preview_runtime_allocations
+		WHERE tenant_id='tenant_preview_hook' AND installation_id=9801 AND github_repository_id=9802 AND pull_request_number=73 AND generation=3`).Scan(&provisionRetryAt, &retryError); err != nil || retryError != "microvm_launch_failed" || !provisionRetryAt.Equal(provisionTime.Add(5*time.Second)) {
+		t.Fatalf("Preview provision retry projection = %s %q err=%v", provisionRetryAt, retryError, err)
 	}
-	firstProvisionJob := firstProvision[0]
-	failureAt := provisionTime.Add(time.Second)
+	workerNow = provisionRetryAt.Add(-time.Second)
+	earlyStats, err := worker.RunOnce(ctx)
+	if err != nil || earlyStats.Claimed != 0 {
+		t.Fatalf("Preview provision retried before backoff: stats=%+v err=%v", earlyStats, err)
+	}
+	workerNow = provisionRetryAt
+	secondStats, err := worker.RunOnce(ctx)
+	if err != nil || secondStats.Claimed != 1 || secondStats.Bound != 1 || len(provisioner.jobs) != 2 || provisioner.jobs[1].Attempt != 2 {
+		t.Fatalf("second Preview provision worker pass = %+v jobs=%+v err=%v", secondStats, provisioner.jobs, err)
+	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	provisionRetryAt, recorded, err := previewstore.RecordRuntimeAllocationFailure(ctx, tx, firstProvisionJob, failureAt, "microvm_launch_failed")
-	if err != nil || !recorded || provisionRetryAt != failureAt.Add(5*time.Second) {
-		_ = tx.Rollback(ctx)
-		t.Fatalf("record Preview launch failure: retry=%s recorded=%v err=%v", provisionRetryAt, recorded, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if jobs, err := claimProvision(provisionRetryAt.Add(-time.Second), "preview-provision-early"); err != nil || len(jobs) != 0 {
-		t.Fatalf("Preview provision retried before backoff: jobs=%+v err=%v", jobs, err)
-	}
-	secondProvision, err := claimProvision(provisionRetryAt, "preview-provision-a2")
-	if err != nil || len(secondProvision) != 1 || secondProvision[0].Attempt != 2 {
-		t.Fatalf("Preview provision retry claim = %+v, err=%v", secondProvision, err)
-	}
-	secondProvisionJob := secondProvision[0]
-	tx, err = pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
 	stale, err := previewstore.BindRuntimeAllocation(ctx, tx, firstProvisionJob,
-		previewstore.RuntimeBinding{ResourcePlaneID: "rp_preview_01", WorkspaceID: "ws_preview_01", MicroVMID: "microvm_preview_01", GatewayRouteID: "route_preview_01"}, provisionRetryAt.Add(time.Second))
+		provisioner.binding, provisionRetryAt.Add(time.Second))
 	if err != nil || stale {
 		_ = tx.Rollback(ctx)
 		t.Fatalf("superseded Preview provision claim bound runtime: bound=%v err=%v", stale, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	tx, err = pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bound, err := previewstore.BindRuntimeAllocation(ctx, tx, secondProvisionJob,
-		previewstore.RuntimeBinding{ResourcePlaneID: "rp_preview_01", WorkspaceID: "ws_preview_01", MicroVMID: "microvm_preview_01", GatewayRouteID: "route_preview_01"}, provisionRetryAt.Add(time.Second))
-	if err != nil || !bound {
-		_ = tx.Rollback(ctx)
-		t.Fatalf("bind current Preview runtime generation: bound=%v err=%v", bound, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
@@ -556,4 +533,26 @@ func TestRepositoryPreviewQuotaConfigurationIncludesPRReservations(t *testing.T)
 	if err != nil || stored.PreviewRuns != 2 || stored.PreviewLifetimeSeconds != 3600 {
 		t.Fatalf("rejected quota update changed configured limits: %+v, error=%v", stored, err)
 	}
+}
+
+type previewProvisionFake struct {
+	failures []error
+	binding  previewstore.RuntimeBinding
+	jobs     []previewstore.ProvisionJob
+	cleaned  int
+}
+
+func (f *previewProvisionFake) Provision(_ context.Context, job previewstore.ProvisionJob) (previewstore.RuntimeBinding, error) {
+	f.jobs = append(f.jobs, job)
+	if len(f.failures) > 0 {
+		err := f.failures[0]
+		f.failures = f.failures[1:]
+		return previewstore.RuntimeBinding{}, err
+	}
+	return f.binding, nil
+}
+
+func (f *previewProvisionFake) Compensate(context.Context, previewstore.ProvisionJob, previewstore.RuntimeBinding) error {
+	f.cleaned++
+	return nil
 }
