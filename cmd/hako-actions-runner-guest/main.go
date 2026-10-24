@@ -29,7 +29,7 @@ const (
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatal("Hako Actions runner guest stopped: ", err)
+		log.Fatal("Hako Actions runner guest stopped (failure_class=process_exit)")
 	}
 }
 

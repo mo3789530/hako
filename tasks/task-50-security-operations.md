@@ -137,6 +137,13 @@ that it is absent from the structured log. Local migration diagnosis remains
 available from the database/operator side; production log retention and alert
 review are still outstanding.
 
+A follow-up scan also found four Guest/init entrypoints calling `log.Fatal`
+with the returned startup error. They now log only
+`failure_class=process_exit`, so paths, endpoint details, and provider errors
+from Agent/Workspace/Actions Runner startup cannot enter process logs. Their
+command packages compile and test locally; deployed log retention remains an
+operational review item.
+
 The deferred architecture requirements are now recorded as four separate
 ADRs: [BYOC](../docs/adr/0010-customer-owned-resource-planes.md),
 [multi-Region placement](../docs/adr/0011-multi-region-resource-planes.md),

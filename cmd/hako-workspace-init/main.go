@@ -22,7 +22,7 @@ const workspaceInitListenAddress = "0.0.0.0:8080"
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatal("Hako Workspace init stopped: ", err)
+		log.Fatal("Hako Workspace init stopped (failure_class=process_exit)")
 	}
 }
 

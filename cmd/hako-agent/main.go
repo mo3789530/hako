@@ -22,7 +22,7 @@ const agentListenAddress = "0.0.0.0:8080"
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatal("Hako Agent stopped: ", err)
+		log.Fatal("Hako Agent stopped (failure_class=process_exit)")
 	}
 }
 

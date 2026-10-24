@@ -22,7 +22,7 @@ import (
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatal("Hako Workspace Agent stopped: ", err)
+		log.Fatal("Hako Workspace Agent stopped (failure_class=process_exit)")
 	}
 }
 
