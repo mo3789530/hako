@@ -38,7 +38,8 @@ func planTicketClaims(vm string, id workloadjournal.Command, operation Operation
 			AgentInstallationID: plan.AgentInstallationID, AgentRepositoryID: plan.AgentRepositoryID,
 			AgentTaskContextSHA256: plan.AgentTaskContextSHA256,
 			SourceDigest:           plan.SourceDigest, CommitSHA: plan.CommitSHA,
-			TriggerEvent: plan.TriggerEvent, TriggerBranch: plan.TriggerBranch, CorrelationID: plan.CorrelationID, Deadline: plan.Deadline.UTC()}
+			TriggerEvent: plan.TriggerEvent, TriggerBranch: plan.TriggerBranch, CorrelationID: plan.CorrelationID,
+			JobMemoryLimitMB: plan.JobMemoryLimitMB, JobCPULimitMillis: plan.JobCPULimitMillis, Deadline: plan.Deadline.UTC()}
 	}
 	return claims
 }
@@ -154,7 +155,8 @@ func TestProcessBackendRecordsInvalidFactoryManifestAsTerminalRunFailure(t *test
 	now := time.Now().UTC()
 	id := testIdentity()
 	plan := ExecutionPlan{Identity: id, RepositoryPath: "/workspace/source", SourceDigest: strings.Repeat("a", 64),
-		CommitSHA: strings.Repeat("b", 40), TriggerEvent: "push", TriggerBranch: "main", Deadline: now.Add(time.Hour)}
+		CommitSHA: strings.Repeat("b", 40), TriggerEvent: "push", TriggerBranch: "main", JobMemoryLimitMB: 8192, JobCPULimitMillis: 4000,
+		Deadline: now.Add(time.Hour)}
 	factory := &fakeProcessFactory{}
 	backend, err := NewProcessBackend(ProcessConfig{Resolver: fixedExecutionResolver{plan: plan, err: ErrFactoryManifest},
 		Factory: factory, Now: func() time.Time { return now }})

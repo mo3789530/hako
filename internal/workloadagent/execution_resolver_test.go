@@ -110,7 +110,7 @@ pipelines:
 		ResourcePlaneID: "rp_1", IdempotencyToken: "idem_1"}
 	deadline := now.Add(time.Hour).UTC()
 	execution := ExecutionBinding{SourceDigest: archive.SHA256(), CommitSHA: strings.Repeat("b", 40),
-		TriggerEvent: "push", TriggerBranch: "release/2026.10", Deadline: deadline}
+		TriggerEvent: "push", TriggerBranch: "release/2026.10", JobMemoryLimitMB: 4096, JobCPULimitMillis: 2000, Deadline: deadline}
 	installer, err := NewFilesystemSourceInstaller(filepath.Join(t.TempDir(), "checkout"), 0)
 	if err != nil {
 		t.Fatal(err)
@@ -129,6 +129,7 @@ pipelines:
 		t.Fatalf("resolve native Pipeline from verified commit: %v", err)
 	}
 	if plan.TriggerEvent != "push" || plan.TriggerBranch != "release/2026.10" || len(plan.FactoryPipelines) != 2 ||
+		plan.JobMemoryLimitMB != 4096 || plan.JobCPULimitMillis != 2000 ||
 		plan.FactoryPipelines[0].Pipeline != "a-test" || plan.FactoryPipelines[1].Pipeline != "z-lint" ||
 		plan.FactoryPipelines[0].Commands[0].Executable != "/usr/local/go/bin/go" {
 		t.Fatalf("resolved native Pipeline plan = %+v", plan)
@@ -136,6 +137,12 @@ pipelines:
 	startClaims.Execution.TriggerBranch = "hotfix"
 	if _, err := resolver.ResolveExecution(context.Background(), startClaims); !errors.Is(err, ErrFactoryManifest) {
 		t.Fatalf("unmatched trigger branch was accepted: %v", err)
+	}
+	startClaims.Execution.TriggerBranch = "release/2026.10"
+	startClaims.Execution.JobMemoryLimitMB = 1024
+	startClaims.Execution.JobCPULimitMillis = 500
+	if _, err := resolver.ResolveExecution(context.Background(), startClaims); !errors.Is(err, ErrFactoryManifest) {
+		t.Fatalf("pipeline exceeding the selected MicroVM capacity was accepted: %v", err)
 	}
 }
 

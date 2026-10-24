@@ -9,7 +9,7 @@ import (
 	"github.com/mo3789530/hako/internal/workloadcontroller"
 )
 
-const testProfile = `[{"runtime_class":"standard","trust_level":"untrusted","image_identifier":"arn:aws:lambda:ap-northeast-1:123456789012:microvm-image:hako-standard","image_version":"1","image_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","ingress_connector":"arn:aws:lambda:ap-northeast-1:aws:network-connector:aws-network-connector:ALL_INGRESS","egress_connector":"arn:aws:lambda:ap-northeast-1:123456789012:network-connector:hako-egress"}]`
+const testProfile = `[{"runtime_class":"standard","trust_level":"untrusted","image_identifier":"arn:aws:lambda:ap-northeast-1:123456789012:microvm-image:hako-standard","image_version":"1","image_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","job_memory_limit_mb":8192,"job_cpu_limit_millis":4000,"ingress_connector":"arn:aws:lambda:ap-northeast-1:aws:network-connector:aws-network-connector:ALL_INGRESS","egress_connector":"arn:aws:lambda:ap-northeast-1:123456789012:network-connector:hako-egress"}]`
 
 func TestParseProfiles(t *testing.T) {
 	profiles, err := parseProfiles(testProfile)
@@ -17,7 +17,8 @@ func TestParseProfiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := workloadcontroller.RuntimeProfileKey{Kind: domain.WorkloadJob, RuntimeClass: "standard", TrustLevel: domain.WorkloadUntrusted}
-	if profile, ok := profiles[key]; !ok || profile.ImageVersion != "1" || len(profile.IngressNetworkConnectors) != 1 {
+	if profile, ok := profiles[key]; !ok || profile.ImageVersion != "1" || len(profile.IngressNetworkConnectors) != 1 ||
+		profile.JobMemoryLimitMB != 8192 || profile.JobCPULimitMillis != 4000 {
 		t.Fatalf("unexpected parsed profile: %#v", profiles)
 	}
 }
@@ -45,13 +46,32 @@ func TestParseProfilesRejectsUnknownDuplicateAndUnsupportedProfiles(t *testing.T
 
 func TestParseProfilesSeparatesWorkloadKinds(t *testing.T) {
 	job := strings.Replace(testProfile, `"runtime_class"`, `"kind":"job","runtime_class"`, 1)
-	agent := strings.Replace(testProfile, `"runtime_class"`, `"kind":"agent","runtime_class"`, 1)
+	agent := strings.Replace(strings.Replace(testProfile, `"job_memory_limit_mb":8192,`, "", 1), `"job_cpu_limit_millis":4000,`, "", 1)
+	agent = strings.Replace(agent, `"runtime_class"`, `"kind":"agent","runtime_class"`, 1)
 	profiles, err := parseProfiles(strings.TrimSuffix(job, "]") + "," + strings.Trim(agent, "[]") + "]")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(profiles) != 2 {
 		t.Fatalf("workload kind profiles = %d, want 2", len(profiles))
+	}
+}
+
+func TestParseProfilesRequiresJobCapacityAndRejectsCapacityOnAgent(t *testing.T) {
+	withoutMemory := strings.Replace(testProfile, `"job_memory_limit_mb":8192,`, "", 1)
+	withoutCPU := strings.Replace(testProfile, `"job_cpu_limit_millis":4000,`, "", 1)
+	for name, input := range map[string]string{"missing memory": withoutMemory, "missing CPU": withoutCPU,
+		"memory above Lambda class": strings.Replace(testProfile, `"job_memory_limit_mb":8192`, `"job_memory_limit_mb":16385`, 1),
+		"CPU above Lambda class":    strings.Replace(testProfile, `"job_cpu_limit_millis":4000`, `"job_cpu_limit_millis":8001`, 1)} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseProfiles(input); err == nil {
+				t.Fatal("invalid Job capacity profile was accepted")
+			}
+		})
+	}
+	agentWithCapacity := strings.Replace(testProfile, `"runtime_class"`, `"kind":"agent","runtime_class"`, 1)
+	if _, err := parseProfiles(agentWithCapacity); err == nil {
+		t.Fatal("Agent profile accepted Job resource ceilings")
 	}
 }
 

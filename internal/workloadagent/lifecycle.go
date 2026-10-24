@@ -38,6 +38,8 @@ type runtimeHookPayload struct {
 	TriggerEvent           string                  `json:"trigger_event,omitempty"`
 	TriggerBranch          string                  `json:"trigger_branch,omitempty"`
 	CorrelationID          string                  `json:"correlation_id,omitempty"`
+	JobMemoryLimitMB       int                     `json:"job_memory_limit_mb,omitempty"`
+	JobCPULimitMillis      int                     `json:"job_cpu_limit_millis,omitempty"`
 	Deadline               time.Time               `json:"deadline"`
 }
 
@@ -86,7 +88,8 @@ func sameExecutionBinding(left, right ExecutionBinding) bool {
 	return left.SourceDigest == right.SourceDigest && left.CommitSHA == right.CommitSHA && left.TriggerEvent == right.TriggerEvent &&
 		left.Kind == right.Kind && left.AgentIntegrationID == right.AgentIntegrationID && left.AgentInstallationID == right.AgentInstallationID &&
 		left.AgentRepositoryID == right.AgentRepositoryID && left.AgentTaskContextSHA256 == right.AgentTaskContextSHA256 &&
-		left.TriggerBranch == right.TriggerBranch && left.CorrelationID == right.CorrelationID && left.Deadline.Equal(right.Deadline)
+		left.TriggerBranch == right.TriggerBranch && left.CorrelationID == right.CorrelationID &&
+		left.JobMemoryLimitMB == right.JobMemoryLimitMB && left.JobCPULimitMillis == right.JobCPULimitMillis && left.Deadline.Equal(right.Deadline)
 }
 
 // NewMicroVMLifecycleHandler exposes the documented Lambda MicroVM image and
@@ -153,7 +156,8 @@ func lifecycleRun(w http.ResponseWriter, r *http.Request, binder interface {
 		AgentInstallationID: payload.AgentInstallationID, AgentRepositoryID: payload.AgentRepositoryID,
 		AgentTaskContextSHA256: payload.AgentTaskContextSHA256,
 		SourceDigest:           payload.SourceDigest, CommitSHA: payload.CommitSHA,
-		TriggerEvent: payload.TriggerEvent, TriggerBranch: payload.TriggerBranch, CorrelationID: payload.CorrelationID, Deadline: payload.Deadline}
+		TriggerEvent: payload.TriggerEvent, TriggerBranch: payload.TriggerBranch, CorrelationID: payload.CorrelationID,
+		JobMemoryLimitMB: payload.JobMemoryLimitMB, JobCPULimitMillis: payload.JobCPULimitMillis, Deadline: payload.Deadline}
 	if !validExecutionBinding(execution) {
 		http.Error(w, "invalid MicroVM lifecycle request", http.StatusBadRequest)
 		return

@@ -133,9 +133,12 @@ func (r *LambdaMicroVM) input(spec Specification) (*lambdamicrovms.RunMicrovmInp
 		TriggerEvent           string                  `json:"trigger_event,omitempty"`
 		TriggerBranch          string                  `json:"trigger_branch,omitempty"`
 		CorrelationID          string                  `json:"correlation_id,omitempty"`
+		JobMemoryLimitMB       int                     `json:"job_memory_limit_mb,omitempty"`
+		JobCPULimitMillis      int                     `json:"job_cpu_limit_millis,omitempty"`
 		Deadline               time.Time               `json:"deadline"`
 	}{spec.Identity, spec.Kind, spec.GitHubIntegrationID, spec.GitHubInstallationID, spec.GitHubRepositoryID, spec.AgentTaskContextSHA256,
-		spec.SourceDigest, spec.CommitSHA, spec.TriggerEvent, spec.TriggerBranch, spec.CorrelationID, spec.Deadline.UTC()})
+		spec.SourceDigest, spec.CommitSHA, spec.TriggerEvent, spec.TriggerBranch, spec.CorrelationID,
+		spec.JobMemoryLimitMB, spec.JobCPULimitMillis, spec.Deadline.UTC()})
 	if err != nil {
 		return nil, err
 	}
@@ -297,7 +300,8 @@ func (r *LambdaMicroVM) agentConnection(ctx context.Context, spec Specification,
 			Kind: spec.Kind, AgentIntegrationID: spec.GitHubIntegrationID, AgentInstallationID: spec.GitHubInstallationID,
 			AgentRepositoryID: spec.GitHubRepositoryID, AgentTaskContextSHA256: spec.AgentTaskContextSHA256,
 			SourceDigest: spec.SourceDigest, CommitSHA: spec.CommitSHA, TriggerEvent: spec.TriggerEvent, TriggerBranch: spec.TriggerBranch,
-			CorrelationID: spec.CorrelationID, Deadline: spec.Deadline.UTC(),
+			CorrelationID: spec.CorrelationID, JobMemoryLimitMB: spec.JobMemoryLimitMB, JobCPULimitMillis: spec.JobCPULimitMillis,
+			Deadline: spec.Deadline.UTC(),
 		})
 	} else {
 		agentTicket, err = r.config.AgentTicketIssuer.Issue(handle, spec.Identity, operation)
@@ -312,7 +316,8 @@ func (r *LambdaMicroVM) agentConnection(ctx context.Context, spec Specification,
 			Kind: spec.Kind, AgentIntegrationID: spec.GitHubIntegrationID, AgentInstallationID: spec.GitHubInstallationID,
 			AgentRepositoryID: spec.GitHubRepositoryID, AgentTaskContextSHA256: spec.AgentTaskContextSHA256,
 			SourceDigest: spec.SourceDigest, CommitSHA: spec.CommitSHA, TriggerEvent: spec.TriggerEvent, TriggerBranch: spec.TriggerBranch,
-			CorrelationID: spec.CorrelationID, Deadline: spec.Deadline.UTC(),
+			CorrelationID: spec.CorrelationID, JobMemoryLimitMB: spec.JobMemoryLimitMB, JobCPULimitMillis: spec.JobCPULimitMillis,
+			Deadline: spec.Deadline.UTC(),
 		})
 		if err != nil || sourceTicket == "" || strings.ContainsAny(sourceTicket, " \t\r\n") {
 			return AgentConnection{}, ErrMicroVMNotReady

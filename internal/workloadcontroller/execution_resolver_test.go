@@ -56,7 +56,8 @@ func TestMetadataSpecificationResolverCombinesTrustedMetadataAndPlaneProfile(t *
 	sources := &fixedSourceMaterializer{source: MaterializedSource{Digest: strings.Repeat("b", 64),
 		ArtifactPrefix: "s3://hako-artifacts/workloads/tenant_1/run_1/attempt_1/"}}
 	profile := RuntimeProfile{ImageIdentifier: "arn:aws:lambda:ap-northeast-1:123456789012:microvm-image:hako", ImageVersion: "7",
-		ImageDigest: strings.Repeat("c", 64), IngressNetworkConnectors: []string{"ingress"}, EgressNetworkConnectors: []string{"egress"}}
+		ImageDigest: strings.Repeat("c", 64), JobMemoryLimitMB: 8192, JobCPULimitMillis: 4000,
+		IngressNetworkConnectors: []string{"ingress"}, EgressNetworkConnectors: []string{"egress"}}
 	resolver, err := NewMetadataSpecificationResolver(MetadataSpecificationResolverConfig{ResourcePlaneID: "rp_1", Metadata: metaResolver,
 		Sources: sources, Profiles: map[RuntimeProfileKey]RuntimeProfile{{Kind: domain.WorkloadJob, RuntimeClass: "standard", TrustLevel: domain.WorkloadUntrusted}: profile}, Now: func() time.Time { return now }})
 	if err != nil {
@@ -69,7 +70,8 @@ func TestMetadataSpecificationResolverCombinesTrustedMetadataAndPlaneProfile(t *
 	}
 	if spec.Identity != id || spec.CommitSHA != metadata.CommitSHA || !spec.RequestedAt.Equal(metadata.RequestedAt) || !spec.Deadline.Equal(metadata.Deadline) ||
 		spec.SourceDigest != sources.source.Digest || spec.ArtifactPrefix != sources.source.ArtifactPrefix || spec.ImageDigest != strings.Repeat("c", 64) ||
-		spec.EgressNetworkConnectors[0] != "egress" || metaResolver.calls != 1 || sources.calls != 1 {
+		spec.EgressNetworkConnectors[0] != "egress" || spec.JobMemoryLimitMB != 8192 || spec.JobCPULimitMillis != 4000 ||
+		metaResolver.calls != 1 || sources.calls != 1 {
 		t.Fatalf("unexpected resolved specification: %+v", spec)
 	}
 }
@@ -107,8 +109,10 @@ func TestMetadataSpecificationResolverPreservesIssueAgentKind(t *testing.T) {
 	}
 	jobProfileOnly, err := NewMetadataSpecificationResolver(MetadataSpecificationResolverConfig{ResourcePlaneID: "rp_1",
 		Metadata: &fixedExecutionMetadataResolver{metadata: metadata}, Sources: sources, AgentTasks: fixedResolverAgentTaskProvider{task: task},
-		Profiles: map[RuntimeProfileKey]RuntimeProfile{{Kind: domain.WorkloadJob, RuntimeClass: "standard", TrustLevel: domain.WorkloadUntrusted}: profile},
-		Now:      func() time.Time { return now }})
+		Profiles: map[RuntimeProfileKey]RuntimeProfile{{Kind: domain.WorkloadJob, RuntimeClass: "standard", TrustLevel: domain.WorkloadUntrusted}: {
+			ImageIdentifier: profile.ImageIdentifier, ImageVersion: profile.ImageVersion, ImageDigest: profile.ImageDigest,
+			JobMemoryLimitMB: 8192, JobCPULimitMillis: 4000, IngressNetworkConnectors: []string{"ingress"}, EgressNetworkConnectors: []string{"egress"}}},
+		Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,6 +131,7 @@ func TestMetadataSpecificationResolverFailsClosedBeforeSourceMaterialization(t *
 		CommitSHA: strings.Repeat("a", 40), RuntimeClass: "standard", TrustLevel: domain.WorkloadUntrusted,
 		RequestedAt: now.Add(-time.Minute), Deadline: now.Add(time.Hour)}
 	profile := RuntimeProfile{ImageIdentifier: "image", ImageVersion: "1", ImageDigest: strings.Repeat("c", 64),
+		JobMemoryLimitMB: 4096, JobCPULimitMillis: 2000,
 		IngressNetworkConnectors: []string{"ingress"}, EgressNetworkConnectors: []string{"egress"}}
 	validSource := MaterializedSource{Digest: strings.Repeat("b", 64), ArtifactPrefix: "s3://bucket/logs/tenant_1/run_1/attempt_1/"}
 	for _, tc := range []struct {

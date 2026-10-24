@@ -45,6 +45,8 @@ type Specification struct {
 	RequestedAt              time.Time
 	ImageIdentifier          string
 	ImageVersion             string
+	JobMemoryLimitMB         int
+	JobCPULimitMillis        int
 	IngressNetworkConnectors []string
 	EgressNetworkConnectors  []string
 }
@@ -324,6 +326,12 @@ func specificationHash(s Specification, id workloadjournal.Command) (string, err
 		(s.Kind != domain.WorkloadAgent && (s.GitHubIntegrationID != "" || s.GitHubInstallationID != 0 || s.GitHubRepositoryID != 0 || s.AgentTaskContextSHA256 != "")) ||
 		(s.Kind != "" && s.Kind != domain.WorkloadJob && s.Kind != domain.WorkloadAgent) ||
 		!validTriggerSelection(effectiveSpecificationKind(s.Kind), s.TriggerEvent, s.TriggerBranch) {
+		return "", ErrSpecification
+	}
+	if (s.JobMemoryLimitMB == 0) != (s.JobCPULimitMillis == 0) ||
+		(s.JobMemoryLimitMB != 0 && (effectiveSpecificationKind(s.Kind) != domain.WorkloadJob || s.JobMemoryLimitMB < 256 ||
+			s.JobMemoryLimitMB > 16384 || s.JobCPULimitMillis < 250 || s.JobCPULimitMillis > 8000)) ||
+		(s.TriggerEvent != "" && effectiveSpecificationKind(s.Kind) == domain.WorkloadJob && (s.JobMemoryLimitMB == 0 || s.JobCPULimitMillis == 0)) {
 		return "", ErrSpecification
 	}
 	if id.Generation == 1 && s.Predecessor != nil {

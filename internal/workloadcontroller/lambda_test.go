@@ -2,6 +2,7 @@ package workloadcontroller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -128,6 +129,8 @@ func setupLambda(t *testing.T) (*Controller, *LambdaMicroVM, *lambdaStub, *agent
 		s, err := old.Resolve(ctx, id)
 		s.ImageIdentifier = config.ImageIdentifier
 		s.ImageVersion = config.ImageVersion
+		s.JobMemoryLimitMB = 8192
+		s.JobCPULimitMillis = 4000
 		s.Deadline = s.RequestedAt.Add(8 * time.Hour)
 		s.IngressNetworkConnectors = []string{config.IngressConnector}
 		s.EgressNetworkConnectors = []string{config.VPCEgressConnector}
@@ -144,7 +147,7 @@ func setupLambda(t *testing.T) (*Controller, *LambdaMicroVM, *lambdaStub, *agent
 }
 
 func TestLambdaRetriesExactRunParameters(t *testing.T) {
-	c, _, api, agent, now := setupLambda(t)
+	c, runtime, api, agent, now := setupLambda(t)
 	api.runErrOnce = true
 	data := envelope(t, nil)
 	if _, err := c.Ensure(context.Background(), data); err == nil {
@@ -164,6 +167,19 @@ func TestLambdaRetriesExactRunParameters(t *testing.T) {
 	}
 	if s.Journal.RuntimeHandle != "microvm_1" || agent.handle != "microvm_1" || agent.starts != 1 {
 		t.Fatal("allocation binding missing")
+	}
+	issuer := runtime.config.AgentTicketIssuer.(*recordingTicketIssuer)
+	if len(issuer.issued) == 0 || issuer.issued[0].execution == nil ||
+		issuer.issued[0].execution.JobMemoryLimitMB != 8192 || issuer.issued[0].execution.JobCPULimitMillis != 4000 {
+		t.Fatal("Agent ticket did not bind the selected Runtime Profile capacity")
+	}
+	var runPayload struct {
+		JobMemoryLimitMB  int `json:"job_memory_limit_mb"`
+		JobCPULimitMillis int `json:"job_cpu_limit_millis"`
+	}
+	if err := json.Unmarshal([]byte(aws.ToString(api.inputs[0].RunHookPayload)), &runPayload); err != nil ||
+		runPayload.JobMemoryLimitMB != 8192 || runPayload.JobCPULimitMillis != 4000 {
+		t.Fatalf("Run hook did not bind Runtime Profile capacity: %+v err=%v", runPayload, err)
 	}
 	if agent.connection.Endpoint != api.endpoint || agent.connection.AuthToken != "short-lived-test-token" || agent.connection.AgentTicket != "signed-agent-ticket" || agent.connection.SourceTicket != "signed-agent-ticket" || len(api.tokenInputs) != 1 {
 		t.Fatal("agent connection did not receive the short-lived endpoint credential")

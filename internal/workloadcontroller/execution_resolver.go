@@ -45,6 +45,8 @@ type RuntimeProfile struct {
 	ImageIdentifier          string
 	ImageVersion             string
 	ImageDigest              string
+	JobMemoryLimitMB         int
+	JobCPULimitMillis        int
 	IngressNetworkConnectors []string
 	EgressNetworkConnectors  []string
 }
@@ -77,6 +79,10 @@ func NewMetadataSpecificationResolver(config MetadataSpecificationResolverConfig
 			key.RuntimeClass == "" || key.TrustLevel == "" || profile.ImageIdentifier == "" || profile.ImageVersion == "" ||
 			!digestPattern.MatchString(profile.ImageDigest) || len(profile.IngressNetworkConnectors) != 1 ||
 			len(profile.EgressNetworkConnectors) != 1 || profile.IngressNetworkConnectors[0] == "" || profile.EgressNetworkConnectors[0] == "" {
+			return nil, ErrExecutionMaterialization
+		}
+		if key.Kind == domain.WorkloadJob && (profile.JobMemoryLimitMB < 256 || profile.JobMemoryLimitMB > 16384 ||
+			profile.JobCPULimitMillis < 250 || profile.JobCPULimitMillis > 8000) {
 			return nil, ErrExecutionMaterialization
 		}
 		profile.IngressNetworkConnectors = append([]string(nil), profile.IngressNetworkConnectors...)
@@ -126,6 +132,7 @@ func (r *MetadataSpecificationResolver) Resolve(ctx context.Context, id workload
 		CommitSHA: metadata.CommitSHA, TriggerEvent: metadata.TriggerEvent, TriggerBranch: metadata.TriggerBranch, CorrelationID: metadata.CorrelationID,
 		RequestedAt: metadata.RequestedAt.UTC(), Deadline: metadata.Deadline.UTC(),
 		ArtifactPrefix: source.ArtifactPrefix, ImageIdentifier: profile.ImageIdentifier, ImageVersion: profile.ImageVersion,
+		JobMemoryLimitMB: profile.JobMemoryLimitMB, JobCPULimitMillis: profile.JobCPULimitMillis,
 		IngressNetworkConnectors: append([]string(nil), profile.IngressNetworkConnectors...),
 		EgressNetworkConnectors:  append([]string(nil), profile.EgressNetworkConnectors...)}
 	if spec.Kind == domain.WorkloadAgent {

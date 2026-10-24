@@ -287,6 +287,14 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   exhaust either budget or use `network: none`. This is admission planning
   only; the Workload Agent still has no Job-scoped Service provisioner or
   runtime enforcement for the pipeline process budget.
+- Resource Plane Job Runtime Profiles now declare allocatable memory and CPU
+  ceilings. The selected profile values are frozen into the launch
+  specification, Lambda `/run` identity, and signed Start/Source tickets.
+  Guest manifest resolution rejects a complete pipeline request above either
+  ceiling before process start. Unit tests cover profile validation, signed
+  propagation, and over-capacity rejection. These configured ceilings do not
+  prove that Lambda MicroVM cgroups enforce them; target runtime validation is
+  still required.
 - Added a regression test that first proves a valid `postgres` sidecar plan
   passes manifest admission, then verifies the Workload Agent refuses to run it
   until a Job/attempt-scoped executor is composed. This protects the boundary
@@ -319,11 +327,15 @@ Services remain disabled.
 - [ ] Keep service storage ephemeral and disjoint across Job attempts; derive
   container/network names from the immutable Workload identity and remove them
   on success, failure, cancellation, timeout, startup error, and recovery.
+- [x] Reject a Factory pipeline whose aggregate declared CPU or memory budget
+  exceeds the selected Resource Plane Job profile's allocatable ceiling. The
+  trusted ceiling is frozen into the launch specification, MicroVM `/run`
+  binding, and signed Agent tickets before Guest manifest evaluation.
 - [ ] Enforce each service's catalog memory/CPU limits at container runtime
-  and enforce the aggregate Job budget for commands plus sidecars. Reject a
-  plan when its complete resource request exceeds the selected Lambda MicroVM
-  profile; current manifest validation only checks the declared pipeline
-  budget and does not enforce that budget against the MicroVM.
+  and enforce the aggregate Job budget for commands plus sidecars. The
+  Resource Plane now rejects a declared pipeline budget above the selected
+  profile's allocatable ceiling, but the runtime cgroup limits still need
+  Lambda MicroVM validation.
 - [ ] Bind service ports only to the MicroVM loopback interface. Permit only
   the registry traffic needed to obtain pinned catalog images; do not provide
   arbitrary Internet or AWS access to the Job or its service containers.

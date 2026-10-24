@@ -74,7 +74,8 @@ func TestAgentTicketV2SignsPipelineTriggerAndCorrelationContext(t *testing.T) {
 	issuer := &Ed25519TicketIssuer{KeyID: "rp-key-v2", PrivateKey: privateKey, Now: func() time.Time { return now }}
 	id := testIdentity()
 	binding := ExecutionBinding{SourceDigest: strings.Repeat("a", 64), CommitSHA: strings.Repeat("b", 40),
-		TriggerEvent: "pull_request", TriggerBranch: "release/2026.10", CorrelationID: "req_cccccccc-cccc-4ccc-8ccc-cccccccccccc", Deadline: now.Add(time.Hour)}
+		TriggerEvent: "pull_request", TriggerBranch: "release/2026.10", CorrelationID: "req_cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+		JobMemoryLimitMB: 8192, JobCPULimitMillis: 4000, Deadline: now.Add(time.Hour)}
 	ticket, err := issuer.IssueExecution("microvm_1", id, OperationStart, binding)
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +108,8 @@ func TestAgentTicketV2SignsPipelineTriggerAndCorrelationContext(t *testing.T) {
 	}
 	if _, err := issuer.IssueExecution("microvm_1", id, OperationStart, ExecutionBinding{Kind: domain.WorkloadAgent,
 		AgentIntegrationID: "integration_1", AgentInstallationID: 71, AgentRepositoryID: 81,
-		SourceDigest: binding.SourceDigest, CommitSHA: binding.CommitSHA, TriggerEvent: "push", TriggerBranch: "main", Deadline: binding.Deadline}); err == nil {
+		SourceDigest: binding.SourceDigest, CommitSHA: binding.CommitSHA, TriggerEvent: "push", TriggerBranch: "main",
+		JobMemoryLimitMB: 8192, JobCPULimitMillis: 4000, Deadline: binding.Deadline}); err == nil {
 		t.Fatal("Agent ticket accepted a Job trigger")
 	}
 }

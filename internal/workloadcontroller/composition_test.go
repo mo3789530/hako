@@ -221,10 +221,12 @@ func TestLambdaWorkloadHandlerDispatchRunsAuthenticatedAgentWithVerifiedSource(t
 	egress := "arn:aws:lambda:ap-northeast-1:123456789012:network-connector:restricted"
 	ingress := "arn:aws:lambda:ap-northeast-1:aws:network-connector:aws-network-connector:ALL_INGRESS"
 	profile := RuntimeProfile{ImageIdentifier: image, ImageVersion: version, ImageDigest: strings.Repeat("c", 64),
+		JobMemoryLimitMB: 8192, JobCPULimitMillis: 4000,
 		IngressNetworkConnectors: []string{ingress}, EgressNetworkConnectors: []string{egress}}
 	spec := Specification{Identity: id, ImageIdentifier: image, ImageVersion: version, ImageDigest: profile.ImageDigest,
 		SourceDigest: archive.SHA256(), CommitSHA: commit, Deadline: deadline, RequestedAt: now,
-		ArtifactPrefix: "s3://bucket/artifacts/tenant_1/run_1/attempt_1/", IngressNetworkConnectors: []string{ingress}, EgressNetworkConnectors: []string{egress}}
+		ArtifactPrefix: "s3://bucket/artifacts/tenant_1/run_1/attempt_1/", JobMemoryLimitMB: profile.JobMemoryLimitMB,
+		JobCPULimitMillis: profile.JobCPULimitMillis, IngressNetworkConnectors: []string{ingress}, EgressNetworkConnectors: []string{egress}}
 	api := &lambdaStub{config: LambdaConfig{ImageIdentifier: image, ImageVersion: version}, state: types.MicrovmStateRunning,
 		endpoint: "https://microvm_1.lambda-microvm.ap-northeast-1.on.aws", token: map[string]string{"X-aws-proxy-auth": "short-lived-token"}}
 	ticketIssuer := &workloadagent.Ed25519TicketIssuer{KeyID: "rp-v1", PrivateKey: privateKey, Now: func() time.Time { return now }}

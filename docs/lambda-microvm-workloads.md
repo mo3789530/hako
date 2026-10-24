@@ -16,6 +16,17 @@ CPの`RequestCancel`はdesired stateとcurrent attempt向け`workload_attempt.ca
 
 ## AWSの仕様とHakoの制約
 
+Resource Planeの`HAKO_WORKLOAD_RUNTIME_PROFILES_JSON`はWorkload kind、Runtime
+Class、Trust Levelごとに固定イメージ/Network Connectorと実行上限を定義する。
+`kind=job`の各profileには`job_memory_limit_mb`（256–16384）と
+`job_cpu_limit_millis`（250–8000）が必須で、これはGuest OS/containerd等の
+オーバーヘッドを差し引いたJobへ割当可能な上限としてOperatorが設定する。
+Control Plane APIやRepository manifestからこの値を指定できない。Controllerは
+値をMicroVM Run HookとEd25519 Start/Source Ticketへ束縛し、Guestはmanifestの
+pipeline全要求がこの上限内であることを検証してから実行する。値はMicroVMの
+実測可能容量やcgroup適用成功を証明するものではなく、AWSでのPoCとcgroup v2
+enforcement検証は別途必要である。
+
 - **1 MicroVMの最大存続時間は8時間（28,800秒）、ARM64のみ。** 汎用Run APIのdeadline上限24時間と異なる。AWS adapterは元のrequest intervalが8時間を超えるSpecificationを起動前に拒否する。fake-clockの24時間テストはCP契約の検証であり、AWSで24時間実行できる証明ではない。
 - **Resource quotaとAPI throughputもPlacement/Dispatcherの前提にする。** 公開Quota表ではMicroVM baseline memory合計は通常のaccount/Regionで400 GiB、Tokyoを含む一部Regionでは1,024 GiBで、最大4倍までburst可能。MicroVM一台ごとの非調整可能な最大durationは8時間。`RunMicrovm`は5 TPS / burst 5、`GetMicrovm`は100 TPS、`CreateMicrovmAuthToken`は50 TPS、`TerminateMicrovm`は10 TPS（いずれもaccount/Region単位）。既定値は変更され得るため、運用開始時に対象account/RegionのService Quotasを確認し、Scheduler側でRun起動を平滑化、AWS throttlingはexponential backoff+jitterで再試行する。HakoはまだQuotaをAWSから同期せず、DBのResource Plane capacity設定は実quotaの証拠ではない。
 - **Runtime classは公開サイズ表に合せる。** baseline 0.5/1/2/4/8 GiBはそれぞれ0.25/0.5/1/2/4 vCPU、peakは最大4倍。最大diskは8/8/8/16/32 GiB。Hakoの`standard`案（4 GiB/2 vCPU baseline、16 GiB/8 vCPU peak、16 GiB disk）は公開サイズの一つに合致する。diskサイズはimage作成時の設定を検証するまでHako側の保証値として扱わない。

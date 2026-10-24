@@ -39,14 +39,16 @@ import (
 const maxProfileConfigBytes = 32 << 10
 
 type profileDocument struct {
-	Kind             domain.WorkloadKind       `json:"kind,omitempty"`
-	RuntimeClass     string                    `json:"runtime_class"`
-	TrustLevel       domain.WorkloadTrustLevel `json:"trust_level"`
-	ImageIdentifier  string                    `json:"image_identifier"`
-	ImageVersion     string                    `json:"image_version"`
-	ImageDigest      string                    `json:"image_digest"`
-	IngressConnector string                    `json:"ingress_connector"`
-	EgressConnector  string                    `json:"egress_connector"`
+	Kind              domain.WorkloadKind       `json:"kind,omitempty"`
+	RuntimeClass      string                    `json:"runtime_class"`
+	TrustLevel        domain.WorkloadTrustLevel `json:"trust_level"`
+	ImageIdentifier   string                    `json:"image_identifier"`
+	ImageVersion      string                    `json:"image_version"`
+	ImageDigest       string                    `json:"image_digest"`
+	JobMemoryLimitMB  int                       `json:"job_memory_limit_mb,omitempty"`
+	JobCPULimitMillis int                       `json:"job_cpu_limit_millis,omitempty"`
+	IngressConnector  string                    `json:"ingress_connector"`
+	EgressConnector   string                    `json:"egress_connector"`
 }
 
 type deploymentConfig struct {
@@ -377,12 +379,20 @@ func parseProfiles(raw string) (map[workloadcontroller.RuntimeProfileKey]workloa
 		if key.RuntimeClass == "" || (key.TrustLevel != domain.WorkloadUntrusted && key.TrustLevel != domain.WorkloadTrusted && key.TrustLevel != domain.WorkloadPrivileged) {
 			return nil, errors.New("Workload runtime profile identity is invalid")
 		}
+		if key.Kind == domain.WorkloadJob && (doc.JobMemoryLimitMB < 256 || doc.JobMemoryLimitMB > 16384 ||
+			doc.JobCPULimitMillis < 250 || doc.JobCPULimitMillis > 8000) {
+			return nil, errors.New("Workload Job runtime profile resource limits are invalid")
+		}
+		if key.Kind != domain.WorkloadJob && (doc.JobMemoryLimitMB != 0 || doc.JobCPULimitMillis != 0) {
+			return nil, errors.New("Job resource limits are not valid for non-Job runtime profiles")
+		}
 		if _, exists := profiles[key]; exists {
 			return nil, errors.New("Workload runtime profile identity is duplicated")
 		}
 		profile := workloadcontroller.RuntimeProfile{ImageIdentifier: strings.TrimSpace(doc.ImageIdentifier), ImageVersion: strings.TrimSpace(doc.ImageVersion),
 			ImageDigest: strings.TrimSpace(doc.ImageDigest), IngressNetworkConnectors: []string{strings.TrimSpace(doc.IngressConnector)},
-			EgressNetworkConnectors: []string{strings.TrimSpace(doc.EgressConnector)}}
+			EgressNetworkConnectors: []string{strings.TrimSpace(doc.EgressConnector)}, JobMemoryLimitMB: doc.JobMemoryLimitMB,
+			JobCPULimitMillis: doc.JobCPULimitMillis}
 		profiles[key] = profile
 	}
 	return profiles, nil

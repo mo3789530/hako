@@ -46,6 +46,16 @@ execution is a separate, short-lived `WorkloadRun` with kind `job`, `agent`, or
 `preview`; it does not reuse the Workspace `operations` table, whose foreign
 keys and lifecycle are Workspace-specific.
 
+The Resource Plane owns the runtime profile for each `kind × runtime_class ×
+trust_level`. A Job profile includes allocatable `job_memory_limit_mb` and
+`job_cpu_limit_millis` ceilings; these values are not user-selectable API
+fields. They are frozen into the MicroVM launch binding and signed Agent
+Start/Source tickets. Before execution the Guest rejects a `.hako/factory.yaml`
+pipeline whose declared aggregate memory or CPU request exceeds either
+ceiling. Sidecar resource requests are also included in the manifest budget.
+This is admission enforcement; cgroup v2 behavior and the allocatable values
+inside a Lambda MicroVM still require target-runtime validation.
+
 ## Persisted model
 
 - `workload_runs` stores Tenant-scoped identity, optional registered GitHub

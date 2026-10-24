@@ -39,6 +39,8 @@ type ExecutionPlan struct {
 	TriggerEvent           string
 	TriggerBranch          string
 	CorrelationID          string
+	JobMemoryLimitMB       int
+	JobCPULimitMillis      int
 	AgentIntegrationID     string
 	AgentInstallationID    int64
 	AgentRepositoryID      int64
@@ -137,7 +139,9 @@ func (b *ProcessBackend) Start(ctx context.Context, claims TicketClaims, req Sta
 			b.attempt.plan.Kind != req.Kind || claims.Execution.Kind != req.Kind ||
 			!sameAgentTask(b.attempt.plan.AgentTask, req.AgentTask) ||
 			b.attempt.plan.TriggerEvent != claims.Execution.TriggerEvent || b.attempt.plan.TriggerBranch != claims.Execution.TriggerBranch ||
-			b.attempt.plan.CorrelationID != claims.Execution.CorrelationID {
+			b.attempt.plan.CorrelationID != claims.Execution.CorrelationID ||
+			b.attempt.plan.JobMemoryLimitMB != claims.Execution.JobMemoryLimitMB ||
+			b.attempt.plan.JobCPULimitMillis != claims.Execution.JobCPULimitMillis {
 			return ErrAttemptConflict
 		}
 		return nil
@@ -159,7 +163,8 @@ func (b *ProcessBackend) Start(ctx context.Context, claims TicketClaims, req Sta
 		plan.AgentRepositoryID != claims.Execution.AgentRepositoryID ||
 		plan.AgentTaskContextSHA256 != claims.Execution.AgentTaskContextSHA256 ||
 		plan.TriggerEvent != claims.Execution.TriggerEvent || plan.TriggerBranch != claims.Execution.TriggerBranch ||
-		plan.CorrelationID != claims.Execution.CorrelationID ||
+		plan.CorrelationID != claims.Execution.CorrelationID || plan.JobMemoryLimitMB != claims.Execution.JobMemoryLimitMB ||
+		plan.JobCPULimitMillis != claims.Execution.JobCPULimitMillis ||
 		!plan.Deadline.Equal(req.Deadline) || deadlineIn <= 0 || deadlineIn > 8*time.Hour {
 		return ErrExecutionPlan
 	}

@@ -51,7 +51,8 @@ func (r *FilesystemExecutionResolver) ResolveExecution(ctx context.Context, clai
 		AgentRepositoryID: claims.Execution.AgentRepositoryID, AgentTaskContextSHA256: claims.Execution.AgentTaskContextSHA256,
 		SourceDigest: claims.Execution.SourceDigest, CommitSHA: claims.Execution.CommitSHA,
 		TriggerEvent: claims.Execution.TriggerEvent, TriggerBranch: claims.Execution.TriggerBranch,
-		CorrelationID: claims.Execution.CorrelationID, Deadline: deadline}
+		CorrelationID: claims.Execution.CorrelationID, JobMemoryLimitMB: claims.Execution.JobMemoryLimitMB,
+		JobCPULimitMillis: claims.Execution.JobCPULimitMillis, Deadline: deadline}
 	if plan.TriggerEvent != "" {
 		if verifyInstalledExecutionSource(ctx, plan, workloadsource.DefaultMaxArchiveBytes) != nil {
 			return ExecutionPlan{}, ErrExecutionPlan
@@ -90,6 +91,7 @@ func resolveFactoryPipelines(ctx context.Context, execution ExecutionPlan) ([]fa
 	for _, name := range names {
 		plan, err := factoryconfig.Plan(config, name)
 		if err != nil || factoryconfig.ValidateExecutionPlan(plan) != nil || plan.RuntimeClass != "standard" ||
+			plan.MemoryMB > execution.JobMemoryLimitMB || plan.CPUMillis > execution.JobCPULimitMillis ||
 			plan.Network != "registry-only" || len(plan.Services) != 0 {
 			return nil, ErrFactoryManifest
 		}

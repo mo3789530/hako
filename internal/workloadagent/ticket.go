@@ -57,6 +57,8 @@ type ExecutionBinding struct {
 	TriggerEvent           string              `json:"trigger_event,omitempty"`
 	TriggerBranch          string              `json:"trigger_branch,omitempty"`
 	CorrelationID          string              `json:"correlation_id,omitempty"`
+	JobMemoryLimitMB       int                 `json:"job_memory_limit_mb,omitempty"`
+	JobCPULimitMillis      int                 `json:"job_cpu_limit_millis,omitempty"`
 	Deadline               time.Time           `json:"deadline"`
 }
 
@@ -218,6 +220,12 @@ func validExecutionBinding(binding ExecutionBinding) bool {
 		len(binding.TriggerBranch) > 255 ||
 		strings.Contains(binding.TriggerBranch, "..") || strings.Contains(binding.TriggerBranch, "//") ||
 		strings.HasSuffix(binding.TriggerBranch, "/") || strings.HasSuffix(binding.TriggerBranch, ".") || strings.Contains(binding.TriggerBranch, "@{") {
+		return false
+	}
+	if (binding.JobMemoryLimitMB == 0) != (binding.JobCPULimitMillis == 0) ||
+		(binding.JobMemoryLimitMB != 0 && (binding.Kind == domain.WorkloadAgent || binding.JobMemoryLimitMB < 256 || binding.JobMemoryLimitMB > 16384 ||
+			binding.JobCPULimitMillis < 250 || binding.JobCPULimitMillis > 8000)) ||
+		(binding.TriggerEvent != "" && binding.Kind != domain.WorkloadAgent && (binding.JobMemoryLimitMB == 0 || binding.JobCPULimitMillis == 0)) {
 		return false
 	}
 	for _, char := range binding.TriggerBranch {
