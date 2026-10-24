@@ -22,6 +22,42 @@ output "results_queue_arn" {
   value = module.resource_plane.results_queue_arn
 }
 
+output "preview_runtime_commands_queue_url" {
+  value = module.resource_plane.preview_runtime_commands_queue_url
+}
+
+output "preview_runtime_commands_queue_arn" {
+  value = module.resource_plane.preview_runtime_commands_queue_arn
+}
+
+output "preview_runtime_results_queue_url" {
+  value = module.resource_plane.preview_runtime_results_queue_url
+}
+
+output "preview_runtime_results_queue_arn" {
+  value = module.resource_plane.preview_runtime_results_queue_arn
+}
+
+output "preview_runtime_commands_dlq_url" {
+  value = module.resource_plane.preview_runtime_commands_dlq_url
+}
+
+output "preview_runtime_commands_dlq_arn" {
+  value = module.resource_plane.preview_runtime_commands_dlq_arn
+}
+
+output "preview_runtime_results_dlq_url" {
+  value = module.resource_plane.preview_runtime_results_dlq_url
+}
+
+output "preview_runtime_results_dlq_arn" {
+  value = module.resource_plane.preview_runtime_results_dlq_arn
+}
+
+output "preview_runtime_controller_event_source_mapping_uuid" {
+  value = module.resource_plane.preview_runtime_controller_event_source_mapping_uuid
+}
+
 output "results_dlq_url" {
   value = module.resource_plane.results_dlq_url
 }

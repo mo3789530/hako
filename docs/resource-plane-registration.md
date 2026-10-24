@@ -49,9 +49,25 @@ Dispatcher also routes `repository_preview_runtime.provision` and
 `repository_preview_runtime.cleanup` events to the dedicated
 `preview_runtime_command_queue_url`, after validating generation, claim,
 logical runtime identity, head (for provision), and pinned Plane. It never
-falls back to the Workspace command queue. This is currently a routing
-contract only: no Preview command producer, Resource Plane consumer, result
-consumer, or Terraform queue is connected yet. The
+falls back to the Workspace command queue.
+
+The Resource Plane Terraform module can optionally create a distinct Preview
+command/result queue pair plus DLQs, exact Dispatcher/result-consumer queue
+policies, controller IAM, SQS event-source mapping, and DLQ/age alarms. Set
+`enable_preview_runtime = true` only with the Lambda MicroVM Workspace runtime
+configured and pass the Control Plane `preview_result_consumer_role_arn` as
+`control_plane_preview_result_consumer_role_arn`. The stack exposes the four
+Preview queue URL/ARN outputs. Register the command queue URL here and pass
+the result queue ARN in Control Plane `preview_result_queue_arns`; the
+Control Plane Preview result consumer remains separately default-off. No AWS
+resources or grants have been applied.
+
+The Resource Plane Lambda consumer allocates the generation-scoped Lambda
+MicroVM using the durable Workspace runtime journal, then reports the
+provider binding. This still does not checkout the PR's immutable SHA, start a
+Guest or application, or publish an application route. Do not enable Preview
+sessions until those steps and the scheduled producer/result consumer
+deployment are complete. The
 runner startup publisher uses `actions_runner_startup_queue_url` when present,
 claims a durable runner admission with a bounded lease, and publishes only the
 integration/job/attempt/claim key. The Control Plane Dispatcher IAM role is

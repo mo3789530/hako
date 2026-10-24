@@ -9,11 +9,12 @@ implemented locally, including stale GitHub `updated_at` fencing, fixed
 Tenant-quota-based expiry metadata, and a bounded idempotent expiry-to-cleanup
 transition. A default-off scheduled Lambda now invokes this metadata sweep;
 production IAM wiring and enabled invocation remain unverified. Preview
-MicroVM allocation, Gateway routing, and physical cleanup execution remain
-incomplete; cleanup retry metadata and attempt-fenced leases are implemented.
-The Preview command producer and result consumer now have default-off Lambda
-compositions and Terraform wiring; no AWS resources or DSQL role grants have
-been applied.
+provision/cleanup commands now have a Resource Plane Lambda MicroVM controller
+composition and default-off command/result queue, IAM, alarm, and event-source
+Terraform. No AWS resources or DSQL grants have been applied. PR SHA checkout,
+Guest/application startup, a public application route, and deployed worker
+scheduling remain incomplete; cleanup retry metadata and attempt-fenced leases
+are implemented.
 The dormant approval verifier checks
 the live Actions run attempt against signed repository, owner, ref, SHA,
 workflow and event claims, checks pending deployments and approval history,
@@ -248,10 +249,15 @@ Add optional repository-level preview environments and service metadata/deploy p
   result queue. Preview records are routed by exact configured SQS
   `EventSourceARN`, with unrecognized Preview queue deliveries returned as
   per-record failures. Both environment variables are unset by default.
-- This handler composition is not yet deployed: Resource Plane Preview queue,
-  IAM, and event-source Terraform wiring remain open. PR SHA checkout into the
-  generation's `/workspace`, app startup, scheduled command deployment, and a
-  deployed Gateway route also remain necessary before enabling Preview sessions.
+- Resource Plane Preview queue, IAM, and event-source Terraform wiring are
+  implemented as default-off `enable_preview_runtime` configuration with
+  distinct command/result queues, exact CP role policies, scoped controller
+  permissions, DLQ/age alarms, and outputs. A Control Plane deployment must
+  register the command queue URL in the Resource Plane manifest and map the
+  result ARN into the Preview result consumer. No AWS apply or DSQL grant was
+  performed. PR SHA checkout into the generation's `/workspace`, app startup,
+  scheduled producer/result consumer deployment, and a deployed Gateway route
+  remain necessary before enabling Preview sessions.
 
 ## Preview lifecycle read API/CLI (2026-10-24)
 

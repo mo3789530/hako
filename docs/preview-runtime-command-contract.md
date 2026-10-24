@@ -82,8 +82,16 @@ envelope delivered from any other queue is returned as a partial batch failure
 and never falls through to the Workspace Operation handler. Leaving both
 settings unset preserves default-off behavior.
 
-This is handler composition only. Resource Plane Preview queues, queue
-policies, IAM permissions, and the event-source mapping are not yet wired.
+Resource Plane Terraform now has optional Preview queues, DLQs, exact
+Dispatcher/result-consumer queue policies, controller SQS permissions, an
+event-source mapping, and DLQ/oldest-message alarms. Set
+`enable_preview_runtime` only alongside `workspace_runtime_deployment` and set
+`control_plane_preview_result_consumer_role_arn` to the Control Plane output.
+The Control Plane Dispatcher manifest must use the output
+`preview_runtime_commands_queue_url`; the Control Plane result-consumer
+configuration must map the Plane ID to `preview_runtime_results_queue_arn`.
+Both sides remain default-off and no AWS resources or grants were applied.
+
 Even after queue wiring, a successful result currently means that the
 generation-scoped Lambda MicroVM exists and has a logical Gateway route
 identity. The PR SHA is not checked out and no Guest process or application is

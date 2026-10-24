@@ -88,6 +88,88 @@ resource "aws_sqs_queue_redrive_allow_policy" "results_dlq" {
   })
 }
 
+# Preview runtime commands and acknowledgements have a distinct envelope and
+# dispatcher/result-consumer trust boundary from Workspace Operations.
+resource "aws_sqs_queue" "preview_runtime_commands" {
+  count = var.enable_preview_runtime ? 1 : 0
+
+  name                       = "${var.resource_plane_id}-preview-commands"
+  message_retention_seconds  = var.message_retention_seconds
+  visibility_timeout_seconds = var.command_visibility_timeout_seconds
+  receive_wait_time_seconds  = 20
+  sqs_managed_sse_enabled    = true
+  tags                       = merge(local.common_tags, { "hako:queue-role" = "preview-runtime-commands" })
+}
+
+resource "aws_sqs_queue" "preview_runtime_commands_dlq" {
+  count = var.enable_preview_runtime ? 1 : 0
+
+  name                      = "${var.resource_plane_id}-preview-commands-dlq"
+  message_retention_seconds = var.dlq_retention_seconds
+  sqs_managed_sse_enabled   = true
+  tags                      = merge(local.common_tags, { "hako:queue-role" = "preview-runtime-commands-dlq" })
+}
+
+resource "aws_sqs_queue_redrive_policy" "preview_runtime_commands" {
+  count = var.enable_preview_runtime ? 1 : 0
+
+  queue_url = aws_sqs_queue.preview_runtime_commands[0].id
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.preview_runtime_commands_dlq[0].arn
+    maxReceiveCount     = var.max_receive_count
+  })
+}
+
+resource "aws_sqs_queue_redrive_allow_policy" "preview_runtime_commands_dlq" {
+  count = var.enable_preview_runtime ? 1 : 0
+
+  queue_url = aws_sqs_queue.preview_runtime_commands_dlq[0].id
+  redrive_allow_policy = jsonencode({
+    redrivePermission = "byQueue"
+    sourceQueueArns   = [aws_sqs_queue.preview_runtime_commands[0].arn]
+  })
+}
+
+resource "aws_sqs_queue" "preview_runtime_results" {
+  count = var.enable_preview_runtime ? 1 : 0
+
+  name                       = "${var.resource_plane_id}-preview-results"
+  message_retention_seconds  = var.message_retention_seconds
+  visibility_timeout_seconds = var.result_visibility_timeout_seconds
+  receive_wait_time_seconds  = 20
+  sqs_managed_sse_enabled    = true
+  tags                       = merge(local.common_tags, { "hako:queue-role" = "preview-runtime-results" })
+}
+
+resource "aws_sqs_queue" "preview_runtime_results_dlq" {
+  count = var.enable_preview_runtime ? 1 : 0
+
+  name                      = "${var.resource_plane_id}-preview-results-dlq"
+  message_retention_seconds = var.dlq_retention_seconds
+  sqs_managed_sse_enabled   = true
+  tags                      = merge(local.common_tags, { "hako:queue-role" = "preview-runtime-results-dlq" })
+}
+
+resource "aws_sqs_queue_redrive_policy" "preview_runtime_results" {
+  count = var.enable_preview_runtime ? 1 : 0
+
+  queue_url = aws_sqs_queue.preview_runtime_results[0].id
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.preview_runtime_results_dlq[0].arn
+    maxReceiveCount     = var.max_receive_count
+  })
+}
+
+resource "aws_sqs_queue_redrive_allow_policy" "preview_runtime_results_dlq" {
+  count = var.enable_preview_runtime ? 1 : 0
+
+  queue_url = aws_sqs_queue.preview_runtime_results_dlq[0].id
+  redrive_allow_policy = jsonencode({
+    redrivePermission = "byQueue"
+    sourceQueueArns   = [aws_sqs_queue.preview_runtime_results[0].arn]
+  })
+}
+
 # Workload Run results have a different envelope and consumer from the
 # Workspace Operation results above; keep their storage and IAM boundary
 # separate and opt-in until the production worker/consumer is deployed.
@@ -1208,6 +1290,38 @@ resource "aws_sqs_queue_policy" "commands" {
   })
 }
 
+resource "aws_sqs_queue_policy" "preview_runtime_commands" {
+  count = var.enable_preview_runtime ? 1 : 0
+
+  queue_url = aws_sqs_queue.preview_runtime_commands[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "AllowExactControlPlaneDispatcher"
+      Effect    = "Allow"
+      Principal = { AWS = var.control_plane_dispatcher_role_arn }
+      Action    = "sqs:SendMessage"
+      Resource  = aws_sqs_queue.preview_runtime_commands[0].arn
+    }]
+  })
+}
+
+resource "aws_sqs_queue_policy" "preview_runtime_results" {
+  count = var.enable_preview_runtime ? 1 : 0
+
+  queue_url = aws_sqs_queue.preview_runtime_results[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "AllowExactControlPlanePreviewResultConsumer"
+      Effect    = "Allow"
+      Principal = { AWS = var.control_plane_preview_result_consumer_role_arn }
+      Action    = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:ChangeMessageVisibility", "sqs:GetQueueAttributes"]
+      Resource  = aws_sqs_queue.preview_runtime_results[0].arn
+    }]
+  })
+}
+
 resource "aws_sqs_queue_policy" "results" {
   queue_url = aws_sqs_queue.results.id
   policy = jsonencode({
@@ -2063,6 +2177,26 @@ data "aws_iam_policy_document" "resource_controller" {
     resources = [aws_sqs_queue.results.arn]
   }
 
+  dynamic "statement" {
+    for_each = var.enable_preview_runtime ? [1] : []
+    content {
+      sid       = "ConsumePreviewRuntimeCommands"
+      effect    = "Allow"
+      actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:ChangeMessageVisibility", "sqs:GetQueueAttributes"]
+      resources = [aws_sqs_queue.preview_runtime_commands[0].arn]
+    }
+  }
+
+  dynamic "statement" {
+    for_each = var.enable_preview_runtime ? [1] : []
+    content {
+      sid       = "PublishPreviewRuntimeResults"
+      effect    = "Allow"
+      actions   = ["sqs:SendMessage"]
+      resources = [aws_sqs_queue.preview_runtime_results[0].arn]
+    }
+  }
+
   statement {
     sid     = "WriteControllerLogs"
     effect  = "Allow"
@@ -2357,15 +2491,17 @@ resource "aws_lambda_function" "workspace_resource_controller" {
 
   environment {
     variables = {
-      HAKO_RESOURCE_PLANE_ID                = var.resource_plane_id
-      HAKO_OPERATION_RESULT_QUEUE_URL       = aws_sqs_queue.results.url
-      HAKO_RUNTIME_IMPLEMENTATION           = "lambda-microvm"
-      HAKO_OPERATION_TIMEOUT                = "${var.workspace_runtime_deployment.operation_timeout_seconds}s"
-      HAKO_WORKSPACE_RUNTIME_JOURNAL_BUCKET = var.workspace_runtime_deployment.journal_bucket_name
-      HAKO_WORKSPACE_RUNTIME_JOURNAL_PREFIX = var.workspace_runtime_deployment.journal_prefix
-      HAKO_WORKSPACE_EFS_FILE_SYSTEM_ID     = var.workspace_storage_runtime.file_system_id
-      HAKO_WORKSPACE_RUNTIME_POLL_INTERVAL  = "500ms"
-      HAKO_WORKSPACE_RUNTIME_POLL_TIMEOUT   = "30s"
+      HAKO_RESOURCE_PLANE_ID                 = var.resource_plane_id
+      HAKO_OPERATION_RESULT_QUEUE_URL        = aws_sqs_queue.results.url
+      HAKO_RUNTIME_IMPLEMENTATION            = "lambda-microvm"
+      HAKO_OPERATION_TIMEOUT                 = "${var.workspace_runtime_deployment.operation_timeout_seconds}s"
+      HAKO_PREVIEW_RUNTIME_COMMAND_QUEUE_ARN = var.enable_preview_runtime ? aws_sqs_queue.preview_runtime_commands[0].arn : ""
+      HAKO_PREVIEW_RUNTIME_RESULT_QUEUE_URL  = var.enable_preview_runtime ? aws_sqs_queue.preview_runtime_results[0].url : ""
+      HAKO_WORKSPACE_RUNTIME_JOURNAL_BUCKET  = var.workspace_runtime_deployment.journal_bucket_name
+      HAKO_WORKSPACE_RUNTIME_JOURNAL_PREFIX  = var.workspace_runtime_deployment.journal_prefix
+      HAKO_WORKSPACE_EFS_FILE_SYSTEM_ID      = var.workspace_storage_runtime.file_system_id
+      HAKO_WORKSPACE_RUNTIME_POLL_INTERVAL   = "500ms"
+      HAKO_WORKSPACE_RUNTIME_POLL_TIMEOUT    = "30s"
       HAKO_WORKSPACE_RUNTIME_LAUNCH_SPEC_JSON = jsonencode({
         runtime_class               = var.workspace_runtime_deployment.runtime_class
         image_identifier            = var.workspace_runtime_deployment.microvm_image_arn
@@ -2409,6 +2545,94 @@ resource "aws_lambda_event_source_mapping" "workspace_resource_controller" {
   batch_size              = 1
   function_response_types = ["ReportBatchItemFailures"]
   enabled                 = true
+}
+
+resource "aws_lambda_event_source_mapping" "preview_runtime_controller" {
+  count = var.enable_preview_runtime ? 1 : 0
+
+  event_source_arn        = aws_sqs_queue.preview_runtime_commands[0].arn
+  function_name           = aws_lambda_function.workspace_resource_controller[0].arn
+  batch_size              = 1
+  function_response_types = ["ReportBatchItemFailures"]
+  enabled                 = true
+
+  depends_on = [aws_iam_role_policy.resource_controller]
+}
+
+resource "aws_cloudwatch_metric_alarm" "preview_runtime_commands_dlq_visible" {
+  count = var.enable_preview_runtime ? 1 : 0
+
+  alarm_name          = "${var.resource_plane_id}-preview-runtime-commands-dlq-visible"
+  alarm_description   = "Preview runtime commands reached the dead-letter queue; inspect the generation claim and runtime journal before redriving."
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = var.alarm_actions
+  ok_actions          = var.alarm_actions
+  dimensions          = { QueueName = aws_sqs_queue.preview_runtime_commands_dlq[0].name }
+  tags                = merge(local.common_tags, { "hako:queue-role" = "preview-runtime-commands-dlq" })
+}
+
+resource "aws_cloudwatch_metric_alarm" "preview_runtime_commands_oldest_message" {
+  count = var.enable_preview_runtime ? 1 : 0
+
+  alarm_name          = "${var.resource_plane_id}-preview-runtime-commands-oldest-message"
+  alarm_description   = "A Preview runtime command has exceeded the Resource Plane processing age threshold."
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateAgeOfOldestMessage"
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 2
+  threshold           = var.oldest_message_age_alarm_seconds
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = var.alarm_actions
+  ok_actions          = var.alarm_actions
+  dimensions          = { QueueName = aws_sqs_queue.preview_runtime_commands[0].name }
+  tags                = merge(local.common_tags, { "hako:queue-role" = "preview-runtime-commands" })
+}
+
+resource "aws_cloudwatch_metric_alarm" "preview_runtime_results_dlq_visible" {
+  count = var.enable_preview_runtime ? 1 : 0
+
+  alarm_name          = "${var.resource_plane_id}-preview-runtime-results-dlq-visible"
+  alarm_description   = "Preview runtime results reached the dead-letter queue; reconcile the generation result before redriving."
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = var.alarm_actions
+  ok_actions          = var.alarm_actions
+  dimensions          = { QueueName = aws_sqs_queue.preview_runtime_results_dlq[0].name }
+  tags                = merge(local.common_tags, { "hako:queue-role" = "preview-runtime-results-dlq" })
+}
+
+resource "aws_cloudwatch_metric_alarm" "preview_runtime_results_oldest_message" {
+  count = var.enable_preview_runtime ? 1 : 0
+
+  alarm_name          = "${var.resource_plane_id}-preview-runtime-results-oldest-message"
+  alarm_description   = "A Preview runtime result has exceeded the Control Plane acknowledgement age threshold."
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateAgeOfOldestMessage"
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 2
+  threshold           = var.oldest_message_age_alarm_seconds
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = var.alarm_actions
+  ok_actions          = var.alarm_actions
+  dimensions          = { QueueName = aws_sqs_queue.preview_runtime_results[0].name }
+  tags                = merge(local.common_tags, { "hako:queue-role" = "preview-runtime-results" })
 }
 
 resource "aws_cloudwatch_metric_alarm" "workspace_resource_controller_errors" {

@@ -38,6 +38,51 @@ output "results_dlq_arn" {
   value       = aws_sqs_queue.results_dlq.arn
 }
 
+output "preview_runtime_commands_queue_url" {
+  description = "URL of the dedicated Preview runtime command queue; null unless Preview runtime deployment is configured."
+  value       = try(aws_sqs_queue.preview_runtime_commands[0].url, null)
+}
+
+output "preview_runtime_commands_queue_arn" {
+  description = "ARN of the dedicated Preview runtime command queue; null unless Preview runtime deployment is configured."
+  value       = try(aws_sqs_queue.preview_runtime_commands[0].arn, null)
+}
+
+output "preview_runtime_results_queue_url" {
+  description = "URL of the dedicated Preview runtime result queue; null unless Preview runtime deployment is configured."
+  value       = try(aws_sqs_queue.preview_runtime_results[0].url, null)
+}
+
+output "preview_runtime_results_queue_arn" {
+  description = "ARN of the dedicated Preview runtime result queue; null unless Preview runtime deployment is configured."
+  value       = try(aws_sqs_queue.preview_runtime_results[0].arn, null)
+}
+
+output "preview_runtime_commands_dlq_url" {
+  description = "URL of the Preview runtime command DLQ; null unless Preview runtime deployment is configured."
+  value       = try(aws_sqs_queue.preview_runtime_commands_dlq[0].url, null)
+}
+
+output "preview_runtime_commands_dlq_arn" {
+  description = "ARN of the Preview runtime command DLQ; null unless Preview runtime deployment is configured."
+  value       = try(aws_sqs_queue.preview_runtime_commands_dlq[0].arn, null)
+}
+
+output "preview_runtime_results_dlq_url" {
+  description = "URL of the Preview runtime result DLQ; null unless Preview runtime deployment is configured."
+  value       = try(aws_sqs_queue.preview_runtime_results_dlq[0].url, null)
+}
+
+output "preview_runtime_results_dlq_arn" {
+  description = "ARN of the Preview runtime result DLQ; null unless Preview runtime deployment is configured."
+  value       = try(aws_sqs_queue.preview_runtime_results_dlq[0].arn, null)
+}
+
+output "preview_runtime_controller_event_source_mapping_uuid" {
+  description = "SQS event source mapping for optional Preview runtime commands."
+  value       = try(aws_lambda_event_source_mapping.preview_runtime_controller[0].uuid, null)
+}
+
 output "workload_results_queue_url" {
   description = "URL of the dedicated Workload Run result queue; null unless explicitly enabled."
   value       = try(aws_sqs_queue.workload_results[0].url, null)
@@ -229,7 +274,7 @@ output "workspace_resource_controller_event_source_mapping_uuid" {
 }
 
 output "monitoring_alarm_names" {
-  description = "CloudWatch alarm names for Resource Plane queues and optional health, Fake, Workspace MicroVM, Workload, Service, and Gateway controllers."
+  description = "CloudWatch alarm names for Resource Plane queues and optional health, Fake, Workspace MicroVM, Preview runtime, Workload, Service, and Gateway controllers."
   value = concat(
     [
       aws_cloudwatch_metric_alarm.commands_dlq_visible.alarm_name,
@@ -258,6 +303,10 @@ output "monitoring_alarm_names" {
     try([aws_cloudwatch_metric_alarm.health_reporter_errors[0].alarm_name], []),
     try([aws_cloudwatch_metric_alarm.fake_controller_errors[0].alarm_name], []),
     try([aws_cloudwatch_metric_alarm.workspace_resource_controller_errors[0].alarm_name], []),
+    try([aws_cloudwatch_metric_alarm.preview_runtime_commands_dlq_visible[0].alarm_name], []),
+    try([aws_cloudwatch_metric_alarm.preview_runtime_commands_oldest_message[0].alarm_name], []),
+    try([aws_cloudwatch_metric_alarm.preview_runtime_results_dlq_visible[0].alarm_name], []),
+    try([aws_cloudwatch_metric_alarm.preview_runtime_results_oldest_message[0].alarm_name], []),
     try([aws_cloudwatch_metric_alarm.workspace_gateway_unhealthy_targets[0].alarm_name], []),
     try([aws_cloudwatch_metric_alarm.workspace_gateway_alb_5xx[0].alarm_name], [])
   )

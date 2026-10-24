@@ -233,8 +233,10 @@ run "workspace_lambda_microvm_controller_is_disabled_by_default" {
     condition = (length(aws_lambda_function.workspace_resource_controller) == 0 &&
       length(aws_lambda_event_source_mapping.workspace_resource_controller) == 0 &&
       length(aws_iam_role_policy.resource_controller_workspace_runtime) == 0 &&
+      length(aws_sqs_queue.preview_runtime_commands) == 0 &&
+      length(aws_lambda_event_source_mapping.preview_runtime_controller) == 0 &&
     output.workspace_resource_controller_lambda_arn == null)
-    error_message = "The Workspace Lambda MicroVM controller, queue mapping, runtime IAM, and output must remain absent unless explicitly configured."
+    error_message = "Workspace and Preview Lambda MicroVM controllers and Preview queues must remain absent unless explicitly configured."
   }
 }
 
@@ -245,9 +247,11 @@ run "workspace_lambda_microvm_controller_uses_scoped_runtime_iam" {
   }
 
   variables {
-    resource_plane_id                      = "rp-test"
-    control_plane_dispatcher_role_arn      = "arn:aws:iam::123456789012:role/hako-cp-dispatcher"
-    control_plane_result_consumer_role_arn = "arn:aws:iam::123456789012:role/hako-cp-result-consumer"
+    resource_plane_id                              = "rp-test"
+    control_plane_dispatcher_role_arn              = "arn:aws:iam::123456789012:role/hako-cp-dispatcher"
+    control_plane_result_consumer_role_arn         = "arn:aws:iam::123456789012:role/hako-cp-result-consumer"
+    control_plane_preview_result_consumer_role_arn = "arn:aws:iam::123456789012:role/hako-cp-preview-result-consumer"
+    enable_preview_runtime                         = true
     workspace_storage_runtime = {
       file_system_id  = "fs-0123456789abcdef0"
       file_system_arn = "arn:aws:elasticfilesystem:ap-northeast-1:123456789012:file-system/fs-0123456789abcdef0"
@@ -275,6 +279,11 @@ run "workspace_lambda_microvm_controller_uses_scoped_runtime_iam" {
   assert {
     condition = (length(aws_lambda_function.workspace_resource_controller) == 1 &&
       length(aws_lambda_event_source_mapping.workspace_resource_controller) == 1 &&
+      length(aws_lambda_event_source_mapping.preview_runtime_controller) == 1 &&
+      length(aws_sqs_queue.preview_runtime_commands) == 1 &&
+      length(aws_sqs_queue.preview_runtime_commands_dlq) == 1 &&
+      length(aws_sqs_queue.preview_runtime_results) == 1 &&
+      length(aws_sqs_queue.preview_runtime_results_dlq) == 1 &&
       length(aws_lambda_function.fake_resource_controller) == 0 &&
       contains(aws_lambda_function.workspace_resource_controller[0].architectures, "arm64") &&
       length(aws_lambda_function.workspace_resource_controller[0].architectures) == 1 &&
@@ -307,6 +316,24 @@ run "workspace_lambda_microvm_controller_uses_scoped_runtime_iam" {
     length(aws_lambda_event_source_mapping.workspace_resource_controller[0].function_response_types) == 1)
     error_message = "The Lambda environment must receive only the trusted static launch profile and use per-record SQS failure reporting."
   }
+
+  assert {
+    condition = (
+      aws_lambda_function.workspace_resource_controller[0].environment[0].variables.HAKO_PREVIEW_RUNTIME_COMMAND_QUEUE_ARN == aws_sqs_queue.preview_runtime_commands[0].arn &&
+      aws_lambda_function.workspace_resource_controller[0].environment[0].variables.HAKO_PREVIEW_RUNTIME_RESULT_QUEUE_URL == aws_sqs_queue.preview_runtime_results[0].url &&
+      aws_lambda_event_source_mapping.preview_runtime_controller[0].event_source_arn == aws_sqs_queue.preview_runtime_commands[0].arn
+    )
+    error_message = "Preview queues must be mapped to the Resource Controller Lambda and passed through the exact environment settings."
+  }
+
+  assert {
+    condition = (
+      strcontains(aws_sqs_queue_policy.preview_runtime_commands[0].policy, "arn:aws:iam::123456789012:role/hako-cp-dispatcher") &&
+      strcontains(aws_sqs_queue_policy.preview_runtime_results[0].policy, "arn:aws:iam::123456789012:role/hako-cp-preview-result-consumer")
+    )
+    error_message = "Preview command/result queues must be private to the exact dispatcher and result consumer."
+  }
+
 }
 
 run "workspace_service_controller_isolated_and_opt_in" {

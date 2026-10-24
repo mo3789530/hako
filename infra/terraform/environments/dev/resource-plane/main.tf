@@ -4,6 +4,7 @@ module "resource_plane" {
   resource_plane_id                               = var.resource_plane_id
   control_plane_dispatcher_role_arn               = var.control_plane_dispatcher_role_arn
   control_plane_result_consumer_role_arn          = var.control_plane_result_consumer_role_arn
+  control_plane_preview_result_consumer_role_arn  = var.control_plane_preview_result_consumer_role_arn
   control_plane_workload_result_consumer_role_arn = var.control_plane_workload_result_consumer_role_arn
   workload_controller_secret_arns                 = var.workload_controller_secret_arns
   workload_controller_runtime                     = var.workload_controller_runtime
@@ -28,6 +29,7 @@ module "resource_plane" {
   fake_controller_execution_timeout_seconds       = var.fake_controller_execution_timeout_seconds
   fake_controller_memory_size                     = var.fake_controller_memory_size
   workspace_runtime_deployment                    = var.workspace_runtime_deployment
+  enable_preview_runtime                          = var.enable_preview_runtime
   tags                                            = var.tags
   alarm_actions                                   = var.alarm_actions
   oldest_message_age_alarm_seconds                = var.oldest_message_age_alarm_seconds

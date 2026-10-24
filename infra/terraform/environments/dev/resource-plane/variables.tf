@@ -20,6 +20,17 @@ variable "control_plane_result_consumer_role_arn" {
   type        = string
 }
 
+variable "control_plane_preview_result_consumer_role_arn" {
+  description = "Exact Control Plane Preview result consumer role ARN; required only when Preview runtime deployment is configured."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.control_plane_preview_result_consumer_role_arn == "" || can(regex("^arn:[^:]+:iam::[0-9]{12}:role/.+$", var.control_plane_preview_result_consumer_role_arn))
+    error_message = "control_plane_preview_result_consumer_role_arn must be an IAM role ARN when set."
+  }
+}
+
 variable "enable_workload_result_queue" {
   description = "Opt in to a separate Workload Run result queue/DLQ and alarms."
   type        = bool
@@ -299,6 +310,12 @@ variable "workspace_runtime_deployment" {
     )
     error_message = "Workspace Runtime Lambda deployment requires workspace_storage with enable_dynamic_workspace_roles=true."
   }
+}
+
+variable "enable_preview_runtime" {
+  description = "Default-off Preview command queues and consumer on the Lambda MicroVM Workspace Resource Controller."
+  type        = bool
+  default     = false
 }
 
 variable "tags" {

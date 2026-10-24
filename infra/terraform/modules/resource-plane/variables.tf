@@ -164,6 +164,31 @@ variable "control_plane_result_consumer_role_arn" {
   }
 }
 
+variable "control_plane_preview_result_consumer_role_arn" {
+  description = "Exact Control Plane IAM role allowed to receive Preview runtime results. Required only when enable_preview_runtime is true."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.control_plane_preview_result_consumer_role_arn == "" || can(regex("^arn:[^:]+:iam::[0-9]{12}:role/.+$", var.control_plane_preview_result_consumer_role_arn))
+    error_message = "control_plane_preview_result_consumer_role_arn must be an IAM role ARN when set."
+  }
+}
+
+variable "enable_preview_runtime" {
+  description = "Create separate default-off Preview runtime command/result queues and map commands to the Lambda MicroVM Resource Controller."
+  type        = bool
+  default     = false
+
+  validation {
+    condition = !var.enable_preview_runtime || (
+      var.workspace_runtime_deployment != null &&
+      var.control_plane_preview_result_consumer_role_arn != ""
+    )
+    error_message = "Preview runtime requires the Lambda MicroVM Workspace runtime and an exact Control Plane Preview result consumer role."
+  }
+}
+
 variable "enable_workload_result_queue" {
   description = "Create separate Workload command/result queues and DLQs plus a queue-only worker role; the Workload result queue is not the Workspace Operation result queue."
   type        = bool
@@ -660,6 +685,7 @@ variable "workspace_runtime_deployment" {
     error_message = "Workspace runtime deployment requires an existing ZIP, dynamic EFS roles, an exact journal bucket/prefix, fixed same-account image/connectors, bounded Lambda/MicroVM settings, and queue visibility at least six times the Lambda timeout; it cannot run beside the fake controller."
   }
 }
+
 
 variable "workspace_service_controller_vpc_config" {
   description = "Pre-provisioned private subnets and dedicated security group for the optional Workspace Service controller. Routes/endpoints are owned and reviewed by the Resource Plane account."
