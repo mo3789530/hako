@@ -2,6 +2,7 @@ package workspacestorage
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -88,4 +89,41 @@ func TestWorkspaceStorageAccessPointIdentityMismatchLeavesRoleUntouched(t *testi
 	if roles.createCalls != 1 {
 		t.Fatalf("created IAM role before AP ownership was confirmed: creates=%d", roles.createCalls)
 	}
+}
+
+func TestWorkspaceStorageCompensatesOnlyNewAccessPointWhenRoleProvisioningFails(t *testing.T) {
+	t.Run("new Access Point is removed", func(t *testing.T) {
+		identity := testIdentity()
+		efsFake := &efsStub{}
+		accessPoints, _ := NewEFS(efsFake, "fs-0123456789abcdef0", "us-east-1")
+		roleFake := newIAMFake()
+		roleFake.putErr = errors.New("synthetic policy failure")
+		roles, _ := NewExecutionRoleProvider(roleFake, "aws", "123456789012")
+		storage, _ := NewWorkspaceStorage(accessPoints, roles)
+		if _, err := storage.Ensure(context.Background(), identity); err == nil {
+			t.Fatal("expected IAM policy provisioning failure")
+		}
+		if efsFake.deleted != 1 || roleFake.deleteCalls != 1 {
+			t.Fatalf("new resources were not compensated: AP deletes=%d IAM role deletes=%d", efsFake.deleted, roleFake.deleteCalls)
+		}
+	})
+
+	t.Run("existing Access Point is preserved", func(t *testing.T) {
+		identity := testIdentity()
+		efsFake := &efsStub{}
+		accessPoints, _ := NewEFS(efsFake, "fs-0123456789abcdef0", "us-east-1")
+		if _, err := accessPoints.Ensure(context.Background(), identity); err != nil {
+			t.Fatal(err)
+		}
+		roleFake := newIAMFake()
+		roleFake.putErr = errors.New("synthetic policy failure")
+		roles, _ := NewExecutionRoleProvider(roleFake, "aws", "123456789012")
+		storage, _ := NewWorkspaceStorage(accessPoints, roles)
+		if _, err := storage.Ensure(context.Background(), identity); err == nil {
+			t.Fatal("expected IAM policy provisioning failure")
+		}
+		if efsFake.deleted != 0 {
+			t.Fatalf("pre-existing Access Point was removed during compensation: deletes=%d", efsFake.deleted)
+		}
+	})
 }

@@ -110,8 +110,16 @@ func NewEFS(api EFSAPI, fileSystemID, region string) (*EFS, error) {
 // client token is deterministic so retries of an ambiguous CreateAccessPoint
 // request return the same AP instead of creating an orphan.
 func (e *EFS) Ensure(ctx context.Context, identity Identity) (Binding, error) {
+	binding, _, err := e.EnsureWithCreated(ctx, identity)
+	return binding, err
+}
+
+// EnsureWithCreated returns whether this invocation created the Access Point.
+// The flag lets a multi-resource provisioner compensate only resources it
+// owns, without deleting a mapping that existed before this operation.
+func (e *EFS) EnsureWithCreated(ctx context.Context, identity Identity) (Binding, bool, error) {
 	if e == nil || ctx == nil || ctx.Err() != nil || !validIdentity(identity) {
-		return Binding{}, errors.New("Workspace EFS identity or context is invalid")
+		return Binding{}, false, errors.New("Workspace EFS identity or context is invalid")
 	}
 	root := "/hako/" + shortHash(string(identity.ResourcePlaneID)) + "/" + shortHash(string(identity.TenantID)) + "/" + shortHash(string(identity.WorkspaceID))
 	uid := stablePOSIXID(string(identity.TenantID) + ":" + string(identity.WorkspaceID))
@@ -119,7 +127,7 @@ func (e *EFS) Ensure(ctx context.Context, identity Identity) (Binding, error) {
 	token := hashToken(e.fileSystemID + ":" + string(identity.ResourcePlaneID) + ":" + string(identity.TenantID) + ":" + string(identity.WorkspaceID))
 	existing, err := e.DiscoverManaged(ctx)
 	if err != nil {
-		return Binding{}, err
+		return Binding{}, false, err
 	}
 	var matched *Binding
 	for _, point := range existing {
@@ -127,16 +135,16 @@ func (e *EFS) Ensure(ctx context.Context, identity Identity) (Binding, error) {
 			continue
 		}
 		if matched != nil {
-			return Binding{}, errors.New("multiple EFS Access Points claim the same Workspace identity")
+			return Binding{}, false, errors.New("multiple EFS Access Points claim the same Workspace identity")
 		}
 		binding := point.Binding
 		matched = &binding
 	}
 	if matched != nil {
 		if matched.RootPath != root || matched.UID != uid || matched.GID != gid {
-			return Binding{}, errors.New("existing Workspace EFS Access Point does not match the expected isolation configuration")
+			return Binding{}, false, errors.New("existing Workspace EFS Access Point does not match the expected isolation configuration")
 		}
-		return *matched, nil
+		return *matched, false, nil
 	}
 	output, err := e.api.CreateAccessPoint(ctx, &efs.CreateAccessPointInput{
 		ClientToken: aws.String(token), FileSystemId: aws.String(e.fileSystemID),
@@ -152,14 +160,14 @@ func (e *EFS) Ensure(ctx context.Context, identity Identity) (Binding, error) {
 		},
 	})
 	if err != nil {
-		return Binding{}, fmt.Errorf("create Workspace EFS Access Point: %w", err)
+		return Binding{}, false, fmt.Errorf("create Workspace EFS Access Point: %w", err)
 	}
 	if output == nil || !accessPointPattern.MatchString(aws.ToString(output.AccessPointId)) ||
 		aws.ToString(output.FileSystemId) != e.fileSystemID || aws.ToString(output.ClientToken) != token ||
 		!matchesDescription(output.PosixUser, output.RootDirectory, output.Tags, identity, root, uid, gid) {
-		return Binding{}, errors.New("EFS returned an Access Point that does not match the requested Workspace isolation")
+		return Binding{}, false, errors.New("EFS returned an Access Point that does not match the requested Workspace isolation")
 	}
-	return Binding{FileSystemID: e.fileSystemID, Region: e.region, AccessPointID: aws.ToString(output.AccessPointId), RootPath: root, UID: uid, GID: gid}, nil
+	return Binding{FileSystemID: e.fileSystemID, Region: e.region, AccessPointID: aws.ToString(output.AccessPointId), RootPath: root, UID: uid, GID: gid}, true, nil
 }
 
 // DiscoverManaged lists only Hako-tagged Access Points on this exact

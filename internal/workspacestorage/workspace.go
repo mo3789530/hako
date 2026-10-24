@@ -3,6 +3,7 @@ package workspacestorage
 import (
 	"context"
 	"errors"
+	"fmt"
 )
 
 // WorkspaceStorage composes the Access Point and execution-role lifecycle.
@@ -23,13 +24,18 @@ func (s *WorkspaceStorage) Ensure(ctx context.Context, identity Identity) (Bindi
 	if s == nil || s.accessPoints == nil || s.roles == nil || ctx == nil || ctx.Err() != nil {
 		return Binding{}, errors.New("Workspace storage provisioner is not configured")
 	}
-	binding, err := s.accessPoints.Ensure(ctx, identity)
+	binding, accessPointCreated, err := s.accessPoints.EnsureWithCreated(ctx, identity)
 	if err != nil {
 		return Binding{}, err
 	}
 	role, err := s.roles.Ensure(ctx, identity, binding)
 	if err != nil {
-		return Binding{}, err
+		if accessPointCreated {
+			if cleanupErr := s.accessPoints.DeleteOwned(ctx, identity, binding); cleanupErr != nil {
+				return Binding{}, errors.Join(fmt.Errorf("ensure Workspace execution role: %w", err), fmt.Errorf("compensate newly created Workspace Access Point: %w", cleanupErr))
+			}
+		}
+		return Binding{}, fmt.Errorf("ensure Workspace execution role: %w", err)
 	}
 	binding.ExecutionRoleARN = role.ARN
 	if err := binding.ValidateFor(identity); err != nil {

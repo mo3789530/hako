@@ -84,6 +84,12 @@ Terraform module is
 Resource Plane root can instantiate it only when the optional
 `workspace_storage` input is explicitly configured. Its default is `null`.
 
+The storage provisioner now tracks whether an Access Point was created by the
+current call. If subsequent IAM execution-role provisioning fails, it removes
+only that newly created AP; an AP discovered from a previous attempt is kept
+for safety. Fake-provider tests cover both compensation and preservation.
+`go test ./internal/workspacestorage ./internal/workspaceruntime` passes.
+
 An ARM64 image build was attempted with test-only public keys and the pinned
 `amazon-efs-utils` version. Cross-compiled init/agent binaries built, but the
 Podman host lacks ARM64 execution emulation (`exec format error` in the AL2023
