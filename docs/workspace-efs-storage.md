@@ -39,9 +39,9 @@ ARM64 image and live runtime validation.
 The hook also carries Tenant, Workspace, and Resource Plane IDs as non-secret
 identity metadata. `NewWorkspaceMountLifecycleHandler` can bind a
 `WorkspaceRuntimeBinder` after the mount succeeds and before returning HTTP 200;
-the guest shell Agent uses this to pin those IDs together with the provider
-MicroVM ID. The default init executable is not yet composed with that Agent,
-so the hook currently mounts storage but does not start a PTY service.
+the Workspace init image composes this mount hook with the unprivileged
+interactive Agent and pinned code-server child. The Agent binds those IDs to
+the provider MicroVM identity before serving Workspace sessions.
 
 The dedicated `images/workspace-init` Workspace image runs
 `cmd/hako-workspace-init`, which serves the strict Workspace-specific `/run`
@@ -96,16 +96,14 @@ Access Point mount instructions](https://docs.aws.amazon.com/efs/latest/ug/mount
 [AWS IAM mount instructions](https://docs.aws.amazon.com/efs/latest/ug/mounting-IAM-option.html),
 and the [official EFS mount-helper source](https://github.com/aws/efs-utils).
 
-An Access Point is not, by itself, a Tenant network/IAM boundary. Current
-Runtime launch profiles use one static execution role for all Workspaces, so
-the new `iam` mount option does not yet distinguish one Workspace from another.
-Production must remain disabled until each MicroVM is given a Workspace-scoped
-IAM identity/policy restricted to its exact Access Point, the filesystem
-policy rejects direct or non-TLS access, and private mount-target security
-groups restrict NFS to the reviewed Resource Plane network path. The Terraform
-module can express a distinct role/AP pair for each Workspace, but
-per-Workspace role provisioning and policy attachment are not yet implemented;
-a shared role must not be treated as sufficient Tenant isolation.
+An Access Point is not, by itself, a Tenant network/IAM boundary. Hako now has
+a locally implemented Workspace-scoped execution-role provider and the Lambda
+MicroVM runtime pins its role ARN with the EFS binding. Dynamic role and EFS
+policy provisioning remain default-off and have only fake-provider/mock-plan
+coverage. Production must remain disabled until live IAM authorization,
+filesystem policy, private mount-target security groups, and Lambda MicroVM
+connector compatibility are reviewed. A shared role must not be treated as
+sufficient Tenant isolation.
 
 `internal/workspacestorage` now provisions an opaque deterministic execution
 role through an injectable IAM API. It verifies the exact path, ownership
@@ -199,17 +197,20 @@ filesystem.
 
 ## Remaining Task 44 work
 
-The Workspace image now includes the distinct interactive Agent child; the
-root init starts it with the Access Point UID/GID only after mounting EFS,
-waits for readiness, and terminates it before ownership-checked unmount. The
-image build requires a public verification-key JSON file. An ARM64 Podman
-build was attempted: cross-compilation succeeded, but the host cannot execute
-the ARM64 AL2023 RPM-install layer, and the MicroVM base image has no amd64
-manifest. No final image was produced; use an ARM64 or explicitly configured
-binfmt/QEMU builder. The real Lambda `/run` hook remains unverified. Test
-suspend/restart/replacement recovery plus orderly unmount. Live EFS IAM policy
-and mount validation, mount failure compensation and orphan reconciliation,
-and backup/restore, retention, and quota verification remain open.
+The Workspace image now includes the distinct interactive Agent child; root
+init starts it with the Access Point UID/GID only after mounting EFS, waits for
+readiness, and terminates it before ownership-checked unmount. The provisioner
+compensates a newly created Access Point if execution-role provisioning fails,
+and the runtime test verifies that a replacement allocation reuses the exact
+journaled AP/UID/root binding. These tests do not verify file contents on a real
+mounted filesystem. The image build requires a public verification-key JSON
+file. An ARM64 Podman build was attempted: cross-compilation succeeded, but the
+host cannot execute the ARM64 AL2023 RPM-install layer, and the MicroVM base
+image has no amd64 manifest. No final image was produced; use an ARM64 or
+explicitly configured binfmt/QEMU builder. The real Lambda `/run` hook remains
+unverified. Live EFS IAM policy and mount validation, orderly/forced shutdown
+behavior, orphan reconciliation, and backup/restore, retention, and quota
+verification remain open.
 Live AWS validation remains subject to explicit approval.
 
 Authoritative references: [EFS Access Point IAM condition key](https://docs.aws.amazon.com/efs/latest/ug/access-points-iam-policy.html), [EFS resource policy example](https://docs.aws.amazon.com/efs/latest/ug/security_iam_resource-based-policy-examples.html), [AWS Backup for EFS](https://docs.aws.amazon.com/efs/latest/ug/awsbackup.html), and [EFS lifecycle management](https://docs.aws.amazon.com/efs/latest/ug/enable-lifecycle-management.html).
