@@ -89,6 +89,12 @@ Add optional repository-level preview environments and service metadata/deploy p
   now runs it with the webhook lifecycle E2E; integration statement coverage
   for `internal/store/previews` is 37.4% (unit-only coverage is 21.2%). This
   remains metadata-store coverage, not a provider cleanup test.
+- Added PostgreSQL integration coverage for bounded Tenant/Installation/
+  Repository-scoped Preview listing, list limits and ordering, foreign-scope
+  isolation, expiry batch transitions, and repeated-sweep idempotency. The
+  focused `make test-preview-expiry-integration` suite now reports 59.6%
+  statement coverage for `internal/store/previews`; runtime allocation and
+  physical cleanup are still outside this coverage.
 - `go test ./...` passed. PostgreSQL Preview lifecycle E2E passed against the
   local `hako-dev-postgres`, including stale delivery, close/reopen, Tenant
   scoping, and duplicate replay.
