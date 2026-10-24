@@ -74,6 +74,13 @@ func main() {
 		}
 		_ = json.NewEncoder(os.Stdout).Encode(result)
 	case len(os.Args) >= 5 && os.Args[1] == "github" && os.Args[2] == "repository" && os.Args[3] == "previews":
+		if len(os.Args) >= 5 && os.Args[4] == "open" {
+			if err := openGitHubRepositoryPreview(context.Background(), os.Args[5:], os.Stderr); err != nil {
+				fmt.Fprintf(os.Stderr, "hako github repository previews open: %v\n", err)
+				os.Exit(1)
+			}
+			break
+		}
 		if len(os.Args) >= 6 && os.Args[4] == "session" {
 			if os.Args[5] == "revoke" {
 				if err := revokeGitHubRepositoryPreviewSessionCLI(os.Args[6:]); err != nil {
@@ -616,6 +623,52 @@ func workspaceIDE(ctx context.Context, tenantID, workspaceID, localPortText stri
 		apiURL, gatewayURL, accessToken, stderr, nil, nil)
 }
 
+func openGitHubRepositoryPreview(ctx context.Context, args []string, stderr io.Writer) error {
+	if ctx == nil || stderr == nil {
+		return errors.New("Preview open context and status output are required")
+	}
+	input, err := parseGitHubRepositoryPreviewOpenCLI(args)
+	if err != nil {
+		return err
+	}
+	accessToken, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
+	if err != nil {
+		return err
+	}
+	apiURL, gatewayURL := os.Getenv("HAKO_API_URL"), os.Getenv("HAKO_GATEWAY_URL")
+	if apiURL == "" || gatewayURL == "" {
+		return errors.New("HAKO_API_URL and HAKO_GATEWAY_URL are required")
+	}
+	localPort, _ := strconv.ParseUint(input.localPort, 10, 16)
+	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.FormatUint(localPort, 10)))
+	if err != nil {
+		return fmt.Errorf("listen on local loopback port: %w", err)
+	}
+	defer listener.Close()
+	localAddr := listener.Addr().(*net.TCPAddr)
+	previewURL := "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(localAddr.Port)) + "/"
+	fmt.Fprintf(stderr, "Opening Preview IDE at %s. Press Ctrl-C to stop.\n", previewURL)
+	if cliBrowserOpener != nil {
+		if err := cliBrowserOpener(previewURL); err != nil {
+			return fmt.Errorf("open Preview IDE in browser: %w", err)
+		}
+	}
+	return serveWorkspaceTunnelWithSession(ctx, listener, workspacesession.PermissionVSCode, 0, gatewayURL, stderr, nil, nil,
+		func(sessionCtx context.Context) (workspaceTunnelSession, func(context.Context) error, error) {
+			session, err := api.CreateRepositoryPreviewSession(sessionCtx, apiURL, accessToken, input.tenantID,
+				input.installationID, input.repositoryID, input.pullRequest,
+				[]workspacesession.Permission{workspacesession.PermissionVSCode}, nil)
+			if err != nil {
+				return workspaceTunnelSession{}, nil, err
+			}
+			workspaceID := string(session.WorkspaceID)
+			return workspaceTunnelSession{ID: string(session.SessionID), WorkspaceID: workspaceID, Ticket: session.Ticket}, func(revokeCtx context.Context) error {
+				return api.RevokeRepositoryPreviewSession(revokeCtx, apiURL, accessToken, input.tenantID,
+					input.installationID, input.repositoryID, input.pullRequest, string(session.SessionID), nil)
+			}, nil
+		})
+}
+
 func serveWorkspaceForward(ctx context.Context, listener net.Listener, tenantID, workspaceID string, remotePort uint16, apiURL, gatewayURL, accessToken string,
 	stderr io.Writer, apiHTTPClient *http.Client, gatewayTLSConfig *tls.Config) error {
 	return serveWorkspaceTunnel(ctx, listener, tenantID, workspaceID, workspacesession.PermissionPortForward, remotePort,
@@ -626,6 +679,24 @@ func serveWorkspaceTunnel(ctx context.Context, listener net.Listener, tenantID, 
 	apiURL, gatewayURL, accessToken string, stderr io.Writer, apiHTTPClient *http.Client, gatewayTLSConfig *tls.Config) error {
 	if ctx == nil || listener == nil || stderr == nil || tenantID == "" || workspaceID == "" || apiURL == "" || gatewayURL == "" || accessToken == "" {
 		return errors.New("Workspace tunnel listener, identity, endpoints, credentials, context, and output are required")
+	}
+	return serveWorkspaceTunnelWithSession(ctx, listener, permission, remotePort, gatewayURL, stderr, apiHTTPClient, gatewayTLSConfig,
+		func(ctx context.Context) (workspaceTunnelSession, func(context.Context) error, error) {
+			session, err := api.CreateWorkspaceSession(ctx, apiURL, accessToken, tenantID, workspaceID,
+				[]workspacesession.Permission{permission}, apiHTTPClient)
+			if err != nil {
+				return workspaceTunnelSession{}, nil, err
+			}
+			return workspaceTunnelSession{ID: string(session.SessionID), WorkspaceID: workspaceID, Ticket: session.Ticket}, func(revokeCtx context.Context) error {
+				return api.RevokeWorkspaceSession(revokeCtx, apiURL, accessToken, tenantID, workspaceID, string(session.SessionID), apiHTTPClient)
+			}, nil
+		})
+}
+
+func serveWorkspaceTunnelWithSession(ctx context.Context, listener net.Listener, permission workspacesession.Permission, remotePort uint16,
+	gatewayURL string, stderr io.Writer, apiHTTPClient *http.Client, gatewayTLSConfig *tls.Config, createSession workspaceTunnelSessionFactory) error {
+	if ctx == nil || listener == nil || stderr == nil || gatewayURL == "" || createSession == nil {
+		return errors.New("Workspace tunnel listener, endpoints, session factory, context, and output are required")
 	}
 	switch permission {
 	case workspacesession.PermissionPortForward:
@@ -660,7 +731,7 @@ func serveWorkspaceTunnel(ctx context.Context, listener net.Listener, tenantID, 
 			go func() {
 				defer workers.Done()
 				defer func() { <-semaphore }()
-				if err := workspaceTunnelConnection(ctx, localConn, tenantID, workspaceID, permission, remotePort, apiURL, gatewayURL, accessToken, apiHTTPClient, gatewayTLSConfig); err != nil && ctx.Err() == nil {
+				if err := workspaceTunnelConnectionWithSession(ctx, localConn, permission, remotePort, gatewayURL, apiHTTPClient, gatewayTLSConfig, createSession); err != nil && ctx.Err() == nil {
 					stderrMu.Lock()
 					fmt.Fprintf(stderr, "forwarded connection failed: %v\n", err)
 					stderrMu.Unlock()
@@ -680,20 +751,50 @@ func forwardWorkspaceConnection(ctx context.Context, localConn net.Conn, tenantI
 
 func workspaceTunnelConnection(ctx context.Context, localConn net.Conn, tenantID, workspaceID string, permission workspacesession.Permission, remotePort uint16,
 	apiURL, gatewayURL, accessToken string, apiHTTPClient *http.Client, gatewayTLSConfig *tls.Config) (returnErr error) {
+	return workspaceTunnelConnectionWithSession(ctx, localConn, permission, remotePort, gatewayURL, apiHTTPClient, gatewayTLSConfig,
+		func(ctx context.Context) (workspaceTunnelSession, func(context.Context) error, error) {
+			session, err := api.CreateWorkspaceSession(ctx, apiURL, accessToken, tenantID, workspaceID,
+				[]workspacesession.Permission{permission}, apiHTTPClient)
+			if err != nil {
+				return workspaceTunnelSession{}, nil, err
+			}
+			return workspaceTunnelSession{ID: string(session.SessionID), WorkspaceID: workspaceID, Ticket: session.Ticket}, func(revokeCtx context.Context) error {
+				return api.RevokeWorkspaceSession(revokeCtx, apiURL, accessToken, tenantID, workspaceID, string(session.SessionID), apiHTTPClient)
+			}, nil
+		})
+}
+
+type workspaceTunnelSession struct {
+	ID          string
+	WorkspaceID string
+	Ticket      string
+}
+
+type workspaceTunnelSessionFactory func(context.Context) (workspaceTunnelSession, func(context.Context) error, error)
+
+func workspaceTunnelConnectionWithSession(ctx context.Context, localConn net.Conn, permission workspacesession.Permission, remotePort uint16,
+	gatewayURL string, apiHTTPClient *http.Client, gatewayTLSConfig *tls.Config, createSession workspaceTunnelSessionFactory) (returnErr error) {
+	if ctx == nil || localConn == nil || createSession == nil {
+		return errors.New("Workspace tunnel connection and session factory are required")
+	}
 	defer localConn.Close()
-	session, err := api.CreateWorkspaceSession(ctx, apiURL, accessToken, tenantID, workspaceID,
-		[]workspacesession.Permission{permission}, apiHTTPClient)
+	session, revoke, err := createSession(ctx)
 	if err != nil {
 		return fmt.Errorf("request Workspace tunnel session: %w", err)
 	}
-	defer func() {
-		revokeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		if err := api.RevokeWorkspaceSession(revokeCtx, apiURL, accessToken, tenantID, workspaceID, string(session.SessionID), apiHTTPClient); err != nil && returnErr == nil {
-			returnErr = fmt.Errorf("revoke port-forward session: %w", err)
-		}
-	}()
-	stream, err := workspacegateway.Dial(ctx, gatewayURL, domain.WorkspaceID(workspaceID), permission, remotePort,
+	if revoke != nil {
+		defer func() {
+			revokeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			if err := revoke(revokeCtx); err != nil && returnErr == nil {
+				returnErr = fmt.Errorf("revoke Workspace tunnel session: %w", err)
+			}
+		}()
+	}
+	if session.ID == "" || session.WorkspaceID == "" || session.Ticket == "" || revoke == nil {
+		return errors.New("Workspace tunnel session is incomplete")
+	}
+	stream, err := workspacegateway.Dial(ctx, gatewayURL, domain.WorkspaceID(session.WorkspaceID), permission, remotePort,
 		session.Ticket, gatewayTLSConfig)
 	if err != nil {
 		return err

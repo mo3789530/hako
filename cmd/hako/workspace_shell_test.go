@@ -605,6 +605,21 @@ func TestWorkspaceIDETunnelUsesVSCodePermissionAndLoopbackListener(t *testing.T)
 	}
 }
 
+func TestWorkspaceTunnelWithSessionFactoryRevokesOnGatewayDialFailure(t *testing.T) {
+	local, peer := net.Pipe()
+	defer peer.Close()
+	created, revoked := false, false
+	err := workspaceTunnelConnectionWithSession(context.Background(), local, workspacesession.PermissionVSCode, 0,
+		"not-a-gateway-url", nil, nil, func(context.Context) (workspaceTunnelSession, func(context.Context) error, error) {
+			created = true
+			return workspaceTunnelSession{ID: "preview-session", WorkspaceID: "prvws_0123456789abcdef0123456789abcdef", Ticket: "ticket"},
+				func(context.Context) error { revoked = true; return nil }, nil
+		})
+	if err == nil || !created || !revoked {
+		t.Fatalf("session factory lifecycle: created=%t revoked=%t err=%v", created, revoked, err)
+	}
+}
+
 func TestWorkspaceIDEOpensOnlyLoopbackBrowserURLAndStopsOnCancellation(t *testing.T) {
 	previousGetter, previousBrowser := cliCredentialGetter, cliBrowserOpener
 	cliCredentialGetter = workspaceShellCredentials(`{"access_token":"ide-access","token_type":"Bearer","expires_in":3600,"stored_at":"` + time.Now().UTC().Format(time.RFC3339) + `"}`)

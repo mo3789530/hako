@@ -7,6 +7,7 @@ import (
 	"flag"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,39 @@ type githubRepositoryFactoryCLIInput struct {
 	installationID int64
 	repositoryID   int64
 	enabled        bool
+}
+
+type githubRepositoryPreviewOpenCLIInput struct {
+	tenantID       string
+	installationID int64
+	repositoryID   int64
+	pullRequest    int64
+	localPort      string
+}
+
+func parseGitHubRepositoryPreviewOpenCLI(args []string) (githubRepositoryPreviewOpenCLIInput, error) {
+	var input githubRepositoryPreviewOpenCLIInput
+	flags := flag.NewFlagSet("github repository previews open", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&input.tenantID, "tenant", "", "Tenant ID")
+	flags.Int64Var(&input.installationID, "installation", 0, "GitHub App installation ID")
+	flags.Int64Var(&input.repositoryID, "repository", 0, "GitHub repository ID")
+	flags.Int64Var(&input.pullRequest, "pull-request", 0, "Pull request number")
+	flags.StringVar(&input.localPort, "local-port", "0", "Local browser tunnel port (0 selects an available port)")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+		return input, errors.New("invalid Preview open arguments")
+	}
+	input.tenantID = strings.TrimSpace(input.tenantID)
+	if input.tenantID == "" || input.installationID <= 0 || input.repositoryID <= 0 || input.pullRequest <= 0 {
+		return input, errors.New("--tenant, positive --installation, --repository, and --pull-request are required")
+	}
+	port, err := strconv.ParseUint(input.localPort, 10, 16)
+	if err != nil || port == 0 {
+		if input.localPort != "0" || err != nil {
+			return input, errors.New("--local-port must be 0 or between 1 and 65535")
+		}
+	}
+	return input, nil
 }
 
 func parseGitHubRepositoryFactoryCLI(args []string) (githubRepositoryFactoryCLIInput, error) {

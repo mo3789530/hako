@@ -91,6 +91,26 @@ func TestParseGitHubRepositoryPreviewSessionCLI(t *testing.T) {
 	}
 }
 
+func TestParseGitHubRepositoryPreviewOpenCLI(t *testing.T) {
+	got, err := parseGitHubRepositoryPreviewOpenCLI([]string{"--tenant", " tenant_a ", "--installation", "4", "--repository", "8", "--pull-request", "19"})
+	if err != nil || got.tenantID != "tenant_a" || got.installationID != 4 || got.repositoryID != 8 || got.pullRequest != 19 || got.localPort != "0" {
+		t.Fatalf("parse Preview open = %+v error=%v", got, err)
+	}
+	custom, err := parseGitHubRepositoryPreviewOpenCLI([]string{"--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "--local-port", "8123"})
+	if err != nil || custom.localPort != "8123" {
+		t.Fatalf("parse Preview open local port = %+v error=%v", custom, err)
+	}
+	for _, args := range [][]string{
+		{}, {"--tenant", "tenant_a", "--installation", "0", "--repository", "8", "--pull-request", "19"},
+		{"--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "--local-port", "65536"},
+		{"--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "extra"},
+	} {
+		if _, err := parseGitHubRepositoryPreviewOpenCLI(args); err == nil {
+			t.Errorf("Preview open parser accepted %q", args)
+		}
+	}
+}
+
 func TestParseGitHubRepositoryFactoryAndPreviewActions(t *testing.T) {
 	for _, test := range []struct {
 		name string
