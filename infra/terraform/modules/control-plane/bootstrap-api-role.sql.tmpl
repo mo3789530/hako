@@ -64,9 +64,9 @@ GRANT INSERT ON TABLE operation_events, outbox_events, audit_events TO hako_work
 CREATE ROLE hako_preview_reconciler WITH LOGIN;
 AWS IAM GRANT hako_preview_reconciler TO 'REPLACE_WITH_PREVIEW_EXPIRY_RECONCILER_LAMBDA_ROLE_ARN';
 GRANT USAGE ON SCHEMA public TO hako_preview_reconciler;
-GRANT SELECT (tenant_id, installation_id, github_repository_id, pull_request_number, desired_state, expires_at)
+GRANT SELECT (tenant_id, installation_id, github_repository_id, pull_request_number, desired_state, expires_at, generation)
     ON TABLE repository_previews TO hako_preview_reconciler;
-GRANT UPDATE (desired_state, state, cleanup_next_attempt_at, cleanup_claim_id, cleanup_lease_expires_at, updated_at)
+GRANT UPDATE (desired_state, state, generation, cleanup_next_attempt_at, cleanup_claim_id, cleanup_lease_expires_at, updated_at)
     ON TABLE repository_previews TO hako_preview_reconciler;
 
 -- The Dispatcher role can claim/publish Outbox rows but cannot alter schema or
@@ -90,7 +90,13 @@ GRANT SELECT ON TABLE github_webhook_deliveries, github_app_installation_binding
 GRANT UPDATE (processing_status, payload_json, payload_purged_at) ON TABLE github_webhook_deliveries TO hako_webhook_processor;
 GRANT UPDATE (status, suspended_at, updated_at) ON TABLE tenant_github_installations TO hako_webhook_processor;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE tenant_github_repositories TO hako_webhook_processor;
-GRANT SELECT (tenant_id, preview_lifetime_seconds) ON TABLE tenant_quota_limits TO hako_webhook_processor;
+-- Admission writes only the shared OCC revision guard. It may not change
+-- configured limits; the API remains the only Tenant quota writer.
+GRANT SELECT (tenant_id, workspace_limit, concurrent_workload_run_limit, preview_run_limit, preview_lifetime_seconds,
+    artifact_bytes_limit, workspace_service_memory_bytes_limit, workspace_service_milli_cpu_limit, revision, updated_by, updated_at)
+    ON TABLE tenant_quota_limits TO hako_webhook_processor;
+GRANT INSERT (tenant_id, revision, updated_at) ON TABLE tenant_quota_limits TO hako_webhook_processor;
+GRANT UPDATE (revision) ON TABLE tenant_quota_limits TO hako_webhook_processor;
 GRANT SELECT, INSERT ON TABLE workload_runs, workload_run_events TO hako_webhook_processor;
 GRANT SELECT, INSERT, UPDATE ON TABLE repository_previews TO hako_webhook_processor;
 GRANT SELECT, INSERT ON TABLE workload_agent_tasks TO hako_webhook_processor;

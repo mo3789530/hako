@@ -82,15 +82,12 @@ func AdvanceAdmissionGuard(ctx context.Context, tx pgx.Tx, tenantID domain.Tenan
 	}
 	var limits Limits
 	limits.TenantID = tenantID
-	err := tx.QueryRow(ctx, `INSERT INTO tenant_quota_limits
-		(tenant_id, workspace_limit, concurrent_workload_run_limit, preview_run_limit, preview_lifetime_seconds, artifact_bytes_limit,
-		 workspace_service_memory_bytes_limit, workspace_service_milli_cpu_limit, revision, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, $9)
+	err := tx.QueryRow(ctx, `INSERT INTO tenant_quota_limits (tenant_id, revision, updated_at)
+		VALUES ($1, 1, $2)
 		ON CONFLICT (tenant_id) DO UPDATE SET revision = tenant_quota_limits.revision + 1
 		RETURNING workspace_limit, concurrent_workload_run_limit, preview_run_limit, preview_lifetime_seconds, artifact_bytes_limit,
 		workspace_service_memory_bytes_limit, workspace_service_milli_cpu_limit, revision, COALESCE(updated_by, ''), updated_at`,
-		tenantID, DefaultWorkspaces, DefaultConcurrentWorkloadRuns, DefaultPreviewRuns, DefaultPreviewLifetimeSeconds, DefaultArtifactBytes,
-		DefaultWorkspaceServiceMemoryBytes, DefaultWorkspaceServiceMilliCPU, now.UTC()).Scan(
+		tenantID, now.UTC()).Scan(
 		&limits.Workspaces, &limits.ConcurrentWorkloadRuns, &limits.PreviewRuns, &limits.PreviewLifetimeSeconds, &limits.ArtifactBytes,
 		&limits.WorkspaceServiceMemoryBytes, &limits.WorkspaceServiceMilliCPU,
 		&limits.Revision, &limits.UpdatedBy, &limits.UpdatedAt)
@@ -160,13 +157,18 @@ func SetWithPreview(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, ac
 		AND state NOT IN ('succeeded','failed','cancelled','timed_out')`, tenantID).Scan(&activeWorkloadRuns); err != nil {
 		return Limits{}, fmt.Errorf("count Tenant Workload reservations: %w", err)
 	}
-	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM workload_runs WHERE tenant_id = $1 AND kind = 'preview'
-		AND state NOT IN ('succeeded','failed','cancelled','timed_out')`, tenantID).Scan(&activePreviewRuns); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT
+		(SELECT COUNT(*) FROM workload_runs WHERE tenant_id=$1 AND kind='preview' AND state NOT IN ('succeeded','failed','cancelled','timed_out')) +
+		(SELECT COUNT(*) FROM repository_previews WHERE tenant_id=$1 AND state IN ('awaiting_runtime','running','cleanup_pending'))`, tenantID).Scan(&activePreviewRuns); err != nil {
 		return Limits{}, fmt.Errorf("count Tenant Preview reservations: %w", err)
 	}
 	var previewLifetimeExceeded bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workload_runs WHERE tenant_id=$1 AND kind='preview'
-		AND state NOT IN ('succeeded','failed','cancelled','timed_out') AND timeout_seconds > $2)`, tenantID, previewLifetimeSeconds).Scan(&previewLifetimeExceeded); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT
+		EXISTS (SELECT 1 FROM workload_runs WHERE tenant_id=$1 AND kind='preview'
+			AND state NOT IN ('succeeded','failed','cancelled','timed_out') AND timeout_seconds > $2)
+		OR EXISTS (SELECT 1 FROM repository_previews WHERE tenant_id=$1 AND desired_state='present'
+			AND state IN ('awaiting_runtime','running') AND expires_at > created_at + ($2 * interval '1 second'))`,
+		tenantID, previewLifetimeSeconds).Scan(&previewLifetimeExceeded); err != nil {
 		return Limits{}, fmt.Errorf("check active Tenant Preview lifetime: %w", err)
 	}
 	var artifactBytesCommitted int64

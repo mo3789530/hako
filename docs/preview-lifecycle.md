@@ -65,7 +65,7 @@ Tenant quota or the 24-hour fallback.
 
 This is lifecycle metadata only. No MicroVM is created and no Gateway route is
 published: responses report `runtime_enabled: false`, and records remain in
-`awaiting_runtime` or `cleanup_pending`. The existing Lambda MicroVM Workspace
+`awaiting_runtime`, `quota_exceeded`, `cleanup_pending`, or `cleaned`. The existing Lambda MicroVM Workspace
 runtime does not yet provision a PR-scoped Workspace binding or expiring
 Tenant-scoped Gateway route. A default-off scheduled Lambda invokes the bounded
 expiry sweep, but it is not enabled by default and only updates DSQL metadata.
@@ -76,9 +76,18 @@ confirmation is idempotent. Migrations 000145–000146 add expiring, attempt-fen
 cleanup claims so crashed workers can be recovered and stale workers cannot
 acknowledge a newer claim. Migration 000147 adds lifecycle generations, which
 also fence cleanup metadata against later PR head/state changes. The worker
-that resolves Preview-to-runtime binding and performs physical deletion, route
-authorization, and Preview quota reservation is still required before Preview
-can be enabled for user traffic.
+that resolves Preview-to-runtime binding and performs physical deletion and
+route authorization is still required before Preview can be enabled for user
+traffic.
+
+Webhook admission reserves the Tenant Preview concurrency slot in the same
+transaction as the PR lifecycle update, using the shared Tenant quota OCC row.
+The slot covers both PR Previews and Workload Preview Runs; `cleanup_pending`
+retains the slot until `cleaned` confirms physical deletion. When capacity is
+exhausted, the PR is recorded as `desired_state=absent,state=quota_exceeded`
+without creating a runtime cleanup job. A later `reopened` event retries
+admission; closing a quota-rejected PR moves it directly to `cleaned`. Usage
+and quota reconfiguration include active PR Preview and cleanup reservations.
 `make test-preview-expiry-integration` exercises the list API's generation
 field and Tenant scope, plus the store's claim, active-lease exclusion, fixed
 retry backoff, crash recovery, stale-claim/generation rejection, confirmed

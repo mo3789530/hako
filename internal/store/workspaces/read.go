@@ -58,8 +58,9 @@ func ReadQuotaUsage(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID) (Q
 		return QuotaUsage{}, fmt.Errorf("read Tenant concurrent Workload usage: %w", err)
 	}
 	usage.WorkloadRunsLimit = int64(limits.ConcurrentWorkloadRuns)
-	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM workload_runs WHERE tenant_id = $1 AND kind = 'preview'
-		AND state NOT IN ('succeeded','failed','cancelled','timed_out')`, tenantID).Scan(&usage.PreviewRunsUsed); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT
+		(SELECT COUNT(*) FROM workload_runs WHERE tenant_id=$1 AND kind='preview' AND state NOT IN ('succeeded','failed','cancelled','timed_out')) +
+		(SELECT COUNT(*) FROM repository_previews WHERE tenant_id=$1 AND state IN ('awaiting_runtime','running','cleanup_pending'))`, tenantID).Scan(&usage.PreviewRunsUsed); err != nil {
 		return QuotaUsage{}, fmt.Errorf("read Tenant Preview quota usage: %w", err)
 	}
 	usage.PreviewRunsLimit = int64(limits.PreviewRuns)

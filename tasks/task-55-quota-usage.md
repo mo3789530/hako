@@ -45,6 +45,10 @@ and bucket versioning/lifecycle posture must be reviewed because the object
 bucket is not owned by this module. Tenant-configurable Preview concurrency
 (default 2, ceiling 5) and lifetime (5 minutes–24 hours), same-Tenant OCC
 admission, API/CLI configuration, and usage reporting are implemented.
+The Preview concurrency budget is shared by PR Preview webhook admission and
+Workload Preview Runs. Cleanup-pending PRs retain their slot until cleanup is
+confirmed, quota-rejected PRs reserve no capacity, and `hako usage` reports
+the combined count.
 PostgreSQL lifecycle coverage exercises
 cancel-before-start, failed provisioning, timeout expiry, duplicate terminal
 transitions, release of both Workload and Artifact reservations, and recovery

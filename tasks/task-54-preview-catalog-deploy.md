@@ -91,15 +91,16 @@ Add optional repository-level preview environments and service metadata/deploy p
   remains metadata-store coverage, not a provider cleanup test.
 - Added PostgreSQL integration coverage for bounded Tenant/Installation/
   Repository-scoped Preview listing, list limits and ordering, foreign-scope
-  isolation, expiry batch transitions, and repeated-sweep idempotency. The
-  focused `make test-preview-expiry-integration` suite now reports 59.6%
-  statement coverage for `internal/store/previews`; runtime allocation and
-  physical cleanup are still outside this coverage.
+  isolation, expiry batch transitions, and repeated-sweep idempotency. Before
+  quota admission additions, the focused suite reported 59.6% statement
+  coverage for `internal/store/previews`; the current suite reports 45.4% after
+  adding more store behavior. Runtime allocation and physical cleanup remain
+  outside this coverage.
 - `go test ./...` passed. PostgreSQL Preview lifecycle E2E passed against the
   local `hako-dev-postgres`, including stale delivery, close/reopen, Tenant
   scoping, and duplicate replay.
 - Remaining: Preview Workspace/Run binding to Lambda MicroVM, expiring
-  Tenant-scoped Gateway route, quota reservation, timeout/merge sweep, and
+  Tenant-scoped Gateway route, timeout/merge sweep, and
   idempotent cleanup worker with retry/backoff. See
   [`Preview lifecycle`](../docs/preview-lifecycle.md).
 
@@ -136,6 +137,23 @@ Add optional repository-level preview environments and service metadata/deploy p
 - The physical cleanup worker, Preview-to-runtime binding,
   and provider/Gateway deletion remain unimplemented. No delete is inferred
   from the metadata transition.
+
+## Preview concurrency admission (2026-10-24)
+
+- PR Preview open/reopen now advances the shared Tenant quota OCC guard and
+  checks capacity in the webhook transaction. The same configured limit is
+  shared with Workload Preview Runs. A full quota persists a
+  `desired_state=absent,state=quota_exceeded` record and does not create a
+  cleanup job or runtime allocation. A later `reopened` event retries admission.
+- Active and cleanup-pending PR Preview records count against usage and block
+  quota reductions until cleanup is confirmed. A rejected PR consumes no slot;
+  closing it records `cleaned` directly. The Usage API reads the combined
+  reservation count. Migration 000156 extends the lifecycle-state constraint.
+- PostgreSQL integration covers an active cleanup reservation rejecting a
+  second PR and a Workload Preview, followed by successful admission after the
+  first Preview is cleanup-confirmed. These checks cover quota metadata;
+  runtime allocation, Gateway routing, and the physical cleanup worker remain
+  unimplemented.
 
 ## Acceptance criteria
 

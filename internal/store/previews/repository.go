@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/githubwebhook"
+	"github.com/mo3789530/hako/internal/store/quotas"
 )
 
 type RepositoryPreview struct {
@@ -83,6 +84,21 @@ func ApplyPullRequestDelivery(ctx context.Context, tx pgx.Tx, tenantID domain.Te
 	if !event.PullRequest.UpdatedAt.IsZero() {
 		eventAt = event.PullRequest.UpdatedAt.UTC()
 	}
+	var priorDesired, priorState, priorDeliveryID string
+	var priorEventAt time.Time
+	exists := true
+	err := tx.QueryRow(ctx, `SELECT desired_state,state,last_event_at,last_delivery_id FROM repository_previews
+		WHERE tenant_id=$1 AND installation_id=$2 AND github_repository_id=$3 AND pull_request_number=$4`,
+		tenantID, event.InstallationID, event.Repository.GitHubID, event.PullRequest.Number).
+		Scan(&priorDesired, &priorState, &priorEventAt, &priorDeliveryID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		exists = false
+	} else if err != nil {
+		return false, fmt.Errorf("read current Repository Preview before admission: %w", err)
+	}
+	if exists && (priorEventAt.After(eventAt) || priorEventAt.Equal(eventAt) && priorDeliveryID >= deliveryID) {
+		return false, nil
+	}
 	var lifetimeSeconds int64
 	if err := tx.QueryRow(ctx, `SELECT COALESCE((SELECT preview_lifetime_seconds FROM tenant_quota_limits WHERE tenant_id=$1),86400)`, tenantID).Scan(&lifetimeSeconds); err != nil {
 		return false, fmt.Errorf("resolve Tenant Preview lifetime: %w", err)
@@ -90,7 +106,30 @@ func ApplyPullRequestDelivery(ctx context.Context, tx pgx.Tx, tenantID domain.Te
 	if lifetimeSeconds < 300 || lifetimeSeconds > 86400 {
 		return false, ErrInvalidDelivery
 	}
+	if desired == "absent" && !exists {
+		// A close can arrive before an open event; there is no runtime to clean.
+		state = "cleaned"
+	}
+	if desired == "absent" && exists && priorState == "quota_exceeded" {
+		// A quota-rejected PR has no runtime allocation to clean up.
+		state = "cleaned"
+	}
+	needsSlot := desired == "present" && (!exists || priorDesired == "absent" && event.Action == "reopened" &&
+		(priorState == "cleaned" || priorState == "quota_exceeded"))
+	if needsSlot {
+		admitted, err := admitPreview(ctx, tx, tenantID, now.UTC())
+		if err != nil {
+			return false, err
+		}
+		if !admitted {
+			desired, state = "absent", "quota_exceeded"
+		}
+	}
 	expiresAt := now.UTC().Add(time.Duration(lifetimeSeconds) * time.Second)
+	var expiresAtValue any = expiresAt
+	if state == "quota_exceeded" || state == "cleaned" && desired == "absent" && !exists {
+		expiresAtValue = nil
+	}
 	tag, err := tx.Exec(ctx, `INSERT INTO repository_previews
 		(tenant_id,installation_id,github_repository_id,pull_request_number,head_sha,head_ref,desired_state,state,last_delivery_id,last_event_at,expires_at,created_at,updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)
@@ -114,11 +153,28 @@ func ApplyPullRequestDelivery(ctx context.Context, tx pgx.Tx, tenantID domain.Te
 		WHERE repository_previews.last_event_at < EXCLUDED.last_event_at
 		   OR (repository_previews.last_event_at = EXCLUDED.last_event_at AND repository_previews.last_delivery_id < EXCLUDED.last_delivery_id)`,
 		string(tenantID), event.InstallationID, event.Repository.GitHubID, event.PullRequest.Number,
-		event.PullRequest.HeadSHA, event.PullRequest.HeadRef, desired, state, deliveryID, eventAt, expiresAt, now.UTC(), event.Action)
+		event.PullRequest.HeadSHA, event.PullRequest.HeadRef, desired, state, deliveryID, eventAt, expiresAtValue, now.UTC(), event.Action)
 	if err != nil {
 		return false, fmt.Errorf("upsert repository Preview desired state: %w", err)
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// admitPreview advances the shared Tenant quota OCC guard before counting both
+// Workload and pull-request Previews. A cleanup_pending PR keeps its slot until
+// a worker confirms physical cleanup.
+func admitPreview(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, now time.Time) (bool, error) {
+	limits, err := quotas.AdvanceAdmissionGuard(ctx, tx, tenantID, now)
+	if err != nil {
+		return false, fmt.Errorf("advance Tenant Preview quota guard: %w", err)
+	}
+	var active int64
+	if err := tx.QueryRow(ctx, `SELECT
+		(SELECT COUNT(*) FROM workload_runs WHERE tenant_id=$1 AND kind='preview' AND state NOT IN ('succeeded','failed','cancelled','timed_out')) +
+		(SELECT COUNT(*) FROM repository_previews WHERE tenant_id=$1 AND state IN ('awaiting_runtime','running','cleanup_pending'))`, tenantID).Scan(&active); err != nil {
+		return false, fmt.Errorf("count active Tenant Previews: %w", err)
+	}
+	return active < int64(limits.PreviewRuns), nil
 }
 
 // ExpireDue transitions a bounded batch of expired present Previews into the

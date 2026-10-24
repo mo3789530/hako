@@ -265,8 +265,9 @@ func reserveConcurrentRunSlot(ctx context.Context, tx pgx.Tx, run domain.Workloa
 	}
 	if run.Kind == domain.WorkloadPreview {
 		var activePreviews int64
-		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM workload_runs WHERE tenant_id = $1 AND kind = 'preview'
-			AND state NOT IN ('succeeded','failed','cancelled','timed_out')`, run.TenantID).Scan(&activePreviews); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT
+			(SELECT COUNT(*) FROM workload_runs WHERE tenant_id = $1 AND kind = 'preview' AND state NOT IN ('succeeded','failed','cancelled','timed_out')) +
+			(SELECT COUNT(*) FROM repository_previews WHERE tenant_id=$1 AND state IN ('awaiting_runtime','running','cleanup_pending'))`, run.TenantID).Scan(&activePreviews); err != nil {
 			return fmt.Errorf("count active Tenant Preview Runs: %w", err)
 		}
 		if activePreviews > int64(limits.PreviewRuns) {

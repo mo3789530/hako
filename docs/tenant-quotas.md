@@ -56,10 +56,16 @@ Workload creation returns HTTP 409 `artifact_quota_exceeded` before dispatch.
 Expired metadata still counts until an authorized artifact/object cleanup path
 deletes it. Preview Runs have an independent Tenant concurrency limit in
 addition to the general Workload limit. Pending, queued, provisioning, running,
-and cancel-requested Previews count until a terminal transition commits;
-timeout is enforced through the Workload Run expiration worker. Preview
-creation exceeding the Tenant count or lifetime limit returns HTTP 409
-`preview_quota_exceeded`. The store provides a bounded expired-metadata listing and an
+and cancel-requested Workload Previews count until a terminal transition
+commits; timeout is enforced through the Workload Run expiration worker. The
+same Preview limit is shared with opted-in GitHub PR Previews. Open/reopen
+admission and webhook lifecycle state update share the Tenant OCC transaction.
+When PR capacity is full, the event is retained as `quota_exceeded` without
+runtime allocation; its slot remains reserved through `cleanup_pending` until
+physical cleanup is confirmed. Usage reports include those PR reservations.
+Direct Workload Preview creation exceeding the Tenant count or lifetime limit
+returns HTTP 409 `preview_quota_exceeded`. The store provides a bounded
+expired-metadata listing and an
 exact-reference, expiry-conditional metadata delete for a cleanup worker. The
 worker must delete the backing object first and call the metadata delete only
 after success; failed object deletion must leave metadata and quota usage intact.

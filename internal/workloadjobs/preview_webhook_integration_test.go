@@ -4,16 +4,22 @@ package workloadjobs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/githubwebhook"
 	"github.com/mo3789530/hako/internal/store/dsql"
 	webhookstore "github.com/mo3789530/hako/internal/store/githubwebhook"
 	previewstore "github.com/mo3789530/hako/internal/store/previews"
 	"github.com/mo3789530/hako/internal/store/transaction"
+	"github.com/mo3789530/hako/internal/store/workloads"
+	"github.com/mo3789530/hako/internal/store/workspaces"
 	"github.com/mo3789530/hako/internal/testutil"
 )
 
@@ -28,7 +34,7 @@ func TestRepositoryPreviewWebhookLifecycleFencesStalePRUpdates(t *testing.T) {
 	for _, query := range []string{
 		`INSERT INTO tenants(id,name,created_at) VALUES ('tenant_preview_hook','Preview Hook',$1)`,
 		`INSERT INTO users(id,cognito_subject,email,created_at) VALUES ('usr_preview_hook','preview-hook','',$1)`,
-		`INSERT INTO tenant_quota_limits(tenant_id,workspace_limit,concurrent_workload_run_limit,preview_run_limit,preview_lifetime_seconds,revision,updated_by,updated_at) VALUES ('tenant_preview_hook',10,5,2,3600,1,'usr_preview_hook',$1)`,
+		`INSERT INTO tenant_quota_limits(tenant_id,workspace_limit,concurrent_workload_run_limit,preview_run_limit,preview_lifetime_seconds,revision,updated_by,updated_at) VALUES ('tenant_preview_hook',10,5,1,3600,1,'usr_preview_hook',$1)`,
 		`INSERT INTO tenant_github_installations(tenant_id,installation_id,account_login,status,requested_by,requested_at,updated_at) VALUES ('tenant_preview_hook',9801,'acme','active','usr_preview_hook',$1,$1)`,
 		`INSERT INTO github_app_installation_bindings(installation_id,tenant_id,bound_at) VALUES (9801,'tenant_preview_hook',$1)`,
 		`INSERT INTO tenant_github_repositories(tenant_id,installation_id,github_repository_id,owner_login,repository_name,default_branch,synchronized_at,preview_enabled,preview_enabled_at) VALUES ('tenant_preview_hook',9801,9802,'acme','preview-app','main',$1,true,$1)`,
@@ -127,6 +133,52 @@ func TestRepositoryPreviewWebhookLifecycleFencesStalePRUpdates(t *testing.T) {
 	}
 	if desired != "absent" || state != "cleanup_pending" {
 		t.Fatalf("expired Preview state = desired:%s state:%s, physical cleanup must remain pending", desired, state)
+	}
+	applyPreview := func(number int64, action, prState, deliveryID string, eventAt time.Time) (bool, error) {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			return false, err
+		}
+		updated, err := previewstore.ApplyPullRequestDelivery(ctx, tx, "tenant_preview_hook", deliveryID,
+			githubwebhook.RepositoryEvent{GitHubEvent: "pull_request", Action: action, InstallationID: 9801,
+				Repository:  &githubwebhook.RepositoryRef{GitHubID: 9802},
+				PullRequest: &githubwebhook.PullRequestRef{Number: number, State: prState, HeadRef: "feature/quota", HeadSHA: strings.Repeat("d", 40), UpdatedAt: eventAt}},
+			eventAt, eventAt)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return false, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return false, err
+		}
+		return updated, nil
+	}
+	if updated, err := applyPreview(75, "opened", "open", "30000000-0000-4000-8000-000000000001", now.Add(4*time.Hour)); err != nil || !updated {
+		t.Fatalf("record quota-blocked PR: updated=%v err=%v", updated, err)
+	}
+	var quotaDesired, quotaState string
+	if err := pool.QueryRow(ctx, `SELECT desired_state,state FROM repository_previews WHERE tenant_id='tenant_preview_hook' AND installation_id=9801 AND github_repository_id=9802 AND pull_request_number=75`).Scan(&quotaDesired, &quotaState); err != nil || quotaDesired != "absent" || quotaState != "quota_exceeded" {
+		t.Fatalf("concurrent Preview over Tenant quota = desired:%s state:%s err=%v", quotaDesired, quotaState, err)
+	}
+	if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (struct{}, error) {
+		_, _, err := workloads.CreateOrGet(ctx, tx, domain.WorkloadRun{ID: "run_preview_shares_pr_quota", TenantID: "tenant_preview_hook",
+			Kind: domain.WorkloadPreview, RuntimeClass: "standard", TrustLevel: domain.WorkloadUntrusted,
+			IdempotencyKey: "run_preview_shares_pr_quota", TimeoutSeconds: 1800, CreatedAt: now.Add(4 * time.Hour)})
+		return struct{}{}, err
+	}); !errors.Is(err, workloads.ErrPreviewQuotaExceeded) {
+		t.Fatalf("Workload Preview should share the active PR Preview quota: %v", err)
+	}
+	usage, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (workspaces.QuotaUsage, error) {
+		return workspaces.ReadQuotaUsage(ctx, tx, "tenant_preview_hook")
+	})
+	if err != nil || usage.PreviewRunsUsed != 1 || usage.PreviewRunsLimit != 1 {
+		t.Fatalf("Tenant Preview usage should include cleanup-pending PR reservation: usage=%+v err=%v", usage, err)
+	}
+	if updated, err := applyPreview(75, "closed", "closed", "30000000-0000-4000-8000-000000000002", now.Add(4*time.Hour+time.Second)); err != nil || !updated {
+		t.Fatalf("close quota-rejected PR: updated=%v err=%v", updated, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT state FROM repository_previews WHERE tenant_id='tenant_preview_hook' AND installation_id=9801 AND github_repository_id=9802 AND pull_request_number=75`).Scan(&quotaState); err != nil || quotaState != "cleaned" {
+		t.Fatalf("closed quota-rejected PR should require no physical cleanup: state=%q err=%v", quotaState, err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT generation,head_sha FROM repository_previews WHERE tenant_id='tenant_preview_hook' AND installation_id=9801 AND github_repository_id=9802 AND pull_request_number=73`).Scan(&lifecycleGeneration, &sha); err != nil || lifecycleGeneration != 4 || sha != newSHA {
 		t.Fatalf("expiry generation/head = generation:%d sha:%s err=%v, want 4 and latest SHA", lifecycleGeneration, sha, err)
@@ -239,6 +291,18 @@ func TestRepositoryPreviewWebhookLifecycleFencesStalePRUpdates(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT state,cleanup_attempts,cleanup_last_error,cleanup_claim_id,cleanup_lease_expires_at FROM repository_previews WHERE tenant_id='tenant_preview_hook' AND installation_id=9801 AND github_repository_id=9802 AND pull_request_number=73`).Scan(&cleanupState, &cleanupAttempts, &lastError, &cleanupClaim, &cleanupLease); err != nil || cleanupState != "cleaned" || cleanupAttempts != 3 || lastError != "" || cleanupClaim != nil || cleanupLease != nil {
 		t.Fatalf("persisted Preview cleanup state=%s attempts=%d last_error=%q claim=%v lease=%v err=%v", cleanupState, cleanupAttempts, lastError, cleanupClaim, cleanupLease, err)
 	}
+	usage, err = transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (workspaces.QuotaUsage, error) {
+		return workspaces.ReadQuotaUsage(ctx, tx, "tenant_preview_hook")
+	})
+	if err != nil || usage.PreviewRunsUsed != 0 {
+		t.Fatalf("confirmed Preview cleanup should release its Tenant quota slot: usage=%+v err=%v", usage, err)
+	}
+	if updated, err := applyPreview(75, "reopened", "open", "30000000-0000-4000-8000-000000000003", now.Add(5*time.Hour)); err != nil || !updated {
+		t.Fatalf("reopen quota-rejected PR after cleanup releases its slot: updated=%v err=%v", updated, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT desired_state,state FROM repository_previews WHERE tenant_id='tenant_preview_hook' AND installation_id=9801 AND github_repository_id=9802 AND pull_request_number=75`).Scan(&quotaDesired, &quotaState); err != nil || quotaDesired != "present" || quotaState != "awaiting_runtime" {
+		t.Fatalf("reopened Preview after cleanup did not acquire quota: desired=%s state=%s err=%v", quotaDesired, quotaState, err)
+	}
 	if _, err := pool.Exec(ctx, `INSERT INTO repository_previews
 		(tenant_id,installation_id,github_repository_id,pull_request_number,head_sha,head_ref,desired_state,state,last_delivery_id,last_event_at,created_at,updated_at)
 		VALUES ('tenant_preview_hook',9801,9802,74,$1,'feature/lease','absent','cleanup_pending','40000000-0000-4000-8000-000000000001',$2,$2,$2)`, strings.Repeat("c", 40), cleanupNow); err != nil {
@@ -277,5 +341,60 @@ func TestRepositoryPreviewWebhookLifecycleFencesStalePRUpdates(t *testing.T) {
 	duplicate, err := webhookstore.ProcessBatchWithRepositoryPreviews(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(10*time.Second), nil, ApplyWebhookRepositoryPreview)
 	if err != nil || duplicate.RepositoryPreviewsUpdated != 0 || duplicate.Processed != 0 {
 		t.Fatalf("duplicate deliveries changed Preview state: stats=%+v error=%v", duplicate, err)
+	}
+}
+
+func TestRepositoryPreviewConcurrentAdmissionRespectsTenantQuota(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, query := range []string{
+		`INSERT INTO tenants(id,name,created_at) VALUES ('tenant_preview_race','Preview race',$1)`,
+		`INSERT INTO users(id,cognito_subject,email,created_at) VALUES ('usr_preview_race','preview-race','',$1)`,
+		`INSERT INTO tenant_quota_limits(tenant_id,workspace_limit,concurrent_workload_run_limit,preview_run_limit,preview_lifetime_seconds,revision,updated_by,updated_at) VALUES ('tenant_preview_race',10,5,1,3600,1,'usr_preview_race',$1)`,
+		`INSERT INTO tenant_github_installations(tenant_id,installation_id,account_login,status,requested_by,requested_at,updated_at) VALUES ('tenant_preview_race',9803,'acme','active','usr_preview_race',$1,$1)`,
+		`INSERT INTO github_app_installation_bindings(installation_id,tenant_id,bound_at) VALUES (9803,'tenant_preview_race',$1)`,
+		`INSERT INTO tenant_github_repositories(tenant_id,installation_id,github_repository_id,owner_login,repository_name,default_branch,synchronized_at,preview_enabled,preview_enabled_at) VALUES ('tenant_preview_race',9803,9804,'acme','preview-race','main',$1,true,$1)`,
+	} {
+		if _, err := pool.Exec(ctx, query, now); err != nil {
+			t.Fatalf("seed concurrent Preview quota case: %v", err)
+		}
+	}
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	var group sync.WaitGroup
+	for _, number := range []int64{81, 82} {
+		number := number
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			<-start
+			_, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (bool, error) {
+				return previewstore.ApplyPullRequestDelivery(ctx, tx, "tenant_preview_race",
+					fmt.Sprintf("50000000-0000-4000-8000-%012d", number), githubwebhook.RepositoryEvent{
+						GitHubEvent: "pull_request", Action: "opened", InstallationID: 9803,
+						Repository:  &githubwebhook.RepositoryRef{GitHubID: 9804},
+						PullRequest: &githubwebhook.PullRequestRef{Number: number, State: "open", HeadRef: "feature/race", HeadSHA: strings.Repeat("e", 40), UpdatedAt: now}}, now, now)
+			})
+			results <- err
+		}()
+	}
+	close(start)
+	group.Wait()
+	close(results)
+	for err := range results {
+		if err != nil {
+			t.Fatalf("concurrent Preview admission: %v", err)
+		}
+	}
+	var admitted, rejected int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FILTER (WHERE desired_state='present' AND state='awaiting_runtime'),
+		COUNT(*) FILTER (WHERE desired_state='absent' AND state='quota_exceeded')
+		FROM repository_previews WHERE tenant_id='tenant_preview_race'`).Scan(&admitted, &rejected); err != nil || admitted != 1 || rejected != 1 {
+		t.Fatalf("concurrent Preview quota outcomes admitted=%d rejected=%d err=%v", admitted, rejected, err)
 	}
 }
