@@ -296,6 +296,15 @@ ARM64 artifact or run inside Lambda MicroVM. Do not enable manifest `services`
 by reusing the Workspace path.
 The Job runtime needs its own implementation with these acceptance conditions:
 
+The local `NerdctlJobServiceEngine` now passes the pinned nerdctl
+`--cgroup-manager=systemd` setting on every command. Nerdctl documents that
+rootless CPU/memory limits require systemd and cgroup v2
+([v2.4.1 rootless requirements](https://github.com/containerd/nerdctl/blob/v2.4.1/docs/rootless.md)).
+If the Lambda MicroVM image cannot provide that manager/delegation, service
+creation fails instead of relying on silently ignored limits. This command
+contract is unit-tested; target MicroVM enforcement remains unverified and
+Services remain disabled.
+
 - [ ] Provision only immutable Service Catalog entries (`postgres`, `redis`)
   on a Job/attempt-scoped rootless containerd network. No user-provided image,
   command, mount, port mapping, or host socket is accepted.

@@ -28,7 +28,7 @@ type fakeJobNerdctlRunner struct {
 
 func (r *fakeJobNerdctlRunner) Run(_ context.Context, _ string, args, _ []string) ([]byte, error) {
 	r.commands = append(r.commands, append([]string(nil), args...))
-	command := args[4:]
+	command := args[jobNerdctlGlobalArgCount:]
 	switch {
 	case len(command) >= 3 && command[0] == "network" && command[1] == "ls":
 		if r.networkName == "" {
@@ -124,6 +124,11 @@ func TestNerdctlJobServiceEngineUsesInternalEphemeralLoopbackRuntime(t *testing.
 	}
 	if len(runner.commands) < 4 {
 		t.Fatalf("nerdctl command sequence is incomplete: %v", runner.commands)
+	}
+	for _, command := range runner.commands {
+		if len(command) < jobNerdctlGlobalArgCount || command[jobNerdctlGlobalArgCount-1] != "--cgroup-manager=systemd" {
+			t.Fatalf("Job Service command did not require systemd cgroup limits: %v", command)
+		}
 	}
 	createNetwork := findJobCommand(t, runner.commands, "network", "create")
 	runService := findJobCommand(t, runner.commands, "run")
@@ -279,12 +284,12 @@ func commandContains(args []string, want string) bool {
 
 func commandPrefixSeen(commands [][]string, prefix ...string) bool {
 	for _, command := range commands {
-		if len(command) < 4+len(prefix) {
+		if len(command) < jobNerdctlGlobalArgCount+len(prefix) {
 			continue
 		}
 		matched := true
 		for i, value := range prefix {
-			if command[4+i] != value {
+			if command[jobNerdctlGlobalArgCount+i] != value {
 				matched = false
 				break
 			}
@@ -308,12 +313,12 @@ func argValue(args []string, flag string) string {
 func findJobCommand(t *testing.T, commands [][]string, prefix ...string) []string {
 	t.Helper()
 	for _, command := range commands {
-		if len(command) < 4+len(prefix) {
+		if len(command) < jobNerdctlGlobalArgCount+len(prefix) {
 			continue
 		}
 		matched := true
 		for i, value := range prefix {
-			if command[4+i] != value {
+			if command[jobNerdctlGlobalArgCount+i] != value {
 				matched = false
 				break
 			}

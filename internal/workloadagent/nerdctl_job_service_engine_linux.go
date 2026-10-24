@@ -22,8 +22,9 @@ import (
 )
 
 const (
-	jobNerdctlNamespace = "hako-job-services"
-	jobScopeLabel       = "hako.job-scope-key"
+	jobNerdctlNamespace      = "hako-job-services"
+	jobNerdctlGlobalArgCount = 5
+	jobScopeLabel            = "hako.job-scope-key"
 )
 
 type JobServiceCommandRunner interface {
@@ -409,7 +410,7 @@ func (e *NerdctlJobServiceEngine) inspectContainerLabels(ctx context.Context, na
 }
 
 func (e *NerdctlJobServiceEngine) run(ctx context.Context, args ...string) ([]byte, error) {
-	base := []string{"--address", e.config.ContainerdSocket, "--namespace", jobNerdctlNamespace}
+	base := []string{"--address", e.config.ContainerdSocket, "--namespace", jobNerdctlNamespace, "--cgroup-manager=systemd"}
 	return e.runner.Run(ctx, e.config.BinaryPath, append(base, args...), append([]string(nil), e.env...))
 }
 
