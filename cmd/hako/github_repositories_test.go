@@ -123,6 +123,28 @@ func TestParseGitHubRepositoryPreviewOpenCLI(t *testing.T) {
 	}
 }
 
+func TestParseGitHubRepositoryPreviewForwardCLI(t *testing.T) {
+	got, err := parseGitHubRepositoryPreviewForwardCLI([]string{"--tenant", " tenant_a ", "--installation", "4", "--repository", "8", "--pull-request", "19", "--remote-port", "3000"})
+	if err != nil || got.tenantID != "tenant_a" || got.installationID != 4 || got.repositoryID != 8 || got.pullRequest != 19 || got.remotePort != 3000 || got.localPort != "0" {
+		t.Fatalf("parse Preview forward = %+v error=%v", got, err)
+	}
+	custom, err := parseGitHubRepositoryPreviewForwardCLI([]string{"--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "--remote-port", "65535", "--local-port", "8123"})
+	if err != nil || custom.remotePort != 65535 || custom.localPort != "8123" {
+		t.Fatalf("parse Preview forward custom ports = %+v error=%v", custom, err)
+	}
+	for _, args := range [][]string{
+		{}, {"--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19"},
+		{"--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "--remote-port", "0"},
+		{"--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "--remote-port", "65536"},
+		{"--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "--remote-port", "3000", "--local-port", "65536"},
+		{"--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "--remote-port", "3000", "extra"},
+	} {
+		if _, err := parseGitHubRepositoryPreviewForwardCLI(args); err == nil {
+			t.Errorf("Preview forward parser accepted %q", args)
+		}
+	}
+}
+
 func TestParseGitHubRepositoryFactoryAndPreviewActions(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -462,6 +484,138 @@ func TestOpenGitHubRepositoryPreviewRequiresBothEndpoints(t *testing.T) {
 		if err := openGitHubRepositoryPreview(context.Background(), args, io.Discard); err == nil {
 			t.Errorf("accepted incomplete endpoints: api=%q gateway=%q", endpoints.api, endpoints.gateway)
 		}
+	}
+}
+
+type previewForwardTestPortAuthorizer struct{}
+
+func (previewForwardTestPortAuthorizer) AllowPort(_ context.Context, _ workspacesession.Claims, port uint16) (bool, error) {
+	return port == 3000, nil
+}
+
+type previewForwardTestDialer struct {
+	vscodeTestDialer
+	port atomic.Uint32
+}
+
+func (d *previewForwardTestDialer) OpenPort(_ context.Context, _ workspacesession.Claims, _ workspacesession.Permission, port uint16) (io.ReadWriteCloser, error) {
+	d.port.Store(uint32(port))
+	client, runtime := net.Pipe()
+	go func() {
+		defer runtime.Close()
+		_, _ = io.Copy(runtime, runtime)
+	}()
+	return client, nil
+}
+
+func TestForwardGitHubRepositoryPreviewUsesPortScopedSessionAndTLSGateway(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceID := domain.WorkspaceID("prvws_0123456789abcdef0123456789abcdef")
+	issuer := &workspacesession.Ed25519Issuer{KeyID: "preview-forward-test", PrivateKey: privateKey, TTL: time.Minute}
+	ticket, claims, err := issuer.Issue(workspacesession.Claims{UserID: "usr_cli", TenantID: "tenant_cli", WorkspaceID: workspaceID,
+		ResourcePlane: "rp_cli", Permissions: []workspacesession.Permission{workspacesession.PermissionPortForward}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created, revoked atomic.Int32
+	apiServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer preview-forward-access" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		const createPath = "/v1/tenants/tenant_cli/github/installations/42/repositories/7/previews/19/sessions"
+		if r.Method == http.MethodPost && r.URL.Path == createPath {
+			var request struct {
+				Permissions []workspacesession.Permission `json:"permissions"`
+			}
+			if json.NewDecoder(r.Body).Decode(&request) != nil || len(request.Permissions) != 1 || request.Permissions[0] != workspacesession.PermissionPortForward {
+				http.Error(w, "unexpected Preview permissions", http.StatusBadRequest)
+				return
+			}
+			created.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(api.RepositoryPreviewSession{SessionID: domain.SessionID(claims.TicketID), WorkspaceID: workspaceID,
+				Ticket: ticket, ExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC(), Permissions: []workspacesession.Permission{workspacesession.PermissionPortForward}})
+			return
+		}
+		if r.Method == http.MethodDelete && r.URL.Path == createPath+"/"+claims.TicketID {
+			revoked.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer apiServer.Close()
+	dialer := &previewForwardTestDialer{}
+	gateway, err := workspacegateway.New(workspacegateway.Config{ResourcePlaneID: "rp_cli",
+		Verifier: &workspacesession.Verifier{Keys: map[string]ed25519.PublicKey{"preview-forward-test": publicKey}, Audience: workspacesession.AudienceGateway, Lookup: activeWorkspaceSession{}},
+		Dialer:   dialer, PortAuthorizer: previewForwardTestPortAuthorizer{}, MaxConnections: 2, MaxConnectionsPerWorkspace: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatewayServer := httptest.NewTLSServer(gateway.Handler())
+	defer gatewayServer.Close()
+	gatewayTLS := gatewayServer.Client().Transport.(*http.Transport).TLSClientConfig
+	previousGetter := cliCredentialGetter
+	cliCredentialGetter = workspaceShellCredentials(fmt.Sprintf(`{"access_token":"preview-forward-access","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+		time.Now().UTC().Format(time.RFC3339)))
+	t.Cleanup(func() { cliCredentialGetter = previousGetter })
+	t.Setenv("HAKO_API_URL", apiServer.URL)
+	t.Setenv("HAKO_GATEWAY_URL", gatewayServer.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	openedURL := make(chan string, 1)
+	serverDone := make(chan error, 1)
+	args := []string{"--tenant", "tenant_cli", "--installation", "42", "--repository", "7", "--pull-request", "19", "--remote-port", "3000", "--local-port", "0"}
+	go func() {
+		serverDone <- forwardGitHubRepositoryPreviewWith(ctx, args, io.Discard, apiServer.Client(),
+			&tls.Config{RootCAs: gatewayTLS.RootCAs}, func(value string) error { openedURL <- value; return nil })
+	}()
+	var localURL string
+	select {
+	case localURL = <-openedURL:
+	case err := <-serverDone:
+		cancel()
+		t.Fatalf("Preview forward exited before opening: %v", err)
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("Preview forward did not start")
+	}
+	address := strings.TrimPrefix(localURL, "http://")
+	address = address[:strings.IndexByte(address, '/')]
+	conn, err := net.DialTimeout("tcp", address, time.Second)
+	if err != nil {
+		cancel()
+		t.Fatalf("connect to Preview forward listener: %v", err)
+	}
+	payload := []byte("preview-app-http")
+	if _, err := conn.Write(payload); err != nil {
+		cancel()
+		_ = conn.Close()
+		t.Fatalf("write forwarded Preview bytes: %v", err)
+	}
+	response := make([]byte, len(payload))
+	_ = conn.SetDeadline(time.Now().Add(time.Second))
+	if _, err := io.ReadFull(conn, response); err != nil || string(response) != string(payload) {
+		cancel()
+		_ = conn.Close()
+		t.Fatalf("forwarded Preview response=%q err=%v", response, err)
+	}
+	_ = conn.Close()
+	cancel()
+	select {
+	case err := <-serverDone:
+		if err != nil {
+			t.Fatalf("Preview forward returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Preview forward did not stop after cancellation")
+	}
+	if created.Load() != 1 || revoked.Load() != 1 || dialer.port.Load() != 3000 {
+		t.Fatalf("Preview create=%d revoke=%d remote port=%d", created.Load(), revoked.Load(), dialer.port.Load())
 	}
 }
 

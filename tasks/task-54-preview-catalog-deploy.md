@@ -450,3 +450,20 @@ Add optional repository-level preview environments and service metadata/deploy p
 - This checks key-ID/configuration agreement only; it does not retrieve a real
   private key or prove its cryptographic pair matches the public key baked into
   an image. No AWS resources or Secrets were applied/read.
+
+## Authenticated Preview application port forward CLI (2026-10-25)
+
+- Added `hako github repository previews forward`, which binds its local
+  listener to loopback, takes an explicit numeric remote port, and obtains a
+  new Tenant/Repository/PR-scoped Preview Session with only `port-forward` for
+  each connection. The CLI uses the shared Gateway WSS route and revokes the
+  Session when that stream closes. It never accepts a destination host or
+  creates a public application route.
+- Parser tests cover required identity/port fields and port bounds. A local
+  API + TLS/WSS Gateway test verifies permission scoping, port authorization,
+  byte relay, cancellation, and Session revocation.
+- The command is a tunnel only. Guest application startup/health checking,
+  Gateway production port-authorizer composition, public Preview URL handling,
+  queue/schedule deployment, and real Lambda MicroVM E2E remain incomplete.
+  See [Preview lifecycle](../docs/preview-lifecycle.md). No AWS resources or
+  Secrets were applied/read.

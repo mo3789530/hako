@@ -81,6 +81,13 @@ func main() {
 			}
 			break
 		}
+		if len(os.Args) >= 5 && os.Args[4] == "forward" {
+			if err := forwardGitHubRepositoryPreview(context.Background(), os.Args[5:], os.Stderr); err != nil {
+				fmt.Fprintf(os.Stderr, "hako github repository previews forward: %v\n", err)
+				os.Exit(1)
+			}
+			break
+		}
 		if len(os.Args) >= 6 && os.Args[4] == "session" {
 			if os.Args[5] == "revoke" {
 				if err := revokeGitHubRepositoryPreviewSessionCLI(os.Args[6:]); err != nil {
@@ -663,6 +670,57 @@ func openGitHubRepositoryPreviewWith(ctx context.Context, args []string, stderr 
 			session, err := api.CreateRepositoryPreviewSession(sessionCtx, apiURL, accessToken, input.tenantID,
 				input.installationID, input.repositoryID, input.pullRequest,
 				[]workspacesession.Permission{workspacesession.PermissionVSCode}, apiHTTPClient)
+			if err != nil {
+				return workspaceTunnelSession{}, nil, err
+			}
+			workspaceID := string(session.WorkspaceID)
+			return workspaceTunnelSession{ID: string(session.SessionID), WorkspaceID: workspaceID, Ticket: session.Ticket}, func(revokeCtx context.Context) error {
+				return api.RevokeRepositoryPreviewSession(revokeCtx, apiURL, accessToken, input.tenantID,
+					input.installationID, input.repositoryID, input.pullRequest, string(session.SessionID), apiHTTPClient)
+			}, nil
+		})
+}
+
+func forwardGitHubRepositoryPreview(ctx context.Context, args []string, stderr io.Writer) error {
+	return forwardGitHubRepositoryPreviewWith(ctx, args, stderr, nil, nil, cliBrowserOpener)
+}
+
+func forwardGitHubRepositoryPreviewWith(ctx context.Context, args []string, stderr io.Writer, apiHTTPClient *http.Client,
+	gatewayTLSConfig *tls.Config, browserOpener func(string) error) error {
+	if ctx == nil || stderr == nil {
+		return errors.New("Preview forward context and status output are required")
+	}
+	input, err := parseGitHubRepositoryPreviewForwardCLI(args)
+	if err != nil {
+		return err
+	}
+	accessToken, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
+	if err != nil {
+		return err
+	}
+	apiURL, gatewayURL := os.Getenv("HAKO_API_URL"), os.Getenv("HAKO_GATEWAY_URL")
+	if apiURL == "" || gatewayURL == "" {
+		return errors.New("HAKO_API_URL and HAKO_GATEWAY_URL are required")
+	}
+	localPort, _ := strconv.ParseUint(input.localPort, 10, 16)
+	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.FormatUint(localPort, 10)))
+	if err != nil {
+		return fmt.Errorf("listen on local loopback port: %w", err)
+	}
+	defer listener.Close()
+	localAddr := listener.Addr().(*net.TCPAddr)
+	previewURL := "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(localAddr.Port)) + "/"
+	fmt.Fprintf(stderr, "Opening Preview application at %s. Press Ctrl-C to stop.\n", previewURL)
+	if browserOpener != nil {
+		if err := browserOpener(previewURL); err != nil {
+			return fmt.Errorf("open Preview application in browser: %w", err)
+		}
+	}
+	return serveWorkspaceTunnelWithSession(ctx, listener, workspacesession.PermissionPortForward, input.remotePort, gatewayURL, stderr, apiHTTPClient, gatewayTLSConfig,
+		func(sessionCtx context.Context) (workspaceTunnelSession, func(context.Context) error, error) {
+			session, err := api.CreateRepositoryPreviewSession(sessionCtx, apiURL, accessToken, input.tenantID,
+				input.installationID, input.repositoryID, input.pullRequest,
+				[]workspacesession.Permission{workspacesession.PermissionPortForward}, apiHTTPClient)
 			if err != nil {
 				return workspaceTunnelSession{}, nil, err
 			}

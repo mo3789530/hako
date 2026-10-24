@@ -52,6 +52,24 @@ hako github repository previews open --tenant <tenant> \
   --pull-request <number> [--local-port 0]
 ```
 
+To reach an application port through the same authenticated Gateway, use a
+separate loopback-only forward:
+
+```bash
+hako github repository previews forward --tenant <tenant> \
+  --installation <installation-id> --repository <repository-id> \
+  --pull-request <number> --remote-port 3000 [--local-port 0]
+```
+
+The CLI binds only to `127.0.0.1`, requests a fresh Preview Session scoped to
+`port-forward` for each local connection, and revokes it when that connection
+closes. The remote destination is a numeric port on the Preview MicroVM; no
+host or public route is accepted. The Gateway's configured port authorizer
+must allow that port. This command only provides the authorized tunnel: it
+does not start an application, infer a port from repository files, or create a
+public Preview URL. Preview application startup and production port-policy
+wiring remain incomplete.
+
 The CLI creates a fresh Preview Session for each Gateway WebSocket connection,
 uses the logical runtime Workspace ID returned by that API response for
 routing, and revokes the Session when the connection closes. The local listener
