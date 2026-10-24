@@ -212,10 +212,14 @@ func (e *NerdctlJobServiceEngine) verifyCreatedService(ctx context.Context, name
 			Labels map[string]string `json:"Labels"`
 		} `json:"Config"`
 		HostConfig struct {
-			Memory       int64 `json:"Memory"`
-			NanoCPUs     int64 `json:"NanoCpus"`
-			PidsLimit    int64 `json:"PidsLimit"`
-			ReadonlyRoot bool  `json:"ReadonlyRootfs"`
+			Memory       int64    `json:"Memory"`
+			NanoCPUs     int64    `json:"NanoCpus"`
+			PidsLimit    int64    `json:"PidsLimit"`
+			ReadonlyRoot bool     `json:"ReadonlyRootfs"`
+			Privileged   bool     `json:"Privileged"`
+			CapAdd       []string `json:"CapAdd"`
+			SecurityOpt  []string `json:"SecurityOpt"`
+			Binds        []string `json:"Binds"`
 			PortBindings map[string][]struct {
 				HostIP   string `json:"HostIp"`
 				HostPort string `json:"HostPort"`
@@ -249,11 +253,22 @@ func (e *NerdctlJobServiceEngine) verifyCreatedService(ctx context.Context, name
 	if labels["hako.managed-by"] != "hako" || labels[jobScopeLabel] != owner || labels["hako.service-name"] != template.Name ||
 		actual.Config.User != "999:999" || actual.HostConfig.Memory != template.Resources.MemoryBytes ||
 		actual.HostConfig.NanoCPUs != int64(template.Resources.MilliCPU)*1_000_000 || actual.HostConfig.PidsLimit != 256 ||
-		!actual.HostConfig.ReadonlyRoot || !reflect.DeepEqual(actual.HostConfig.PortBindings, wantPorts) ||
+		!actual.HostConfig.ReadonlyRoot || actual.HostConfig.Privileged || len(actual.HostConfig.CapAdd) != 0 ||
+		!containsNoNewPrivileges(actual.HostConfig.SecurityOpt) || len(actual.HostConfig.Binds) != 0 ||
+		!reflect.DeepEqual(actual.HostConfig.PortBindings, wantPorts) ||
 		!jobServiceTmpfsMatches(actual.HostConfig.Tmpfs, wantTmpfs) {
 		return ErrJobServicesUnavailable
 	}
 	return nil
+}
+
+func containsNoNewPrivileges(options []string) bool {
+	for _, option := range options {
+		if option == "no-new-privileges" || option == "no-new-privileges:true" {
+			return true
+		}
+	}
+	return false
 }
 
 func jobServiceTmpfsMatches(actual, expected map[string]string) bool {

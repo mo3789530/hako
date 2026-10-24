@@ -27,6 +27,8 @@ type fakeJobNerdctlRunner struct {
 	envFilePath           string
 	failRun               bool
 	inspectMemoryOverride int64
+	inspectPrivileged     bool
+	inspectCapAdd         []string
 }
 
 func (r *fakeJobNerdctlRunner) Run(_ context.Context, _ string, args, _ []string) ([]byte, error) {
@@ -108,10 +110,16 @@ func (r *fakeJobNerdctlRunner) Run(_ context.Context, _ string, args, _ []string
 		}
 		cpu, _ := strconv.ParseFloat(argValue(command, "--cpus"), 64)
 		pids, _ := strconv.ParseInt(argValue(command, "--pids-limit"), 10, 64)
+		capAdd := r.inspectCapAdd
+		if capAdd == nil {
+			capAdd = []string{}
+		}
 		r.containerInspect = map[string]any{
 			"Config": map[string]any{"User": argValue(command, "--user"), "Labels": r.containerLabel},
 			"HostConfig": map[string]any{"Memory": memory, "NanoCpus": int64(cpu * 1_000_000_000),
 				"PidsLimit": pids, "ReadonlyRootfs": containsArg(command, "--read-only"),
+				"Privileged": r.inspectPrivileged, "CapAdd": capAdd, "SecurityOpt": []string{"no-new-privileges:true"},
+				"Binds":        []string{},
 				"PortBindings": portBindings, "Tmpfs": tmpfs},
 		}
 		return []byte("container-id\n"), nil
@@ -216,22 +224,34 @@ func TestNerdctlJobServiceEngineRejectsRuntimeThatIgnoresResourceLimit(t *testin
 	const owner = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	const network = "hako-jn-0123456789abcdef01234567"
 	const container = "hako-js-0123456789abcdef0123-redis"
-	runner := &fakeJobNerdctlRunner{networkName: network, networkOwner: owner, networkInternal: true,
-		inspectMemoryOverride: 1 << 30}
-	engine, err := NewNerdctlJobServiceEngine(NerdctlJobServiceEngineConfig{ContainerdSocket: "/run/user/65532/containerd/containerd.sock",
-		RuntimeDirectory: "/run/user/65532", EnvFileDirectory: t.TempDir(), Runner: runner})
-	if err != nil {
-		t.Fatal(err)
+	mutations := []struct {
+		name   string
+		mutate func(*fakeJobNerdctlRunner)
+	}{
+		{name: "memory", mutate: func(runner *fakeJobNerdctlRunner) { runner.inspectMemoryOverride = 1 << 30 }},
+		{name: "privileged", mutate: func(runner *fakeJobNerdctlRunner) { runner.inspectPrivileged = true }},
+		{name: "added capability", mutate: func(runner *fakeJobNerdctlRunner) { runner.inspectCapAdd = []string{"SYS_ADMIN"} }},
 	}
-	engine.isTmpfs = func(string) bool { return true }
-	if err := engine.EnsureService(context.Background(), container, network, owner, mustResolveService(t, "redis"), nil); !errors.Is(err, ErrJobServicesUnavailable) {
-		t.Fatalf("service with a mismatched inspected memory limit was accepted: %v", err)
-	}
-	if !commandPrefixSeen(runner.commands, "run") || !commandPrefixSeen(runner.commands, "inspect") {
-		t.Fatalf("runtime settings were not checked after creation: %v", runner.commands)
-	}
-	if runner.containerName != "" {
-		t.Fatal("service with an unverified runtime limit was left running")
+	for _, mutation := range mutations {
+		t.Run(mutation.name, func(t *testing.T) {
+			runner := &fakeJobNerdctlRunner{networkName: network, networkOwner: owner, networkInternal: true}
+			mutation.mutate(runner)
+			engine, err := NewNerdctlJobServiceEngine(NerdctlJobServiceEngineConfig{ContainerdSocket: "/run/user/65532/containerd/containerd.sock",
+				RuntimeDirectory: "/run/user/65532", EnvFileDirectory: t.TempDir(), Runner: runner})
+			if err != nil {
+				t.Fatal(err)
+			}
+			engine.isTmpfs = func(string) bool { return true }
+			if err := engine.EnsureService(context.Background(), container, network, owner, mustResolveService(t, "redis"), nil); !errors.Is(err, ErrJobServicesUnavailable) {
+				t.Fatalf("service with mismatched inspected settings was accepted: %v", err)
+			}
+			if !commandPrefixSeen(runner.commands, "run") || !commandPrefixSeen(runner.commands, "inspect") {
+				t.Fatalf("runtime settings were not checked after creation: %v", runner.commands)
+			}
+			if runner.containerName != "" {
+				t.Fatal("service with unverified runtime settings was left running")
+			}
+		})
 	}
 }
 

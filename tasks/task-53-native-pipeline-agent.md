@@ -216,8 +216,9 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   Podman on the host, not nerdctl/cgroup enforcement in Lambda MicroVM.
 - The Linux Job Service Engine now inspects each created container and fails
   closed unless its observed memory, NanoCPU, PID limit, read-only rootfs,
-  `999:999` user, exact loopback port bindings, and catalog tmpfs paths/options
-  match the fixed template. The tmpfs verifier permits only Podman's known
+  non-privileged state, no added capabilities, `no-new-privileges`, no bind
+  mounts, `999:999` user, exact loopback port bindings, and catalog tmpfs
+  paths/options match the fixed template. The tmpfs verifier permits only Podman's known
   `rprivate` and `tmpcopyup` additions. Unit tests reject a runtime that ignores
   a requested memory limit and verify the failed container is removed; the
   Podman acceptance exercises the inspect contract. This confirms configured
