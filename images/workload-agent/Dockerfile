@@ -4,6 +4,8 @@ FROM --platform=linux/arm64 public.ecr.aws/lambda/microvms:al2023-minimal@sha256
 
 # Repository execution is fixed to `go test ./...`; the MicroVM needs the Go
 # toolchain and Git, but receives no AWS credential or controller signing key.
+# hako-agent remains root so it can own the isolated runtime socket. Every
+# repository-controlled command is explicitly launched as 65532:65532.
 RUN dnf install -y git ca-certificates shadow-utils && dnf clean all
 COPY --from=go-toolchain /usr/local/go /usr/local/go
 COPY hako-agent /usr/local/bin/hako-agent
@@ -21,5 +23,5 @@ RUN mkdir -p /workspace/source /go/pkg/mod /tmp/hako-go-cache \
 
 WORKDIR /workspace/source
 EXPOSE 8080
-USER 65532:65532
+USER 0:0
 ENTRYPOINT ["/usr/local/bin/hako-agent"]

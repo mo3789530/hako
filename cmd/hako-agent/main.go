@@ -49,6 +49,8 @@ func run() error {
 			GoBinary:    "/usr/local/go/bin/go",
 			GoCache:     "/tmp/hako-go-cache",
 			ModuleCache: strings.TrimSpace(os.Getenv("HAKO_GO_MODULE_CACHE")),
+			CommandUID:  65532,
+			CommandGID:  65532,
 		},
 	})
 	if err != nil {

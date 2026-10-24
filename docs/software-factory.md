@@ -305,6 +305,15 @@ secret policies. Shell execution is a capability granted by policy, not a
 trusted declarative value. Pin or policy-check third-party actions/images
 before production use.
 
+The Lambda MicroVM image runs the trusted `hako-agent` as root so it can own
+runtime control sockets. Repository-controlled catalog processes are started
+with an explicit empty supplementary-group list as UID/GID `65532:65532`.
+This separates job code from the Agent's root identity and prepares the
+containerd socket boundary; it does not by itself provide network isolation,
+resource limits, or permission to start containers. Service pipelines remain
+disabled until the rootless runtime is composed and those controls are tested
+inside the pinned ARM64 Lambda MicroVM image.
+
 ### Issue Agent repository write policy
 
 Tenant Owners/Admins can store an explicit per-Repository Agent write ceiling

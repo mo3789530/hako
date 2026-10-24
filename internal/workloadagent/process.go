@@ -421,6 +421,11 @@ type GoTestProcessFactory struct {
 	GoCache     string
 	ModuleCache string
 	JobServices JobServiceProvisioner
+	// CommandUID/GID drop repository-controlled commands below the trusted
+	// Agent process. Both must be set together; zero/zero preserves the caller
+	// identity for local development and tests.
+	CommandUID uint32
+	CommandGID uint32
 }
 
 func (f GoTestProcessFactory) Start(ctx context.Context, plan ExecutionPlan, output io.Writer) (ManagedProcess, error) {
@@ -454,6 +459,10 @@ func (f GoTestProcessFactory) Start(ctx context.Context, plan ExecutionPlan, out
 	if !filepath.IsAbs(goBinary) {
 		return nil, ErrExecutionPlan
 	}
+	credential, err := commandCredential(f.CommandUID, f.CommandGID)
+	if err != nil {
+		return nil, ErrExecutionPlan
+	}
 	cache := f.GoCache
 	if cache == "" {
 		cache = "/tmp/hako-go-cache"
@@ -473,7 +482,7 @@ func (f GoTestProcessFactory) Start(ctx context.Context, plan ExecutionPlan, out
 	}
 	cmd := exec.CommandContext(ctx, goBinary, "test", "./...")
 	cmd.Dir, cmd.Env, cmd.Stdout, cmd.Stderr = repository, env, output, output
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Credential: credential}
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
 			return os.ErrProcessDone
@@ -580,7 +589,7 @@ func (f GoTestProcessFactory) startFactoryPipelines(ctx context.Context, plan Ex
 					}
 					break
 				}
-				if err := runCatalogCommand(pipelineCtx, plan.RepositoryPath, executable, command.Args, env, output); err != nil {
+				if err := runCatalogCommand(pipelineCtx, plan.RepositoryPath, executable, command.Args, env, output, f.CommandUID, f.CommandGID); err != nil {
 					if termination, pipelineOutcome, terminated := pipelineContextExit(pipeline.Pipeline, pipelineCtx.Err()); terminated {
 						result, pipelineResult = termination, pipelineOutcome
 					} else if termination, pipelineOutcome, terminated := pipelineContextExit(pipeline.Pipeline, ctx.Err()); terminated {
@@ -695,10 +704,14 @@ func (p *factoryPipelineProcess) Wait() (int, error) {
 	return result.code, result.err
 }
 
-func runCatalogCommand(ctx context.Context, directory, executable string, args, env []string, output io.Writer) error {
+func runCatalogCommand(ctx context.Context, directory, executable string, args, env []string, output io.Writer, uid, gid uint32) error {
+	credential, err := commandCredential(uid, gid)
+	if err != nil {
+		return ErrExecutionPlan
+	}
 	cmd := exec.CommandContext(ctx, executable, args...)
 	cmd.Dir, cmd.Env, cmd.Stdout, cmd.Stderr = directory, env, output, output
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Credential: credential}
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
 			return os.ErrProcessDone
@@ -713,6 +726,16 @@ func runCatalogCommand(ctx context.Context, directory, executable string, args, 
 		return ErrAgentBusy
 	}
 	return cmd.Wait()
+}
+
+func commandCredential(uid, gid uint32) (*syscall.Credential, error) {
+	if uid == 0 && gid == 0 {
+		return nil, nil
+	}
+	if uid < 1000 || gid < 1000 || uid != gid {
+		return nil, ErrExecutionPlan
+	}
+	return &syscall.Credential{Uid: uid, Gid: gid, Groups: []uint32{}}, nil
 }
 
 func catalogExitCode(err error) int {

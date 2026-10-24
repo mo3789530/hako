@@ -289,7 +289,7 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
 
 The current Workspace Service Engine is not a Job service runtime: it uses a
 Workspace identity, durable Service IDs/volumes, and Workspace lifecycle
-commands. The Workload Agent image also does not include the rootless
+commands. The Workload Agent image does not yet include or start the rootless
 containerd toolchain. Do not enable manifest `services` by reusing that path.
 The Job runtime needs its own implementation with these acceptance conditions:
 
@@ -318,6 +318,16 @@ The Job runtime needs its own implementation with these acceptance conditions:
   recovery, resource limits, port isolation, credential/log redaction, and
   repeated cleanup. Keep Agent scheduling disabled until its separate
   executor, credential policy, and network/resource gates pass.
+
+## Process identity isolation (2026-10-24)
+
+- The workload image now runs the trusted `hako-agent` as root while fixed
+  Go-test and Native catalog child commands are launched as UID/GID
+  `65532:65532` with no supplementary groups. Linux tests verify identity
+  validation and, when the test process is root, the actual child UID. This
+  establishes a process-identity boundary for a future rootless containerd
+  socket. The runtime is not yet started or injected in this image, so Service
+  declarations remain rejected and Agent scheduling remains disabled.
 
 ## Repository write policy groundwork (2026-10-24)
 
