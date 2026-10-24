@@ -11,7 +11,9 @@ import (
 
 	"github.com/mo3789530/hako/internal/dispatcher"
 	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/previewcontroller"
 	"github.com/mo3789530/hako/internal/previewprotocol"
+	"github.com/mo3789530/hako/internal/previewresult"
 	"github.com/mo3789530/hako/internal/store/dsql"
 	"github.com/mo3789530/hako/internal/store/outbox"
 	"github.com/mo3789530/hako/internal/testutil"
@@ -96,6 +98,36 @@ func TestPreviewCommandProducerOutboxAndDispatcherEndToEnd(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT published_at FROM outbox_events WHERE id=$1`, eventID).Scan(&publishedAt); err != nil || publishedAt == nil {
 		t.Fatalf("Outbox command was not acknowledged after publish: published_at=%v err=%v", publishedAt, err)
 	}
+
+	runtime := &previewRuntimeFake{binding: previewcontroller.Binding{MicroVMID: "microvm-preview-41", GatewayRouteID: "preview-route-41"}}
+	resultSink := &previewResultFake{}
+	resourceController, err := previewcontroller.New("rp-preview-dispatch", runtime, resultSink,
+		func() time.Time { return now.Add(3 * time.Second) }, 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resourceController.Handle(ctx, publisher.event.Payload, publisher.event.EventType, publisher.event.AggregateID); err != nil || len(resultSink.results) != 1 {
+		t.Fatalf("Resource Plane fake did not execute/report Preview command: results=%+v err=%v", resultSink.results, err)
+	}
+	resultPayload, err := previewprotocol.EncodeResult(resultSink.results[0])
+	if err != nil {
+		t.Fatalf("encode Preview result: %v", err)
+	}
+	resultConsumer := previewresult.Consumer{Pool: pool, Now: func() time.Time { return now.Add(4 * time.Second) }}
+	applied, err := resultConsumer.Handle(ctx, resultPayload, resultSink.results[0].ClaimID, resultSink.results[0].Action, resultSink.results[0].ResourcePlaneID)
+	if err != nil || !applied {
+		t.Fatalf("apply successful Preview result: applied=%v err=%v", applied, err)
+	}
+	applied, err = resultConsumer.Handle(ctx, resultPayload, resultSink.results[0].ClaimID, resultSink.results[0].Action, resultSink.results[0].ResourcePlaneID)
+	if err != nil || applied {
+		t.Fatalf("duplicate Preview result was not an idempotent stale no-op: applied=%v err=%v", applied, err)
+	}
+	var finalState, microvmID, routeID string
+	if err := pool.QueryRow(ctx, `SELECT state,microvm_id,gateway_route_id FROM repository_preview_runtime_allocations
+		WHERE tenant_id='tenant_preview_dispatch' AND pull_request_number=41 AND generation=1`).Scan(&finalState, &microvmID, &routeID); err != nil ||
+		finalState != "running" || microvmID != runtime.binding.MicroVMID || routeID != runtime.binding.GatewayRouteID {
+		t.Fatalf("Preview binding projection = %q %q %q err=%v", finalState, microvmID, routeID, err)
+	}
 }
 
 type capturePublisher struct {
@@ -109,5 +141,26 @@ func (p *capturePublisher) Publish(_ context.Context, queueURL string, event out
 	}
 	p.queueURL = queueURL
 	p.event = event
+	return nil
+}
+
+type previewRuntimeFake struct {
+	binding previewcontroller.Binding
+}
+
+func (r *previewRuntimeFake) Ensure(context.Context, previewprotocol.Command) (previewcontroller.Binding, error) {
+	return r.binding, nil
+}
+func (*previewRuntimeFake) Cleanup(context.Context, previewprotocol.Command) error { return nil }
+func (*previewRuntimeFake) Compensate(context.Context, previewprotocol.Command, previewcontroller.Binding) error {
+	return nil
+}
+
+type previewResultFake struct {
+	results []previewcontroller.Result
+}
+
+func (s *previewResultFake) Report(_ context.Context, result previewcontroller.Result) error {
+	s.results = append(s.results, result)
 	return nil
 }

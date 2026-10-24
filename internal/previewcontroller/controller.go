@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"strings"
 	"time"
 
 	"github.com/mo3789530/hako/internal/previewprotocol"
@@ -24,16 +23,9 @@ var (
 	ErrGatewayRouteRemove    = errors.New("Preview Gateway route removal failed")
 )
 
-var (
-	resultWorkspaceIDPattern = regexp.MustCompile(`^prvws_[a-f0-9]{32}$`)
-	resultPlaneIDPattern     = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
-	resultClaimIDPattern     = regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`)
-)
+var resultPlaneIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 
-type Binding struct {
-	MicroVMID      string `json:"microvm_id"`
-	GatewayRouteID string `json:"gateway_route_id"`
-}
+type Binding = previewprotocol.RuntimeBinding
 
 // Runtime operations must be idempotent for (runtime_workspace_id, generation).
 // Cleanup must rediscover resources by Hako ownership tags when IDs were never
@@ -45,24 +37,7 @@ type Runtime interface {
 	Compensate(context.Context, previewprotocol.Command, Binding) error
 }
 
-type Result struct {
-	SchemaVersion      int       `json:"schema_version"`
-	Action             string    `json:"action"`
-	TenantID           string    `json:"tenant_id"`
-	InstallationID     int64     `json:"installation_id"`
-	RepositoryID       int64     `json:"repository_id"`
-	PullRequestNumber  int64     `json:"pull_request_number"`
-	Generation         int64     `json:"generation"`
-	RuntimeWorkspaceID string    `json:"runtime_workspace_id"`
-	ResourcePlaneID    string    `json:"resource_plane_id"`
-	ClaimID            string    `json:"claim_id"`
-	ClaimAttempt       int       `json:"claim_attempt"`
-	LeaseExpiresAt     time.Time `json:"lease_expires_at"`
-	Status             string    `json:"status"`
-	ErrorCode          string    `json:"error_code,omitempty"`
-	Binding            *Binding  `json:"binding,omitempty"`
-	CompletedAt        time.Time `json:"completed_at"`
-}
+type Result = previewprotocol.Result
 
 type ResultSink interface {
 	Report(context.Context, Result) error
@@ -175,27 +150,7 @@ func validBinding(binding Binding) bool {
 }
 
 func validResult(result Result) bool {
-	if result.SchemaVersion != 1 || (result.Action != "provision" && result.Action != "cleanup") ||
-		strings.TrimSpace(result.TenantID) == "" || result.InstallationID <= 0 || result.RepositoryID <= 0 ||
-		result.PullRequestNumber <= 0 || result.Generation <= 0 ||
-		!resultWorkspaceIDPattern.MatchString(result.RuntimeWorkspaceID) ||
-		!resultPlaneIDPattern.MatchString(result.ResourcePlaneID) || !resultClaimIDPattern.MatchString(result.ClaimID) ||
-		result.ClaimAttempt < 1 || result.LeaseExpiresAt.IsZero() || result.CompletedAt.IsZero() {
-		return false
-	}
-	if result.Status == "succeeded" {
-		return result.ErrorCode == "" && ((result.Action == "provision" && result.Binding != nil && validBinding(*result.Binding)) ||
-			(result.Action == "cleanup" && result.Binding == nil))
-	}
-	if result.Status != "failed" || result.Binding != nil {
-		return false
-	}
-	switch result.ErrorCode {
-	case "claim_lease_expired", "preview_expired", "provider_unavailable", "runtime_profile_missing", "microvm_launch_failed", "gateway_route_publish_failed", "invalid_runtime_binding", "gateway_route_remove_failed", "microvm_terminate_failed":
-		return true
-	default:
-		return false
-	}
+	return result.Validate() == nil
 }
 
 func safeProviderID(value string) bool {

@@ -159,9 +159,12 @@ Add optional repository-level preview environments and service metadata/deploy p
   compensation contract, and SQS result sink. Unit tests cover event attribute
   binding, lease expiry, safe compensation, and FIFO result deduplication. The
   Lambda MicroVM provider adapter, durable fencing across duplicate receives,
-  Control Plane result consumer/projection, tag discovery/deletion adapter,
-  queue infrastructure, worker deployment, and scheduled composition remain
-  unwired.
+  Control Plane now has a strict result Lambda handler and transactional
+  generation/claim/attempt/lease/Plane-fenced projection. PostgreSQL E2E composes
+  producer→Dispatcher→fake Resource Plane controller→result projection and
+  verifies duplicate results are no-ops. The Lambda MicroVM provider adapter,
+  tag discovery/deletion, queue infrastructure, worker deployment, and
+  scheduled composition remain unwired.
 - Migrations 000163–000164 add a separate Preview Gateway session registry
   because deterministic Preview runtime Workspace IDs are intentionally absent
   from the public Workspace table. Tenant members can request/revoke scoped
@@ -180,9 +183,9 @@ Add optional repository-level preview environments and service metadata/deploy p
 - `go test ./...` passed. PostgreSQL Preview lifecycle E2E passed against the
   local `hako-dev-postgres`, including stale delivery, close/reopen, Tenant
   scoping, and duplicate replay.
-- Remaining: connect the producer worker to its scheduled Lambda composition;
-  implement durable MicroVM/Gateway provider operations and the Control Plane
-  fenced result consumer/projection; Preview Workspace/Run binding to Lambda MicroVM, expiring
+- Remaining: connect producer and result handlers to their scheduled/queue
+  Lambda compositions; implement durable MicroVM/Gateway provider operations;
+  Preview Workspace/Run binding to Lambda MicroVM, expiring
   Tenant-scoped Gateway route, timeout/merge sweep, provider-backed MicroVM /
   route cleanup executor, cleanup command producer and Resource Plane result
   consumer, scheduled provision/cleanup composition and DSQL grants, and lifecycle wiring

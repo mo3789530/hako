@@ -37,9 +37,13 @@ The Resource Plane result Queue receives a generation- and claim-fenced result
 envelope with fixed status/error codes and optional provider binding. FIFO
 queues use Workspace generation ordering and a deterministic deduplication key
 for `(action, workspace, generation, claim, attempt)`. The Control Plane result
-consumer must still compare the result with the active generation, claim,
-attempt, lease, and pinned Plane before applying it. That consumer and the
-Lambda MicroVM/Gateway provider implementation are not yet wired.
+  `internal/previewresult.LambdaHandler` and `store/previews.ApplyRuntimeResult`
+  compare the result with the active generation, claim, attempt, lease, derived
+  runtime Workspace ID, and pinned Plane before applying it. Stale or duplicate
+  claims are ackable no-ops; malformed or mismatched results remain retryable.
+  PostgreSQL integration composes producer, Dispatcher, fake Resource Plane
+  controller, and result projection. The Lambda MicroVM/Gateway provider and
+  result queue deployment are not wired.
 
 ## Outbox event
 

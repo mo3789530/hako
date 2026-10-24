@@ -4,13 +4,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"github.com/mo3789530/hako/internal/previewprotocol"
 )
 
 type sqsAPI interface {
@@ -33,7 +33,7 @@ func (s *SQSResultSink) Report(ctx context.Context, result Result) error {
 	if s == nil || s.client == nil || strings.TrimSpace(s.queueURL) == "" || ctx == nil || !validResult(result) {
 		return errors.New("invalid Preview runtime result")
 	}
-	body, err := json.Marshal(result)
+	body, err := previewprotocol.EncodeResult(result)
 	if err != nil {
 		return fmt.Errorf("encode Preview runtime result: %w", err)
 	}
