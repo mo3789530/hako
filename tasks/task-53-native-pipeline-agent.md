@@ -424,3 +424,13 @@ Services remain disabled.
 - Unit/client/CLI tests cover policy scope and malformed input. A PostgreSQL
   Owner/Admin integration test verifies dormant configuration, cross-Tenant
   denial, Factory prerequisite, policy clearing, and transactional audit.
+
+## Model credential resolver guard coverage (2026-10-24)
+
+- Added unit coverage for nil resolver/context/consumer rejection on both
+  Actions Runner and Native Agent credential APIs, proving invalid calls do
+  not reach the Secret reader. Printable-ASCII and 8 KiB value bounds are now
+  tested at empty, exact-limit, oversized, control-byte, and non-ASCII edges.
+  `go test ./internal/modelcredentialbroker -cover` reports 51.5% statement
+  coverage. PostgreSQL provenance/rotation behavior remains in the integration
+  suite; Agent scheduling and credential delivery remain disabled.
