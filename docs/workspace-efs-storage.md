@@ -23,6 +23,15 @@ all ownership tags, root path, UID/GID, and permissions before deleting an AP.
 tagged entries; it returns metadata for comparison with durable Workspace
 bindings and never adopts or deletes discovered resources.
 
+`EFS.Reconcile` accepts the Resource Plane's durable journal identity/binding
+pairs and returns a stable, read-only report: `referenced`, `unbound_candidate`,
+`stale_candidate`, `duplicate_identity`, `identity_mismatch`, or
+`missing_access_point`. The caller must include terminal journal tombstones
+until cleanup is confirmed. An unbound AP can be a create whose journal write
+has not completed, so candidate output is not deletion authorization; check
+in-flight operations and the retention policy before taking action. This is a
+library primitive and is not yet wired to a scheduled AWS reconciler or CLI.
+
 The runtime journal schema has an immutable `storage_binding` field and
 validates its shape across encode/decode. The Lambda MicroVM adapter now
 ensures the AP before first allocation, stores the binding with the immutable
@@ -189,7 +198,8 @@ disabled until the IAM policy, networking, and live behavior are reviewed. See t
 Run `GOCACHE=/tmp/hako-go-cache go test ./internal/workspacestorage ./internal/workspaceagent -count=1`.
 Tests cover deterministic Workspace separation, retry identity, malformed AWS
 responses, ownership-fenced deletion, absent-AP idempotency, tagged AP
-discovery, exact fixed mount arguments, bounded mount-table confirmation,
+discovery and journal-binding reconciliation, exact fixed mount arguments,
+bounded mount-table confirmation,
 intent-marker retries, ownership-checked unmount/retry, and rejection of an
 unowned or non-NFS mount. They use
 an in-memory EFS API/mount-command fake and do not contact AWS or mount a real

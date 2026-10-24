@@ -9,6 +9,8 @@ Terraform contract now conditionally grants Access Point lifecycle and
 Workspace-role operations when dynamic Workspace roles are enabled; role
 creation tags, existing-role ownership tags, and Lambda-only PassRole are
 separate conditions. Mock plan tests verify the default-off and scoped policy.
+Read-only journal/AP reconciliation reports referenced, unbound, stale,
+duplicate, mismatched, and missing bindings; it never deletes candidates.
 Real role lifecycle, EFS authorization behavior, private subnet/connector
 compatibility, image execution, restore testing, and deployment gates remain
 unverified).
@@ -92,6 +94,14 @@ The runtime adapter also has a replacement test proving allocation generation
 2 reuses the exact journaled AP/UID/root binding. This verifies metadata
 continuity, not actual file persistence through a mounted EFS filesystem.
 `go test ./internal/workspacestorage ./internal/workspaceruntime` passes.
+
+The read-only `EFS.Reconcile` primitive compares supplied durable
+identity/binding pairs with validated Hako Access Points and returns a stable
+report for referenced, unbound, stale, duplicate, mismatched, and missing
+entries. It deliberately does not enumerate journals or delete resources;
+callers must include terminal tombstones and operators must account for
+in-flight provisioning before taking action. See
+[`workspace-efs-storage.md`](../docs/workspace-efs-storage.md).
 
 An ARM64 image build was attempted with test-only public keys and the pinned
 `amazon-efs-utils` version. Cross-compiled init/agent binaries built, but the
