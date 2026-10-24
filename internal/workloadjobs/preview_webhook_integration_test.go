@@ -46,6 +46,9 @@ func TestRepositoryPreviewWebhookLifecycleFencesStalePRUpdates(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if _, err := pool.Exec(ctx, `INSERT INTO resource_planes(id,provider,region,capabilities_json) VALUES ('rp_preview_01','aws','ap-northeast-1','["microvm"]')`); err != nil {
+		t.Fatalf("seed fixed Preview Resource Plane: %v", err)
+	}
 	newSHA, oldSHA := strings.Repeat("b", 40), strings.Repeat("a", 40)
 	deliveries := []struct {
 		id, action, state, sha string

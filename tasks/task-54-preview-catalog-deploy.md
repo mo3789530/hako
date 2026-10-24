@@ -140,10 +140,16 @@ Add optional repository-level preview environments and service metadata/deploy p
   attempt is safely retired without provider I/O; an unbound attempted
   generation is now delivered to the executor with its deterministic runtime
   Workspace ID and pinned Resource Plane ID so it can recover resources by Hako
-  tags. Migrations 000165–000168 add, index, and constrain the Resource Plane pin. The
-  first provision claim persists the configured Plane and retries cannot move
-  the generation. Placement policy and the concrete tag discovery/deletion
-  adapter and scheduled composition are not wired.
+  tags. Migrations 000165–000168 add, index, and constrain the Resource Plane pin.
+  The first provision claim persists its Plane and retries cannot move the
+  generation. Dynamic placement now applies Tenant policy, active/healthy Plane
+  eligibility, the `microvm` capability, and configured Workspace/CPU/RAM
+  capacity in the same claim transaction. Migration 000169 tracks private
+  Preview capacity reservations and releases them only after confirmed cleanup;
+  a lost conditional claim reverses its provisional reservation. PostgreSQL
+  integration covers capacity filtering and release. The concrete tag
+  discovery/deletion adapter, Resource Plane command transport, worker
+  deployment, and scheduled composition are not wired.
 - Migrations 000163–000164 add a separate Preview Gateway session registry
   because deterministic Preview runtime Workspace IDs are intentionally absent
   from the public Workspace table. Tenant members can request/revoke scoped
@@ -164,8 +170,10 @@ Add optional repository-level preview environments and service metadata/deploy p
   scoping, and duplicate replay.
 - Remaining: Preview Workspace/Run binding to Lambda MicroVM, expiring
   Tenant-scoped Gateway route, timeout/merge sweep, provider-backed MicroVM /
-  route cleanup executor, scheduled provision/cleanup composition, and wiring
-  the new Preview Session endpoint into `hako open`. See
+  route cleanup executor, CP-to-Resource Plane command/result transport,
+  scheduled provision/cleanup composition and DSQL grants, and lifecycle wiring
+  into `hako open`. Placement selection/reservation is implemented locally but
+  is not yet connected to a provider-backed runtime. See
   [`Preview lifecycle`](../docs/preview-lifecycle.md).
 
 ## Preview lifecycle read API/CLI (2026-10-24)
@@ -245,3 +253,23 @@ Add optional repository-level preview environments and service metadata/deploy p
 - Catalog reads/writes enforce Tenant RBAC and validate dependency references.
 - OIDC token validation rejects wrong issuer/audience/repository/ref/environment/workflow; enabled policies require configured Environment reviewer verification and fail closed when that verifier is unavailable. No cloud credentials are stored or STS exchange enabled.
 - Document cost/quota, preview data isolation, cleanup, and production approval policy.
+
+## Dynamic Preview placement (2026-10-25)
+
+- `previewprovision.Worker` can now select a Plane per unpinned PR generation
+  from active/healthy Resource Planes. Selection applies the Tenant placement
+  policy, requires `microvm`, and reserves configured Runtime Class capacity
+  before the provider call. An explicit operator Plane also reserves configured
+  capacity. The chosen Plane remains pinned across retries.
+- Added migration 000169 for private Preview capacity reservations. A confirmed
+  physical cleanup releases the Plane reservation; failed or stale cleanup
+  keeps it. Conditional claim races undo their provisional charge. The claim
+  uses optimistic conditional writes and does not depend on `FOR UPDATE`, which
+  Aurora DSQL does not support.
+- PostgreSQL integration verifies Tenant Plane/region restrictions, skipping a
+  full Plane, reserving on the selected Plane, and releasing capacity only after
+  cleanup confirmation. `make test-preview-expiry-integration` includes this
+  coverage.
+- This does not provision a MicroVM or Gateway route. Resource Plane command
+  transport, the provider adapter, and scheduled worker/deployment composition
+  remain open.

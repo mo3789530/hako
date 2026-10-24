@@ -1,4 +1,4 @@
-// Package resourcecapacity manages transactional Workspace slots per Resource Plane.
+// Package resourcecapacity manages transactional Runtime reservations per Resource Plane.
 package resourcecapacity
 
 import (
@@ -15,9 +15,9 @@ import (
 
 var ErrReservationCounterUnderflow = errors.New("Resource Plane reservation counter underflow")
 
-// Reserve atomically claims Workspace, CPU, and memory capacity when configured
-// for the Resource Plane. An unconfigured plane is unbounded. false means a
-// configured limit is already reached.
+// Reserve atomically claims one Runtime, CPU, and memory slot when capacity is
+// configured for the Resource Plane. An unconfigured plane is unbounded. false
+// means a configured limit is already reached.
 func Reserve(ctx context.Context, tx pgx.Tx, resourcePlaneID domain.ResourcePlaneID, runtimeClass string, now time.Time) (bool, error) {
 	if tx == nil || resourcePlaneID == "" {
 		return false, errors.New("transaction and Resource Plane ID are required")
@@ -60,6 +60,43 @@ func Reserve(ctx context.Context, tx pgx.Tx, resourcePlaneID domain.ResourcePlan
 	return false, nil
 }
 
+// Unreserve reverses a successful Reserve when a later conditional placement
+// write loses its OCC race. It is intended only inside the same transaction.
+func Unreserve(ctx context.Context, tx pgx.Tx, resourcePlaneID domain.ResourcePlaneID, runtimeClass string, now time.Time) error {
+	if tx == nil || resourcePlaneID == "" {
+		return errors.New("transaction and Resource Plane ID are required")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	var configured bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM resource_plane_capacities WHERE resource_plane_id=$1)`, resourcePlaneID).Scan(&configured); err != nil {
+		return fmt.Errorf("check Resource Plane capacity configuration: %w", err)
+	}
+	if !configured {
+		return nil
+	}
+	cpu, memory, found, err := runtimeClassDemand(ctx, tx, strings.ToLower(strings.TrimSpace(runtimeClass)))
+	if err != nil {
+		return err
+	}
+	if !found {
+		cpu, memory = 0, 0
+	}
+	tag, err := tx.Exec(ctx, `UPDATE resource_plane_capacities
+		SET reserved_workspaces=reserved_workspaces-1,reserved_cpu_millicores=reserved_cpu_millicores-$3,
+		    reserved_memory_mib=reserved_memory_mib-$4,updated_at=$2
+		WHERE resource_plane_id=$1 AND reserved_workspaces>0
+		  AND reserved_cpu_millicores >= $3 AND reserved_memory_mib >= $4`, resourcePlaneID, now.UTC(), cpu, memory)
+	if err != nil {
+		return fmt.Errorf("undo Resource Plane capacity reservation: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrReservationCounterUnderflow
+	}
+	return nil
+}
+
 // RecordWorkspace stores the selected Plane for every new Workspace, including
 // currently-unbounded Planes. This makes later capacity configuration and
 // eventual release accounting possible without changing Workspace identity.
@@ -81,6 +118,94 @@ func RecordWorkspace(ctx context.Context, tx pgx.Tx, workspaceID domain.Workspac
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO resource_plane_reservations (workspace_id, resource_plane_id, reserved_at, runtime_class, cpu_millicores, memory_mib) VALUES ($1, $2, $3, $4, $5, $6)`, workspaceID, resourcePlaneID, now, nullIfEmpty(runtimeClass), cpuValue, memoryValue); err != nil {
 		return fmt.Errorf("record Resource Plane reservation: %w", err)
+	}
+	return nil
+}
+
+// RecordPreviewReservation stores the capacity charge associated with a
+// private Preview runtime identity. Reserve must have succeeded in the same
+// transaction before this function is called.
+func RecordPreviewReservation(ctx context.Context, tx pgx.Tx, runtimeWorkspaceID domain.WorkspaceID, resourcePlaneID domain.ResourcePlaneID, runtimeClass string, now time.Time) error {
+	if tx == nil || runtimeWorkspaceID == "" || resourcePlaneID == "" {
+		return errors.New("transaction, Preview runtime identity, and Resource Plane ID are required")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	runtimeClass = strings.ToLower(strings.TrimSpace(runtimeClass))
+	cpu, memory, found, err := runtimeClassDemand(ctx, tx, runtimeClass)
+	if err != nil {
+		return err
+	}
+	if !found {
+		cpu, memory = 0, 0
+	}
+	var capacityConfigured bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM resource_plane_capacities WHERE resource_plane_id=$1)`, resourcePlaneID).Scan(&capacityConfigured); err != nil {
+		return fmt.Errorf("check Preview Resource Plane capacity configuration: %w", err)
+	}
+	tag, err := tx.Exec(ctx, `INSERT INTO preview_resource_plane_reservations
+		(runtime_workspace_id,resource_plane_id,runtime_class,cpu_millicores,memory_mib,capacity_charged,reserved_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (runtime_workspace_id) DO NOTHING`, runtimeWorkspaceID, resourcePlaneID, runtimeClass, cpu, memory, capacityConfigured, now.UTC())
+	if err != nil {
+		return fmt.Errorf("record Preview Resource Plane reservation: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		if err := Unreserve(ctx, tx, resourcePlaneID, runtimeClass, now.UTC()); err != nil {
+			return fmt.Errorf("undo duplicate Preview capacity charge: %w", err)
+		}
+		var existingPlane domain.ResourcePlaneID
+		var existingClass string
+		if err := tx.QueryRow(ctx, `SELECT resource_plane_id,runtime_class FROM preview_resource_plane_reservations WHERE runtime_workspace_id=$1`, runtimeWorkspaceID).Scan(&existingPlane, &existingClass); err != nil {
+			return fmt.Errorf("verify existing Preview capacity reservation: %w", err)
+		}
+		if existingPlane != resourcePlaneID || existingClass != runtimeClass {
+			return errors.New("Preview capacity reservation identity changed")
+		}
+	}
+	return nil
+}
+
+// ReleasePreviewReservation releases a previously reserved Preview runtime
+// only after its provider cleanup has been confirmed. Missing rows are an
+// idempotent no-op for legacy or already released generations.
+func ReleasePreviewReservation(ctx context.Context, tx pgx.Tx, runtimeWorkspaceID domain.WorkspaceID, now time.Time) error {
+	if tx == nil || runtimeWorkspaceID == "" {
+		return errors.New("transaction and Preview runtime identity are required")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	var planeID domain.ResourcePlaneID
+	var cpu, memory int64
+	var capacityCharged bool
+	err := tx.QueryRow(ctx, `DELETE FROM preview_resource_plane_reservations
+		WHERE runtime_workspace_id=$1 RETURNING resource_plane_id,cpu_millicores,memory_mib,capacity_charged`, runtimeWorkspaceID).Scan(&planeID, &cpu, &memory, &capacityCharged)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("remove Preview Resource Plane reservation: %w", err)
+	}
+	if !capacityCharged {
+		return nil
+	}
+	tag, err := tx.Exec(ctx, `UPDATE resource_plane_capacities
+		SET reserved_workspaces=reserved_workspaces-1,reserved_cpu_millicores=reserved_cpu_millicores-$3,
+		    reserved_memory_mib=reserved_memory_mib-$4,updated_at=$2
+		WHERE resource_plane_id=$1 AND reserved_workspaces>0
+		  AND reserved_cpu_millicores >= $3 AND reserved_memory_mib >= $4`, planeID, now.UTC(), cpu, memory)
+	if err != nil {
+		return fmt.Errorf("release Preview Resource Plane capacity: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		var configured bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM resource_plane_capacities WHERE resource_plane_id=$1)`, planeID).Scan(&configured); err != nil {
+			return fmt.Errorf("check Preview Resource Plane capacity configuration: %w", err)
+		}
+		if configured {
+			return ErrReservationCounterUnderflow
+		}
 	}
 	return nil
 }

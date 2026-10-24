@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/store/resourcecapacity"
 )
 
 type RuntimeCleanupJob struct {
@@ -127,6 +128,11 @@ func MarkRuntimeAllocationCleaned(ctx context.Context, tx pgx.Tx, job RuntimeCle
 		job.ClaimID, job.Attempt, job.LeaseExpiresAt.UTC(), now.UTC())
 	if err != nil {
 		return false, fmt.Errorf("confirm Preview runtime generation cleanup: %w", err)
+	}
+	if tag.RowsAffected() == 1 {
+		if err := resourcecapacity.ReleasePreviewReservation(ctx, tx, job.RuntimeWorkspaceID, now.UTC()); err != nil {
+			return false, err
+		}
 	}
 	if tag.RowsAffected() != 1 {
 		var alreadyCleaned bool

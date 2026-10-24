@@ -11,6 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/scheduler"
+	"github.com/mo3789530/hako/internal/store/resourcecapacity"
 )
 
 var (
@@ -49,49 +51,150 @@ func ClaimRuntimeAllocations(ctx context.Context, tx pgx.Tx, resourcePlaneID dom
 	if ctx == nil || tx == nil || !runtimeIdentifierPattern.MatchString(string(resourcePlaneID)) || !validCleanupClaimID(claimID) || now.IsZero() || lease < 5*time.Second || lease > 10*time.Minute || limit < 1 || limit > 100 {
 		return nil, ErrInvalidRuntimeAllocation
 	}
-	rows, err := tx.Query(ctx, `WITH due AS (
-		SELECT a.tenant_id,a.installation_id,a.github_repository_id,a.pull_request_number,a.generation
+	return ClaimRuntimeAllocationsOnPlane(ctx, tx, resourcePlaneID, "standard", claimID, now, lease, limit)
+}
+
+// ClaimRuntimeAllocationsOnPlane keeps an operator-selected Plane while still
+// accounting for configured capacity. Tenant policy/candidate selection is
+// intentionally bypassed only for this explicit placement override.
+func ClaimRuntimeAllocationsOnPlane(ctx context.Context, tx pgx.Tx, resourcePlaneID domain.ResourcePlaneID, runtimeClass, claimID string, now time.Time, lease time.Duration, limit int) ([]ProvisionJob, error) {
+	if ctx == nil || tx == nil || !runtimeIdentifierPattern.MatchString(string(resourcePlaneID)) || !validCleanupClaimID(claimID) || now.IsZero() || lease < 5*time.Second || lease > 10*time.Minute || limit < 1 || limit > 100 || runtimeClass == "" {
+		return nil, ErrInvalidRuntimeAllocation
+	}
+	return claimRuntimeAllocations(ctx, tx, &resourcePlaneID, func(ctx context.Context, tx pgx.Tx, _ domain.TenantID, _ domain.WorkspaceID) (domain.ResourcePlaneID, error) {
+		available, err := resourcecapacity.Reserve(ctx, tx, resourcePlaneID, runtimeClass, now.UTC())
+		if err != nil {
+			return "", err
+		}
+		if !available {
+			return "", scheduler.ErrNoEligibleResourcePlane
+		}
+		return resourcePlaneID, nil
+	}, runtimeClass, claimID, now, lease, limit)
+}
+
+// ClaimRuntimeAllocationsScheduled selects an eligible Plane independently
+// for each first-time generation claim. Selection and target pinning happen in
+// the caller's transaction. Existing target Plane pins are always reused.
+func ClaimRuntimeAllocationsScheduled(ctx context.Context, tx pgx.Tx, claimID string, now time.Time, lease time.Duration, limit int, runtimeClass string) ([]ProvisionJob, error) {
+	if ctx == nil || tx == nil || !validCleanupClaimID(claimID) || now.IsZero() || lease < 5*time.Second || lease > 10*time.Minute || limit < 1 || limit > 100 || runtimeClass == "" {
+		return nil, ErrInvalidRuntimeAllocation
+	}
+	return claimRuntimeAllocations(ctx, tx, nil, func(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, _ domain.WorkspaceID) (domain.ResourcePlaneID, error) {
+		planeID, err := scheduler.Select(ctx, tx, scheduler.Policy{
+			TenantID: tenantID, RuntimeClass: runtimeClass, RequiredCapabilities: []string{"microvm"},
+		})
+		if err != nil {
+			return "", err
+		}
+		return planeID, nil
+	}, runtimeClass, claimID, now, lease, limit)
+}
+
+type runtimePlaneSelector func(context.Context, pgx.Tx, domain.TenantID, domain.WorkspaceID) (domain.ResourcePlaneID, error)
+
+func claimRuntimeAllocations(ctx context.Context, tx pgx.Tx, fixedPlane *domain.ResourcePlaneID, selectPlane runtimePlaneSelector, runtimeClass, claimID string, now time.Time, lease time.Duration, limit int) ([]ProvisionJob, error) {
+	rows, err := tx.Query(ctx, `SELECT a.tenant_id,a.installation_id,a.github_repository_id,a.pull_request_number,a.generation,
+		       a.head_sha,a.head_ref,a.expires_at,a.target_resource_plane_id
 		FROM repository_preview_runtime_allocations a
 		JOIN repository_previews p USING (tenant_id,installation_id,github_repository_id,pull_request_number)
 		WHERE a.desired_state='present' AND p.desired_state='present' AND p.generation=a.generation
 		  AND a.expires_at>$1 AND p.expires_at>$1
-		  AND (a.target_resource_plane_id IS NULL AND a.provision_attempts=0 OR a.target_resource_plane_id=$5)
+		  AND (($2::TEXT IS NULL AND (a.target_resource_plane_id IS NOT NULL OR a.provision_attempts=0))
+		       OR ($2::TEXT IS NOT NULL AND ((a.target_resource_plane_id IS NULL AND a.provision_attempts=0) OR a.target_resource_plane_id=$2)))
 		  AND ((a.state='awaiting_runtime' AND (a.provision_next_attempt_at IS NULL OR a.provision_next_attempt_at <= $1))
 		       OR (a.state='provisioning' AND a.provision_lease_expires_at <= $1))
 		ORDER BY COALESCE(a.provision_next_attempt_at,a.created_at),a.created_at,a.tenant_id,a.installation_id,a.github_repository_id,a.pull_request_number,a.generation
-		LIMIT $2
-	)
-	UPDATE repository_preview_runtime_allocations a
-	SET state='provisioning',provision_claim_id=$3,provision_lease_expires_at=$4,
-	    provision_attempts=a.provision_attempts+1,provision_next_attempt_at=NULL,provision_last_error='',
-	    target_resource_plane_id=COALESCE(a.target_resource_plane_id,$5),updated_at=$1
-	FROM due
-	WHERE a.tenant_id=due.tenant_id AND a.installation_id=due.installation_id
-	  AND a.github_repository_id=due.github_repository_id AND a.pull_request_number=due.pull_request_number AND a.generation=due.generation
-	  AND a.desired_state='present' AND a.expires_at>$1
-	  AND (a.target_resource_plane_id IS NULL AND a.provision_attempts=0 OR a.target_resource_plane_id=$5)
-	  AND ((a.state='awaiting_runtime' AND (a.provision_next_attempt_at IS NULL OR a.provision_next_attempt_at <= $1))
-	       OR (a.state='provisioning' AND a.provision_lease_expires_at <= $1))
-	RETURNING a.tenant_id,a.installation_id,a.github_repository_id,a.pull_request_number,a.generation,
-	          a.head_sha,a.head_ref,a.expires_at,a.target_resource_plane_id,a.provision_claim_id,a.provision_lease_expires_at,a.provision_attempts`,
-		now.UTC(), limit, claimID, now.UTC().Add(lease), resourcePlaneID)
+		LIMIT $3`, now.UTC(), fixedPlane, limit)
 	if err != nil {
-		return nil, fmt.Errorf("claim Preview runtime allocations: %w", err)
+		return nil, fmt.Errorf("list due Preview runtime allocations: %w", err)
 	}
-	defer rows.Close()
-	jobs := make([]ProvisionJob, 0, limit)
+	type candidate struct {
+		job   ProvisionJob
+		plane domain.ResourcePlaneID
+	}
+	candidates := make([]candidate, 0, limit)
 	for rows.Next() {
-		var job ProvisionJob
-		if err := rows.Scan(&job.TenantID, &job.InstallationID, &job.RepositoryID, &job.PullRequestNumber,
-			&job.Generation, &job.HeadSHA, &job.HeadRef, &job.ExpiresAt, &job.TargetResourcePlaneID, &job.ClaimID, &job.LeaseExpiresAt, &job.Attempt); err != nil {
-			return nil, fmt.Errorf("scan claimed Preview runtime allocation: %w", err)
+		var item candidate
+		var targetPlane *string
+		if err := rows.Scan(&item.job.TenantID, &item.job.InstallationID, &item.job.RepositoryID, &item.job.PullRequestNumber,
+			&item.job.Generation, &item.job.HeadSHA, &item.job.HeadRef, &item.job.ExpiresAt, &targetPlane); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan due Preview runtime allocation: %w", err)
 		}
-		job.ExpiresAt, job.LeaseExpiresAt = job.ExpiresAt.UTC(), job.LeaseExpiresAt.UTC()
-		job.RuntimeWorkspaceID = runtimeWorkspaceID(job.CleanupIdentity, job.Generation)
-		jobs = append(jobs, job)
+		item.job.ExpiresAt = item.job.ExpiresAt.UTC()
+		item.job.RuntimeWorkspaceID = runtimeWorkspaceID(item.job.CleanupIdentity, item.job.Generation)
+		if targetPlane != nil {
+			item.plane = domain.ResourcePlaneID(*targetPlane)
+		}
+		candidates = append(candidates, item)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate claimed Preview runtime allocations: %w", err)
+		rows.Close()
+		return nil, fmt.Errorf("iterate due Preview runtime allocations: %w", err)
+	}
+	rows.Close()
+	jobs := make([]ProvisionJob, 0, len(candidates))
+	for _, item := range candidates {
+		planeID := item.plane
+		selectedNewPlane := false
+		if planeID == "" && fixedPlane != nil {
+			planeID = *fixedPlane
+		}
+		if planeID == "" {
+			if selectPlane == nil {
+				return nil, ErrInvalidRuntimeAllocation
+			}
+			planeID, err = selectPlane(ctx, tx, item.job.TenantID, item.job.RuntimeWorkspaceID)
+			if errors.Is(err, scheduler.ErrNoEligibleResourcePlane) {
+				continue
+			}
+			if err != nil {
+				return nil, fmt.Errorf("select Preview Resource Plane: %w", err)
+			}
+			selectedNewPlane = true
+		}
+		if !runtimeIdentifierPattern.MatchString(string(planeID)) {
+			return nil, ErrInvalidRuntimeAllocation
+		}
+		leaseExpiresAt := now.UTC().Add(lease)
+		tag, err := tx.Exec(ctx, `UPDATE repository_preview_runtime_allocations a
+			SET state='provisioning',provision_claim_id=$7,provision_lease_expires_at=$8,
+			    provision_attempts=a.provision_attempts+1,provision_next_attempt_at=NULL,provision_last_error='',
+			    target_resource_plane_id=COALESCE(a.target_resource_plane_id,$9),updated_at=$1
+			FROM repository_previews p
+			WHERE a.tenant_id=$2 AND a.installation_id=$3 AND a.github_repository_id=$4 AND a.pull_request_number=$5 AND a.generation=$6
+			  AND p.tenant_id=a.tenant_id AND p.installation_id=a.installation_id AND p.github_repository_id=a.github_repository_id
+			  AND p.pull_request_number=a.pull_request_number AND p.generation=a.generation AND p.desired_state='present' AND p.expires_at>$1
+			  AND a.desired_state='present' AND a.expires_at>$1 AND (a.target_resource_plane_id IS NULL OR a.target_resource_plane_id=$9)
+			  AND ((a.state='awaiting_runtime' AND (a.provision_next_attempt_at IS NULL OR a.provision_next_attempt_at <= $1))
+			       OR (a.state='provisioning' AND a.provision_lease_expires_at <= $1))`,
+			now.UTC(), item.job.TenantID, item.job.InstallationID, item.job.RepositoryID, item.job.PullRequestNumber,
+			item.job.Generation, claimID, leaseExpiresAt, planeID)
+		if err != nil {
+			return nil, fmt.Errorf("claim Preview runtime allocation: %w", err)
+		}
+		if tag.RowsAffected() != 1 {
+			if selectedNewPlane {
+				if err := resourcecapacity.Unreserve(ctx, tx, planeID, runtimeClass, now.UTC()); err != nil {
+					return nil, fmt.Errorf("undo raced Preview capacity selection: %w", err)
+				}
+			}
+			continue
+		}
+		if selectedNewPlane {
+			if err := resourcecapacity.RecordPreviewReservation(ctx, tx, item.job.RuntimeWorkspaceID, planeID, runtimeClass, now.UTC()); err != nil {
+				return nil, err
+			}
+		}
+		item.job.TargetResourcePlaneID, item.job.ClaimID = planeID, claimID
+		item.job.LeaseExpiresAt, item.job.Attempt = leaseExpiresAt, 0
+		if err := tx.QueryRow(ctx, `SELECT provision_attempts FROM repository_preview_runtime_allocations
+			WHERE tenant_id=$1 AND installation_id=$2 AND github_repository_id=$3 AND pull_request_number=$4 AND generation=$5`,
+			item.job.TenantID, item.job.InstallationID, item.job.RepositoryID, item.job.PullRequestNumber, item.job.Generation).Scan(&item.job.Attempt); err != nil {
+			return nil, fmt.Errorf("read Preview runtime claim attempt: %w", err)
+		}
+		jobs = append(jobs, item.job)
 	}
 	return jobs, nil
 }

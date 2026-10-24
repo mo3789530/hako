@@ -52,6 +52,7 @@ type Worker struct {
 	Pool                  transaction.Beginner
 	Provisioner           Provisioner
 	TargetResourcePlaneID domain.ResourcePlaneID
+	RuntimeClass          string
 	Now                   func() time.Time
 	NewClaimID            func() (string, error)
 	Lease                 time.Duration
@@ -61,8 +62,14 @@ type Worker struct {
 
 func (w Worker) RunOnce(ctx context.Context) (Stats, error) {
 	var stats Stats
-	if ctx == nil || ctx.Err() != nil || w.Pool == nil || w.Provisioner == nil || !resourcePlaneIDPattern.MatchString(string(w.TargetResourcePlaneID)) {
+	if ctx == nil || ctx.Err() != nil || w.Pool == nil || w.Provisioner == nil ||
+		(w.TargetResourcePlaneID == "" && w.RuntimeClass == "") ||
+		(w.TargetResourcePlaneID != "" && !resourcePlaneIDPattern.MatchString(string(w.TargetResourcePlaneID))) {
 		return stats, ErrWorkerConfiguration
+	}
+	runtimeClass := w.RuntimeClass
+	if runtimeClass == "" {
+		runtimeClass = "standard"
 	}
 	now := w.Now
 	if now == nil {
@@ -94,7 +101,10 @@ func (w Worker) RunOnce(ctx context.Context) (Stats, error) {
 	}
 	claimedAt := now().UTC()
 	jobs, err := transaction.Within(ctx, w.Pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) ([]previews.ProvisionJob, error) {
-		return previews.ClaimRuntimeAllocations(ctx, tx, w.TargetResourcePlaneID, claimID, claimedAt, lease, batchSize)
+		if w.TargetResourcePlaneID != "" {
+			return previews.ClaimRuntimeAllocationsOnPlane(ctx, tx, w.TargetResourcePlaneID, runtimeClass, claimID, claimedAt, lease, batchSize)
+		}
+		return previews.ClaimRuntimeAllocationsScheduled(ctx, tx, claimID, claimedAt, lease, batchSize, runtimeClass)
 	})
 	if err != nil {
 		return stats, ErrClaimFailed

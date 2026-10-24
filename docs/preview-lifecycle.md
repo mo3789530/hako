@@ -133,16 +133,25 @@ PR-head change during provisioning that rejects and compensates the stale
 result. It also verifies that a failed compensation does not schedule a
 duplicate attempt while the lease is active, then recovers after lease expiry.
 
-Migrations 000165–000168 add and constrain a target Resource Plane pin to each runtime
-generation. The first provision claim stores the configured Plane before
-provider I/O; retries cannot move a generation to another Plane. Bound results
-must match this pin, and cleanup jobs carry it together with the deterministic
-runtime Workspace ID even when no provider IDs were persisted. The provision
-worker currently receives a fixed target Plane ID; policy/capacity-based
-Preview placement is not implemented. Resource Plane command transport,
-worker deployment and DSQL role grants, Lambda MicroVM API calls, Gateway route
+Migrations 000165–000169 add and constrain a target Resource Plane pin and
+private capacity reservation to each runtime generation. The first provision
+claim stores its selected Plane before provider I/O; retries cannot move a
+generation to another Plane. Bound results must match this pin, and cleanup
+jobs carry it together with the deterministic runtime Workspace ID even when
+no provider IDs were persisted. A worker may use an explicit Plane for
+controlled deployments or omit it and provide a Runtime Class to select from
+active, healthy Planes. Both modes reserve configured Workspace/CPU/RAM
+capacity on the first claim. Dynamic selection additionally applies Tenant
+placement policy and requires the `microvm` capability. Capacity remains charged across provisioning
+retries and is released only after cleanup confirmation. A conditional claim
+race reverses its provisional capacity reservation in the same transaction.
+The claim uses conditional writes and OCC retries rather than row-locking
+syntax, keeping it compatible with Aurora DSQL. PostgreSQL integration covers
+Tenant region/Plane filters, full-capacity exclusion, pinned placement, and
+capacity release after cleanup. Resource Plane command transport, worker
+deployment and DSQL role grants, Lambda MicroVM API calls, Gateway route
 publication, and tag-based provider executor are still missing, so no Preview
-runtime is allocated.
+runtime is allocated for user traffic.
 
 Each present Preview records a fixed `expires_at` using the Tenant's configured
 Preview lifetime (24 hours when no quota row exists). `synchronize` deliveries
@@ -200,7 +209,7 @@ schema. It also exercises the cleanup worker against a fake executor. This
 verifies the metadata fence and worker orchestration only; it does not simulate
 provider deletion or prove runtime cleanup.
 
-When runtime execution is added, it must bind the immutable PR head SHA to an
+When runtime execution is enabled, it must bind the immutable PR head SHA to an
 isolated Workspace, enforce Tenant authorization on every route, respect the
 Tenant Preview count/lifetime quota, and make close/merge/expiry cleanup
 idempotent. Preview data must not reuse a developer Workspace volume or expose
