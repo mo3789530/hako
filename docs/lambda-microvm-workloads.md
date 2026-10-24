@@ -75,6 +75,10 @@ integrationは既定のローカルPostgresまたは`HAKO_TEST_DATABASE_URL`を�
 
 ## 公式資料
 
+Resource Plane Workerのdeployment order、admission停止、rollback、DLQ
+redrive判断、artifact retentionは[Workload Controller deployment and
+operations runbook](workload-controller-deployment.md)を参照してください。
+
 - [Lambda MicroVMs](https://docs.aws.amazon.com/lambda/latest/dg/lambda-microvms-guide.html)
 - [Quotas](https://docs.aws.amazon.com/lambda/latest/dg/gettingstarted-limits.html)
 - [RunMicrovm](https://docs.aws.amazon.com/lambda/latest/microvm-api/API_RunMicrovm.html)
