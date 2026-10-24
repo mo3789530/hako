@@ -2,6 +2,14 @@
 
 Status: In Progress (local PostgreSQL → Tenant-specific signed HTTP ingress/HMAC and live Installation-binding authorization → duplicate/conflicting Delivery ID handling → immutable untrusted success, failure, pre-dispatch-cancel, in-flight-cancel, timeout, and artifact-failure Runs → isolated Podman Go tests → redacted artifacts → durable Checks outbox/dispatcher → fake GitHub terminal Check conclusions E2E added and run locally; transient GitHub 503 retry is verified without re-running Jobs. Integration tests compose the PostgreSQL-backed Scheduler Consumer, placement/attempt Outbox, Resource Plane Dispatcher route, Lambda MicroVM Worker command handler, signed Agent success execution, PostgreSQL result apply/replay, and confirmed cleanup; handler replacement/replay reuses the MicroVM and Agent process. Cancellation now starts a real signed FilesystemAgent process and verifies fake Lambda MicroVM termination closes the guest Agent, cancels the process context, and projects a cancelled result without artifacts into PostgreSQL. Scheduled recovery uses the production S3 journal adapter over conditional fake S3 and verifies lost-result-ack replay into PostgreSQL after recovery handler restart. CI requires Podman and the pinned Go image. Resolver uses a synthetic in-memory credential, never AWS Secrets Manager. AWS smoke/deployed-runtime validation remains). Priority: P0.
 
+## Local verification refresh (2026-10-24)
+
+Re-ran `make test-software-factory-e2e` against the already-running local
+PostgreSQL and Podman; the signed webhook → isolated Go test → durable GitHub
+Check test passed. `go test ./...` also passed. These local results do not
+verify the AWS Lambda MicroVM image, deployed queue wiring, or production
+network isolation; those remain separate runtime gates.
+
 ## Goal
 
 Prove one Tenant-owned GitHub Repository can go from installation through one isolated Go test Job to a GitHub Check and retained redacted logs.
