@@ -75,10 +75,15 @@ runtime executor confirms MicroVM and Gateway route deletion, and duplicate
 confirmation is idempotent. Migrations 000145–000146 add expiring, attempt-fenced
 cleanup claims so crashed workers can be recovered and stale workers cannot
 acknowledge a newer claim. Migration 000147 adds lifecycle generations, which
-also fence cleanup metadata against later PR head/state changes. The worker
-that resolves Preview-to-runtime binding and performs physical deletion and
-route authorization is still required before Preview can be enabled for user
-traffic.
+also fence cleanup metadata against later PR head/state changes. The local
+`internal/previewcleanup` worker now claims bounded batches, calls an injected
+idempotent executor under a deadline capped by the claim lease, and only marks
+the row cleaned after executor confirmation. Fixed provider error categories
+schedule a retry while keeping the quota reservation. PostgreSQL integration
+verifies failure/backoff, attempt and claim changes, confirmed cleanup, and
+duplicate sweep behavior. The actual executor that resolves Preview-to-runtime
+binding and deletes the MicroVM/Gateway route, plus its scheduled deployment,
+is still required before Preview can be enabled for user traffic.
 
 Webhook admission reserves the Tenant Preview concurrency slot in the same
 transaction as the PR lifecycle update, using the shared Tenant quota OCC row.
@@ -92,8 +97,9 @@ and quota reconfiguration include active PR Preview and cleanup reservations.
 field and Tenant scope, plus the store's claim, active-lease exclusion, fixed
 retry backoff, crash recovery, stale-claim/generation rejection, confirmed
 completion, and duplicate acknowledgement against an isolated local PostgreSQL
-schema. This verifies the metadata fence only; it does not simulate provider
-deletion or prove runtime cleanup.
+schema. It also exercises the cleanup worker against a fake executor. This
+verifies the metadata fence and worker orchestration only; it does not simulate
+provider deletion or prove runtime cleanup.
 
 When runtime execution is added, it must bind the immutable PR head SHA to an
 isolated Workspace, enforce Tenant authorization on every route, respect the

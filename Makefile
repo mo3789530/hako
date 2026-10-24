@@ -49,7 +49,7 @@ test-workspace-idle-lifecycle-integration:
 	HAKO_TEST_DATABASE_URL="$${HAKO_TEST_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" go test -tags=integration ./internal/api ./cmd/hako -run 'TestWorkspaceGatewayDisconnectReconnectFencesIdleSuspendEndToEnd|TestParseWorkspaceActionOptions' -count=1
 
 test-preview-expiry-integration:
-	HAKO_TEST_DATABASE_URL="$${HAKO_TEST_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" go test -tags=integration -cover ./internal/store/previews ./internal/workloadjobs ./internal/api -run 'TestCleanupLeaseBackoffRecoveryAndFencedCompletion|TestRepositoryPreviewListingAndExpiryBatch|TestRepositoryPreviewWebhookLifecycleFencesStalePRUpdates|TestRepositoryPreviewConcurrentAdmissionRespectsTenantQuota|TestRepositoryPreviewQuotaConfigurationIncludesPRReservations|TestRepositoryFactorySettingRequiresTenantOwnerAndActiveRegisteredRepository' -count=1
+	HAKO_TEST_DATABASE_URL="$${HAKO_TEST_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" go test -tags=integration -cover ./internal/store/previews ./internal/previewcleanup ./internal/workloadjobs ./internal/api -run 'TestCleanupLeaseBackoffRecoveryAndFencedCompletion|TestPreviewCleanupWorkerRetriesAndOnlyReleasesQuotaAfterConfirmation|TestRepositoryPreviewListingAndExpiryBatch|TestRepositoryPreviewWebhookLifecycleFencesStalePRUpdates|TestRepositoryPreviewConcurrentAdmissionRespectsTenantQuota|TestRepositoryPreviewQuotaConfigurationIncludesPRReservations|TestRepositoryFactorySettingRequiresTenantOwnerAndActiveRegisteredRepository' -count=1
 
 test-coverage:
 	@test -n "$${HAKO_TEST_DATABASE_URL:-}" || (echo "set HAKO_TEST_DATABASE_URL to a disposable PostgreSQL database" >&2; exit 1)

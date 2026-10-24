@@ -89,6 +89,15 @@ Add optional repository-level preview environments and service metadata/deploy p
   now runs it with the webhook lifecycle E2E; integration statement coverage
   for `internal/store/previews` is 37.4% (unit-only coverage is 21.2%). This
   remains metadata-store coverage, not a provider cleanup test.
+- Added `internal/previewcleanup.Worker`, which claims bounded cleanup batches,
+  invokes an injected idempotent executor with a deadline capped by the lease,
+  records only fixed provider failure categories with retry/backoff, and marks a
+  Preview cleaned only after executor confirmation. Its PostgreSQL integration
+  test verifies that a failed MicroVM termination keeps the quota slot reserved,
+  the retry uses a new claim/attempt, a later confirmed cleanup releases the
+  slot, and a repeated sweep is idempotent. This is worker orchestration with a
+  fake executor; Preview-to-runtime binding, AWS MicroVM/Gateway deletion, and
+  a scheduled production composition are still unimplemented.
 - Added PostgreSQL integration coverage for bounded Tenant/Installation/
   Repository-scoped Preview listing, list limits and ordering, foreign-scope
   isolation, expiry batch transitions, and repeated-sweep idempotency. Before
@@ -100,8 +109,8 @@ Add optional repository-level preview environments and service metadata/deploy p
   local `hako-dev-postgres`, including stale delivery, close/reopen, Tenant
   scoping, and duplicate replay.
 - Remaining: Preview Workspace/Run binding to Lambda MicroVM, expiring
-  Tenant-scoped Gateway route, timeout/merge sweep, and
-  idempotent cleanup worker with retry/backoff. See
+  Tenant-scoped Gateway route, timeout/merge sweep, provider-backed MicroVM /
+  route cleanup executor, and its scheduled composition. See
   [`Preview lifecycle`](../docs/preview-lifecycle.md).
 
 ## Preview lifecycle read API/CLI (2026-10-24)
@@ -134,9 +143,9 @@ Add optional repository-level preview environments and service metadata/deploy p
   require the generation captured by the claim. The bounded list API exposes
   the generation, and PostgreSQL integration coverage checks stale generation
   fencing across PR update, close/reopen, expiry, retry, and cleanup.
-- The physical cleanup worker, Preview-to-runtime binding,
-  and provider/Gateway deletion remain unimplemented. No delete is inferred
-  from the metadata transition.
+- The generic cleanup worker now executes the claim/retry/confirmation state
+  machine, but Preview-to-runtime binding and provider/Gateway deletion remain
+  unimplemented. No delete is inferred from the metadata transition.
 
 ## Preview concurrency admission (2026-10-24)
 
@@ -152,7 +161,7 @@ Add optional repository-level preview environments and service metadata/deploy p
 - PostgreSQL integration covers an active cleanup reservation rejecting a
   second PR and a Workload Preview, followed by successful admission after the
   first Preview is cleanup-confirmed. These checks cover quota metadata;
-  runtime allocation, Gateway routing, and the physical cleanup worker remain
+  runtime allocation, Gateway routing, and provider-backed deletion remain
   unimplemented.
 
 ## Acceptance criteria
