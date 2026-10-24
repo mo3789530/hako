@@ -203,6 +203,38 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   separate identity. This does not enable Agent scheduling or prove that
   profile connectors implement an egress restriction.
 
+## Remaining runtime implementation gates
+
+The current Workspace Service Engine is not a Job service runtime: it uses a
+Workspace identity, durable Service IDs/volumes, and Workspace lifecycle
+commands. The Workload Agent image also does not include the rootless
+containerd toolchain. Do not enable manifest `services` by reusing that path.
+The Job runtime needs its own implementation with these acceptance conditions:
+
+- [ ] Provision only immutable Service Catalog entries (`postgres`, `redis`)
+  on a Job/attempt-scoped rootless containerd network. No user-provided image,
+  command, mount, port mapping, or host socket is accepted.
+- [ ] Keep service storage ephemeral and disjoint across Job attempts; derive
+  container/network names from the immutable Workload identity and remove them
+  on success, failure, cancellation, timeout, startup error, and recovery.
+- [ ] Enforce each service's catalog memory/CPU limits and the aggregate Job
+  budget before starting any container. Reject a plan when its complete
+  resource request exceeds the selected Lambda MicroVM profile.
+- [ ] Bind service ports only to the MicroVM loopback interface. Permit only
+  the registry traffic needed to obtain pinned catalog images; do not provide
+  arbitrary Internet or AWS access to the Job or its service containers.
+- [ ] Generate PostgreSQL credentials per attempt, pass them only to the
+  service and test process, and include them in the bounded log redaction set.
+  Never persist them in DSQL, journal, result, artifact, or container labels.
+- [ ] Wait for catalog health checks before executing pipeline commands and
+  always perform bounded teardown. A teardown failure must keep the Workload
+  non-terminal/cleanup-pending until the Resource Plane confirms removal.
+- [ ] Add fake-backed lifecycle tests plus a local container integration test
+  covering startup, health failure, command failure, cancel/timeout, crash
+  recovery, resource limits, port isolation, credential/log redaction, and
+  repeated cleanup. Keep Agent scheduling disabled until its separate
+  executor, credential policy, and network/resource gates pass.
+
 ## Repository write policy groundwork (2026-10-24)
 
 - Added a Tenant Repository Agent write policy for branch prefixes, optional
