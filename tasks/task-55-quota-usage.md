@@ -106,3 +106,13 @@ The Resource Plane expired-artifact candidate query now returns the Run
 correlation ID required by the shared artifact response projection. The
 signed candidate-listing and cleanup acknowledgement PostgreSQL E2E covers
 the endpoint and cross-Plane isolation.
+
+## Quota and usage CLI/API wiring refresh (2026-10-24)
+
+- Added local HTTP-backed CLI coverage for Tenant usage, quota GET/PUT, and
+  Workspace Service reservation usage. Tests verify the authenticated
+  Tenant-scoped paths, Bearer token, used/reserved values, quota revision, and
+  preservation of omitted quota settings when only Workspace/Workload limits
+  are changed. Missing token/API URL fail closed. Values remain configured
+  admission reservations; this does not claim live resource measurement.
+  The focused CLI package now reports 55.7% statement coverage.
