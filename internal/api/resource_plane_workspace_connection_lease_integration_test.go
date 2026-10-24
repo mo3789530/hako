@@ -193,4 +193,55 @@ func TestResourcePlaneWorkspaceConnectionLeaseHMACLifecycle(t *testing.T) {
 	if response := callLease(http.MethodPut, fmt.Sprintf("%048x", 100+workspaceactivity.MaxActiveLeasesPerWorkspace), "", overCapBody, true); response.Code != http.StatusTooManyRequests {
 		t.Fatalf("connection over shared Workspace cap response=%d %s, want 429", response.Code, response.Body.String())
 	}
+	for i := 0; i < workspaceactivity.MaxActiveLeasesPerWorkspace; i++ {
+		id := fmt.Sprintf("%048x", i+100)
+		connectedSessionID := fmt.Sprintf("%048x", i+300)
+		connectionBody, err := json.Marshal(workspaceConnectionLeaseRequest{SessionID: connectedSessionID, TenantID: "tenant_lease_api",
+			WorkspaceID: "ws_lease_api", ResourcePlaneID: "rp_lease_api", MicroVMID: "vm_lease_api", AllocationGeneration: 1,
+			ExpiresAt: time.Now().UTC().Add(90 * time.Second)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response := callLease(http.MethodPost, id, "/release", connectionBody, true); response.Code != http.StatusNoContent {
+			t.Fatalf("release shared-cap test lease %d response=%d %s", i+1, response.Code, response.Body.String())
+		}
+	}
+	var usedAdmissions int
+	if err := pool.QueryRow(ctx, `SELECT gateway_admission_count FROM workspace_status WHERE workspace_id='ws_lease_api'`).Scan(&usedAdmissions); err != nil {
+		t.Fatalf("read admission count before rate-window fill: %v", err)
+	}
+	for i := 0; usedAdmissions < workspaceactivity.MaxWorkspaceAdmissionsPerWindow; i++ {
+		id := fmt.Sprintf("%048x", 600+i)
+		if response := callLease(http.MethodPut, id, "", body, true); response.Code != http.StatusNoContent {
+			t.Fatalf("connection admission %d within rate window response=%d %s", usedAdmissions+1, response.Code, response.Body.String())
+		}
+		if response := callLease(http.MethodPost, id, "/release", body, true); response.Code != http.StatusNoContent {
+			t.Fatalf("release rate-window test lease %d response=%d %s", usedAdmissions+1, response.Code, response.Body.String())
+		}
+		usedAdmissions++
+	}
+	limitedLeaseID := fmt.Sprintf("%048x", 700)
+	if response := callLease(http.MethodPut, limitedLeaseID, "", body, true); response.Code != http.StatusTooManyRequests ||
+		!bytes.Contains(response.Body.Bytes(), []byte("start rate limit")) {
+		t.Fatalf("connection start rate limit response=%d %s, want HTTP 429 rate-limit result", response.Code, response.Body.String())
+	}
+	var admissionCount int
+	if err := pool.QueryRow(ctx, `SELECT gateway_admission_count FROM workspace_status WHERE workspace_id='ws_lease_api'`).Scan(&admissionCount); err != nil ||
+		admissionCount != workspaceactivity.MaxWorkspaceAdmissionsPerWindow+1 {
+		t.Fatalf("persisted rate-limit count=%d err=%v, want saturated count %d", admissionCount, err, workspaceactivity.MaxWorkspaceAdmissionsPerWindow+1)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE workspace_status SET gateway_admission_window_started_at=$1 WHERE workspace_id='ws_lease_api'`,
+		time.Now().UTC().Add(-workspaceactivity.WorkspaceAdmissionWindow-time.Second)); err != nil {
+		t.Fatalf("expire fixed admission window: %v", err)
+	}
+	afterWindowLeaseID := fmt.Sprintf("%048x", 701)
+	if response := callLease(http.MethodPut, afterWindowLeaseID, "", body, true); response.Code != http.StatusNoContent {
+		t.Fatalf("connection admission after expired window response=%d %s", response.Code, response.Body.String())
+	}
+	if response := callLease(http.MethodPost, afterWindowLeaseID, "/release", body, true); response.Code != http.StatusNoContent {
+		t.Fatalf("release after-window lease response=%d %s", response.Code, response.Body.String())
+	}
+	if err := pool.QueryRow(ctx, `SELECT gateway_admission_count FROM workspace_status WHERE workspace_id='ws_lease_api'`).Scan(&admissionCount); err != nil || admissionCount != 1 {
+		t.Fatalf("reset rate-window count=%d err=%v, want 1", admissionCount, err)
+	}
 }

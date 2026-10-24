@@ -86,20 +86,31 @@ func workspaceConnectionLeaseHandler(pool transaction.Beginner, resolveKey Resou
 		lease := workspaceactivity.Lease{ID: leaseID, SessionID: request.SessionID, TenantID: request.TenantID, WorkspaceID: request.WorkspaceID,
 			ResourcePlaneID: planeID, MicroVMID: request.MicroVMID, AllocationGeneration: request.AllocationGeneration,
 			ExpiresAt: request.ExpiresAt, Now: now}
-		_, err = transaction.Within(c.Request().Context(), pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (struct{}, error) {
+		var denial workspaceactivity.AdmissionDenial
+		denial, err = transaction.Within(c.Request().Context(), pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (workspaceactivity.AdmissionDenial, error) {
 			if release {
 				_, err := workspaceactivity.Release(ctx, tx, lease)
-				return struct{}{}, err
+				return workspaceactivity.AdmissionAllowed, err
 			}
-			return struct{}{}, workspaceactivity.Renew(ctx, tx, lease)
+			return workspaceactivity.Admit(ctx, tx, lease)
 		})
+		if err == nil {
+			switch denial {
+			case workspaceactivity.AdmissionRateLimited:
+				return echo.NewHTTPError(http.StatusTooManyRequests, "Workspace connection start rate limit reached")
+			case workspaceactivity.AdmissionAtCapacity:
+				return echo.NewHTTPError(http.StatusTooManyRequests, "Workspace connection limit reached")
+			case workspaceactivity.AdmissionSessionConnected:
+				return echo.NewHTTPError(http.StatusConflict, "Workspace Session already has an active connection")
+			}
+		}
 		if errors.Is(err, workspaceactivity.ErrInvalidLease) {
 			return echo.NewHTTPError(http.StatusBadRequest, "invalid Workspace connection lease")
 		}
 		if errors.Is(err, workspaceactivity.ErrStaleLease) {
 			return echo.NewHTTPError(http.StatusConflict, "Workspace connection lease is stale")
 		}
-		if errors.Is(err, workspaceactivity.ErrConnectionLimit) {
+		if errors.Is(err, workspaceactivity.ErrConnectionLimit) || errors.Is(err, workspaceactivity.ErrConnectionRateLimit) {
 			return echo.NewHTTPError(http.StatusTooManyRequests, "Workspace connection limit reached")
 		}
 		if errors.Is(err, workspaceactivity.ErrSessionConnected) {

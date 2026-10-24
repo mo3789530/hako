@@ -80,8 +80,12 @@ see [Aurora DSQL concurrency control](https://docs.aws.amazon.com/aurora-dsql/la
 The API handles lease metadata only; it does not carry Workspace application
 traffic.
 
-This cap is not configurable yet. Per-Gateway process limits can be lower, and
-fleet-wide request-rate limiting is not provided by the lease cap.
+This cap is not configurable yet. Per-Gateway process limits can be lower.
+The same shared Workspace status row also enforces a fixed-window start-rate
+limit of 30 new connection leases per minute across Gateway replicas. Existing
+lease heartbeats do not consume a new-start slot. Capacity and rate-limit
+denials are persisted/returned as HTTP 429; the rate counter saturates one
+above the threshold until the window expires.
 
 ## Cross-replica Session replay fence
 
@@ -92,7 +96,8 @@ different Gateway replicas. A competing lease receives HTTP 409. Releasing a
 lease clears the claim only when that lease owns it; if a Gateway disappears,
 the claim becomes reusable at the earlier of the lease expiry and Session
 expiry. The signed ticket value and its claims are not stored in this field.
-This is connection replay exclusion, not fleet-wide request-rate limiting.
+This is connection replay exclusion; the fixed-window counter above limits
+new lease admissions, not terminal or application traffic.
 
 Idle candidate selection is scoped to the current running allocation. It
 excludes Workspaces with any unexpired lease and Workspaces that have never

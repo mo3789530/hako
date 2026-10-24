@@ -88,7 +88,11 @@ clears the claim only for its owning lease; claim expiry permits recovery
 after Gateway failure. Only the opaque Session ID and active lease metadata
 are stored; the signed ticket value is not. Stream contents and tickets are
 not logged. `/healthz` returns only static readiness status. Per-process caps
-remain local, and fleet-wide request-rate limiting remains open. TLS termination, private
+remain local. A shared Workspace status counter also limits new lease
+admissions to 30 per minute across Gateway replicas; heartbeats for existing
+leases are exempt, and HTTP 429 identifies either capacity or start-rate
+rejection. This is a connection-admission guard, not an application-traffic
+rate limit. TLS termination, private
 Gateway-to-runtime transport, and task/service health wiring are deployment
 responsibilities.
 
@@ -107,8 +111,8 @@ dimensions are limited to Resource Plane, fixed channel, and fixed outcome;
 Tenant/Workspace IDs, tickets, and stream contents are excluded. These are
 process-local metrics. The signed lease API enforces the shared ten-connection
 per-Workspace allocation cap and rejects concurrent reuse of the same Session
-Ticket across replicas with HTTP 409; fleet-wide request-rate limiting remains
-open. The VS Code process bridge
+Ticket across replicas with HTTP 409, and applies a shared fixed-window limit
+of 30 new lease admissions per Workspace per minute. The VS Code process bridge
 and Lambda MicroVM end-to-end stream PoC also remain open Task 46/47 work.
 
 ## Resource Plane Gateway process

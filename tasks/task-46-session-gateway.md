@@ -1,6 +1,6 @@
 # Task 46: Hako Session Tickets and Gateway
 
-Status: In Progress (Ed25519 Gateway-audience ticket claims, RBAC-backed session API, HTTPS/HMAC active-session lookup, TLS/WSS core, shell/port local E2E, fixed-port VS Code bridge, idle-lease reporting, structured connection logs, CloudWatch EMF metrics, an OCC-fenced shared cap of ten active connection leases per Workspace, and cross-replica same-Session connection exclusion are implemented. `cmd/hako-workspace-gateway` composes the verifier, HTTPS session/lease clients, S3 runtime journal, Lambda MicroVM SDK/token provider, Agent ticket signer, and journal-backed shell/VS Code directory into a non-root HTTPS service. A default-off Resource Plane Terraform contract now creates the 443-only ALB with a 60-minute WebSocket idle timeout, private ARM64 Fargate tasks, ephemeral Secret loader volume, exact journal/MicroVM/Secret IAM, CPU scaling, and health/5xx alarms; OpenTofu mock-plan tests cover disabled and enabled configurations. Actual AWS deployment, production key/secret/certificate/DNS/network provisioning, idle-sweep-to-Dispatcher runtime E2E, fleet-wide request-rate limiting, and live MicroVM connectivity remain. Priority: P1.
+Status: In Progress (Ed25519 Gateway-audience ticket claims, RBAC-backed session API, HTTPS/HMAC active-session lookup, TLS/WSS core, shell/port local E2E, fixed-port VS Code bridge, idle-lease reporting, structured connection logs, CloudWatch EMF metrics, an OCC-fenced shared cap of ten active connection leases per Workspace, cross-replica same-Session connection exclusion, and a shared limit of 30 new lease admissions per Workspace per minute are implemented. `cmd/hako-workspace-gateway` composes the verifier, HTTPS session/lease clients, S3 runtime journal, Lambda MicroVM SDK/token provider, Agent ticket signer, and journal-backed shell/VS Code directory into a non-root HTTPS service. A default-off Resource Plane Terraform contract now creates the 443-only ALB with a 60-minute WebSocket idle timeout, private ARM64 Fargate tasks, ephemeral Secret loader volume, exact journal/MicroVM/Secret IAM, CPU scaling, and health/5xx alarms; OpenTofu mock-plan tests cover disabled and enabled configurations. Actual AWS deployment, production key/secret/certificate/DNS/network provisioning, idle-sweep-to-Dispatcher runtime E2E, and live MicroVM connectivity remain. Priority: P1.
 
 ## Goal
 
@@ -121,6 +121,10 @@ closing the owning lease clears only its own claim, and an expired claim can
 be recovered after a Gateway failure. The claim is bounded by both the lease
 and Session expiry. Tests cover the concurrent two-replica race, release and
 reconnect, and HMAC-authenticated API behavior against PostgreSQL. The
-remaining distributed admission item is fleet-wide request-rate limiting;
-production deployment, key provisioning, and live MicroVM connectivity also
-remain open.
+The shared fixed-window admission counter allows 30 new connection leases per
+Workspace per minute across Gateway replicas. It persists even rejected
+capacity/rate attempts, saturates at 31, resets after one minute, and does not
+count an existing lease heartbeat. PostgreSQL API tests verify the threshold,
+HTTP 429 response, and committed counter; concurrent lease tests continue to
+verify shared OCC admission. Production deployment, key provisioning, and
+live MicroVM connectivity remain open.

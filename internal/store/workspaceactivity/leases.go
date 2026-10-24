@@ -15,16 +15,28 @@ import (
 )
 
 const (
-	MaxLeaseTTL                 = 2 * time.Minute
-	MaxActiveLeasesPerWorkspace = 10
+	MaxLeaseTTL                     = 2 * time.Minute
+	MaxActiveLeasesPerWorkspace     = 10
+	WorkspaceAdmissionWindow        = time.Minute
+	MaxWorkspaceAdmissionsPerWindow = 30
 )
 
 var (
-	ErrInvalidLease     = errors.New("invalid Workspace connection lease")
-	ErrStaleLease       = errors.New("Workspace connection lease does not match the active runtime")
-	ErrConnectionLimit  = errors.New("Workspace active connection limit reached")
-	ErrSessionConnected = errors.New("Workspace Session already has an active connection")
-	leaseIDPattern      = regexp.MustCompile(`^[a-f0-9]{48}$`)
+	ErrInvalidLease        = errors.New("invalid Workspace connection lease")
+	ErrStaleLease          = errors.New("Workspace connection lease does not match the active runtime")
+	ErrConnectionLimit     = errors.New("Workspace active connection limit reached")
+	ErrConnectionRateLimit = errors.New("Workspace connection start rate limit reached")
+	ErrSessionConnected    = errors.New("Workspace Session already has an active connection")
+	leaseIDPattern         = regexp.MustCompile(`^[a-f0-9]{48}$`)
+)
+
+type AdmissionDenial uint8
+
+const (
+	AdmissionAllowed AdmissionDenial = iota
+	AdmissionRateLimited
+	AdmissionAtCapacity
+	AdmissionSessionConnected
 )
 
 type Lease struct {
@@ -53,8 +65,29 @@ type IdleCandidate struct {
 // immutable across every identity dimension and cannot be revived after
 // release.
 func Renew(ctx context.Context, tx pgx.Tx, lease Lease) error {
+	denial, err := Admit(ctx, tx, lease)
+	if err != nil {
+		return err
+	}
+	switch denial {
+	case AdmissionRateLimited:
+		return ErrConnectionRateLimit
+	case AdmissionAtCapacity:
+		return ErrConnectionLimit
+	case AdmissionSessionConnected:
+		return ErrSessionConnected
+	default:
+		return nil
+	}
+}
+
+// Admit applies shared admission policy and returns a denial as a successful
+// transaction result so rate-limit counters remain committed when rejecting a
+// request. Existing lease heartbeats are idempotent and do not consume a new
+// connection-start admission.
+func Admit(ctx context.Context, tx pgx.Tx, lease Lease) (AdmissionDenial, error) {
 	if tx == nil || ctx == nil || !validLease(lease) {
-		return ErrInvalidLease
+		return AdmissionAllowed, ErrInvalidLease
 	}
 	var lockedWorkspace domain.WorkspaceID
 	err := tx.QueryRow(ctx, `SELECT s.workspace_id FROM workspaces w
@@ -67,18 +100,41 @@ func Renew(ctx context.Context, tx pgx.Tx, lease Lease) error {
 			AND rb.external_id = $4 AND rb.allocation_generation = $5
 		FOR UPDATE OF s`, lease.WorkspaceID, lease.TenantID, lease.ResourcePlaneID, lease.MicroVMID, lease.AllocationGeneration).Scan(&lockedWorkspace)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrStaleLease
+		return AdmissionAllowed, ErrStaleLease
 	}
 	if err != nil {
-		return fmt.Errorf("resolve active Workspace connection binding: %w", err)
+		return AdmissionAllowed, fmt.Errorf("resolve active Workspace connection binding: %w", err)
 	}
 	if lockedWorkspace != lease.WorkspaceID {
-		return ErrStaleLease
+		return AdmissionAllowed, ErrStaleLease
 	}
 	// The FOR UPDATE read of the current Workspace status row above gives every
 	// Gateway replica the same OCC conflict fence. Count active leases for this exact
 	// runtime allocation, excluding this lease so an existing stream can renew
 	// while the Workspace is at capacity.
+	var knownLease bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workspace_connection_leases WHERE lease_id=$1)`, lease.ID).Scan(&knownLease); err != nil {
+		return AdmissionAllowed, fmt.Errorf("check existing Workspace connection lease: %w", err)
+	}
+	if !knownLease {
+		var admissionCount int
+		now := lease.Now.UTC()
+		err := tx.QueryRow(ctx, `UPDATE workspace_status SET
+			gateway_admission_window_started_at = CASE
+				WHEN gateway_admission_window_started_at IS NULL OR gateway_admission_window_started_at <= $3 THEN $2
+				ELSE gateway_admission_window_started_at END,
+			gateway_admission_count = CASE
+				WHEN gateway_admission_window_started_at IS NULL OR gateway_admission_window_started_at <= $3 THEN 1
+				ELSE LEAST(gateway_admission_count + 1, $4) END
+			WHERE workspace_id = $1 RETURNING gateway_admission_count`, lease.WorkspaceID, now,
+			now.Add(-WorkspaceAdmissionWindow), MaxWorkspaceAdmissionsPerWindow+1).Scan(&admissionCount)
+		if err != nil {
+			return AdmissionAllowed, fmt.Errorf("record Workspace connection admission: %w", err)
+		}
+		if admissionCount > MaxWorkspaceAdmissionsPerWindow {
+			return AdmissionRateLimited, nil
+		}
+	}
 	var activeLeases int
 	err = tx.QueryRow(ctx, `SELECT COUNT(*) FROM workspace_connection_leases
 		WHERE tenant_id = $1 AND workspace_id = $2 AND resource_plane_id = $3
@@ -86,10 +142,10 @@ func Renew(ctx context.Context, tx pgx.Tx, lease Lease) error {
 			AND released_at IS NULL AND expires_at > $7`, lease.TenantID, lease.WorkspaceID,
 		lease.ResourcePlaneID, lease.MicroVMID, lease.AllocationGeneration, lease.ID, lease.Now.UTC()).Scan(&activeLeases)
 	if err != nil {
-		return fmt.Errorf("count active Workspace connection leases: %w", err)
+		return AdmissionAllowed, fmt.Errorf("count active Workspace connection leases: %w", err)
 	}
 	if activeLeases >= MaxActiveLeasesPerWorkspace {
-		return ErrConnectionLimit
+		return AdmissionAtCapacity, nil
 	}
 	var claimedSessionID string
 	err = tx.QueryRow(ctx, `UPDATE sessions SET active_connection_lease_id = $6,
@@ -100,13 +156,13 @@ func Renew(ctx context.Context, tx pgx.Tx, lease Lease) error {
 		RETURNING id`, lease.SessionID, lease.TenantID, lease.WorkspaceID, lease.ResourcePlaneID,
 		lease.Now.UTC(), lease.ID, lease.ExpiresAt.UTC()).Scan(&claimedSessionID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrSessionConnected
+		return AdmissionSessionConnected, nil
 	}
 	if err != nil {
-		return fmt.Errorf("claim Workspace Session connection: %w", err)
+		return AdmissionAllowed, fmt.Errorf("claim Workspace Session connection: %w", err)
 	}
 	if claimedSessionID != lease.SessionID {
-		return ErrSessionConnected
+		return AdmissionSessionConnected, nil
 	}
 	var insertedID string
 	err = tx.QueryRow(ctx, `INSERT INTO workspace_connection_leases
@@ -124,15 +180,15 @@ func Renew(ctx context.Context, tx pgx.Tx, lease Lease) error {
 		RETURNING lease_id`, lease.ID, lease.TenantID, lease.WorkspaceID, lease.ResourcePlaneID, lease.MicroVMID,
 		lease.AllocationGeneration, lease.ExpiresAt.UTC(), lease.Now.UTC()).Scan(&insertedID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrStaleLease
+		return AdmissionAllowed, ErrStaleLease
 	}
 	if err != nil {
-		return fmt.Errorf("write Workspace connection lease: %w", err)
+		return AdmissionAllowed, fmt.Errorf("write Workspace connection lease: %w", err)
 	}
 	if insertedID != lease.ID {
-		return ErrStaleLease
+		return AdmissionAllowed, ErrStaleLease
 	}
-	return nil
+	return AdmissionAllowed, nil
 }
 
 // Release is idempotent for an exact lease identity. Replays cannot release a
