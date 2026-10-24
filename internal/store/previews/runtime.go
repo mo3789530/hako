@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/previewprotocol"
 	"github.com/mo3789530/hako/internal/scheduler"
 	"github.com/mo3789530/hako/internal/store/resourcecapacity"
 )
@@ -32,6 +33,49 @@ type ProvisionJob struct {
 	ClaimID               string
 	LeaseExpiresAt        time.Time
 	Attempt               int
+}
+
+// ClaimRuntimeAllocationsAndEnqueue atomically claims Preview generations,
+// reserves placement capacity, pins the Resource Plane, and records command
+// Outbox events. The caller must commit before dispatching the events.
+func ClaimRuntimeAllocationsAndEnqueue(ctx context.Context, tx pgx.Tx, targetPlane domain.ResourcePlaneID, runtimeClass, claimID string, eventIDs []string, now time.Time, lease time.Duration, limit int) ([]ProvisionJob, error) {
+	if ctx == nil || tx == nil || runtimeClass == "" || len(eventIDs) != limit || limit < 1 || limit > 100 {
+		return nil, ErrInvalidRuntimeAllocation
+	}
+	var jobs []ProvisionJob
+	var err error
+	if targetPlane != "" {
+		jobs, err = ClaimRuntimeAllocationsOnPlane(ctx, tx, targetPlane, runtimeClass, claimID, now, lease, limit)
+	} else {
+		jobs, err = ClaimRuntimeAllocationsScheduled(ctx, tx, claimID, now, lease, limit, runtimeClass)
+	}
+	if err != nil {
+		return nil, err
+	}
+	for index, job := range jobs {
+		command := previewprotocol.Command{
+			SchemaVersion: 1, Action: previewprotocol.ActionProvision,
+			TenantID: string(job.TenantID), InstallationID: job.InstallationID, RepositoryID: job.RepositoryID,
+			PullRequestNumber: job.PullRequestNumber, Generation: job.Generation,
+			RuntimeWorkspaceID: string(job.RuntimeWorkspaceID), ResourcePlaneID: string(job.TargetResourcePlaneID),
+			ClaimID: job.ClaimID, ClaimAttempt: job.Attempt, LeaseExpiresAt: job.LeaseExpiresAt,
+			HeadSHA: job.HeadSHA, HeadRef: job.HeadRef, ExpiresAt: job.ExpiresAt,
+		}
+		payload, err := previewprotocol.Encode(command)
+		if err != nil {
+			return nil, err
+		}
+		if eventIDs[index] == "" {
+			return nil, ErrInvalidRuntimeAllocation
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO outbox_events
+			(id,aggregate_type,aggregate_id,event_type,payload_json,created_at,published_at,attempt)
+			VALUES ($1,$2,$3,$4,$5,$6,NULL,0)`, eventIDs[index], previewprotocol.AggregateType,
+			string(job.RuntimeWorkspaceID), previewprotocol.EventType(previewprotocol.ActionProvision), string(payload), now.UTC()); err != nil {
+			return nil, fmt.Errorf("enqueue Preview runtime provision command: %w", err)
+		}
+	}
+	return jobs, nil
 }
 
 // RuntimeBinding is produced by the Resource Plane after it has created the
