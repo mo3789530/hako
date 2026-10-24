@@ -122,6 +122,87 @@ func TestRepositoryPreviewListingAndExpiryBatch(t *testing.T) {
 	}
 }
 
+func TestPreviewRuntimeGenerationPinsTenantGitHubAppCredentialIdentity(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, statement := range []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO tenants(id,name,created_at) VALUES ('tenant_preview_pin','Preview pin',$1)`, []any{now}},
+		{`INSERT INTO users(id,cognito_subject,email,created_at) VALUES ('usr_preview_pin','preview-pin','',$1)`, []any{now}},
+		{`INSERT INTO github_credential_bindings (id,tenant_id,github_app_id,status,private_key_secret_ref,oauth_secret_ref,webhook_secret_ref,approved_at) VALUES ('preview_pin_credential','tenant_preview_pin',921,'approved','private','oauth','webhook',$1)`, []any{now}},
+		{`INSERT INTO github_app_registrations (id,github_app_id,mode,owner_tenant_id,slug,client_id,created_at) VALUES ('preview_pin_app',921,'tenant_owned','tenant_preview_pin','preview-pin','client',$1)`, []any{now}},
+		{`INSERT INTO tenant_github_integrations (id,tenant_id,app_registration_id,github_app_id,credential_binding_id,status,config_revision,credential_generation,idempotency_key,request_sha256,created_by,created_at,updated_at) VALUES ('preview_pin_integration','tenant_preview_pin','preview_pin_app',921,'preview_pin_credential','active',3,8,'preview-pin-key','hash','usr_preview_pin',$1,$1)`, []any{now}},
+		{`INSERT INTO tenant_github_installations(tenant_id,installation_id,account_login,status,requested_by,requested_at,updated_at) VALUES ('tenant_preview_pin',9931,'acme','active','usr_preview_pin',$1,$1)`, []any{now}},
+		{`INSERT INTO github_app_installation_bindings(installation_id,tenant_id,bound_at) VALUES (9931,'tenant_preview_pin',$1)`, []any{now}},
+		{`INSERT INTO tenant_github_app_installation_bindings(tenant_id,integration_id,installation_id,bound_at) VALUES ('tenant_preview_pin','preview_pin_integration',9931,$1)`, []any{now}},
+		{`INSERT INTO tenant_github_repositories(tenant_id,installation_id,github_repository_id,owner_login,repository_name,default_branch,synchronized_at) VALUES ('tenant_preview_pin',9931,9932,'acme','preview-pin','main',$1)`, []any{now}},
+		{`INSERT INTO repository_previews(tenant_id,installation_id,github_repository_id,pull_request_number,head_sha,head_ref,desired_state,state,last_delivery_id,last_event_at,generation,expires_at,created_at,updated_at) VALUES ('tenant_preview_pin',9931,9932,9,$2,'feature/pin','present','awaiting_runtime','50000000-0000-4000-8000-000000000001',$1,1,$3,$1,$1)`, []any{now, strings.Repeat("a", 40), now.Add(time.Hour)}},
+	} {
+		if _, err := pool.Exec(ctx, statement.query, statement.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runSync := func() {
+		t.Helper()
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := syncRuntimeAllocations(ctx, tx, CleanupIdentity{TenantID: "tenant_preview_pin", InstallationID: 9931,
+			RepositoryID: 9932, PullRequestNumber: 9}, now); err != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatal(err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertPin := func(generation int64, integration string, revision, credentialGeneration int64) {
+		t.Helper()
+		var gotIntegration *string
+		var gotRevision, gotCredentialGeneration *int64
+		if err := pool.QueryRow(ctx, `SELECT github_integration_id,github_config_revision,github_credential_generation
+			FROM repository_preview_runtime_allocations WHERE tenant_id='tenant_preview_pin' AND installation_id=9931
+			AND github_repository_id=9932 AND pull_request_number=9 AND generation=$1`, generation).
+			Scan(&gotIntegration, &gotRevision, &gotCredentialGeneration); err != nil {
+			t.Fatal(err)
+		}
+		if integration == "" {
+			if gotIntegration != nil || gotRevision != nil || gotCredentialGeneration != nil {
+				t.Fatalf("generation %d unexpectedly pinned App identity: %v %v %v", generation, gotIntegration, gotRevision, gotCredentialGeneration)
+			}
+			return
+		}
+		if gotIntegration == nil || *gotIntegration != integration || gotRevision == nil || *gotRevision != revision ||
+			gotCredentialGeneration == nil || *gotCredentialGeneration != credentialGeneration {
+			t.Fatalf("generation %d App pin = %v/%v/%v, want %s/%d/%d", generation, gotIntegration, gotRevision, gotCredentialGeneration,
+				integration, revision, credentialGeneration)
+		}
+	}
+	runSync()
+	assertPin(1, "preview_pin_integration", 3, 8)
+	if _, err := pool.Exec(ctx, `UPDATE tenant_github_integrations SET config_revision=4,credential_generation=9 WHERE id='preview_pin_integration'`); err != nil {
+		t.Fatal(err)
+	}
+	runSync()
+	assertPin(1, "preview_pin_integration", 3, 8)
+	if _, err := pool.Exec(ctx, `UPDATE repository_previews SET generation=2,head_sha=$1,head_ref='feature/pin-v2',updated_at=$2
+		WHERE tenant_id='tenant_preview_pin' AND installation_id=9931 AND github_repository_id=9932 AND pull_request_number=9`,
+		strings.Repeat("b", 40), now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	runSync()
+	assertPin(1, "preview_pin_integration", 3, 8)
+	assertPin(2, "preview_pin_integration", 4, 9)
+}
+
 func previewDeliveryID(pullRequest int) string {
 	return fmt.Sprintf("10000000-0000-4000-8000-%012x", pullRequest)
 }

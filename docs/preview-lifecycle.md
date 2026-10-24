@@ -170,6 +170,19 @@ Preview runtime is allocated for user traffic.
 The accepted Preview Outbox envelope and current routing-only status are
 documented in [Preview Runtime command routing contract](preview-runtime-command-contract.md).
 
+Migration 000170 adds an optional Tenant GitHub App identity pin to each
+Preview runtime generation. When a new generation is recorded, Hako resolves
+an active, approved, Tenant-owned App integration bound to that repository and
+stores its integration ID, config revision, and credential generation. A
+retry keeps the original pin; a later PR head generation resolves and records
+the then-current eligible integration. Shared Hako credentials are never used
+as a fallback. If no eligible Tenant App exists, the generation remains
+unpinned and must fail closed for source checkout. Existing unpinned rows are
+not silently backfilled, so enabling checkout for them requires a new
+generation or an explicit migration policy. This is credential identity
+metadata only: broker checkout, source transfer into the MicroVM, and Guest
+startup are not yet composed, and the migration has not been applied to AWS.
+
 Each present Preview records a fixed `expires_at` using the Tenant's configured
 Preview lifetime (24 hours when no quota row exists). `synchronize` deliveries
 update the pinned commit without extending that lifetime; a valid `reopened`

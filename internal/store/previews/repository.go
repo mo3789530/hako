@@ -208,12 +208,36 @@ func syncRuntimeAllocations(ctx context.Context, tx pgx.Tx, identity CleanupIden
 			identity.TenantID, identity.InstallationID, identity.RepositoryID, identity.PullRequestNumber, generation, now.UTC()); err != nil {
 			return fmt.Errorf("retire stale Preview runtime generations: %w", err)
 		}
+		var integrationID string
+		var configRevision, credentialGeneration int64
+		pinErr := tx.QueryRow(ctx, `SELECT i.id,i.config_revision,i.credential_generation
+			FROM tenant_github_app_installation_bindings binding
+			JOIN tenant_github_integrations i ON i.tenant_id=binding.tenant_id AND i.id=binding.integration_id
+			JOIN tenant_github_installations installation ON installation.tenant_id=binding.tenant_id AND installation.installation_id=binding.installation_id
+			JOIN tenant_github_repositories repository ON repository.tenant_id=binding.tenant_id
+			  AND repository.installation_id=binding.installation_id AND repository.github_repository_id=$3
+			JOIN github_app_registrations registration ON registration.id=i.app_registration_id
+			  AND registration.github_app_id=i.github_app_id AND registration.mode='tenant_owned'
+			  AND registration.owner_tenant_id=i.tenant_id
+			JOIN github_credential_bindings credential ON credential.tenant_id=i.tenant_id
+			  AND credential.id=i.credential_binding_id AND credential.github_app_id=i.github_app_id AND credential.status='approved'
+			WHERE binding.tenant_id=$1 AND binding.installation_id=$2 AND i.status='active'
+			  AND installation.status='active' AND installation.suspended_at IS NULL`,
+			identity.TenantID, identity.InstallationID, identity.RepositoryID).Scan(&integrationID, &configRevision, &credentialGeneration)
+		if pinErr != nil && !errors.Is(pinErr, pgx.ErrNoRows) {
+			return fmt.Errorf("resolve Tenant GitHub App pin for Preview generation: %w", pinErr)
+		}
+		var integrationValue, revisionValue, credentialGenerationValue any
+		if pinErr == nil {
+			integrationValue, revisionValue, credentialGenerationValue = integrationID, configRevision, credentialGeneration
+		}
 		if _, err := tx.Exec(ctx, `INSERT INTO repository_preview_runtime_allocations
-			(tenant_id,installation_id,github_repository_id,pull_request_number,generation,head_sha,head_ref,desired_state,state,expires_at,created_at,updated_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,'present','awaiting_runtime',$8,$9,$9)
+			(tenant_id,installation_id,github_repository_id,pull_request_number,generation,head_sha,head_ref,desired_state,state,expires_at,
+			 github_integration_id,github_config_revision,github_credential_generation,created_at,updated_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,'present','awaiting_runtime',$8,$9,$10,$11,$12,$12)
 			ON CONFLICT (tenant_id,installation_id,github_repository_id,pull_request_number,generation) DO NOTHING`,
 			identity.TenantID, identity.InstallationID, identity.RepositoryID, identity.PullRequestNumber,
-			generation, headSHA, headRef, expiresAt.UTC(), now.UTC()); err != nil {
+			generation, headSHA, headRef, expiresAt.UTC(), integrationValue, revisionValue, credentialGenerationValue, now.UTC()); err != nil {
 			return fmt.Errorf("record current Preview runtime generation: %w", err)
 		}
 		return nil

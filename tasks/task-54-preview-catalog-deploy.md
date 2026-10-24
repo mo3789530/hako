@@ -376,3 +376,19 @@ Add optional repository-level preview environments and service metadata/deploy p
   PostgreSQL capacity/placement/Outbox behavior remains covered by the existing
   Preview integration suite. Resource Plane queue deployment, provider
   operations, Gateway route publication, and real Preview runtime remain open.
+
+## Tenant GitHub App pin per Preview generation (2026-10-25)
+
+- Migration 000170 adds nullable integration ID, config revision, and
+  credential generation fields to the immutable Preview runtime generation.
+  New generations snapshot only an active, approved Tenant-owned App that is
+  bound to the repository; conflict retries preserve the original identity.
+- Generations without an eligible Tenant App remain unpinned. There is no
+  shared-credential fallback and existing rows are not auto-backfilled; source
+  checkout must fail closed until an explicitly supported pin exists.
+- PostgreSQL integration coverage verifies the initial pin, pin stability
+  after credential rotation, and use of the newer identity for the next PR
+  head generation. `make test-preview-expiry-integration` includes the test.
+- This change provides identity pinning only. Broker checkout, archive transfer
+  into the Guest, MicroVM startup, and production migration/application are
+  still open. No AWS resources or migrations were applied.
