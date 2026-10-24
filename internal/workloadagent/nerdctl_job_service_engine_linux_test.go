@@ -29,6 +29,7 @@ type fakeJobNerdctlRunner struct {
 	inspectMemoryOverride int64
 	inspectPrivileged     bool
 	inspectCapAdd         []string
+	inspectMutation       string
 }
 
 func (r *fakeJobNerdctlRunner) Run(_ context.Context, _ string, args, _ []string) ([]byte, error) {
@@ -114,13 +115,25 @@ func (r *fakeJobNerdctlRunner) Run(_ context.Context, _ string, args, _ []string
 		if capAdd == nil {
 			capAdd = []string{}
 		}
+		hostConfig := map[string]any{"Memory": memory, "NanoCpus": int64(cpu * 1_000_000_000),
+			"PidsLimit": pids, "ReadonlyRootfs": containsArg(command, "--read-only"),
+			"Privileged": r.inspectPrivileged, "CapAdd": capAdd, "SecurityOpt": []string{"no-new-privileges:true"},
+			"Binds": []string{}, "PortBindings": portBindings, "Tmpfs": tmpfs}
+		switch r.inspectMutation {
+		case "writable-rootfs":
+			hostConfig["ReadonlyRootfs"] = false
+		case "missing-no-new-privileges":
+			hostConfig["SecurityOpt"] = []string{"seccomp=unconfined"}
+		case "bind-mount":
+			hostConfig["Binds"] = []string{"/tmp:/tmp"}
+		case "public-port":
+			for _, bindings := range portBindings {
+				bindings[0]["HostIp"] = "0.0.0.0"
+			}
+		}
 		r.containerInspect = map[string]any{
-			"Config": map[string]any{"User": argValue(command, "--user"), "Labels": r.containerLabel},
-			"HostConfig": map[string]any{"Memory": memory, "NanoCpus": int64(cpu * 1_000_000_000),
-				"PidsLimit": pids, "ReadonlyRootfs": containsArg(command, "--read-only"),
-				"Privileged": r.inspectPrivileged, "CapAdd": capAdd, "SecurityOpt": []string{"no-new-privileges:true"},
-				"Binds":        []string{},
-				"PortBindings": portBindings, "Tmpfs": tmpfs},
+			"Config":     map[string]any{"User": argValue(command, "--user"), "Labels": r.containerLabel},
+			"HostConfig": hostConfig,
 		}
 		return []byte("container-id\n"), nil
 	case len(command) > 0 && command[0] == "rm":
@@ -231,6 +244,10 @@ func TestNerdctlJobServiceEngineRejectsRuntimeThatIgnoresResourceLimit(t *testin
 		{name: "memory", mutate: func(runner *fakeJobNerdctlRunner) { runner.inspectMemoryOverride = 1 << 30 }},
 		{name: "privileged", mutate: func(runner *fakeJobNerdctlRunner) { runner.inspectPrivileged = true }},
 		{name: "added capability", mutate: func(runner *fakeJobNerdctlRunner) { runner.inspectCapAdd = []string{"SYS_ADMIN"} }},
+		{name: "writable rootfs", mutate: func(runner *fakeJobNerdctlRunner) { runner.inspectMutation = "writable-rootfs" }},
+		{name: "missing no-new-privileges", mutate: func(runner *fakeJobNerdctlRunner) { runner.inspectMutation = "missing-no-new-privileges" }},
+		{name: "bind mount", mutate: func(runner *fakeJobNerdctlRunner) { runner.inspectMutation = "bind-mount" }},
+		{name: "public port", mutate: func(runner *fakeJobNerdctlRunner) { runner.inspectMutation = "public-port" }},
 	}
 	for _, mutation := range mutations {
 		t.Run(mutation.name, func(t *testing.T) {

@@ -218,10 +218,12 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   closed unless its observed memory, NanoCPU, PID limit, read-only rootfs,
   non-privileged state, no added capabilities, `no-new-privileges`, no bind
   mounts, `999:999` user, exact loopback port bindings, and catalog tmpfs
-  paths/options match the fixed template. The tmpfs verifier permits only Podman's known
-  `rprivate` and `tmpcopyup` additions. Unit tests reject a runtime that ignores
-  a requested memory limit and verify the failed container is removed; the
-  Podman acceptance exercises the inspect contract. This confirms configured
+  paths/options match the fixed template. The tmpfs verifier permits only
+  Podman's known `rprivate` and `tmpcopyup` additions. Unit tests reject
+  mismatched memory limits, privileged mode, added capabilities, writable
+  rootfs, missing `no-new-privileges`, bind mounts, and public port bindings;
+  each failed container is verified removed. The Podman acceptance exercises
+  the inspect contract. This confirms configured
   container metadata on host Podman; it does not prove kernel/cgroup enforcement
   or validate nerdctl inside Lambda MicroVM.
 - Extended that Podman integration to build a connection from the exact
