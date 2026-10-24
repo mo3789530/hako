@@ -84,6 +84,32 @@ GRANT SELECT (tenant_id, installation_id, github_repository_id, pull_request_num
 GRANT UPDATE (desired_state, state, updated_at)
     ON TABLE repository_preview_runtime_allocations TO hako_preview_reconciler;
 
+-- The Preview runtime dispatcher selects/reserves placement and writes only
+-- generation-fenced provider commands to the existing Outbox. It cannot read
+-- credentials or bind provider IDs; those are Resource Plane/result duties.
+CREATE ROLE hako_preview_runtime_dispatcher WITH LOGIN;
+AWS IAM GRANT hako_preview_runtime_dispatcher TO 'REPLACE_WITH_PREVIEW_RUNTIME_DISPATCHER_LAMBDA_ROLE_ARN';
+GRANT USAGE ON SCHEMA public TO hako_preview_runtime_dispatcher;
+GRANT SELECT ON TABLE repository_previews TO hako_preview_runtime_dispatcher;
+GRANT SELECT ON TABLE repository_preview_runtime_allocations TO hako_preview_runtime_dispatcher;
+GRANT UPDATE (state, target_resource_plane_id, provision_claim_id, provision_lease_expires_at,
+    provision_attempts, provision_next_attempt_at, provision_last_error,
+    runtime_cleanup_claim_id, runtime_cleanup_lease_expires_at, runtime_cleanup_attempts,
+    runtime_cleanup_next_attempt_at, runtime_cleanup_last_error, updated_at)
+    ON TABLE repository_preview_runtime_allocations TO hako_preview_runtime_dispatcher;
+GRANT UPDATE (state, cleanup_claim_id, cleanup_lease_expires_at, cleanup_next_attempt_at, cleanup_last_error, updated_at)
+    ON TABLE repository_previews TO hako_preview_runtime_dispatcher;
+GRANT INSERT ON TABLE outbox_events TO hako_preview_runtime_dispatcher;
+GRANT SELECT ON TABLE resource_planes TO hako_preview_runtime_dispatcher;
+GRANT SELECT ON TABLE resource_plane_status TO hako_preview_runtime_dispatcher;
+GRANT SELECT ON TABLE resource_plane_health TO hako_preview_runtime_dispatcher;
+GRANT SELECT ON TABLE placements TO hako_preview_runtime_dispatcher;
+GRANT SELECT ON TABLE workspace_status TO hako_preview_runtime_dispatcher;
+GRANT SELECT ON TABLE tenant_placement_policies TO hako_preview_runtime_dispatcher;
+GRANT SELECT, UPDATE ON TABLE resource_plane_capacities TO hako_preview_runtime_dispatcher;
+GRANT SELECT ON TABLE runtime_class_resources TO hako_preview_runtime_dispatcher;
+GRANT SELECT, INSERT, DELETE ON TABLE preview_resource_plane_reservations TO hako_preview_runtime_dispatcher;
+
 -- The Dispatcher role can claim/publish Outbox rows but cannot alter schema or
 -- access Workspace, Tenant, User, Session, or Operation tables.
 CREATE ROLE hako_dispatcher WITH LOGIN;

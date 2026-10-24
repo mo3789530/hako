@@ -106,6 +106,22 @@ output "preview_expiry_reconciler_error_alarm_name" {
   value = module.control_plane.preview_expiry_reconciler_error_alarm_name
 }
 
+output "preview_runtime_dispatcher_role_arn" {
+  value = module.control_plane.preview_runtime_dispatcher_role_arn
+}
+
+output "preview_runtime_dispatcher_lambda_arn" {
+  value = module.control_plane.preview_runtime_dispatcher_lambda_arn
+}
+
+output "preview_runtime_dispatcher_schedule_arn" {
+  value = module.control_plane.preview_runtime_dispatcher_schedule_arn
+}
+
+output "preview_runtime_dispatcher_error_alarm_name" {
+  value = module.control_plane.preview_runtime_dispatcher_error_alarm_name
+}
+
 output "github_checks_queue_url" {
   value = module.control_plane.github_checks_queue_url
 }

@@ -203,6 +203,26 @@ output "preview_expiry_reconciler_error_alarm_name" {
   value       = try(aws_cloudwatch_metric_alarm.preview_expiry_reconciler_errors[0].alarm_name, null)
 }
 
+output "preview_runtime_dispatcher_role_arn" {
+  description = "Stable IAM role ARN to map to the least-privilege hako_preview_runtime_dispatcher DSQL user."
+  value       = aws_iam_role.preview_runtime_dispatcher.arn
+}
+
+output "preview_runtime_dispatcher_lambda_arn" {
+  description = "ARN of the optional scheduled Preview command producer Lambda; null unless enabled."
+  value       = try(aws_lambda_function.preview_runtime_dispatcher[0].arn, null)
+}
+
+output "preview_runtime_dispatcher_schedule_arn" {
+  description = "EventBridge schedule ARN for the optional Preview command producer; null unless enabled."
+  value       = try(aws_cloudwatch_event_rule.preview_runtime_dispatcher[0].arn, null)
+}
+
+output "preview_runtime_dispatcher_error_alarm_name" {
+  description = "CloudWatch invocation error alarm for the optional Preview command producer; null unless enabled."
+  value       = try(aws_cloudwatch_metric_alarm.preview_runtime_dispatcher_errors[0].alarm_name, null)
+}
+
 output "http_api_endpoint" {
   description = "Invoke URL of the Hako Control Plane HTTP API default stage."
   value       = aws_apigatewayv2_api.control_plane.api_endpoint

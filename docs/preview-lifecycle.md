@@ -146,14 +146,17 @@ placement policy and requires the `microvm` capability. Capacity remains charged
 retries and is released only after cleanup confirmation. A conditional claim
 race reverses its provisional capacity reservation in the same transaction.
 The claim uses conditional writes and OCC retries rather than row-locking
-syntax, keeping it compatible with Aurora DSQL. The Outbox Dispatcher now has
-a dedicated Preview provision/cleanup queue route with strict generation,
-claim, logical identity, and Plane validation; it never falls back to the
-Workspace command queue. The producer, Resource Plane consumer/result path,
-and queue infrastructure are still missing. PostgreSQL integration covers
-Tenant region/Plane filters, full-capacity exclusion, pinned placement, and
-capacity release after cleanup. Resource Plane command transport, worker
-deployment and DSQL role grants, Lambda MicroVM API calls, Gateway route
+syntax, keeping it compatible with Aurora DSQL. The Outbox Dispatcher has a
+dedicated Preview provision/cleanup queue route with strict generation, claim,
+logical identity, and Plane validation; it never falls back to the Workspace
+command queue. A default-off Control Plane scheduled producer now runs the
+transactional provision and cleanup claimers and writes only fenced Outbox
+commands. Its dedicated DSQL role can reserve capacity and enqueue commands,
+but cannot update provider IDs or call AWS/Resource Plane APIs. Dispatch to a
+Plane still depends on the existing Dispatcher schedule and a configured
+Preview queue URL. PostgreSQL integration covers Tenant region/Plane filters,
+full-capacity exclusion, pinned placement, and capacity release after cleanup.
+Resource Plane queue infrastructure, Lambda MicroVM API calls, Gateway route
 publication, and tag-based provider executor are still missing, so no Preview
 runtime is allocated for user traffic.
 
@@ -178,6 +181,10 @@ published: responses report `runtime_enabled: false`, and records remain in
 runtime does not yet provision a PR-scoped Workspace binding or expiring
 Tenant-scoped Gateway route. A default-off scheduled Lambda invokes the bounded
 expiry sweep, but it is not enabled by default and only updates DSQL metadata.
+A separate default-off scheduled Lambda claims current Preview generations,
+reserves and pins Resource Plane placement, and enqueues provision/cleanup
+commands transactionally; the normal Outbox Dispatcher sends those commands.
+Neither schedule calls a MicroVM provider or publishes a Gateway route.
 The store records only fixed cleanup error categories and schedules bounded
 exponential retries (5 seconds to 1 hour). `cleaned` is written only after the
 runtime executor confirms MicroVM and Gateway route deletion, and duplicate

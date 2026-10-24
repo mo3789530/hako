@@ -61,5 +61,9 @@ module "control_plane" {
   preview_expiry_reconciler_lambda_zip_path       = var.preview_expiry_reconciler_lambda_zip_path
   preview_expiry_reconciler_batch_size            = var.preview_expiry_reconciler_batch_size
   preview_expiry_reconciler_schedule_expression   = var.preview_expiry_reconciler_schedule_expression
+  enable_preview_runtime_dispatcher               = var.enable_preview_runtime_dispatcher
+  preview_runtime_dispatcher_lambda_zip_path      = var.preview_runtime_dispatcher_lambda_zip_path
+  preview_runtime_dispatcher_batch_size           = var.preview_runtime_dispatcher_batch_size
+  preview_runtime_dispatcher_schedule_expression  = var.preview_runtime_dispatcher_schedule_expression
   resource_plane_manifest_json                    = var.resource_plane_manifest_json
 }

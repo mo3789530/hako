@@ -14,6 +14,7 @@ make build-dispatcher-lambda # only when enable_outbox_dispatcher = true
 make build-webhook-processor-lambda # only when enable_github_webhook_processor = true
 make build-workspace-idle-reconciler-lambda # only when enable_workspace_idle_reconciler = true
 make build-preview-expiry-lambda # only when enable_preview_expiry_reconciler = true
+make build-preview-runtime-dispatch-lambda # only when enable_preview_runtime_dispatcher = true
 tofu -chdir=infra/terraform/environments/dev/control-plane init
 tofu -chdir=infra/terraform/environments/dev/control-plane plan \
   -var='cognito_issuer_url=https://cognito-idp.ap-northeast-1.amazonaws.com/ap-northeast-1_Example' \
@@ -31,6 +32,7 @@ The first Terraform apply creates the cluster and API Lambda. Until bootstrap co
 1. Attach the module output `dsql_migration_admin_policy_arn` to a dedicated, short-lived migration principal. That principal also needs AWS credentials and network reachability to the DSQL endpoint.
 2. Use a DSQL-compatible PostgreSQL client to connect to the output `dsql_endpoint` as database user `admin` with IAM authentication, then run `make migrate` with `HAKO_DSQL_HOST`, `AWS_REGION`, and `HAKO_DSQL_USER=admin` set.
 3. Edit `infra/terraform/modules/control-plane/bootstrap-api-role.sql.tmpl`, replacing the API, Dispatcher, and stable Checks task-role ARN placeholders with outputs `api_lambda_role_arn`, `outbox_dispatcher_role_arn`, and `github_checks_consumer_task_role_arn`; if enabling the GitHub Webhook Processor, also replace its placeholder with `github_webhook_processor_role_arn`. Replace the Workspace idle and Preview expiry reconciler placeholders with the stable `workspace_idle_reconciler_role_arn` and `preview_expiry_reconciler_role_arn` outputs even when their schedules are disabled, then run the statements once as `admin` after the schema migrations finish. The template also contains a `hako_github_broker` role placeholder: replace it only when the separately deployed, CP-only broker has an exact IAM role; no broker Terraform role/output is provisioned by this module today. The Checks ECS task role is created without workload permissions when delivery is disabled; its exact SQS/DSQL IAM policies attach only when `enable_github_checks_delivery=true`. The API role receives current-table DML grants plus read-only Preview lifecycle access; the Dispatcher role receives Outbox-only grants; the webhook processor receives delivery/integration/Installation binding reads, delivery-status update, repository-registry DML, Preview lifecycle/quota access and Actions Runner admission/Check writes. Its quota guard permissions allow creating a row with schema-defined defaults or advancing only `tenant_quota_limits.revision`; it cannot insert or update configured limit values. The Checks consumer reads Run and Runner Check state and updates only persisted Check Run IDs; the GitHub Broker reads Tenant-pinned App and Software Catalog policy metadata and can mutate only Actions Runner lifecycle/Check rows. The idle reconciler DSQL role can inspect Workspace policy/runtime/lease state and insert only suspend Operations/events/Outbox/audit while updating the Workspace Desired State fence. The Preview expiry role can read the Workspace Preview generation fence and update only desired/state/generation/cleanup deadline metadata; it cannot delete rows or operate runtime resources. A newly added table requires a deliberate grant review before deploying code that accesses it. If the bootstrap ran before a new migration, compare grants against the current template and apply only the reviewed delta as `admin` after migrations finish.
+3a. If enabling the Preview runtime dispatcher, replace its bootstrap SQL role placeholder with the stable `preview_runtime_dispatcher_role_arn` output before running the template. Its dedicated `hako_preview_runtime_dispatcher` grants are limited to Preview claim/retry columns, placement/capacity reservations, and Outbox insertion; it cannot write MicroVM or Gateway binding IDs.
 4. Apply the Resource Plane root with the exact Dispatcher and Result Consumer role ARNs so its command/result queue policies trust those roles.
 5. Test a health/API request before sending traffic. For any future migration that adds tables, grant the `hako_api` role the required privileges on those tables before deploying API code that uses them. The bootstrap SQL deliberately does not grant DDL or database-admin privileges.
 6. Only after DSQL bootstrap and Resource Plane queues are ready, provide the Resource Plane manifest JSON and set `enable_outbox_dispatcher = true` in the Control Plane root. Apply and verify a successful scheduled invocation before routing production traffic.
@@ -60,6 +62,17 @@ The first Terraform apply creates the cluster and API Lambda. Until bootstrap co
     runs a bounded transaction and moves expired rows only to
     `cleanup_pending`; it does not delete Preview Workspaces or Gateway routes.
     The schedule is default-off and has not been applied to AWS.
+
+13. To schedule Preview runtime command production, build
+    `make build-preview-runtime-dispatch-lambda`, map
+    `preview_runtime_dispatcher_role_arn` to the dedicated
+    `hako_preview_runtime_dispatcher` DSQL role, and explicitly set
+    `enable_preview_runtime_dispatcher=true`. It reserves/pins placement and
+    writes provision/cleanup commands to the Outbox; the existing Dispatcher
+    must be configured with the pinned Plane's Preview queue. Resource Plane
+    provider execution and Gateway routing are not implemented, so this
+    producer alone does not enable Preview runtime or user traffic. Its
+    schedule is default-off and has not been applied.
 
 Aurora DSQL distinguishes `dsql:DbConnectAdmin` for the built-in `admin` role from `dsql:DbConnect` for custom roles, and requires an `AWS IAM GRANT` mapping plus SQL privileges for the custom role. See [Aurora DSQL authentication and authorization](https://docs.aws.amazon.com/aurora-dsql/latest/userguide/authentication-authorization.html) and [database roles with IAM authentication](https://docs.aws.amazon.com/aurora-dsql/latest/userguide/using-database-and-iam-roles.html).
 

@@ -12,6 +12,18 @@ The dev environment expects Cognito User Pool inputs managed outside this module
 
 Preview expiry metadata reconciliation is independently opt-in through `enable_preview_expiry_reconciler` (default `false`). The stable `preview_expiry_reconciler_role_arn` allows mapping the dedicated `hako_preview_reconciler` DSQL role before enabling it. When enabled, the module requires the ARM64 ZIP from `make build-preview-expiry-lambda`, grants only DSQL `DbConnect` and scoped log writes, and creates an EventBridge schedule (default `rate(1 minute)`) plus a Lambda Errors alarm. The batch is bounded to 1–500. Its SQL grants allow expiry-key reads, cleanup metadata updates, and deletion of expired Preview Session rows only; it cannot read provider bindings or operate MicroVMs, EFS, or Gateway routes. The feature remains disabled by default and has not been applied.
 
+Preview runtime command production is separately opt-in through
+`enable_preview_runtime_dispatcher` (default `false`). Its ARM64 ZIP is built
+with `make build-preview-runtime-dispatch-lambda`. The dedicated
+`hako_preview_runtime_dispatcher` DSQL role can select and claim Preview
+generations, reserve placement capacity, update claim/retry metadata, and
+insert fenced provision/cleanup commands into the Outbox. It cannot bind
+provider IDs or call Resource Plane/AWS APIs. The Lambda and EventBridge
+schedule create Outbox work only; the existing Dispatcher publishes commands
+to the configured Plane queue. The stable role ARN is exported for DSQL IAM
+mapping. This schedule is independent from expiry reconciliation and remains
+disabled by default; infrastructure has not been applied.
+
 The optional `resource_plane_artifact_cleanup_secret_arns` map enables the
 HMAC-authenticated artifact cleanup API for exact Resource Plane IDs. Each
 entry references the same dedicated cleanup HMAC Secret configured on that

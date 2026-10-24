@@ -1292,6 +1292,131 @@ resource "aws_cloudwatch_metric_alarm" "preview_expiry_reconciler_errors" {
   tags                = local.common_tags
 }
 
+resource "aws_iam_role" "preview_runtime_dispatcher" {
+  name = "${var.api_name}-preview-runtime-dispatcher"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+  tags = local.common_tags
+}
+
+resource "aws_iam_role_policy" "preview_runtime_dispatcher" {
+  count = var.enable_preview_runtime_dispatcher ? 1 : 0
+
+  name = "${var.api_name}-preview-runtime-dispatcher-runtime"
+  role = aws_iam_role.preview_runtime_dispatcher.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "WriteFunctionLogs"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "${aws_cloudwatch_log_group.preview_runtime_dispatcher[0].arn}:*"
+      },
+      {
+        Sid      = "ConnectAsPreviewRuntimeDispatcher"
+        Effect   = "Allow"
+        Action   = ["dsql:DbConnect"]
+        Resource = aws_dsql_cluster.control_plane.arn
+      }
+    ]
+  })
+}
+
+resource "aws_cloudwatch_log_group" "preview_runtime_dispatcher" {
+  count = var.enable_preview_runtime_dispatcher ? 1 : 0
+
+  name              = "/aws/lambda/${var.api_name}-preview-runtime-dispatcher"
+  retention_in_days = var.lambda_log_retention_days
+  tags              = local.common_tags
+}
+
+resource "aws_lambda_function" "preview_runtime_dispatcher" {
+  count = var.enable_preview_runtime_dispatcher ? 1 : 0
+
+  function_name    = "${var.api_name}-preview-runtime-dispatcher"
+  role             = aws_iam_role.preview_runtime_dispatcher.arn
+  runtime          = "provided.al2023"
+  handler          = "bootstrap"
+  architectures    = ["arm64"]
+  filename         = var.preview_runtime_dispatcher_lambda_zip_path
+  source_code_hash = filebase64sha256(var.preview_runtime_dispatcher_lambda_zip_path)
+  memory_size      = 256
+  timeout          = 60
+
+  environment {
+    variables = {
+      HAKO_DSQL_HOST                  = "${aws_dsql_cluster.control_plane.identifier}.dsql.${var.aws_region}.on.aws"
+      HAKO_DSQL_USER                  = "hako_preview_runtime_dispatcher"
+      HAKO_DSQL_DATABASE              = "postgres"
+      HAKO_PREVIEW_RUNTIME_BATCH_SIZE = tostring(var.preview_runtime_dispatcher_batch_size)
+      HAKO_PREVIEW_RUNTIME_CLASS      = "standard"
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.preview_runtime_dispatcher,
+    aws_iam_role_policy.preview_runtime_dispatcher,
+  ]
+  tags = local.common_tags
+}
+
+resource "aws_cloudwatch_event_rule" "preview_runtime_dispatcher" {
+  count = var.enable_preview_runtime_dispatcher ? 1 : 0
+
+  name                = "${var.api_name}-preview-runtime-dispatcher"
+  description         = "Claim Preview runtime generations and enqueue fenced Resource Plane commands."
+  schedule_expression = var.preview_runtime_dispatcher_schedule_expression
+  state               = "ENABLED"
+  tags                = local.common_tags
+}
+
+resource "aws_cloudwatch_event_target" "preview_runtime_dispatcher" {
+  count = var.enable_preview_runtime_dispatcher ? 1 : 0
+
+  rule      = aws_cloudwatch_event_rule.preview_runtime_dispatcher[0].name
+  target_id = "hako-preview-runtime-dispatcher"
+  arn       = aws_lambda_function.preview_runtime_dispatcher[0].arn
+
+  retry_policy {
+    maximum_event_age_in_seconds = 3600
+    maximum_retry_attempts       = 2
+  }
+}
+
+resource "aws_lambda_permission" "preview_runtime_dispatcher_eventbridge" {
+  count = var.enable_preview_runtime_dispatcher ? 1 : 0
+
+  statement_id  = "AllowPreviewRuntimeDispatcherSchedule"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.preview_runtime_dispatcher[0].function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.preview_runtime_dispatcher[0].arn
+}
+
+resource "aws_cloudwatch_metric_alarm" "preview_runtime_dispatcher_errors" {
+  count = var.enable_preview_runtime_dispatcher ? 1 : 0
+
+  alarm_name          = "${var.api_name}-preview-runtime-dispatcher-errors"
+  alarm_description   = "The Preview runtime dispatcher failed. Check its logs and pending Resource Plane Outbox commands."
+  namespace           = "AWS/Lambda"
+  metric_name         = "Errors"
+  statistic           = "Sum"
+  period              = 60
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  dimensions          = { FunctionName = aws_lambda_function.preview_runtime_dispatcher[0].function_name }
+  tags                = local.common_tags
+}
+
 resource "aws_apigatewayv2_api" "control_plane" {
   name          = var.api_name
   protocol_type = "HTTP"

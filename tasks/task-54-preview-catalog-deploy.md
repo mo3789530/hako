@@ -286,3 +286,23 @@ Add optional repository-level preview environments and service metadata/deploy p
 - This does not provision a MicroVM or Gateway route. Resource Plane command
   production, the provider adapter, and scheduled worker/deployment composition
   remain open. The Dispatcher route is a local transport contract only.
+
+## Scheduled Preview command producer (2026-10-25)
+
+- Added `cmd/hako-preview-runtime-dispatch-lambda`, which runs the existing
+  transactional provision and cleanup producers on a bounded EventBridge
+  invocation. It commits only placement/capacity reservations, claim leases,
+  and generation-fenced commands to the Control Plane Outbox. The ordinary
+  Dispatcher remains responsible for publishing the commands to the pinned
+  Plane queue; the producer does not call AWS or a Resource Plane.
+- Added an independent default-off ARM64 Lambda/EventBridge Terraform contract
+  and a dedicated `hako_preview_runtime_dispatcher` database role. Grants
+  constrain the role to Preview claim/cleanup metadata, placement/capacity
+  selection, reservation accounting, and Outbox insertion; provider binding
+  fields are not updateable by this role. The development root exposes the
+  role ARN for DSQL IAM mapping. No resources or DSQL grants were applied.
+- Unit coverage verifies both sweep paths run, cleanup is attempted when the
+  provision sweep fails, configuration bounds, and fixed/redacted errors.
+  PostgreSQL capacity/placement/Outbox behavior remains covered by the existing
+  Preview integration suite. Resource Plane queue deployment, provider
+  operations, Gateway route publication, and real Preview runtime remain open.
