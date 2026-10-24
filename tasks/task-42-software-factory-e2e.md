@@ -10,6 +10,15 @@ Check test passed. `go test ./...` also passed. These local results do not
 verify the AWS Lambda MicroVM image, deployed queue wiring, or production
 network isolation; those remain separate runtime gates.
 
+## Workload CLI/API wiring (2026-10-24)
+
+Added a local HTTP-backed CLI test for `hako workload create`, list, show, and
+cancel. It verifies Tenant-scoped routes, Bearer auth, immutable lowercase
+commit SHA/ref/timeout payloads, idempotency key propagation, pagination, and
+the asynchronous `202 Accepted` cancel contract. The test uses only a local
+fake API and synthetic CLI token; it does not schedule a real Workload or call
+AWS. `go test ./cmd/hako -cover` reports 48.4% statement coverage.
+
 ## Goal
 
 Prove one Tenant-owned GitHub Repository can go from installation through one isolated Go test Job to a GitHub Check and retained redacted logs.
