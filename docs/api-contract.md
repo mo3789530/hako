@@ -128,6 +128,14 @@ the API returns `runtime_enabled:false` until isolated Lambda MicroVM
 allocation, expiring Gateway routes, and cleanup are available. See
 [`Preview lifecycle`](preview-lifecycle.md).
 
+Tenant members can list bounded Preview lifecycle metadata for an active
+registered Repository through
+`GET /v1/tenants/{tenant_id}/github/installations/{installation_id}/repositories/{repository_id}/previews?limit=50`
+or `hako github repository previews list --tenant <tenant> --installation
+<id> --repository <id> [--limit 50]`. The default limit is 50 and the maximum
+is 100. Cross-Tenant Repository identifiers are hidden as not found. The
+response continues to report `runtime_enabled:false`.
+
 Tenant Owners/Admins can separately enable the per-repository GitHub Actions
 runner admission policy with
 `PUT /v1/tenants/{tenant_id}/github/installations/{installation_id}/repositories/{repository_id}/actions-runner`

@@ -29,6 +29,7 @@ import (
 	"github.com/mo3789530/hako/internal/store/githubregistry"
 	"github.com/mo3789530/hako/internal/store/operations"
 	"github.com/mo3789530/hako/internal/store/placementpolicies"
+	previewstore "github.com/mo3789530/hako/internal/store/previews"
 	"github.com/mo3789530/hako/internal/store/quotas"
 	"github.com/mo3789530/hako/internal/store/resourceplanehealth"
 	"github.com/mo3789530/hako/internal/store/transaction"
@@ -228,6 +229,8 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 		protected.PUT("/v1/tenants/:tenant_id/github/installations/:installation_id/repositories/:repository_id/factory", configureGitHubRepositoryFactory(pool, workspaceConfig.WebhookWorkloadTriggersEnabled),
 			RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
 		protected.PUT("/v1/tenants/:tenant_id/github/installations/:installation_id/repositories/:repository_id/preview", configureGitHubRepositoryPreview(pool),
+			RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+		protected.GET("/v1/tenants/:tenant_id/github/installations/:installation_id/repositories/:repository_id/previews", listGitHubRepositoryPreviews(pool),
 			RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
 		protected.PUT("/v1/tenants/:tenant_id/github/installations/:installation_id/repositories/:repository_id/actions-runner", configureGitHubRepositoryActionsRunner(pool),
 			RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
@@ -856,6 +859,52 @@ func configureGitHubRepositoryPreview(pool transaction.Beginner) echo.HandlerFun
 			return databaseUnavailable(c)
 		}
 		return c.JSON(http.StatusOK, map[string]any{"repository": repository, "runtime_enabled": false})
+	}
+}
+
+func listGitHubRepositoryPreviews(pool transaction.Beginner) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		_, ok := HakoUserFromContext(c)
+		if !ok || pool == nil {
+			return databaseUnavailable(c)
+		}
+		tenantID := domain.TenantID(strings.TrimSpace(c.Param("tenant_id")))
+		installationID, installationErr := strconv.ParseInt(strings.TrimSpace(c.Param("installation_id")), 10, 64)
+		repositoryID, repositoryErr := strconv.ParseInt(strings.TrimSpace(c.Param("repository_id")), 10, 64)
+		limit := 50
+		if raw := strings.TrimSpace(c.QueryParam("limit")); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 1 || parsed > 100 {
+				return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_limit", Message: "limit must be between 1 and 100"}})
+			}
+			limit = parsed
+		}
+		if tenantID == "" || installationErr != nil || installationID <= 0 || repositoryErr != nil || repositoryID <= 0 {
+			return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_repository", Message: "Valid Tenant, Installation, and Repository IDs are required"}})
+		}
+		items, err := transaction.Within(c.Request().Context(), pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) ([]previewstore.RepositoryPreview, error) {
+			var registered bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (
+				SELECT 1 FROM tenant_github_repositories r
+				JOIN github_app_installation_bindings b ON b.tenant_id=r.tenant_id AND b.installation_id=r.installation_id
+				JOIN tenant_github_installations i ON i.tenant_id=b.tenant_id AND i.installation_id=b.installation_id
+				WHERE r.tenant_id=$1 AND r.installation_id=$2 AND r.github_repository_id=$3
+				  AND i.status='active' AND i.suspended_at IS NULL
+			)`, tenantID, installationID, repositoryID).Scan(&registered); err != nil {
+				return nil, err
+			}
+			if !registered {
+				return nil, githubregistry.ErrRepositoryNotFound
+			}
+			return previewstore.ListForRepository(ctx, tx, tenantID, installationID, repositoryID, limit)
+		})
+		if errors.Is(err, githubregistry.ErrRepositoryNotFound) {
+			return c.JSON(http.StatusNotFound, errorResponse{Error: errorBody{Code: "not_found", Message: "Active registered GitHub Repository not found"}})
+		}
+		if err != nil {
+			return databaseUnavailable(c)
+		}
+		return c.JSON(http.StatusOK, map[string]any{"previews": items, "runtime_enabled": false})
 	}
 }
 

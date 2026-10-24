@@ -216,4 +216,36 @@ func TestRepositoryFactorySettingRequiresTenantOwnerAndActiveRegisteredRepositor
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE tenant_id='tenant_factory_api' AND action='tenant.github_repository.preview.configure'`).Scan(&auditCount); err != nil || auditCount != 2 {
 		t.Fatalf("Preview configuration audit count = %d, error = %v", auditCount, err)
 	}
+	previewSHA := strings.Repeat("a", 40)
+	if _, err := pool.Exec(ctx, `INSERT INTO repository_previews
+		(tenant_id,installation_id,github_repository_id,pull_request_number,head_sha,head_ref,desired_state,state,last_delivery_id,last_event_at,expires_at,created_at,updated_at)
+		VALUES ('tenant_factory_api',7001,7002,19,$1,'feature/list','present','awaiting_runtime','30000000-0000-4000-8000-000000000001',now(),now()+interval '1 hour',now(),now())`, previewSHA); err != nil {
+		t.Fatal(err)
+	}
+	previewsPath := "/v1/tenants/tenant_factory_api/github/installations/7001/repositories/7002/previews"
+	listPreviews := func(subject, tenant, query string) *httptest.ResponseRecorder {
+		token := signTenantAPIToken(t, key, issuer, subject, "openid hako/api")
+		request := httptest.NewRequest(http.MethodGet, strings.Replace(previewsPath, "tenant_factory_api", tenant, 1)+query, nil)
+		request.Header.Set("Authorization", "Bearer "+token)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	for _, test := range []struct {
+		subject, tenant, query string
+		want                   int
+	}{
+		{"factory-member", "tenant_factory_api", "?limit=10", http.StatusOK},
+		{"factory-owner", "tenant_factory_other", "?limit=10", http.StatusNotFound},
+		{"factory-owner", "tenant_factory_api", "?limit=101", http.StatusBadRequest},
+	} {
+		response := listPreviews(test.subject, test.tenant, test.query)
+		if response.Code != test.want {
+			t.Fatalf("Preview listing for %s/%s returned HTTP %d, want %d: %s", test.subject, test.tenant, response.Code, test.want, response.Body.String())
+		}
+		if response.Code == http.StatusOK && (!strings.Contains(response.Body.String(), `"pull_request_number":19`) ||
+			!strings.Contains(response.Body.String(), `"runtime_enabled":false`) || !strings.Contains(response.Body.String(), previewSHA)) {
+			t.Fatalf("Preview listing omitted scoped metadata or claimed runtime readiness: %s", response.Body.String())
+		}
+	}
 }

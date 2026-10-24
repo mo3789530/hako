@@ -11,6 +11,51 @@ import (
 	"github.com/mo3789530/hako/internal/githubwebhook"
 )
 
+type RepositoryPreview struct {
+	TenantID          domain.TenantID `json:"tenant_id"`
+	InstallationID    int64           `json:"installation_id"`
+	RepositoryID      int64           `json:"repository_id"`
+	PullRequestNumber int64           `json:"pull_request_number"`
+	HeadSHA           string          `json:"head_sha"`
+	HeadRef           string          `json:"head_ref"`
+	DesiredState      string          `json:"desired_state"`
+	State             string          `json:"state"`
+	ExpiresAt         *time.Time      `json:"expires_at,omitempty"`
+	CleanupAttempts   int             `json:"cleanup_attempts"`
+	CleanupNextAt     *time.Time      `json:"cleanup_next_attempt_at,omitempty"`
+	UpdatedAt         time.Time       `json:"updated_at"`
+}
+
+// ListForRepository returns a bounded, Tenant-scoped view of Preview lifecycle
+// metadata. It intentionally exposes no runtime credentials or provider IDs.
+func ListForRepository(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, installationID, repositoryID int64, limit int) ([]RepositoryPreview, error) {
+	if ctx == nil || tx == nil || tenantID == "" || installationID <= 0 || repositoryID <= 0 || limit < 1 || limit > 100 {
+		return nil, errors.New("valid Tenant, repository, transaction, and bounded limit are required")
+	}
+	rows, err := tx.Query(ctx, `SELECT tenant_id,installation_id,github_repository_id,pull_request_number,head_sha,head_ref,
+		desired_state,state,expires_at,cleanup_attempts,cleanup_next_attempt_at,updated_at
+		FROM repository_previews WHERE tenant_id=$1 AND installation_id=$2 AND github_repository_id=$3
+		ORDER BY updated_at DESC,pull_request_number DESC LIMIT $4`, tenantID, installationID, repositoryID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list Repository Previews: %w", err)
+	}
+	defer rows.Close()
+	items := make([]RepositoryPreview, 0)
+	for rows.Next() {
+		var item RepositoryPreview
+		if err := rows.Scan(&item.TenantID, &item.InstallationID, &item.RepositoryID, &item.PullRequestNumber,
+			&item.HeadSHA, &item.HeadRef, &item.DesiredState, &item.State, &item.ExpiresAt,
+			&item.CleanupAttempts, &item.CleanupNextAt, &item.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan Repository Preview: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate Repository Previews: %w", err)
+	}
+	return items, nil
+}
+
 var ErrInvalidDelivery = errors.New("invalid repository Preview delivery")
 
 // ApplyPullRequestDelivery records the current desired Preview state for one

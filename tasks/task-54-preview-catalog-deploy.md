@@ -90,6 +90,19 @@ Add optional repository-level preview environments and service metadata/deploy p
   idempotent cleanup worker with retry/backoff. See
   [`Preview lifecycle`](../docs/preview-lifecycle.md).
 
+## Preview lifecycle read API/CLI (2026-10-24)
+
+- Added a bounded Tenant-member read endpoint and `hako github repository
+  previews list` command for PR Preview lifecycle metadata. The response is
+  scoped to the active registered Tenant Repository and exposes the immutable
+  PR head, expiry, cleanup retry state, and timestamps; it does not expose
+  provider identifiers and reports `runtime_enabled: false`.
+- Added client/parser tests and PostgreSQL API integration coverage for member
+  access, cross-Tenant hiding, and limit bounds. This improves visibility while
+  Preview runtime allocation and physical cleanup remain unavailable.
+- See [`Preview lifecycle`](../docs/preview-lifecycle.md) for endpoint and CLI
+  usage.
+
 ## Acceptance criteria
 
 - Tests cover PR update/reopen/close races, stale commit preview, cross-Tenant route access, expiry, cleanup retries, and duplicate webhooks.

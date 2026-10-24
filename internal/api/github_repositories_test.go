@@ -56,6 +56,47 @@ func TestSetGitHubRepositoryPreviewEnabledKeepsRuntimeDisabled(t *testing.T) {
 	}
 }
 
+func TestListGitHubRepositoryPreviewsUsesBoundedTenantScopedEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/tenants/tenant_preview_api/github/installations/7001/repositories/7002/previews" ||
+			r.URL.Query().Get("limit") != "25" || r.Header.Get("Authorization") != "Bearer test-token" {
+			t.Fatalf("request = %s %s?%s, authorization present=%t", r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization") != "")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"runtime_enabled":false,"previews":[{"tenant_id":"tenant_preview_api","installation_id":7001,"repository_id":7002,"pull_request_number":17,"head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","head_ref":"feature/api","desired_state":"present","state":"awaiting_runtime","updated_at":"2026-10-24T00:00:00Z"}]}`))
+	}))
+	defer server.Close()
+	result, err := ListGitHubRepositoryPreviews(context.Background(), server.URL, "test-token", "tenant_preview_api", 7001, 7002, 25, server.Client())
+	if err != nil || result.RuntimeEnabled || len(result.Previews) != 1 || result.Previews[0].PullRequestNumber != 17 {
+		t.Fatalf("ListGitHubRepositoryPreviews() = %+v, error=%v", result, err)
+	}
+}
+
+func TestListGitHubRepositoryPreviewsRejectsInvalidInputsAndRuntimeClaim(t *testing.T) {
+	for _, test := range []struct {
+		name, tenant string
+		limit        int
+		wantError    string
+	}{
+		{name: "tenant", tenant: "", limit: 10, wantError: "valid Tenant"},
+		{name: "limit", tenant: "tenant_preview_api", limit: 101, wantError: "valid Tenant"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := ListGitHubRepositoryPreviews(context.Background(), "https://api.example", "token", test.tenant, 7001, 7002, test.limit, nil)
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("error = %v, want containing %q", err, test.wantError)
+			}
+		})
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"runtime_enabled":true,"previews":[]}`))
+	}))
+	defer server.Close()
+	if _, err := ListGitHubRepositoryPreviews(context.Background(), server.URL, "token", "tenant_preview_api", 7001, 7002, 10, server.Client()); err == nil {
+		t.Fatal("accepted response claiming Preview runtime is enabled")
+	}
+}
+
 func TestSetGitHubRepositoryAgentWritePolicyUsesTenantScopedDormantEndpoint(t *testing.T) {
 	policy := agenttask.WritePolicy{Enabled: true, BranchPrefixes: []string{"hako/agent/"}, AllowPullRequests: true,
 		RequiredChecks: []string{"hako/lint", "hako/test"}, RequireChecksToPass: true}

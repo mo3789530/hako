@@ -67,6 +67,44 @@ func manageGitHubRepositoryPreviewCLI(args []string) (api.GitHubRepositoryPrevie
 		input.tenantID, input.installationID, input.repositoryID, input.enabled, nil)
 }
 
+type githubRepositoryPreviewsCLIInput struct {
+	tenantID       string
+	installationID int64
+	repositoryID   int64
+	limit          int
+}
+
+func parseGitHubRepositoryPreviewsCLI(args []string) (githubRepositoryPreviewsCLIInput, error) {
+	var input githubRepositoryPreviewsCLIInput
+	if len(args) == 0 || args[0] != "list" {
+		return input, errors.New("action must be list")
+	}
+	flags := flag.NewFlagSet("github repository previews list", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&input.tenantID, "tenant", "", "Tenant ID")
+	flags.Int64Var(&input.installationID, "installation", 0, "GitHub Installation ID")
+	flags.Int64Var(&input.repositoryID, "repository", 0, "GitHub Repository ID")
+	flags.IntVar(&input.limit, "limit", 50, "Maximum Previews to return (1-100)")
+	if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 || strings.TrimSpace(input.tenantID) == "" || input.installationID <= 0 || input.repositoryID <= 0 || input.limit < 1 || input.limit > 100 {
+		return githubRepositoryPreviewsCLIInput{}, errors.New("--tenant, positive --installation, positive --repository, and --limit between 1 and 100 are required")
+	}
+	input.tenantID = strings.TrimSpace(input.tenantID)
+	return input, nil
+}
+
+func listGitHubRepositoryPreviewsCLI(args []string) (api.GitHubRepositoryPreviewsResult, error) {
+	input, err := parseGitHubRepositoryPreviewsCLI(args)
+	if err != nil {
+		return api.GitHubRepositoryPreviewsResult{}, err
+	}
+	token, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
+	if err != nil {
+		return api.GitHubRepositoryPreviewsResult{}, err
+	}
+	return api.ListGitHubRepositoryPreviews(context.Background(), strings.TrimSpace(os.Getenv("HAKO_API_URL")), token,
+		input.tenantID, input.installationID, input.repositoryID, input.limit, nil)
+}
+
 type githubRepositoryActionsRunnerCLIInput struct {
 	tenantID       string
 	installationID int64

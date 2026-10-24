@@ -42,6 +42,9 @@ REVOKE DELETE ON TABLE tenant_model_credentials FROM hako_api;
 -- upsert them but does not delete history or manage repository bindings.
 GRANT SELECT, INSERT, UPDATE ON TABLE tenant_software_catalog_services TO hako_api;
 REVOKE DELETE ON TABLE tenant_software_catalog_services FROM hako_api;
+-- Preview lifecycle is read-only from the API; webhook processing owns updates.
+REVOKE INSERT, UPDATE, DELETE ON TABLE repository_previews FROM hako_api;
+GRANT SELECT ON TABLE repository_previews TO hako_api;
 
 -- The Workspace idle reconciler is a separate scheduled Control Plane
 -- execution identity. It owns only idle-suspend state/Operation writes and
@@ -87,7 +90,9 @@ GRANT SELECT ON TABLE github_webhook_deliveries, github_app_installation_binding
 GRANT UPDATE (processing_status, payload_json, payload_purged_at) ON TABLE github_webhook_deliveries TO hako_webhook_processor;
 GRANT UPDATE (status, suspended_at, updated_at) ON TABLE tenant_github_installations TO hako_webhook_processor;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE tenant_github_repositories TO hako_webhook_processor;
+GRANT SELECT (tenant_id, preview_lifetime_seconds) ON TABLE tenant_quota_limits TO hako_webhook_processor;
 GRANT SELECT, INSERT ON TABLE workload_runs, workload_run_events TO hako_webhook_processor;
+GRANT SELECT, INSERT, UPDATE ON TABLE repository_previews TO hako_webhook_processor;
 GRANT SELECT, INSERT ON TABLE workload_agent_tasks TO hako_webhook_processor;
 GRANT SELECT, INSERT, UPDATE ON TABLE workload_github_checks TO hako_webhook_processor;
 -- Actions Runner admission/status events also update the exact durable Check

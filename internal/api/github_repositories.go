@@ -14,6 +14,7 @@ import (
 
 	"github.com/mo3789530/hako/internal/agenttask"
 	"github.com/mo3789530/hako/internal/store/githubregistry"
+	previewstore "github.com/mo3789530/hako/internal/store/previews"
 )
 
 type GitHubRepositoryFactoryResult struct {
@@ -23,6 +24,11 @@ type GitHubRepositoryFactoryResult struct {
 type GitHubRepositoryPreviewResult struct {
 	Repository     githubregistry.Repository `json:"repository"`
 	RuntimeEnabled bool                      `json:"runtime_enabled"`
+}
+
+type GitHubRepositoryPreviewsResult struct {
+	Previews       []previewstore.RepositoryPreview `json:"previews"`
+	RuntimeEnabled bool                             `json:"runtime_enabled"`
 }
 
 type GitHubRepositoryActionsRunnerResult struct {
@@ -152,6 +158,46 @@ func SetGitHubRepositoryPreviewEnabled(ctx context.Context, baseURL, accessToken
 		string(result.Repository.TenantID) != tenantID || result.Repository.InstallationID != installationID ||
 		result.Repository.GitHubRepositoryID != repositoryID || result.Repository.PreviewEnabled != enabled {
 		return GitHubRepositoryPreviewResult{}, errors.New("invalid GitHub Repository Preview response")
+	}
+	return result, nil
+}
+
+// ListGitHubRepositoryPreviews returns bounded lifecycle metadata for one
+// Tenant-owned Repository. Preview runtime allocation remains disabled.
+func ListGitHubRepositoryPreviews(ctx context.Context, baseURL, accessToken, tenantID string, installationID, repositoryID int64, limit int, client *http.Client) (GitHubRepositoryPreviewsResult, error) {
+	var result GitHubRepositoryPreviewsResult
+	if !validTenantID(tenantID) || strings.TrimSpace(accessToken) == "" || installationID <= 0 || repositoryID <= 0 || limit < 1 || limit > 100 {
+		return result, errors.New("valid Tenant, Installation, Repository, access token, and limit between 1 and 100 are required")
+	}
+	path := "/v1/tenants/" + url.PathEscape(tenantID) + "/github/installations/" + strconv.FormatInt(installationID, 10) +
+		"/repositories/" + strconv.FormatInt(repositoryID, 10) + "/previews"
+	endpoint, err := apiEndpoint(baseURL, path)
+	if err != nil {
+		return result, err
+	}
+	endpoint += "?limit=" + strconv.Itoa(limit)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return result, errors.New("create GitHub Repository Previews request")
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	response, err := safeAPIClient(client).Do(req)
+	if err != nil {
+		return result, errors.New("GitHub Repository Previews request failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return result, readAPIError(response)
+	}
+	if json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result) != nil || result.RuntimeEnabled || len(result.Previews) > limit {
+		return GitHubRepositoryPreviewsResult{}, errors.New("invalid GitHub Repository Previews response")
+	}
+	for _, item := range result.Previews {
+		if string(item.TenantID) != tenantID || item.InstallationID != installationID || item.RepositoryID != repositoryID ||
+			item.PullRequestNumber <= 0 || len(item.HeadSHA) != 40 || (item.DesiredState != "present" && item.DesiredState != "absent") ||
+			(item.State != "awaiting_runtime" && item.State != "cleanup_pending" && item.State != "cleaned") || item.UpdatedAt.IsZero() {
+			return GitHubRepositoryPreviewsResult{}, errors.New("invalid GitHub Repository Preview entry")
+		}
 	}
 	return result, nil
 }

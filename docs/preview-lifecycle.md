@@ -11,6 +11,22 @@ PUT /v1/tenants/{tenant_id}/github/installations/{installation_id}/repositories/
 The CLI equivalent is `hako github repository preview enable|disable --tenant
 <tenant> --installation <id> --repository <id>`.
 
+Tenant members can inspect the bounded lifecycle list for that registered
+Repository:
+
+```bash
+hako github repository previews list --tenant <tenant> \
+  --installation <installation-id> --repository <repository-id> --limit 50
+```
+
+The matching read-only endpoint is
+`GET /v1/tenants/{tenant_id}/github/installations/{installation_id}/repositories/{repository_id}/previews?limit=50`.
+It returns PR number, pinned head SHA/ref, desired/observed lifecycle state,
+expiry, cleanup retry metadata, and update time. The limit defaults to 50 and
+is capped at 100. Tenant membership is required; an Installation or Repository
+outside that Tenant is not disclosed. `runtime_enabled` remains false because
+this listing reports lifecycle metadata only.
+
 The endpoint writes an audit event. The webhook processor ignores deliveries
 received before `preview_enabled_at`, so enabling Preview does not backfill old
 PR events. Disabling Preview prevents new lifecycle updates; it does not delete
