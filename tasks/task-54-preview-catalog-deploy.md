@@ -155,7 +155,9 @@ Add optional repository-level preview environments and service metadata/deploy p
   generation with no provider attempt is confirmed locally; other retired
   generations go to their pinned Plane. PostgreSQL E2E follows provision and
   cleanup through the Dispatcher, fake Resource Plane controller, and fenced
-  result projection; duplicate producer/result delivery is idempotent. The
+  result Lambda handler; duplicate producer/result delivery is idempotent, and
+  a mixed SQS batch verifies that only the message with mismatched routing
+  attributes is returned in `BatchItemFailures`. The
   Resource Plane has a strict SQS Lambda handler core, bounded execution
   deadline, fixed failure classes, partial-success compensation, and SQS result
   sink. Lambda MicroVM/Gateway provider operations, durable provider fencing,

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-lambda-go/events"
 	"github.com/mo3789530/hako/internal/dispatcher"
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/previewcontroller"
@@ -113,14 +114,22 @@ func TestPreviewCommandProducerOutboxAndDispatcherEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode Preview result: %v", err)
 	}
-	resultConsumer := previewresult.Consumer{Pool: pool, Now: func() time.Time { return now.Add(4 * time.Second) }}
-	applied, err := resultConsumer.Handle(ctx, resultPayload, resultSink.results[0].ClaimID, resultSink.results[0].Action, resultSink.results[0].ResourcePlaneID)
-	if err != nil || !applied {
-		t.Fatalf("apply successful Preview result: applied=%v err=%v", applied, err)
+	resultHandler, err := previewresult.NewLambdaHandler(previewresult.Consumer{Pool: pool, Now: func() time.Time { return now.Add(4 * time.Second) }})
+	if err != nil {
+		t.Fatalf("create Preview result Lambda handler: %v", err)
 	}
-	applied, err = resultConsumer.Handle(ctx, resultPayload, resultSink.results[0].ClaimID, resultSink.results[0].Action, resultSink.results[0].ResourcePlaneID)
-	if err != nil || applied {
-		t.Fatalf("duplicate Preview result was not an idempotent stale no-op: applied=%v err=%v", applied, err)
+	response, err := resultHandler.Handle(ctx, events.SQSEvent{Records: []events.SQSMessage{
+		previewResultMessage("msg-preview-wrong-route", resultPayload, "wrong-claim", resultSink.results[0].Action, resultSink.results[0].ResourcePlaneID),
+		previewResultMessage("msg-preview-valid", resultPayload, resultSink.results[0].ClaimID, resultSink.results[0].Action, resultSink.results[0].ResourcePlaneID),
+	}})
+	if err != nil || len(response.BatchItemFailures) != 1 || response.BatchItemFailures[0].ItemIdentifier != "msg-preview-wrong-route" {
+		t.Fatalf("Preview result Lambda partial batch response: response=%+v err=%v", response, err)
+	}
+	response, err = resultHandler.Handle(ctx, events.SQSEvent{Records: []events.SQSMessage{
+		previewResultMessage("msg-preview-duplicate", resultPayload, resultSink.results[0].ClaimID, resultSink.results[0].Action, resultSink.results[0].ResourcePlaneID),
+	}})
+	if err != nil || len(response.BatchItemFailures) != 0 {
+		t.Fatalf("duplicate Preview result was not an ackable stale no-op: response=%+v err=%v", response, err)
 	}
 	var finalState, microvmID, routeID string
 	if err := pool.QueryRow(ctx, `SELECT state,microvm_id,gateway_route_id FROM repository_preview_runtime_allocations
@@ -173,10 +182,15 @@ func TestPreviewCommandProducerOutboxAndDispatcherEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode cleanup result: %v", err)
 	}
-	cleanupConsumer := previewresult.Consumer{Pool: pool, Now: func() time.Time { return closedAt.Add(4 * time.Second) }}
-	cleaned, err := cleanupConsumer.Handle(ctx, cleanupPayload, cleanupResult.ClaimID, cleanupResult.Action, cleanupResult.ResourcePlaneID)
-	if err != nil || !cleaned {
-		t.Fatalf("apply Preview cleanup result: cleaned=%v err=%v", cleaned, err)
+	cleanupHandler, err := previewresult.NewLambdaHandler(previewresult.Consumer{Pool: pool, Now: func() time.Time { return closedAt.Add(4 * time.Second) }})
+	if err != nil {
+		t.Fatalf("create Preview cleanup result Lambda handler: %v", err)
+	}
+	response, err = cleanupHandler.Handle(ctx, events.SQSEvent{Records: []events.SQSMessage{
+		previewResultMessage("msg-preview-cleanup", cleanupPayload, cleanupResult.ClaimID, cleanupResult.Action, cleanupResult.ResourcePlaneID),
+	}})
+	if err != nil || len(response.BatchItemFailures) != 0 {
+		t.Fatalf("apply Preview cleanup result through Lambda handler: response=%+v err=%v", response, err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT state FROM repository_preview_runtime_allocations
 		WHERE tenant_id='tenant_preview_dispatch' AND pull_request_number=41 AND generation=1`).Scan(&finalState); err != nil || finalState != "cleaned" {
@@ -197,6 +211,21 @@ func TestPreviewCommandProducerOutboxAndDispatcherEndToEnd(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT state FROM repository_preview_runtime_allocations
 		WHERE tenant_id='tenant_preview_dispatch' AND pull_request_number=41 AND generation=2`).Scan(&finalState); err != nil || finalState != "cleaned" {
 		t.Fatalf("never-provisioned generation state=%q err=%v", finalState, err)
+	}
+}
+
+func previewResultMessage(messageID string, body []byte, claimID, action, resourcePlaneID string) events.SQSMessage {
+	attribute := func(value string) events.SQSMessageAttribute {
+		return events.SQSMessageAttribute{DataType: "String", StringValue: &value}
+	}
+	return events.SQSMessage{
+		MessageId: messageID,
+		Body:      string(body),
+		MessageAttributes: map[string]events.SQSMessageAttribute{
+			"HakoPreviewClaimID":  attribute(claimID),
+			"HakoPreviewAction":   attribute(action),
+			"HakoResourcePlaneID": attribute(resourcePlaneID),
+		},
 	}
 }
 
