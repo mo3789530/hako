@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -37,7 +38,7 @@ type EnvironmentApprovalPin struct {
 }
 
 type EnvironmentApprovalResolver func(context.Context, domain.TenantID, string, int64, int64, string) (EnvironmentApprovalPin, error)
-type EnvironmentApprovalReader func(context.Context, EnvironmentApprovalPin, string) error
+type EnvironmentApprovalReader func(context.Context, EnvironmentApprovalPin, deploypolicy.Claims) error
 
 type EnvironmentApprovalService struct {
 	resolve EnvironmentApprovalResolver
@@ -52,25 +53,25 @@ func NewEnvironmentApprovalService(resolve EnvironmentApprovalResolver, read Env
 }
 
 func (s *EnvironmentApprovalService) Verify(ctx context.Context, caller string, tenant domain.TenantID, serviceID string,
-	installationID, repositoryID int64, environment string) error {
+	installationID, repositoryID int64, claims deploypolicy.Claims) error {
 	if s == nil || ctx == nil || caller != controlPlaneURI || tenant == "" || !environmentApprovalServicePattern.MatchString(serviceID) ||
-		installationID <= 0 || repositoryID <= 0 || !environmentApprovalNameValid(environment) {
+		installationID <= 0 || repositoryID <= 0 || !environmentApprovalNameValid(claims.Environment) || claims.RepositoryID != strconv.FormatInt(repositoryID, 10) {
 		return ErrEnvironmentApprovalDenied
 	}
-	first, err := s.resolve(ctx, tenant, serviceID, installationID, repositoryID, environment)
+	first, err := s.resolve(ctx, tenant, serviceID, installationID, repositoryID, claims.Environment)
 	if errors.Is(err, ErrEnvironmentApprovalUnavailable) {
 		return ErrEnvironmentApprovalUnavailable
 	}
 	if err != nil || !validEnvironmentApprovalPin(first, tenant, serviceID, installationID, repositoryID) {
 		return ErrEnvironmentApprovalDenied
 	}
-	if err := s.read(ctx, first, environment); err != nil {
-		if errors.Is(err, githubapp.ErrEnvironmentApprovalMissing) {
+	if err := s.read(ctx, first, claims); err != nil {
+		if errors.Is(err, githubapp.ErrEnvironmentApprovalMissing) || errors.Is(err, githubapp.ErrEnvironmentRunMismatch) {
 			return ErrEnvironmentApprovalDenied
 		}
 		return ErrEnvironmentApprovalUnavailable
 	}
-	second, err := s.resolve(ctx, tenant, serviceID, installationID, repositoryID, environment)
+	second, err := s.resolve(ctx, tenant, serviceID, installationID, repositoryID, claims.Environment)
 	if errors.Is(err, ErrEnvironmentApprovalUnavailable) {
 		return ErrEnvironmentApprovalUnavailable
 	}
@@ -136,7 +137,7 @@ func NewAWSEnvironmentApprovalReader(config aws.Config, pool transaction.Beginne
 		return nil, ErrEnvironmentApprovalUnavailable
 	}
 	authorizer := githubregistry.CredentialAuthorizer{Pool: pool, Policy: policy}
-	return func(ctx context.Context, pin EnvironmentApprovalPin, environment string) error {
+	return func(ctx context.Context, pin EnvironmentApprovalPin, claims deploypolicy.Claims) error {
 		client, err := githubapp.NewTenantAppTokenClientFromConfig(pin.App, config, authorizer, httpClient)
 		if err != nil {
 			return ErrEnvironmentApprovalUnavailable
@@ -145,7 +146,14 @@ func NewAWSEnvironmentApprovalReader(config aws.Config, pool transaction.Beginne
 		if err != nil || repository != pin.Repository {
 			return ErrEnvironmentApprovalUnavailable
 		}
-		if err := client.VerifyEnvironmentApproval(ctx, token, repository, environment); err != nil {
+		ownerID, err := strconv.ParseInt(claims.RepositoryOwnerID, 10, 64)
+		if err != nil {
+			return ErrEnvironmentApprovalUnavailable
+		}
+		if err := client.VerifyEnvironmentApprovalForRun(ctx, token, repository, githubapp.EnvironmentRunIdentity{
+			RepositoryID: pin.RepositoryID, RepositoryOwnerID: ownerID, RunID: claims.RunID, RunAttempt: claims.RunAttempt,
+			Ref: claims.Ref, SHA: claims.SHA, WorkflowRef: claims.WorkflowRef, EventName: claims.EventName, Environment: claims.Environment,
+		}); err != nil {
 			return err
 		}
 		return nil

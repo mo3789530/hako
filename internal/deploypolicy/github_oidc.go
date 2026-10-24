@@ -37,6 +37,7 @@ type Claims struct {
 	RepositoryOwner   string `json:"repository_owner"`
 	RepositoryOwnerID string `json:"repository_owner_id"`
 	Ref               string `json:"ref"`
+	SHA               string `json:"sha"`
 	Environment       string `json:"environment"`
 	WorkflowRef       string `json:"workflow_ref"`
 	JobWorkflowRef    string `json:"job_workflow_ref,omitempty"`
@@ -135,7 +136,7 @@ func (v *GitHubVerifier) Verify(ctx context.Context, token string, policy Policy
 	}
 	if parsed == nil || !parsed.Valid || claims.Subject == "" || claims.IssuedAt == nil || claims.ExpiresAt == nil ||
 		claims.Repository != repository || claims.RepositoryID != fmt.Sprint(repositoryID) || claims.RepositoryOwner == "" || claims.RepositoryOwnerID == "" ||
-		claims.Ref == "" || claims.Environment == "" || claims.WorkflowRef == "" || claims.EventName == "" || claims.RunID == "" || claims.RunAttempt == "" ||
+		claims.Ref == "" || !validCommitSHA(claims.SHA) || claims.Environment == "" || claims.WorkflowRef == "" || claims.EventName == "" || claims.RunID == "" || claims.RunAttempt == "" ||
 		!exactAudience(claims.Audience, policy.Audience) {
 		return Claims{}, ErrInvalidToken
 	}
@@ -147,6 +148,18 @@ func (v *GitHubVerifier) Verify(ctx context.Context, token string, policy Policy
 		return Claims{}, ErrInvalidToken
 	}
 	return *claims, nil
+}
+
+func validCommitSHA(value string) bool {
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	for _, char := range value {
+		if !(char >= '0' && char <= '9' || char >= 'a' && char <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func validSubject(claims *Claims, repository string) bool {

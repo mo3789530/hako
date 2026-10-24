@@ -22,16 +22,18 @@ type SoftwareCatalogDeployPolicyResult struct {
 }
 
 type SoftwareCatalogDeployPolicyVerification struct {
-	Valid            bool   `json:"valid"`
-	ExecutionEnabled bool   `json:"execution_enabled"`
-	Repository       string `json:"repository"`
-	RepositoryID     string `json:"repository_id"`
-	Ref              string `json:"ref"`
-	Environment      string `json:"environment"`
-	WorkflowRef      string `json:"workflow_ref"`
-	EventName        string `json:"event_name"`
-	RunID            string `json:"run_id"`
-	RunAttempt       string `json:"run_attempt"`
+	Valid                       bool   `json:"valid"`
+	ExecutionEnabled            bool   `json:"execution_enabled"`
+	EnvironmentApprovalVerified bool   `json:"environment_approval_verified"`
+	Repository                  string `json:"repository"`
+	RepositoryID                string `json:"repository_id"`
+	Ref                         string `json:"ref"`
+	SHA                         string `json:"sha"`
+	Environment                 string `json:"environment"`
+	WorkflowRef                 string `json:"workflow_ref"`
+	EventName                   string `json:"event_name"`
+	RunID                       string `json:"run_id"`
+	RunAttempt                  string `json:"run_attempt"`
 }
 
 func GetSoftwareCatalogDeployPolicy(ctx context.Context, baseURL, accessToken, tenantID, serviceID string, client *http.Client) (SoftwareCatalogDeployPolicyResult, error) {
@@ -118,7 +120,8 @@ func VerifySoftwareCatalogDeployPolicy(ctx context.Context, baseURL, accessToken
 	if response.StatusCode != http.StatusOK {
 		return result, readAPIError(response)
 	}
-	if err := decodeSoftwareCatalogJSON(response, &result); err != nil || !result.Valid || result.ExecutionEnabled || result.Repository == "" || result.RepositoryID == "" || result.Ref == "" || result.Environment == "" || result.WorkflowRef == "" {
+	if err := decodeSoftwareCatalogJSON(response, &result); err != nil || !result.Valid || result.ExecutionEnabled || !result.EnvironmentApprovalVerified ||
+		result.Repository == "" || result.RepositoryID == "" || result.Ref == "" || result.SHA == "" || result.Environment == "" || result.WorkflowRef == "" || result.RunID == "" || result.RunAttempt == "" {
 		return SoftwareCatalogDeployPolicyVerification{}, errors.New("invalid GitHub OIDC verification response")
 	}
 	return result, nil

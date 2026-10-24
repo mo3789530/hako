@@ -81,18 +81,23 @@ STS, issue cloud credentials, or authorize a deployment; API responses always
 set `execution_enabled` to `false`. When `require_human_approval` is enabled,
 the API requires a configured Tenant/Installation/Repository-scoped
 Environment approval verifier and returns `environment_approval_verified:true`
-only after it confirms a GitHub `required_reviewers` rule with at least one
-User or Team reviewer. Missing verifier configuration and GitHub API failures
-fail closed; a missing reviewer rule is denied. The reusable GitHub App client
-performs an exact Environment lookup with a short-lived `actions:read` token.
-The production API forwards the verification request over Control Plane mTLS
-to the GitHub Credential Broker. The broker re-resolves the active Tenant App,
-Catalog policy and Repository from DSQL, obtains the scoped token, and verifies
-the GitHub Environment rule; it never returns the token to the API. Configure
+only after it confirms the exact run attempt is active and matches the signed
+Repository, Owner, ref, commit SHA, workflow and event claims; the run has no
+pending deployment for that Environment and its approval history records an
+approved reviewer. The Environment must also have a `required_reviewers` rule
+with at least one User or Team reviewer and `prevent_self_review` enabled.
+Missing verifier configuration and GitHub API failures fail closed; a missing
+review or mismatched run is denied. The reusable GitHub App client performs
+the Environment, run-attempt, pending-deployment and approval-history lookups
+with a short-lived `actions:read` token. The production API forwards the
+verification request over Control Plane mTLS to the GitHub Credential Broker.
+The broker re-resolves the active Tenant App, Catalog policy and Repository
+from DSQL, obtains the scoped token, and verifies the run; it never returns the
+token to the API. Configure
 the existing `HAKO_TENANT_GITHUB_OAUTH_BROKER_*` settings on the API and the
 broker's existing AWS/DSQL access. If the broker is not configured, approval
-policies fail closed as unavailable. This check verifies configured
-protection, not that a specific deployment run has completed its approval. AWS trust/exchange,
+policies fail closed as unavailable. This check validates current GitHub run
+and approval state only; it does not exchange OIDC at AWS STS. AWS trust/exchange,
 deployment execution, Preview lifecycle/routing and production review remain
 disabled. See [Task 54](../tasks/task-54-preview-catalog-deploy.md).
 See [Task 54](../tasks/task-54-preview-catalog-deploy.md).

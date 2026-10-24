@@ -35,6 +35,7 @@ type softwareCatalogDeployPolicyVerificationResult struct {
 	Repository                  string `json:"repository"`
 	RepositoryID                string `json:"repository_id"`
 	Ref                         string `json:"ref"`
+	SHA                         string `json:"sha"`
 	Environment                 string `json:"environment"`
 	WorkflowRef                 string `json:"workflow_ref"`
 	EventName                   string `json:"event_name"`
@@ -45,7 +46,7 @@ type softwareCatalogDeployPolicyVerificationResult struct {
 func verifySoftwareCatalogDeployPolicy(pool transaction.Beginner, verifier interface {
 	Verify(context.Context, string, deploypolicy.Policy, string, int64) (deploypolicy.Claims, error)
 }, approvalVerifier interface {
-	Verify(context.Context, domain.TenantID, string, int64, int64, string) error
+	Verify(context.Context, domain.TenantID, string, int64, int64, deploypolicy.Claims) error
 }) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		user, ok := HakoUserFromContext(c)
@@ -92,7 +93,7 @@ func verifySoftwareCatalogDeployPolicy(pool transaction.Beginner, verifier inter
 			if approvalVerifier == nil {
 				return c.JSON(http.StatusServiceUnavailable, errorResponse{Error: errorBody{Code: "environment_approval_verifier_unavailable", Message: "GitHub Environment approval protection cannot be verified"}})
 			}
-			if err := approvalVerifier.Verify(c.Request().Context(), tenantID, serviceID, resolved.installationID, resolved.repositoryID, claims.Environment); err != nil {
+			if err := approvalVerifier.Verify(c.Request().Context(), tenantID, serviceID, resolved.installationID, resolved.repositoryID, claims); err != nil {
 				if errors.Is(err, deploypolicy.ErrUnavailable) {
 					return c.JSON(http.StatusServiceUnavailable, errorResponse{Error: errorBody{Code: "environment_approval_verifier_unavailable", Message: "GitHub Environment approval protection is temporarily unavailable"}})
 				}
@@ -101,7 +102,7 @@ func verifySoftwareCatalogDeployPolicy(pool transaction.Beginner, verifier inter
 			approvalVerified = true
 		}
 		return c.JSON(http.StatusOK, softwareCatalogDeployPolicyVerificationResult{Valid: true, ExecutionEnabled: false, EnvironmentApprovalVerified: approvalVerified,
-			Repository: claims.Repository, RepositoryID: claims.RepositoryID, Ref: claims.Ref, Environment: claims.Environment,
+			Repository: claims.Repository, RepositoryID: claims.RepositoryID, Ref: claims.Ref, SHA: claims.SHA, Environment: claims.Environment,
 			WorkflowRef: claims.WorkflowRef, EventName: claims.EventName, RunID: claims.RunID, RunAttempt: claims.RunAttempt})
 	}
 }

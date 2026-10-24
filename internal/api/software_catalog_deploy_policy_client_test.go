@@ -74,7 +74,7 @@ func TestVerifySoftwareCatalogDeployPolicyClientKeepsExecutionDisabled(t *testin
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Token != "header.payload.signature" {
 			t.Errorf("verification body token = %q, error=%v", body.Token, err)
 		}
-		_, _ = fmt.Fprint(w, `{"valid":true,"execution_enabled":false,"repository":"acme/payments","repository_id":"1234","ref":"refs/heads/main","environment":"production","workflow_ref":"acme/payments/.github/workflows/deploy.yml@refs/heads/main","event_name":"workflow_dispatch","run_id":"7","run_attempt":"1"}`)
+		_, _ = fmt.Fprint(w, `{"valid":true,"execution_enabled":false,"environment_approval_verified":true,"repository":"acme/payments","repository_id":"1234","ref":"refs/heads/main","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","environment":"production","workflow_ref":"acme/payments/.github/workflows/deploy.yml@refs/heads/main","event_name":"workflow_dispatch","run_id":"7","run_attempt":"1"}`)
 	}))
 	defer server.Close()
 	result, err := VerifySoftwareCatalogDeployPolicy(context.Background(), server.URL, "token", "tenant_a", "payments-api", "header.payload.signature", server.Client())

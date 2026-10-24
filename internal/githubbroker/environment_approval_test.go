@@ -24,6 +24,12 @@ func environmentApprovalTestPin() EnvironmentApprovalPin {
 		Repository: githubapp.RepositoryAccess{Owner: "acme", Name: "payments"}}
 }
 
+func environmentApprovalTestClaims() deploypolicy.Claims {
+	return deploypolicy.Claims{Repository: "acme/payments", RepositoryID: "81", RepositoryOwner: "acme", RepositoryOwnerID: "82",
+		RunID: "12", RunAttempt: "1", Ref: "refs/heads/main", SHA: strings.Repeat("a", 40),
+		WorkflowRef: "acme/payments/.github/workflows/deploy.yml@refs/heads/main", EventName: "workflow_dispatch", Environment: "production"}
+}
+
 func TestEnvironmentApprovalServiceRequiresControlPlaneAndRevalidatesPin(t *testing.T) {
 	t.Run("verifies configured environment and rechecks pin", func(t *testing.T) {
 		calls, reads := 0, 0
@@ -34,9 +40,9 @@ func TestEnvironmentApprovalServiceRequiresControlPlaneAndRevalidatesPin(t *test
 				t.Fatal("resolver received untrusted or unexpected resource coordinates")
 			}
 			return pin, nil
-		}, func(_ context.Context, got EnvironmentApprovalPin, environment string) error {
+		}, func(_ context.Context, got EnvironmentApprovalPin, claims deploypolicy.Claims) error {
 			reads++
-			if got != pin || environment != "production" {
+			if got != pin || claims.Environment != "production" {
 				t.Fatal("reader received an unexpected App or Environment binding")
 			}
 			return nil
@@ -44,7 +50,7 @@ func TestEnvironmentApprovalServiceRequiresControlPlaneAndRevalidatesPin(t *test
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := service.Verify(context.Background(), controlPlaneURI, pin.TenantID, pin.ServiceID, pin.Installation, pin.RepositoryID, "production"); err != nil {
+		if err := service.Verify(context.Background(), controlPlaneURI, pin.TenantID, pin.ServiceID, pin.Installation, pin.RepositoryID, environmentApprovalTestClaims()); err != nil {
 			t.Fatalf("Verify() error = %v", err)
 		}
 		if calls != 2 || reads != 1 {
@@ -63,11 +69,11 @@ func TestEnvironmentApprovalServiceRequiresControlPlaneAndRevalidatesPin(t *test
 				return changed, nil
 			}
 			return pin, nil
-		}, func(context.Context, EnvironmentApprovalPin, string) error { return nil })
+		}, func(context.Context, EnvironmentApprovalPin, deploypolicy.Claims) error { return nil })
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := service.Verify(context.Background(), controlPlaneURI, pin.TenantID, pin.ServiceID, pin.Installation, pin.RepositoryID, "production"); !errors.Is(err, ErrEnvironmentApprovalDenied) {
+		if err := service.Verify(context.Background(), controlPlaneURI, pin.TenantID, pin.ServiceID, pin.Installation, pin.RepositoryID, environmentApprovalTestClaims()); !errors.Is(err, ErrEnvironmentApprovalDenied) {
 			t.Fatalf("Verify() error = %v, want denied", err)
 		}
 	})
@@ -83,8 +89,8 @@ func TestEnvironmentApprovalServiceRequiresControlPlaneAndRevalidatesPin(t *test
 				service, _ := NewEnvironmentApprovalService(func(context.Context, domain.TenantID, string, int64, int64, string) (EnvironmentApprovalPin, error) {
 					return pin, nil
 				},
-					func(context.Context, EnvironmentApprovalPin, string) error { return tt.readErr })
-				if err := service.Verify(context.Background(), controlPlaneURI, pin.TenantID, pin.ServiceID, pin.Installation, pin.RepositoryID, "production"); !errors.Is(err, tt.wantErr) {
+					func(context.Context, EnvironmentApprovalPin, deploypolicy.Claims) error { return tt.readErr })
+				if err := service.Verify(context.Background(), controlPlaneURI, pin.TenantID, pin.ServiceID, pin.Installation, pin.RepositoryID, environmentApprovalTestClaims()); !errors.Is(err, tt.wantErr) {
 					t.Fatalf("Verify() error=%v, want %v", err, tt.wantErr)
 				}
 			})
@@ -96,8 +102,8 @@ func TestEnvironmentApprovalServiceRequiresControlPlaneAndRevalidatesPin(t *test
 		service, _ := NewEnvironmentApprovalService(func(context.Context, domain.TenantID, string, int64, int64, string) (EnvironmentApprovalPin, error) {
 			called = true
 			return EnvironmentApprovalPin{}, nil
-		}, func(context.Context, EnvironmentApprovalPin, string) error { return nil })
-		if err := service.Verify(context.Background(), "spiffe://hako/resource-plane/rp-1", "tenant_approval", "payments-api", 71, 81, "production"); !errors.Is(err, ErrEnvironmentApprovalDenied) {
+		}, func(context.Context, EnvironmentApprovalPin, deploypolicy.Claims) error { return nil })
+		if err := service.Verify(context.Background(), "spiffe://hako/resource-plane/rp-1", "tenant_approval", "payments-api", 71, 81, environmentApprovalTestClaims()); !errors.Is(err, ErrEnvironmentApprovalDenied) {
 			t.Fatalf("Verify() error = %v", err)
 		}
 		if called {
@@ -124,7 +130,7 @@ func TestEnvironmentApprovalHTTPClientUsesBoundedControlPlaneEndpoint(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := client.Verify(context.Background(), "tenant_approval", "payments-api", 71, 81, "production"); err != nil {
+	if err := client.Verify(context.Background(), "tenant_approval", "payments-api", 71, 81, environmentApprovalTestClaims()); err != nil {
 		t.Fatalf("Verify() error = %v", err)
 	}
 
@@ -138,7 +144,7 @@ func TestEnvironmentApprovalHTTPClientUsesBoundedControlPlaneEndpoint(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := client.Verify(context.Background(), "tenant_approval", "payments-api", 71, 81, "production"); !errors.Is(err, deploypolicy.ErrInvalidToken) {
+	if err := client.Verify(context.Background(), "tenant_approval", "payments-api", 71, 81, environmentApprovalTestClaims()); !errors.Is(err, deploypolicy.ErrInvalidToken) {
 		t.Fatalf("denied Verify() error = %v", err)
 	}
 }
@@ -149,7 +155,7 @@ func TestEnvironmentApprovalRouteRequiresControlPlaneIdentityAndReturnsOnlyVerif
 	service, err := NewEnvironmentApprovalService(func(context.Context, domain.TenantID, string, int64, int64, string) (EnvironmentApprovalPin, error) {
 		resolved++
 		return pin, nil
-	}, func(context.Context, EnvironmentApprovalPin, string) error { return nil })
+	}, func(context.Context, EnvironmentApprovalPin, deploypolicy.Claims) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +175,7 @@ func TestEnvironmentApprovalRouteRequiresControlPlaneIdentityAndReturnsOnlyVerif
 	}
 	controlPlane := &x509.Certificate{URIs: []*url.URL{{Scheme: "spiffe", Host: "hako", Path: "/control-plane"}}}
 	resourcePlane := &x509.Certificate{URIs: []*url.URL{{Scheme: "spiffe", Host: "hako", Path: "/resource-plane/rp-tokyo-01"}}}
-	body := `{"tenant_id":"tenant_approval","service_id":"payments-api","installation_id":71,"repository_id":81,"environment":"production"}`
+	body := `{"tenant_id":"tenant_approval","service_id":"payments-api","installation_id":71,"repository_id":81,"claims":{"repository":"acme/payments","repository_id":"81","repository_owner":"acme","repository_owner_id":"82","run_id":"12","run_attempt":"1","ref":"refs/heads/main","sha":"` + strings.Repeat("a", 40) + `","workflow_ref":"acme/payments/.github/workflows/deploy.yml@refs/heads/main","event_name":"workflow_dispatch","environment":"production"}}`
 	if got := invoke(nil, false, body); got.Code != http.StatusUnauthorized || resolved != 0 {
 		t.Fatalf("unauthenticated request status=%d resolved=%d", got.Code, resolved)
 	}
@@ -180,7 +186,7 @@ func TestEnvironmentApprovalRouteRequiresControlPlaneIdentityAndReturnsOnlyVerif
 	if got.Code != http.StatusOK || !strings.Contains(got.Body.String(), `"verified":true`) || strings.Contains(got.Body.String(), "token") || resolved != 2 {
 		t.Fatalf("Control Plane result status=%d body=%s resolved=%d", got.Code, got.Body.String(), resolved)
 	}
-	if got := invoke(controlPlane, true, `{"tenant_id":"tenant_approval","service_id":"payments-api","installation_id":71,"repository_id":81,"environment":"production","secret":"unexpected"}`); got.Code != http.StatusBadRequest {
+	if got := invoke(controlPlane, true, `{"tenant_id":"tenant_approval","service_id":"payments-api","installation_id":71,"repository_id":81,"claims":{"environment":"production"},"secret":"unexpected"}`); got.Code != http.StatusBadRequest {
 		t.Fatalf("unknown request field status=%d body=%s", got.Code, got.Body.String())
 	}
 }

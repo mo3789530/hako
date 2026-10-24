@@ -7,7 +7,10 @@ implemented locally; no STS exchange or deployment execution is enabled.
 Tenant-scoped Preview opt-in and transactional PR desired-state tracking are
 implemented locally, including stale GitHub `updated_at` fencing. Preview
 MicroVM allocation, Gateway routing, expiry and cleanup execution/retries, and
-production approval/IAM wiring remain incomplete. Priority: P3.
+production IAM wiring remain incomplete. The dormant approval verifier checks
+the live Actions run attempt against signed repository, owner, ref, SHA,
+workflow and event claims, checks pending deployments and approval history,
+and requires Environment reviewers with self-review disabled. Priority: P3.
 
 ## Goal
 
@@ -18,7 +21,7 @@ Add optional repository-level preview environments and service metadata/deploy p
 - Create one isolated Preview Run/Workspace per authorized PR commit; expose only through Gateway with expiring Tenant-scoped routing; tear down on PR close/merge/timeout.
 - Add a Tenant-scoped Software Catalog mapping service, owner/team, repository, runtime/language, dependencies, and production URL without duplicating secret data.
 - Add GitHub OIDC cloud identity only for trusted release/deploy Workloads; constrain cloud trust by Repository, ref/environment, and verified workflow claims. Local dormant policy verification is implemented; STS exchange and cloud identity are not.
-- Require explicit human approval and policy checks for production; untrusted forks and agents receive no deploy role.
+- Require explicit human approval and policy checks for production; untrusted forks and agents receive no deploy role. Local verification checks the exact live run and approval state but does not authorize deployment.
 
 ## Software Catalog metadata slice (2026-10-24)
 

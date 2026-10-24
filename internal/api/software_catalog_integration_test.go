@@ -175,12 +175,12 @@ type catalogEnvironmentApprovalVerifier struct{}
 
 type catalogUnavailableEnvironmentApprovalVerifier struct{}
 
-func (catalogUnavailableEnvironmentApprovalVerifier) Verify(context.Context, domain.TenantID, string, int64, int64, string) error {
+func (catalogUnavailableEnvironmentApprovalVerifier) Verify(context.Context, domain.TenantID, string, int64, int64, deploypolicy.Claims) error {
 	return deploypolicy.ErrUnavailable
 }
 
-func (catalogEnvironmentApprovalVerifier) Verify(_ context.Context, tenantID domain.TenantID, serviceID string, installationID, repositoryID int64, environment string) error {
-	if tenantID != "tenant_catalog_a" || serviceID != "payments-api" || installationID != 1101 || repositoryID != 11001 || environment != "production" {
+func (catalogEnvironmentApprovalVerifier) Verify(_ context.Context, tenantID domain.TenantID, serviceID string, installationID, repositoryID int64, claims deploypolicy.Claims) error {
+	if tenantID != "tenant_catalog_a" || serviceID != "payments-api" || installationID != 1101 || repositoryID != 11001 || claims.Environment != "production" {
 		return deploypolicy.ErrInvalid
 	}
 	return nil
@@ -190,6 +190,6 @@ func (catalogOIDCVerifier) Verify(_ context.Context, token string, policy deploy
 	if token != "synthetic-valid-token" || policy.Validate() != nil || repository != "acme/payments" || repositoryID != 11001 {
 		return deploypolicy.Claims{}, deploypolicy.ErrInvalidToken
 	}
-	return deploypolicy.Claims{Repository: repository, RepositoryID: "11001", Ref: "refs/heads/main", Environment: "production",
+	return deploypolicy.Claims{Repository: repository, RepositoryID: "11001", Ref: "refs/heads/main", SHA: strings.Repeat("a", 40), RepositoryOwner: "acme", RepositoryOwnerID: "11000", Environment: "production",
 		WorkflowRef: "acme/payments/.github/workflows/deploy.yml@refs/heads/main", EventName: "workflow_dispatch", RunID: "run-1", RunAttempt: "1"}, nil
 }

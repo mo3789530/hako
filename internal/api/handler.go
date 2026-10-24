@@ -55,7 +55,7 @@ type tenantMembershipResponse struct {
 }
 
 type GitHubEnvironmentApprovalVerifier interface {
-	Verify(context.Context, domain.TenantID, string, int64, int64, string) error
+	Verify(context.Context, domain.TenantID, string, int64, int64, deploypolicy.Claims) error
 }
 
 type WorkspaceCreateConfig struct {

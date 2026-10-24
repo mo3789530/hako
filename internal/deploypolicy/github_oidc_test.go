@@ -38,7 +38,7 @@ func TestGitHubVerifierChecksSignatureIssuerAudienceRepositoryRefEnvironmentAndW
 	verifier := NewGitHubVerifier(client, WithOIDCClock(func() time.Time { return now }))
 	policy := Policy{Enabled: true, Audience: AWSSTSAudience, AllowedRefs: []string{"refs/heads/main"}, Environments: []string{"production"},
 		AllowedWorkflowRefs: []string{"acme/api/.github/workflows/deploy.yml@refs/heads/main"}, RequireHumanApproval: true}
-	baseClaims := Claims{Repository: "acme/api", RepositoryID: "1234", RepositoryOwner: "acme", RepositoryOwnerID: "5678", Ref: "refs/heads/main", Environment: "production",
+	baseClaims := Claims{Repository: "acme/api", RepositoryID: "1234", RepositoryOwner: "acme", RepositoryOwnerID: "5678", Ref: "refs/heads/main", SHA: strings.Repeat("a", 40), Environment: "production",
 		WorkflowRef: "acme/api/.github/workflows/deploy.yml@refs/heads/main", EventName: "workflow_dispatch", RunID: "987", RunAttempt: "1",
 		RegisteredClaims: jwt.RegisteredClaims{Issuer: GitHubIssuer, Subject: "repo:acme/api:environment:production", Audience: jwt.ClaimStrings{AWSSTSAudience},
 			IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(5 * time.Minute))}}

@@ -10,6 +10,8 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,12 +21,14 @@ import (
 
 const environmentApprovalMaxBody = 4 << 10
 
+var environmentApprovalRunNumberPattern = regexp.MustCompile(`^[1-9][0-9]{0,18}$`)
+
 type environmentApprovalRequest struct {
-	TenantID     domain.TenantID `json:"tenant_id"`
-	ServiceID    string          `json:"service_id"`
-	Installation int64           `json:"installation_id"`
-	RepositoryID int64           `json:"repository_id"`
-	Environment  string          `json:"environment"`
+	TenantID     domain.TenantID     `json:"tenant_id"`
+	ServiceID    string              `json:"service_id"`
+	Installation int64               `json:"installation_id"`
+	RepositoryID int64               `json:"repository_id"`
+	Claims       deploypolicy.Claims `json:"claims"`
 }
 
 type environmentApprovalResponse struct {
@@ -51,7 +55,7 @@ func WithEnvironmentApproval(next http.Handler, service *EnvironmentApprovalServ
 			writeError(w, http.StatusServiceUnavailable)
 			return
 		}
-		err = service.Verify(r.Context(), caller, input.TenantID, input.ServiceID, input.Installation, input.RepositoryID, input.Environment)
+		err = service.Verify(r.Context(), caller, input.TenantID, input.ServiceID, input.Installation, input.RepositoryID, input.Claims)
 		switch {
 		case err == nil:
 			writeResponse(w, environmentApprovalResponse{Verified: true})
@@ -88,7 +92,10 @@ func decodeEnvironmentApprovalRequest(r *http.Request) (environmentApprovalReque
 	}
 	var trailing any
 	if decoder.Decode(&trailing) != io.EOF || input.TenantID == "" || !environmentApprovalServicePattern.MatchString(input.ServiceID) ||
-		input.Installation < 1 || input.RepositoryID < 1 || !environmentApprovalNameValid(input.Environment) {
+		input.Installation < 1 || input.RepositoryID < 1 || input.Claims.RepositoryID != strconv.FormatInt(input.RepositoryID, 10) ||
+		!environmentApprovalNameValid(input.Claims.Environment) || !environmentApprovalRunNumberPattern.MatchString(input.Claims.RunID) ||
+		!environmentApprovalRunNumberPattern.MatchString(input.Claims.RunAttempt) || input.Claims.SHA == "" || input.Claims.Ref == "" ||
+		input.Claims.WorkflowRef == "" || input.Claims.EventName == "" {
 		return environmentApprovalRequest{}, false
 	}
 	return input, true
@@ -107,11 +114,13 @@ func NewHTTPEnvironmentApprovalVerifier(baseURL string, client *http.Client) (*H
 	return &HTTPEnvironmentApprovalVerifier{base: validated.BaseURL, http: validated.Client}, nil
 }
 
-func (c *HTTPEnvironmentApprovalVerifier) Verify(ctx context.Context, tenant domain.TenantID, serviceID string, installationID, repositoryID int64, environment string) error {
-	if c == nil || c.http == nil || ctx == nil || tenant == "" || !environmentApprovalServicePattern.MatchString(serviceID) || installationID < 1 || repositoryID < 1 || !environmentApprovalNameValid(environment) {
+func (c *HTTPEnvironmentApprovalVerifier) Verify(ctx context.Context, tenant domain.TenantID, serviceID string, installationID, repositoryID int64, claims deploypolicy.Claims) error {
+	if c == nil || c.http == nil || ctx == nil || tenant == "" || !environmentApprovalServicePattern.MatchString(serviceID) || installationID < 1 || repositoryID < 1 ||
+		claims.RepositoryID != strconv.FormatInt(repositoryID, 10) || !environmentApprovalNameValid(claims.Environment) || claims.RunID == "" || claims.RunAttempt == "" ||
+		claims.SHA == "" || claims.Ref == "" || claims.WorkflowRef == "" || claims.EventName == "" {
 		return ErrEnvironmentApprovalDenied
 	}
-	body, err := json.Marshal(environmentApprovalRequest{TenantID: tenant, ServiceID: serviceID, Installation: installationID, RepositoryID: repositoryID, Environment: environment})
+	body, err := json.Marshal(environmentApprovalRequest{TenantID: tenant, ServiceID: serviceID, Installation: installationID, RepositoryID: repositoryID, Claims: claims})
 	if err != nil || len(body) > environmentApprovalMaxBody {
 		return deploypolicy.ErrUnavailable
 	}
