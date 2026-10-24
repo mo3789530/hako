@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mo3789530/hako/internal/agenttask"
 
@@ -123,6 +124,32 @@ func TestSetGitHubRepositoryAgentWritePolicyUsesTenantScopedDormantEndpoint(t *t
 	result, err := SetGitHubRepositoryAgentWritePolicy(context.Background(), server.URL, "test-token", "tenant_factory_api", 7001, 7002, policy, server.Client())
 	if err != nil || result.ExecutionEnabled || !reflect.DeepEqual(result.Policy, policy) {
 		t.Fatalf("SetGitHubRepositoryAgentWritePolicy() = %+v, error=%v", result, err)
+	}
+}
+
+func TestSetGitHubRepositoryAgentModelAccessUsesTenantScopedDormantEndpoint(t *testing.T) {
+	enabledAt := time.Date(2026, 10, 24, 1, 2, 3, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/v1/tenants/tenant_factory_api/github/installations/7001/repositories/7002/agent-model-access" ||
+			r.Header.Get("Authorization") != "Bearer test-token" {
+			t.Errorf("unexpected Agent model access request: %s %s", r.Method, r.URL.Path)
+		}
+		var got repositoryFactoryRequest
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil || got.Enabled == nil || !*got.Enabled {
+			t.Errorf("unexpected Agent model access request body: %+v, error=%v", got, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(GitHubRepositoryAgentModelAccessResult{
+			Access: githubregistry.AgentModelAccess{Enabled: true, EnabledAt: &enabledAt}, ExecutionEnabled: false,
+		})
+	}))
+	defer server.Close()
+	result, err := SetGitHubRepositoryAgentModelAccess(context.Background(), server.URL, "test-token", "tenant_factory_api", 7001, 7002, true, server.Client())
+	if err != nil || result.ExecutionEnabled || !result.Access.Enabled || result.Access.EnabledAt == nil || !result.Access.EnabledAt.Equal(enabledAt) {
+		t.Fatalf("SetGitHubRepositoryAgentModelAccess() = %+v, error=%v", result, err)
+	}
+	if _, err := SetGitHubRepositoryAgentModelAccess(nil, server.URL, "test-token", "tenant_factory_api", 7001, 7002, true, server.Client()); err == nil {
+		t.Fatal("accepted nil request context")
 	}
 }
 

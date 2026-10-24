@@ -200,7 +200,11 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   its configured timestamp. The API/CLI response explicitly reports
   `execution_enabled: false`; this gate does not schedule Agent Runs, resolve
   credentials for an Agent, or deliver Secret material. Migrations 000154–000155
-  add the persisted gate and state/timestamp consistency constraint.
+  add the persisted gate and state/timestamp consistency constraint. API
+  integration verifies missing-credential and cross-Tenant/Member denial,
+  Owner enable/disable, timestamp consistency, Factory opt-out reset, and
+  atomic audit events. API client and CLI parser tests cover the new endpoint
+  and explicit boolean flag.
 
 - Added a shared `internal/agenttask` canonical digest implementation used by
   Control Plane persistence, Broker validation, Resource Plane Worker, and

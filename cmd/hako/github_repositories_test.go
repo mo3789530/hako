@@ -18,6 +18,26 @@ func TestParseGitHubRepositoryAgentWritePolicyCLI(t *testing.T) {
 	}
 }
 
+func TestParseGitHubRepositoryAgentModelAccessCLI(t *testing.T) {
+	got, err := parseGitHubRepositoryAgentModelAccessCLI([]string{"set", "--tenant", " tenant_a ", "--installation", "4", "--repository", "8", "--enabled", "true"})
+	if err != nil || got.tenantID != "tenant_a" || got.installationID != 4 || got.repositoryID != 8 || !got.enabled {
+		t.Fatalf("parse Agent model access CLI = %+v error=%v", got, err)
+	}
+	disabled, err := parseGitHubRepositoryAgentModelAccessCLI([]string{"set", "--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--enabled", "false"})
+	if err != nil || disabled.enabled {
+		t.Fatalf("parse disabled Agent model access CLI = %+v error=%v", disabled, err)
+	}
+	for _, args := range [][]string{
+		{}, {"enable", "--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--enabled", "true"},
+		{"set", "--tenant", "tenant_a", "--installation", "0", "--repository", "8", "--enabled", "true"},
+		{"set", "--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--enabled", "yes"},
+	} {
+		if _, err := parseGitHubRepositoryAgentModelAccessCLI(args); err == nil {
+			t.Errorf("accepted invalid Agent model access CLI args %q", args)
+		}
+	}
+}
+
 func TestParseGitHubRepositoryPreviewsCLI(t *testing.T) {
 	got, err := parseGitHubRepositoryPreviewsCLI([]string{"list", "--tenant", " tenant_a ", "--installation", "4", "--repository", "8", "--limit", "25"})
 	if err != nil || got.tenantID != "tenant_a" || got.installationID != 4 || got.repositoryID != 8 || got.limit != 25 {
