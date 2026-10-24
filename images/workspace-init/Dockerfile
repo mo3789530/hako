@@ -1,6 +1,6 @@
 # code-server is fetched as a versioned ARM64 standalone release. Keep the
 # download tools out of the final Workspace image.
-FROM public.ecr.aws/lambda/microvms:al2023-minimal AS code-server
+FROM --platform=linux/arm64 public.ecr.aws/lambda/microvms:al2023-minimal@sha256:b6a34591182b4a1969f57eb24c812582d0c52dc2e40b75b73c0df371bb7aef82 AS code-server
 ARG CODE_SERVER_VERSION
 ARG CODE_SERVER_SHA256
 RUN test -n "${CODE_SERVER_VERSION}" \
@@ -16,7 +16,7 @@ RUN test -n "${CODE_SERVER_VERSION}" \
     && rm -f /tmp/code-server.tar.gz \
     && dnf clean all
 
-FROM public.ecr.aws/lambda/microvms:al2023-minimal AS nerdctl
+FROM --platform=linux/arm64 public.ecr.aws/lambda/microvms:al2023-minimal@sha256:b6a34591182b4a1969f57eb24c812582d0c52dc2e40b75b73c0df371bb7aef82 AS nerdctl
 ARG NERDCTL_FULL_VERSION
 ARG NERDCTL_FULL_SHA256
 COPY nerdctl-full-linux-arm64.tar.gz /tmp/nerdctl-full-linux-arm64.tar.gz
@@ -33,7 +33,7 @@ RUN case "${NERDCTL_FULL_VERSION}" in ''|*[!0-9.]* ) exit 1 ;; esac \
     && /opt/hako-nerdctl/bin/nerdctl --version | grep -Fx "nerdctl version ${NERDCTL_FULL_VERSION}" \
     && rm -f /tmp/nerdctl-full-linux-arm64.tar.gz
 
-FROM public.ecr.aws/lambda/microvms:al2023-minimal
+FROM --platform=linux/arm64 public.ecr.aws/lambda/microvms:al2023-minimal@sha256:b6a34591182b4a1969f57eb24c812582d0c52dc2e40b75b73c0df371bb7aef82
 ARG HAKO_WORKSPACE_SERVICES_ENABLED=false
 
 # Pin the helper RPM version at image build time. The build fails closed if a

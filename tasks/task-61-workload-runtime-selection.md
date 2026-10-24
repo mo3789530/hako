@@ -54,3 +54,12 @@ Dockerfile snapshot build is not evidence for nested Docker/containerd/Podman,
 Compose, cgroup limits, Tenant isolation, cold-start, cost, or network policy.
 No image build, AWS API call, or infrastructure change was performed in this
 refresh.
+
+## Image base digest pinning (2026-10-24)
+
+Pinned the Workload Agent Go toolchain, Workload Agent Lambda MicroVM base,
+and all Workspace init Lambda MicroVM stages to verified ARM64 child-manifest
+digests resolved from the official Docker Hub and ECR Public versioned tags.
+This makes Dockerfile base inputs immutable, but does not satisfy the
+image/container/network PoC; the local x86_64 host still cannot execute ARM64
+build steps. No AWS resources were created or changed.

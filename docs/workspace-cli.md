@@ -235,6 +235,12 @@ they can be moved; updating an image requires reviewing the release version and
 replacing the digest in the Service Catalog. Digest pinning does not by itself
 verify the image at runtime or prove Lambda MicroVM compatibility.
 
+The Workload Agent and Workspace init MicroVM Dockerfiles also pin the ARM64
+Lambda MicroVM base by child-manifest digest. The Workload Agent pins its Go
+toolchain image the same way. A base-image update must review the upstream tag,
+platform manifest, and digest together; local packaging still does not prove an
+AWS MicroVM build or runtime.
+
 ## Security and failure behavior
 
 - Missing login credentials or required endpoint configuration fail before a
