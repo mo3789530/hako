@@ -44,6 +44,11 @@ type GitHubRepositoryAgentWritePolicyResult struct {
 	ExecutionEnabled bool                  `json:"execution_enabled"`
 }
 
+type GitHubRepositoryAgentModelAccessResult struct {
+	Access           githubregistry.AgentModelAccess `json:"agent_model_access"`
+	ExecutionEnabled bool                            `json:"execution_enabled"`
+}
+
 // SetGitHubRepositoryAgentWritePolicy stores an Owner/Admin-approved
 // repository branch/PR write ceiling. It does not enable Agent execution.
 func SetGitHubRepositoryAgentWritePolicy(ctx context.Context, baseURL, accessToken, tenantID string, installationID, repositoryID int64,
@@ -79,6 +84,45 @@ func SetGitHubRepositoryAgentWritePolicy(ctx context.Context, baseURL, accessTok
 	if json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result) != nil ||
 		result.ExecutionEnabled || !reflect.DeepEqual(result.Policy, policy) {
 		return GitHubRepositoryAgentWritePolicyResult{}, errors.New("invalid GitHub Repository Agent write policy response")
+	}
+	return result, nil
+}
+
+// SetGitHubRepositoryAgentModelAccess configures a default-off, per-Repository
+// gate for future Native Agent model credential use. It does not enable
+// scheduling or return credential material.
+func SetGitHubRepositoryAgentModelAccess(ctx context.Context, baseURL, accessToken, tenantID string, installationID, repositoryID int64,
+	enabled bool, client *http.Client) (GitHubRepositoryAgentModelAccessResult, error) {
+	var result GitHubRepositoryAgentModelAccessResult
+	if ctx == nil || !validTenantID(tenantID) || strings.TrimSpace(accessToken) == "" || installationID <= 0 || repositoryID <= 0 {
+		return result, errors.New("valid Tenant, Installation, Repository, and access token are required")
+	}
+	path := "/v1/tenants/" + url.PathEscape(tenantID) + "/github/installations/" + strconv.FormatInt(installationID, 10) +
+		"/repositories/" + strconv.FormatInt(repositoryID, 10) + "/agent-model-access"
+	endpoint, err := apiEndpoint(baseURL, path)
+	if err != nil {
+		return result, err
+	}
+	body, _ := json.Marshal(repositoryFactoryRequest{Enabled: &enabled})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return result, errors.New("create GitHub Repository Agent model access request")
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	response, err := safeAPIClient(client).Do(req)
+	if err != nil {
+		return result, errors.New("GitHub Repository Agent model access request failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return result, readAPIError(response)
+	}
+	decoder := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&result) != nil || result.ExecutionEnabled || result.Access.Enabled != enabled ||
+		(enabled && result.Access.EnabledAt == nil) || (!enabled && result.Access.EnabledAt != nil) {
+		return GitHubRepositoryAgentModelAccessResult{}, errors.New("invalid GitHub Repository Agent model access response")
 	}
 	return result, nil
 }

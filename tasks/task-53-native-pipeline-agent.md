@@ -193,6 +193,14 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   existing Actions Runner broker resolver is purpose-pinned to `claude_action`,
   and Agent scheduling remains disabled until its independent runtime policy
   and executor are implemented.
+- Added a default-off per-Repository `agent_model_access_enabled` gate. An
+  Owner/Admin can enable it only when the Repository Factory is enabled and the
+  Tenant has an active, approved Anthropic `native_agent` credential binding.
+  Disabling Factory opt-in clears this gate, and disabling model access clears
+  its configured timestamp. The API/CLI response explicitly reports
+  `execution_enabled: false`; this gate does not schedule Agent Runs, resolve
+  credentials for an Agent, or deliver Secret material. Migrations 000154–000155
+  add the persisted gate and state/timestamp consistency constraint.
 
 - Added a shared `internal/agenttask` canonical digest implementation used by
   Control Plane persistence, Broker validation, Resource Plane Worker, and

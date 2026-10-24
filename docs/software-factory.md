@@ -336,6 +336,24 @@ and its Tenant credential and network/resource controls are deployed. Disabling
 the Repository Factory opt-in clears this policy. See the
 [Task 53 implementation record](../tasks/task-53-native-pipeline-agent.md).
 
+Tenant Owners/Admins can separately configure whether a Factory-enabled
+Repository may use the Tenant's approved Anthropic `native_agent` credential
+in a future Native Agent runtime:
+
+```bash
+hako github repository agent-model-access set \
+  --tenant tnt_example \
+  --installation 12345 \
+  --repository 67890 \
+  --enabled true
+```
+
+The setting is default-off and requires both Factory opt-in and an active,
+approved Tenant credential with purpose `native_agent`. Disabling Factory
+opt-in clears the setting. This configuration does not enable Agent scheduling,
+credential resolution, or Secret delivery; the API returns
+`execution_enabled: false` until those runtime controls are implemented.
+
 Tenant service metadata is tracked separately from built-in Workspace Service
 templates. Owners/Admins can maintain a Software Catalog entry bound to a
 Tenant-registered GitHub Repository, with service owner/team, language,

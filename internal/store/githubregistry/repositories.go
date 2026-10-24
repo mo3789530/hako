@@ -36,6 +36,11 @@ type Repository struct {
 	SynchronizedAt         time.Time       `json:"synchronized_at"`
 }
 
+type AgentModelAccess struct {
+	Enabled   bool       `json:"enabled"`
+	EnabledAt *time.Time `json:"enabled_at,omitempty"`
+}
+
 // ActionsRunnerWorkflowPolicy contains only an explicit workflow/ref/event and
 // label allowlist. It has no command, Secret, image, IAM role, or network
 // configuration fields.
@@ -187,6 +192,8 @@ func SetRepositoryFactoryEnabled(ctx context.Context, tx pgx.Tx, tenantID domain
 	err := tx.QueryRow(ctx, `UPDATE tenant_github_repositories r
 		SET factory_enabled = $4,
 		    agent_write_policy = CASE WHEN $4 THEN r.agent_write_policy ELSE NULL END,
+		    agent_model_access_enabled = CASE WHEN $4 THEN r.agent_model_access_enabled ELSE false END,
+		    agent_model_access_enabled_at = CASE WHEN $4 THEN r.agent_model_access_enabled_at ELSE NULL END,
 		    factory_enabled_at = CASE WHEN $4 THEN COALESCE(r.factory_enabled_at, $5) ELSE NULL END
 		FROM github_app_installation_bindings b
 		JOIN tenant_github_installations i ON i.tenant_id = b.tenant_id AND i.installation_id = b.installation_id
@@ -217,6 +224,40 @@ func SetRepositoryFactoryEnabled(ctx context.Context, tx pgx.Tx, tenantID domain
 		return Repository{}, fmt.Errorf("update Tenant repository factory setting: %w", err)
 	}
 	return repository, nil
+}
+
+// SetRepositoryAgentModelAccess is a per-Repository, default-off gate for a
+// future Native Agent model credential resolver. It never enables scheduling
+// or returns credential material.
+func SetRepositoryAgentModelAccess(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, installationID, repositoryID int64,
+	enabled bool, configuredAt time.Time) (AgentModelAccess, error) {
+	if ctx == nil || tx == nil || tenantID == "" || installationID <= 0 || repositoryID <= 0 || configuredAt.IsZero() {
+		return AgentModelAccess{}, ErrRepositoryNotFound
+	}
+	var result AgentModelAccess
+	err := tx.QueryRow(ctx, `UPDATE tenant_github_repositories r
+		SET agent_model_access_enabled=$4,
+		    agent_model_access_enabled_at=CASE WHEN $4 THEN COALESCE(r.agent_model_access_enabled_at,$5) ELSE NULL END
+		FROM github_app_installation_bindings b
+		JOIN tenant_github_installations i ON i.tenant_id=b.tenant_id AND i.installation_id=b.installation_id
+		WHERE r.tenant_id=$1 AND r.installation_id=$2 AND r.github_repository_id=$3
+		  AND b.tenant_id=r.tenant_id AND b.installation_id=r.installation_id
+		  AND i.status='active' AND i.suspended_at IS NULL
+		  AND (NOT $4 OR (r.factory_enabled=TRUE AND r.factory_enabled_at IS NOT NULL AND EXISTS (
+			SELECT 1 FROM tenant_model_credentials c
+			JOIN tenant_model_credential_bindings cb ON cb.tenant_id=c.tenant_id AND cb.id=c.binding_id
+				AND cb.provider=c.provider AND cb.purpose=c.purpose AND cb.status='approved'
+			WHERE c.tenant_id=r.tenant_id AND c.provider='anthropic' AND c.purpose='native_agent' AND c.status='active'
+		  )))
+		RETURNING r.agent_model_access_enabled,r.agent_model_access_enabled_at`, tenantID, installationID, repositoryID, enabled, configuredAt.UTC()).
+		Scan(&result.Enabled, &result.EnabledAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AgentModelAccess{}, ErrRepositoryNotFound
+	}
+	if err != nil {
+		return AgentModelAccess{}, fmt.Errorf("configure Repository Agent model access: %w", err)
+	}
+	return result, nil
 }
 
 // SetRepositoryAgentWritePolicy stores a narrow, dormant policy for future

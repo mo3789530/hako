@@ -243,3 +243,44 @@ func manageGitHubRepositoryAgentWritePolicyCLI(args []string) (api.GitHubReposit
 	return api.SetGitHubRepositoryAgentWritePolicy(context.Background(), strings.TrimSpace(os.Getenv("HAKO_API_URL")), token,
 		input.tenantID, input.installationID, input.repositoryID, policy, nil)
 }
+
+type githubRepositoryAgentModelAccessCLIInput struct {
+	tenantID       string
+	installationID int64
+	repositoryID   int64
+	enabled        bool
+}
+
+func parseGitHubRepositoryAgentModelAccessCLI(args []string) (githubRepositoryAgentModelAccessCLIInput, error) {
+	var input githubRepositoryAgentModelAccessCLIInput
+	if len(args) == 0 || args[0] != "set" {
+		return input, errors.New("action must be set")
+	}
+	enabledText := ""
+	flags := flag.NewFlagSet("github repository agent-model-access set", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&input.tenantID, "tenant", "", "Tenant ID")
+	flags.Int64Var(&input.installationID, "installation", 0, "GitHub Installation ID")
+	flags.Int64Var(&input.repositoryID, "repository", 0, "GitHub Repository ID")
+	flags.StringVar(&enabledText, "enabled", "", "Whether Native Agent model access is enabled")
+	if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 || strings.TrimSpace(input.tenantID) == "" ||
+		input.installationID <= 0 || input.repositoryID <= 0 || (enabledText != "true" && enabledText != "false") {
+		return githubRepositoryAgentModelAccessCLIInput{}, errors.New("--tenant, positive --installation, positive --repository, and --enabled true|false are required")
+	}
+	input.tenantID = strings.TrimSpace(input.tenantID)
+	input.enabled = enabledText == "true"
+	return input, nil
+}
+
+func manageGitHubRepositoryAgentModelAccessCLI(args []string) (api.GitHubRepositoryAgentModelAccessResult, error) {
+	input, err := parseGitHubRepositoryAgentModelAccessCLI(args)
+	if err != nil {
+		return api.GitHubRepositoryAgentModelAccessResult{}, err
+	}
+	token, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
+	if err != nil {
+		return api.GitHubRepositoryAgentModelAccessResult{}, err
+	}
+	return api.SetGitHubRepositoryAgentModelAccess(context.Background(), strings.TrimSpace(os.Getenv("HAKO_API_URL")), token,
+		input.tenantID, input.installationID, input.repositoryID, input.enabled, nil)
+}
