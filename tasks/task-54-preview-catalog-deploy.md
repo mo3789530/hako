@@ -178,6 +178,11 @@ Add optional repository-level preview environments and service metadata/deploy p
   and rejection of EC2 runtime or unknown secret-bearing fields before an API
   request. These tests cover the metadata surface only; they do not claim
   Preview runtime allocation or production deployment.
+- Added the same local HTTP coverage for deploy-policy `show`, `set`, and
+  `verify`: Tenant route and Bearer auth, valid allowlist payload, short-lived
+  synthetic OIDC-token handoff, and response checks that deployment remains
+  disabled and the token is not echoed to CLI output. No STS exchange or
+  deployment execution is enabled.
 
 ## Acceptance criteria
 

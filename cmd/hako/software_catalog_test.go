@@ -125,6 +125,73 @@ func TestSoftwareCatalogCLIRejectsUnknownOrInvalidMetadataBeforeAPI(t *testing.T
 	}
 }
 
+func TestSoftwareCatalogDeployPolicyCLIKeepsExecutionDormant(t *testing.T) {
+	previousGetter := cliCredentialGetter
+	cliCredentialGetter = workspaceShellCredentials(`{"access_token":"deploy-policy-access","token_type":"Bearer","expires_in":3600,"stored_at":"` + time.Now().UTC().Format(time.RFC3339) + `"}`)
+	t.Cleanup(func() { cliCredentialGetter = previousGetter })
+	policy := `{"enabled":true,"audience":"sts.amazonaws.com","allowed_refs":["refs/heads/main"],"environments":["production"],"allowed_workflow_refs":["acme/payments/.github/workflows/deploy.yml@refs/heads/main"],"require_human_approval":true}`
+	verification := `{"valid":true,"execution_enabled":false,"environment_approval_verified":true,"repository":"acme/payments","repository_id":"99","ref":"refs/heads/main","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","environment":"production","workflow_ref":"acme/payments/.github/workflows/deploy.yml@refs/heads/main","event_name":"push","run_id":"1234","run_attempt":"1"}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer deploy-policy-access" {
+			t.Errorf("authorization = %q", r.Header.Get("Authorization"))
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		base := "/v1/tenants/tenant_catalog/software-catalog/payments-api/deploy-policy"
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == base:
+			_, _ = fmt.Fprintf(w, `{"service_id":"payments-api","policy":%s,"execution_enabled":false}`, policy)
+		case r.Method == http.MethodPut && r.URL.Path == base:
+			var request map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request["audience"] != "sts.amazonaws.com" {
+				t.Errorf("policy payload = %#v, error=%v", request, err)
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			_, _ = fmt.Fprintf(w, `{"service_id":"payments-api","policy":%s,"execution_enabled":false}`, policy)
+		case r.Method == http.MethodPost && r.URL.Path == base+"/verify":
+			var request struct {
+				Token string `json:"token"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Token != "synthetic-github-oidc-token" {
+				t.Errorf("verification token = %q, error=%v", request.Token, err)
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			_, _ = fmt.Fprint(w, verification)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HAKO_API_URL", server.URL)
+
+	policyPath := filepath.Join(t.TempDir(), "policy.json")
+	if err := os.WriteFile(policyPath, []byte(policy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tokenPath := filepath.Join(t.TempDir(), "oidc-token")
+	if err := os.WriteFile(tokenPath, []byte("synthetic-github-oidc-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"show", "--tenant", "tenant_catalog", "--service", "payments-api"},
+		{"set", "--tenant", "tenant_catalog", "--service", "payments-api", "--file", policyPath},
+		{"verify", "--tenant", "tenant_catalog", "--service", "payments-api", "--token-file", tokenPath},
+	} {
+		var output bytes.Buffer
+		if err := runSoftwareCatalogDeployPolicyCLI(args, &output); err != nil {
+			t.Fatalf("runSoftwareCatalogDeployPolicyCLI(%q): %v", args, err)
+		}
+		if strings.Contains(output.String(), "synthetic-github-oidc-token") || strings.Contains(output.String(), `"execution_enabled":true`) {
+			t.Fatalf("deploy policy output leaked a token or enabled execution: %q", output.String())
+		}
+	}
+}
+
 func TestParseSoftwareCatalogDeployPolicyCLI(t *testing.T) {
 	for _, tc := range []struct {
 		args []string
