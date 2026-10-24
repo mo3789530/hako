@@ -120,11 +120,13 @@ Add optional repository-level preview environments and service metadata/deploy p
   Tenant/Installation/Repository/PR/generation identity, and binding rejects a
   different provider-returned Workspace ID.
   `internal/previewprovision.Worker` now runs the claim/provision/bind/retry
-  loop through an injected provisioner and compensates a stale result. Local
-  PostgreSQL integration covers retry, binding, and compensation after a PR
-  head changes during provisioning; unit tests cover bounded config and fixed
-  error classification. The focused target reports 72.4% package coverage. A
-  concrete Resource Plane command, deployed worker/DSQL role grant, Lambda
+  loop through an injected provisioner, compensating partial provider
+  resources after a failed attempt and stale results after a generation race.
+  Local PostgreSQL integration covers partial MicroVM creation followed by
+  route-publish failure and cleanup, retry, binding, and compensation after a
+  PR head changes during provisioning; unit tests cover bounded config and
+  fixed error classification. A concrete Resource Plane command, deployed
+  worker/DSQL role grant, Lambda
   MicroVM allocation, and Gateway route are not wired yet.
 - Migrations 000161–000162 add claim/lease/retry state and a bounded due index
   for each retired runtime generation. `previewcleanup.RuntimeWorker` sends

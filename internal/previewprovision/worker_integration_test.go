@@ -48,8 +48,9 @@ func TestWorkerFencesAndCompensatesStalePreviewProvision(t *testing.T) {
 
 	clock := now.Add(time.Second)
 	provisioner := &integrationProvisioner{
-		failures: []error{ErrMicroVMLaunch},
-		binding:  previewsBinding("rp_preview_test", "ws_preview_test", "microvm_preview_test", "route_preview_test"),
+		failures:        []error{ErrGatewayRoutePublish},
+		failureBindings: []previewstore.RuntimeBinding{{ResourcePlaneID: "rp_preview_test", MicroVMID: "microvm_orphan_preview_test"}},
+		binding:         previewsBinding("rp_preview_test", "ws_preview_test", "microvm_preview_test", "route_preview_test"),
 	}
 	claimSequence := 0
 	worker := Worker{
@@ -61,8 +62,11 @@ func TestWorkerFencesAndCompensatesStalePreviewProvision(t *testing.T) {
 		},
 	}
 	failed, err := worker.RunOnce(ctx)
-	if err != nil || failed.Claimed != 1 || failed.RetryScheduled != 1 {
-		t.Fatalf("failed provider attempt: stats=%+v err=%v", failed, err)
+	if err != nil || failed.Claimed != 1 || failed.RetryScheduled != 1 || failed.Compensated != 1 || provisioner.compensated != 1 {
+		t.Fatalf("failed provider attempt: stats=%+v compensated=%d err=%v", failed, provisioner.compensated, err)
+	}
+	if got := provisioner.compensatedBindings[0]; got.ResourcePlaneID != "rp_preview_test" || got.MicroVMID != "microvm_orphan_preview_test" || got.GatewayRouteID != "" {
+		t.Fatalf("partial provider binding passed to compensation = %+v", got)
 	}
 	var retryAt time.Time
 	if err := pool.QueryRow(ctx, `SELECT provision_next_attempt_at FROM repository_preview_runtime_allocations
@@ -114,16 +118,18 @@ func TestWorkerFencesAndCompensatesStalePreviewProvision(t *testing.T) {
 	}
 	clock = clock.Add(2 * time.Second)
 	stale, err := worker.RunOnce(ctx)
-	if err != nil || stale.Claimed != 1 || stale.StaleClaim != 1 || stale.Compensated != 1 || provisioner.compensated != 1 {
+	if err != nil || stale.Claimed != 1 || stale.StaleClaim != 1 || stale.Compensated != 1 || provisioner.compensated != 2 {
 		t.Fatalf("stale provider result was not compensated: stats=%+v compensated=%d err=%v", stale, provisioner.compensated, err)
 	}
 }
 
 type integrationProvisioner struct {
-	failures    []error
-	binding     previewstore.RuntimeBinding
-	onProvision func(previewstore.ProvisionJob)
-	compensated int
+	failures            []error
+	failureBindings     []previewstore.RuntimeBinding
+	binding             previewstore.RuntimeBinding
+	onProvision         func(previewstore.ProvisionJob)
+	compensated         int
+	compensatedBindings []previewstore.RuntimeBinding
 }
 
 func (p *integrationProvisioner) Provision(_ context.Context, job previewstore.ProvisionJob) (previewstore.RuntimeBinding, error) {
@@ -133,15 +139,24 @@ func (p *integrationProvisioner) Provision(_ context.Context, job previewstore.P
 	if len(p.failures) > 0 {
 		err := p.failures[0]
 		p.failures = p.failures[1:]
-		return previewstore.RuntimeBinding{}, err
+		var binding previewstore.RuntimeBinding
+		if len(p.failureBindings) > 0 {
+			binding = p.failureBindings[0]
+			p.failureBindings = p.failureBindings[1:]
+			if binding.WorkspaceID == "" && binding.MicroVMID != "" {
+				binding.WorkspaceID = job.RuntimeWorkspaceID
+			}
+		}
+		return binding, err
 	}
 	binding := p.binding
 	binding.WorkspaceID = job.RuntimeWorkspaceID
 	return binding, nil
 }
 
-func (p *integrationProvisioner) Compensate(context.Context, previewstore.ProvisionJob, previewstore.RuntimeBinding) error {
+func (p *integrationProvisioner) Compensate(_ context.Context, _ previewstore.ProvisionJob, binding previewstore.RuntimeBinding) error {
 	p.compensated++
+	p.compensatedBindings = append(p.compensatedBindings, binding)
 	return nil
 }
 

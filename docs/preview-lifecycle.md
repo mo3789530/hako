@@ -121,12 +121,15 @@ stale or mismatched result is rejected and its caller must compensate any
 provider resources it already created. Provision failures use fixed error
 classes and bounded exponential retry. `internal/previewprovision.Worker` now
 executes that claim/provision/bind/retry state machine through an injected
-Resource Plane provisioner; if a result loses its generation fence, it invokes
-the provisioner's idempotent compensation method. PostgreSQL lifecycle
-integration drives a fake provisioner through failure/backoff, successful
-binding, and a PR-head change during provisioning that rejects and compensates
-the stale result. The focused target reports 72.4% statement coverage for the
-provisioner package. A concrete Resource Plane command, provision-worker
+Resource Plane provisioner. If a failed attempt returns a partial provider
+binding, the worker compensates those resources before scheduling retry; a
+compensation failure leaves the claim for lease-based recovery instead of
+pretending cleanup succeeded. If a successful result loses its generation
+fence, it also invokes idempotent compensation. PostgreSQL lifecycle
+integration drives a fake provisioner through partial MicroVM creation followed
+by route-publish failure and cleanup, retry/backoff, successful binding, and a
+PR-head change during provisioning that rejects and compensates the stale
+result. A concrete Resource Plane command, provision-worker
 deployment and DSQL role grant, Lambda MicroVM API call, and Gateway route
 publisher are still not wired, so no Preview runtime is allocated.
 

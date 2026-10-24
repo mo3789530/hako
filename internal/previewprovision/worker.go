@@ -26,8 +26,10 @@ var (
 )
 
 // Provisioner routes all mutations through the authorized Resource Plane. It
-// must be idempotent for a Preview generation. Compensate must remove exactly
-// the binding returned by Provision and be safe if resources are already gone.
+// must be idempotent for a Preview generation. If Provision returns an error
+// after creating any provider resource, it must return the partial binding so
+// Compensate can remove exactly those resources. Compensate must accept partial
+// bindings and be safe if resources are already gone.
 type Provisioner interface {
 	Provision(context.Context, previews.ProvisionJob) (previews.RuntimeBinding, error)
 	Compensate(context.Context, previews.ProvisionJob, previews.RuntimeBinding) error
@@ -110,6 +112,15 @@ func (w Worker) RunOnce(ctx context.Context) (Stats, error) {
 		cancel()
 		completedAt := now().UTC()
 		if provisionErr != nil {
+			if hasProviderIdentity(binding) {
+				compensationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+				compensationErr := w.Provisioner.Compensate(compensationCtx, job, binding)
+				cancel()
+				if compensationErr != nil {
+					return stats, ErrCompensationFailed
+				}
+				stats.Compensated++
+			}
 			_, updated, err := recordFailure(ctx, w.Pool, job, completedAt, classify(provisionErr))
 			if err != nil {
 				return stats, ErrFailureRecording
@@ -141,6 +152,10 @@ func (w Worker) RunOnce(ctx context.Context) (Stats, error) {
 		stats.Bound++
 	}
 	return stats, nil
+}
+
+func hasProviderIdentity(binding previews.RuntimeBinding) bool {
+	return binding.ResourcePlaneID != "" || binding.WorkspaceID != "" || binding.MicroVMID != "" || binding.GatewayRouteID != ""
 }
 
 func recordFailure(ctx context.Context, pool transaction.Beginner, job previews.ProvisionJob, now time.Time, code string) (time.Time, bool, error) {
