@@ -192,6 +192,11 @@ Repository. The proposal remains untrusted. Hako must never merge or deploy it.
   `hako workload publication submit <tenant-id> <agent-run-id>`; the focused
   PostgreSQL API E2E verifies latest-attempt forwarding, requester ownership,
   Owner/Admin-compatible access rules, and cross-Tenant/requester denial.
+  CLI tests now cover invalid input, missing login/API URL, API rejection,
+  output failure, safe status rendering, and the `202 verification_queued`
+  response without artifact/token details. The `show` and `submit` command
+  handlers are each 93.8% statement-covered; `cmd/hako` is 65.3% covered in
+  the current unit suite, and focused race tests pass.
 - Failed verifier attempts can be retried at most twice after cleanup
   confirmation. Retry reuses the same verifier Run and immutable Agent
   proposal/base/App/Repository/Resource Plane pins, allocates a new attempt and
