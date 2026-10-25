@@ -16,6 +16,12 @@ confirmed positive egress on the ordinary bridge and blocked egress on an
 internal bridge. These are local/fake/host-Podman acceptances, not proof of
 ARM64 nerdctl or Lambda MicroVM behavior. PostgreSQL remained running.
 
+After adding the Issue-command-to-Native-Agent proposal composition, reran
+`make test-integration-local`; all packages passed, including the new
+PostgreSQL-backed Agent task/proposal path. The API OCI image smoke also passed
+with Podman (`/healthz` 200 and unauthenticated `/v1/health` 401). Neither check
+exercises AWS Lambda Web Adapter event conversion or a deployed MicroVM.
+
 Coverage follow-up (2026-10-25): `make test-coverage` passed with Podman
 required and reported 70.8% repository-wide statement coverage. The separate
 API package run reported 75.6%; new tests pin six invalid-request JSON error
