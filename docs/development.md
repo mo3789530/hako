@@ -29,7 +29,7 @@ make terraform-validate
 
 別の使い捨てPostgreSQLを使う場合は、`HAKO_TEST_DATABASE_URL`を設定して`make test-integration`を実行します。接続先のDBユーザーにはschema作成・削除権限が必要です。integration testはbuild tag付きのため、通常の`go test ./...`では実行されません。GitHub ActionsもPostgreSQL serviceを使い、relation lockの共有枯渇を避けるため全packageを直列実行します。
 
-coverageは`make test-coverage HAKO_TEST_DATABASE_URL=...`で測定します。これはintegration build tagを含めて全Go packageをinstrumentし、`coverage.out`と関数別reportを生成します。通常の単体test coverageとDB-backed coverageを区別し、低coverageのpackage/branchから回帰テストを追加してください。coverage percentageは機械的な合格目標にせず、認可、冪等性、transaction境界、retry、失敗cleanupなど重要な分岐がテストされているかをレビューします。
+coverageは`make test-coverage HAKO_TEST_DATABASE_URL=...`で測定します。これはintegration build tagを含めて全Go packageをinstrumentし、`coverage.out`と関数別reportを生成します。Task 42/53のコンテナ受入をskipさせないため、Podmanと`golang:1.27.3-alpine`、`postgres:18`のローカルimageが必要です。通常の単体test coverageとDB-backed coverageを区別し、低coverageのpackage/branchから回帰テストを追加してください。coverage percentageは機械的な合格目標にせず、認可、冪等性、transaction境界、retry、失敗cleanupなど重要な分岐がテストされているかをレビューします。
 
 このsuiteは通常PostgreSQLでのschema/SQL/Control Plane store連携を検証します。Aurora DSQLのIAM認証、OCC競合挙動、AWS API、HTTP API、Resource Plane配送を実環境で検証するAWS E2E suiteとは別です。
 

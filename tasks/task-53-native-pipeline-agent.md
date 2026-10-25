@@ -530,3 +530,15 @@ deployed recovery scheduling and Lambda MicroVM termination remain unverified.
   `go test -p=1 ./... -count=1` passed. The tests use synthetic values; no AWS
   Secret was read. No production model executor is configured, so Agent
   dispatch remains disabled.
+
+## Required Podman acceptance in coverage and CI (2026-10-25)
+
+The Task 53 rootless Job Service test was previously opt-in and therefore
+skipped by the generic CI integration command. CI now pulls the pinned local
+PostgreSQL service image and sets `HAKO_JOB_SERVICES_PODMAN_TEST=1`. The
+repository-wide `make test-coverage` target also requires both Task 42 and
+Task 53 Podman acceptances instead of silently skipping them. The focused
+Job Service test and Task 42 Software Factory Podman/PostgreSQL E2E pass
+locally; the coverage run reports 70.5% aggregate statement coverage. These
+host container tests do not establish Lambda MicroVM, ARM64 nerdctl, or AWS
+network isolation behavior.

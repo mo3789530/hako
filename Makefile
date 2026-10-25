@@ -61,7 +61,7 @@ test-preview-expiry-integration:
 
 test-coverage:
 	@test -n "$${HAKO_TEST_DATABASE_URL:-}" || (echo "set HAKO_TEST_DATABASE_URL to a disposable PostgreSQL database" >&2; exit 1)
-	go test -tags=integration -p=1 -coverpkg=./... -coverprofile=coverage.out ./... -count=1
+	HAKO_E2E_REQUIRE_PODMAN=1 HAKO_JOB_SERVICES_PODMAN_TEST=1 go test -tags=integration -p=1 -coverpkg=./... -coverprofile=coverage.out ./... -count=1
 	go tool cover -func=coverage.out
 
 integration-db-up:
