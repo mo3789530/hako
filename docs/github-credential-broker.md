@@ -83,6 +83,9 @@ The executable accepts these environment variables:
 | `HAKO_GITHUB_BROKER_TLS_CERT_FILE` | Broker HTTPS server certificate PEM |
 | `HAKO_GITHUB_BROKER_TLS_KEY_FILE` | Matching server key PEM |
 | `HAKO_GITHUB_BROKER_CLIENT_CA_FILE` | CA bundle used to verify Control Plane client certificates |
+| `HAKO_GITHUB_BROKER_TLS_CERT_PEM` | Optional server certificate PEM injected by a container secret provider |
+| `HAKO_GITHUB_BROKER_TLS_KEY_PEM` | Matching server private-key PEM; use with the other PEM variables instead of file variables |
+| `HAKO_GITHUB_BROKER_CLIENT_CA_PEM` | Client CA bundle PEM injected by a container secret provider |
 | `HAKO_GITHUB_BROKER_CHECKOUT_RESOURCE_PLANE_IDS` | Optional comma-separated Resource Plane IDs permitted to call only `/v1/checkout/token`; defaults to none |
 | `HAKO_GITHUB_BROKER_ACTIONS_RUNNER_RESOURCE_PLANE_IDS` | Optional comma-separated Resource Plane IDs permitted to call only `/v1/actions-runner/deregister`; defaults to none |
 | `HAKO_GITHUB_BROKER_AGENT_TASK_RESOURCE_PLANE_IDS` | Optional comma-separated Resource Plane IDs permitted to read active Agent task context via `/v1/agent/task`; defaults to none |
@@ -104,6 +107,12 @@ those settings absent, enabled approval policies fail closed as unavailable.
 
 TLS certificate, private key, and client CA must be configured together. TLS is at least 1.3, and the server requires a verified client certificate. API/OAuth/Checks clients must present the Control Plane URI SAN. Checkout clients may use the Control Plane URI or an explicitly allowlisted Resource Plane URI, use the broker trust root, and refuse redirects. The checkout client has a bounded 50-second HTTP timeout; the OAuth client has a shorter timeout. Server read/header/write/idle limits are bounded.
 
+Use either all three `*_FILE` variables or all three `*_PEM` variables; mixed
+or partial configuration fails closed. The PEM form supports ECS Secrets Manager
+injection without putting secret contents in Terraform inputs or task
+definitions. Pass only Secret ARNs through IaC, restrict task execution-role
+reads to those exact ARNs, and do not log the values.
+
 Local run example (uses the development PostgreSQL service and does not apply migrations or contact GitHub/AWS unless the respective operations are invoked):
 
 ```sh
@@ -116,6 +125,11 @@ go run ./cmd/hako-github-broker
 ```
 
 Do not use a production key or real Tenant Secret for local tests. Unit and integration tests use fake token/Secret providers; PostgreSQL integration tests create isolated schemas and remove only those schemas.
+
+Build the non-root ARM64 container image locally with
+`make build-github-broker-image`. This builds
+`hako-github-broker:local`; publishing it to ECR and deploying a private ECS
+service are separate release operations and are not performed by this target.
 
 ## Production work not performed
 

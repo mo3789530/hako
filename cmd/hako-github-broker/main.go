@@ -384,25 +384,40 @@ func openDatabase(ctx context.Context) (*pgxpool.Pool, error) {
 }
 
 func serverTLSConfigFromEnv() (*tls.Config, error) {
+	certPEM := strings.TrimSpace(os.Getenv("HAKO_GITHUB_BROKER_TLS_CERT_PEM"))
+	keyPEM := strings.TrimSpace(os.Getenv("HAKO_GITHUB_BROKER_TLS_KEY_PEM"))
+	caPEM := strings.TrimSpace(os.Getenv("HAKO_GITHUB_BROKER_CLIENT_CA_PEM"))
 	certPath := strings.TrimSpace(os.Getenv("HAKO_GITHUB_BROKER_TLS_CERT_FILE"))
 	keyPath := strings.TrimSpace(os.Getenv("HAKO_GITHUB_BROKER_TLS_KEY_FILE"))
 	caPath := strings.TrimSpace(os.Getenv("HAKO_GITHUB_BROKER_CLIENT_CA_FILE"))
-	configured := 0
-	for _, value := range []string{certPath, keyPath, caPath} {
-		if value != "" {
-			configured++
+	fileValues := []string{certPath, keyPath, caPath}
+	pemValues := []string{certPEM, keyPEM, caPEM}
+	fileCount, pemCount := configuredCount(fileValues), configuredCount(pemValues)
+	if fileCount != 0 && pemCount != 0 {
+		return nil, errors.New("configure broker TLS material using either PEM values or files, not both")
+	}
+	var certificate tls.Certificate
+	var clientCAPEM []byte
+	switch {
+	case pemCount == len(pemValues):
+		var err error
+		certificate, err = tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
+		if err != nil {
+			return nil, errors.New("parse broker TLS certificate")
 		}
-	}
-	if configured != 3 {
-		return nil, errors.New("configure broker TLS certificate, key, and client CA files together")
-	}
-	certificate, err := tls.LoadX509KeyPair(certPath, keyPath)
-	if err != nil {
-		return nil, errors.New("load broker TLS certificate")
-	}
-	clientCAPEM, err := os.ReadFile(caPath)
-	if err != nil {
-		return nil, errors.New("read broker client CA bundle")
+		clientCAPEM = []byte(caPEM)
+	case fileCount == len(fileValues):
+		var err error
+		certificate, err = tls.LoadX509KeyPair(certPath, keyPath)
+		if err != nil {
+			return nil, errors.New("load broker TLS certificate")
+		}
+		clientCAPEM, err = os.ReadFile(caPath)
+		if err != nil {
+			return nil, errors.New("read broker client CA bundle")
+		}
+	default:
+		return nil, errors.New("configure broker TLS certificate, key, and client CA using PEM values or files together")
 	}
 	clientCAs := x509.NewCertPool()
 	if !clientCAs.AppendCertsFromPEM(clientCAPEM) {
@@ -414,4 +429,14 @@ func serverTLSConfigFromEnv() (*tls.Config, error) {
 	}
 	serverConfig.Certificates = []tls.Certificate{certificate}
 	return serverConfig, nil
+}
+
+func configuredCount(values []string) int {
+	count := 0
+	for _, value := range values {
+		if value != "" {
+			count++
+		}
+	}
+	return count
 }

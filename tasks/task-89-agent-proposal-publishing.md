@@ -4,10 +4,13 @@ Status: In Progress (proposal materialization, isolated verifier scheduling,
 digest-bound Check persistence, publication evidence resolution and durable
 idempotency state, safe status API/CLI, exact-scope Tenant App token minting,
 fake-tested GitHub publisher, and a Control Plane-only mTLS Broker publication
-route with Postgres resolver/recorder, bounded post-cleanup verifier retry, and
-API/CLI queued response, and default-off exact S3 proposal read IAM contracts
-are implemented locally. Broker deployment/wiring, end-to-end Broker
-composition, and runtime activation remain open). Priority: P3.
+route with Postgres resolver/recorder, bounded post-cleanup verifier retry,
+API/CLI queued response, default-off exact S3 proposal read IAM contracts, and
+a composed PostgreSQL Broker route test are implemented locally. The Broker
+can now load its TLS material from either complete PEM environment values or
+complete file paths, enabling task Secret injection without Terraform secret
+contents. ECS deployment/wiring and Lambda MicroVM execution verification
+remain open). Priority: P3.
 Depends on Tasks 39, 40, 53, 57, and 59.
 
 ## Goal
@@ -211,5 +214,13 @@ Repository. The proposal remains untrusted. Hako must never merge or deploy it.
   and Postgres recorder. It verifies safe `no-store` response metadata and the
   durable branch/PR state. All providers are synthetic; no external service is
   contacted.
+- The Broker TLS listener now accepts a complete certificate/key/client-CA
+  PEM set from environment variables as an alternative to file paths. Partial
+  or mixed configuration is rejected. This supports ECS task Secret injection
+  with Secret ARNs in IaC while keeping the PEM values out of Terraform state;
+  local unit tests use generated synthetic certificates.
+- Added a non-root, static ARM64 Broker container image and
+  `make build-github-broker-image`. Image publication, private ECS service,
+  runtime role mapping, and deployed MicroVM integration remain separate.
 - Still open: deployed Broker configuration and Lambda MicroVM execution
   verification. No AWS apply or production activation has been performed.
