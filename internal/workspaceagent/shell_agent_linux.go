@@ -45,6 +45,7 @@ type WorkspaceShellAgent struct {
 	portDial      func(context.Context, uint16) (net.Conn, error)
 	service       http.Handler
 	execs         *ExecManager
+	previewApps   *PreviewApplicationManager
 }
 
 func NewWorkspaceShellAgent(keys map[string]ed25519.PublicKey, gatewayOrigin string) (*WorkspaceShellAgent, error) {
@@ -143,7 +144,12 @@ func (a *WorkspaceShellAgent) BindWorkspaceFileRuntime(files *WorkspaceFiles) er
 	if a.identity.WorkspaceID == "" || !validWorkspaceHookVMID(a.identity.MicroVMID) || a.files != nil {
 		return errors.New("Workspace Agent must be bound before file runtime")
 	}
+	previewApps, err := NewPreviewApplicationManager(files.root)
+	if err != nil {
+		return errors.New("configure Preview application runtime")
+	}
 	a.files = files
+	a.previewApps = previewApps
 	return nil
 }
 
@@ -266,7 +272,7 @@ func (a *WorkspaceShellAgent) serveExec(w http.ResponseWriter, r *http.Request) 
 
 func (a *WorkspaceShellAgent) serveFiles(w http.ResponseWriter, r *http.Request) {
 	a.mu.RLock()
-	identity, files := a.identity, a.files
+	identity, files, previewApps := a.identity, a.files, a.previewApps
 	a.mu.RUnlock()
 	if files == nil || r.Method != http.MethodGet || r.URL.RawQuery != "" || r.URL.ForceQuery || r.ContentLength > 0 {
 		http.Error(w, "Workspace file transfer is unavailable", http.StatusServiceUnavailable)
@@ -301,6 +307,13 @@ func (a *WorkspaceShellAgent) serveFiles(w http.ResponseWriter, r *http.Request)
 			case "install_archive":
 				err := files.InstallSourceArchive(r.Context(), request.Size, request.Digest, io.LimitReader(conn, request.Size))
 				response := workspaceprotocol.FileResponse{OK: err == nil, Size: request.Size}
+				if err != nil {
+					response = workspaceprotocol.FileResponse{Code: "transfer_failed"}
+				}
+				_ = workspaceprotocol.WriteFileResponse(conn, response)
+			case "start_preview":
+				port, err := previewApps.Start(r.Context(), files)
+				response := workspaceprotocol.FileResponse{OK: err == nil, Port: port}
 				if err != nil {
 					response = workspaceprotocol.FileResponse{Code: "transfer_failed"}
 				}
@@ -386,9 +399,11 @@ func (a *WorkspaceShellAgent) Close() error {
 	a.mu.Lock()
 	shells := a.shells
 	files := a.files
+	previewApps := a.previewApps
 	a.shells = nil
 	a.files = nil
 	a.execs = nil
+	a.previewApps = nil
 	a.mu.Unlock()
 	var err error
 	if shells != nil {
@@ -397,6 +412,11 @@ func (a *WorkspaceShellAgent) Close() error {
 	if files != nil {
 		if fileErr := files.Close(); err == nil {
 			err = fileErr
+		}
+	}
+	if previewApps != nil {
+		if stopErr := previewApps.Stop(context.Background()); err == nil {
+			err = stopErr
 		}
 	}
 	return err

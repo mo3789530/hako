@@ -13,10 +13,11 @@ provision/cleanup commands now have a Resource Plane Lambda MicroVM controller
 composition, brokered immutable SHA checkout, S3 archive staging, verified
 Guest source installation, and default-off queue/source IAM Terraform. Preview
 deployment requires a matching Workspace Gateway image, journal, origin, and
-Agent-ticket signing key. No AWS resources or DSQL grants have been applied.
-Guest application startup/public route, production schedule/queues, and real
-MicroVM E2E remain incomplete; cleanup retry metadata and attempt-fenced leases
-are implemented.
+Agent-ticket signing key. Guest Preview application startup and authenticated
+loopback forwarding are now implemented locally. No AWS resources or DSQL
+grants have been applied. Production port-policy composition,
+schedule/queues, and real MicroVM E2E remain incomplete; cleanup retry metadata
+and attempt-fenced leases are implemented.
 The dormant approval verifier checks
 the live Actions run attempt against signed repository, owner, ref, SHA,
 workflow and event claims, checks pending deployments and approval history,
@@ -431,11 +432,11 @@ Add optional repository-level preview environments and service metadata/deploy p
   Secret access plus configured MicroVM auth-token and optional KMS actions.
 - Local Go tests pass. OpenTofu validation passes for the dev Resource Plane
   root. No AWS apply or real Secret retrieval occurred. Remaining: provision
-  the matching Guest ticket public key in the immutable MicroVM image, start
-  the Preview application and issue an application URL, then validate the
-  configured Resource Plane/Gateway path and physical cleanup in an approved
-  AWS/MicroVM end-to-end acceptance. The logical Gateway route resolves from
-  the shared journal; Terraform now requires the matching Gateway identity.
+  the matching Guest ticket public key in the immutable MicroVM image, then
+  validate the configured Resource Plane/Gateway path and physical cleanup in
+  an approved AWS/MicroVM end-to-end acceptance. The logical Gateway route
+  resolves from the shared journal; Terraform now requires the matching
+  Gateway identity.
 
 ## Guest Preview ticket trust check (2026-10-25)
 
@@ -454,16 +455,38 @@ Add optional repository-level preview environments and service metadata/deploy p
 ## Authenticated Preview application port forward CLI (2026-10-25)
 
 - Added `hako github repository previews forward`, which binds its local
-  listener to loopback, takes an explicit numeric remote port, and obtains a
+  listener to loopback, targets only application port 3000, and obtains a
   new Tenant/Repository/PR-scoped Preview Session with only `port-forward` for
   each connection. The CLI uses the shared Gateway WSS route and revokes the
   Session when that stream closes. It never accepts a destination host or
   creates a public application route.
-- Parser tests cover required identity/port fields and port bounds. A local
+- Parser tests cover required identity and enforce the fixed application port. A local
   API + TLS/WSS Gateway test verifies permission scoping, port authorization,
   byte relay, cancellation, and Session revocation.
-- The command is a tunnel only. Guest application startup/health checking,
-  Gateway production port-authorizer composition, public Preview URL handling,
-  queue/schedule deployment, and real Lambda MicroVM E2E remain incomplete.
-  See [Preview lifecycle](../docs/preview-lifecycle.md). No AWS resources or
+- Guest application startup/health checking is implemented in the following
+  section. Gateway production port-authorizer composition, public Preview URL
+  handling, queue/schedule deployment, and real Lambda MicroVM E2E remain
+  incomplete. See [Preview lifecycle](../docs/preview-lifecycle.md). No AWS
+  resources or Secrets were applied/read.
+
+## Guest Preview application startup and port isolation (2026-10-25)
+
+- The immutable Guest Agent accepts a fixed `start_preview` file-channel
+  operation only for `/workspace/src/.hako/preview.yaml`. The strict version-1
+  YAML manifest provides an argv array; the Guest starts it as the
+  unprivileged Agent user with a minimal environment and fixed `PORT=3000`,
+  `HOST=127.0.0.1`. The process is group-managed, killed if its Agent parent
+  exits, and stopped when the Agent closes. Provisioning is acknowledged only
+  after loopback TCP readiness succeeds; failure is returned to the existing
+  generation compensation path.
+- The Resource Plane installer now transfers the exact pinned source, opens a
+  second one-use file-transfer capability, and starts the app before reporting
+  provision success. The shared Gateway denies every Preview runtime port
+  except 3000, even if a general Workspace policy would allow another port;
+  Preview forwarding also defaults to and accepts only 3000.
+- Unit and local integration tests cover strict manifest decoding, process
+  start/idempotence/stop, file-channel authorization, API-to-Gateway Preview
+  forwarding, and denial of non-application ports. This still does not verify
+  deployment port-authorizer configuration, public URL lifecycle, actual
+  Lambda MicroVM networking, or production cleanup. No AWS resources or
   Secrets were applied/read.

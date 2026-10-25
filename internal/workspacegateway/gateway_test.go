@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/previewprotocol"
 	"github.com/mo3789530/hako/internal/workspaceagent"
 	"github.com/mo3789530/hako/internal/workspacesession"
 	"golang.org/x/net/websocket"
@@ -463,6 +464,34 @@ func TestGatewayAppliesPortPolicyBeforeUpgradeAndLimitsFrames(t *testing.T) {
 	waitForConnections(t, gateway, 0)
 }
 
+func TestGatewayRestrictsPreviewSessionsToApplicationPort(t *testing.T) {
+	policy := &portAuthorizer{allow: true}
+	gateway, server, _, dialer := newTestGateway(t, Config{MaxConnections: 2, MaxConnectionsPerWorkspace: 1, PortAuthorizer: policy})
+	defer server.Close()
+	previewID := domain.WorkspaceID("prvws_0123456789abcdef0123456789abcdef")
+	issuer := &workspacesession.Ed25519Issuer{KeyID: "gateway-test", PrivateKey: testPrivateKey(), TTL: time.Minute}
+	token, _, err := issuer.Issue(workspacesession.Claims{UserID: "usr_gateway", TenantID: "tenant_gateway", WorkspaceID: previewID,
+		ResourcePlane: "rp_gateway_a", Permissions: []workspacesession.Permission{workspacesession.PermissionPortForward}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dialWorkspace(server.URL, "/v1/workspaces/"+string(previewID)+"/ports/5432", token, "https://ide.example.test"); err == nil {
+		t.Fatal("Preview Session reached a non-application port")
+	}
+	if dialer.opens.Load() != 0 {
+		t.Fatalf("non-application Preview route opened runtime %d times", dialer.opens.Load())
+	}
+	client, err := dialWorkspace(server.URL, "/v1/workspaces/"+string(previewID)+"/ports/3000", token, "https://ide.example.test")
+	if err != nil {
+		t.Fatalf("Preview application port WSS: %v", err)
+	}
+	_ = client.Close()
+	waitForConnections(t, gateway, 0)
+	if dialer.port.Load() != uint32(previewprotocol.ApplicationPort) {
+		t.Fatalf("Preview runtime port=%d", dialer.port.Load())
+	}
+}
+
 func TestGatewayRejectsOversizedWebSocketFrames(t *testing.T) {
 	gateway, server, token, dialer := newTestGateway(t, Config{MaxConnections: 1, MaxConnectionsPerWorkspace: 1, MaxPayloadBytes: 1024})
 	defer server.Close()
@@ -768,8 +797,13 @@ func newTestVerifier(t *testing.T) *workspacesession.Verifier {
 
 func issueTestTicket(t *testing.T, permissions []workspacesession.Permission) string {
 	t.Helper()
+	return issueTestTicketForWorkspace(t, "ws_gateway_a", permissions)
+}
+
+func issueTestTicketForWorkspace(t *testing.T, workspaceID domain.WorkspaceID, permissions []workspacesession.Permission) string {
+	t.Helper()
 	issuer := &workspacesession.Ed25519Issuer{KeyID: "gateway-test", PrivateKey: testPrivateKey(), TTL: time.Minute}
-	token, _, err := issuer.Issue(workspacesession.Claims{UserID: "usr_gateway", TenantID: "tenant_gateway", WorkspaceID: "ws_gateway_a",
+	token, _, err := issuer.Issue(workspacesession.Claims{UserID: "usr_gateway", TenantID: "tenant_gateway", WorkspaceID: workspaceID,
 		ResourcePlane: domain.ResourcePlaneID("rp_gateway_a"), Permissions: permissions})
 	if err != nil {
 		t.Fatal(err)

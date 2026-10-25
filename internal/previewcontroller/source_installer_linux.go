@@ -24,13 +24,14 @@ type previewMicroVMAPI interface {
 }
 
 type LambdaPreviewSourceInstaller struct {
-	plane   domain.ResourcePlaneID
-	region  string
-	origin  string
-	api     previewMicroVMAPI
-	tokens  workspaceagent.WorkspaceAgentTokenProvider
-	tickets workspaceagent.WorkspaceAgentTicketIssuer
-	reader  workloadsource.SourceArchiveReader
+	plane     domain.ResourcePlaneID
+	region    string
+	origin    string
+	api       previewMicroVMAPI
+	tokens    workspaceagent.WorkspaceAgentTokenProvider
+	tickets   workspaceagent.WorkspaceAgentTicketIssuer
+	reader    workloadsource.SourceArchiveReader
+	websocket workspaceagent.WorkspaceWebSocketDialer
 }
 
 type LambdaPreviewSourceInstallerConfig struct {
@@ -41,6 +42,7 @@ type LambdaPreviewSourceInstallerConfig struct {
 	Tokens          workspaceagent.WorkspaceAgentTokenProvider
 	Tickets         workspaceagent.WorkspaceAgentTicketIssuer
 	Archives        workloadsource.SourceArchiveReader
+	WebSocket       workspaceagent.WorkspaceWebSocketDialer
 }
 
 func NewLambdaPreviewSourceInstaller(config LambdaPreviewSourceInstallerConfig) (*LambdaPreviewSourceInstaller, error) {
@@ -50,7 +52,7 @@ func NewLambdaPreviewSourceInstaller(config LambdaPreviewSourceInstallerConfig) 
 	}
 	return &LambdaPreviewSourceInstaller{plane: config.ResourcePlaneID, region: strings.TrimSpace(config.Region),
 		origin: strings.TrimSpace(config.GatewayOrigin), api: config.MicroVMs, tokens: config.Tokens,
-		tickets: config.Tickets, reader: config.Archives}, nil
+		tickets: config.Tickets, reader: config.Archives, websocket: config.WebSocket}, nil
 }
 
 func (i *LambdaPreviewSourceInstaller) Install(ctx context.Context, command previewprotocol.Command, binding Binding,
@@ -80,7 +82,7 @@ func (i *LambdaPreviewSourceInstaller) Install(ctx context.Context, command prev
 		Endpoint: workspaceagent.WorkspaceRuntimeEndpoint{TenantID: domain.TenantID(command.TenantID),
 			WorkspaceID: domain.WorkspaceID(command.RuntimeWorkspaceID), ResourcePlane: domain.ResourcePlaneID(command.ResourcePlaneID),
 			MicroVMID: binding.MicroVMID, Region: i.region, Endpoint: aws.ToString(vm.Endpoint)},
-		Token: i.tokens, Ticket: i.tickets, Origin: i.origin,
+		Token: i.tokens, Ticket: i.tickets, Origin: i.origin, WebSocket: i.websocket,
 	})
 	if err != nil {
 		return ErrPreviewSourceInstall
@@ -92,8 +94,17 @@ func (i *LambdaPreviewSourceInstaller) Install(ctx context.Context, command prev
 	if err != nil {
 		return ErrPreviewSourceInstall
 	}
-	defer stream.Close()
-	if err := workspaceagent.TransferSourceArchive(ctx, stream, archive, source.Digest); err != nil {
+	installErr := workspaceagent.TransferSourceArchive(ctx, stream, archive, source.Digest)
+	_ = stream.Close()
+	if installErr != nil {
+		return ErrPreviewSourceInstall
+	}
+	startStream, err := dialer.OpenFileTransfer(ctx, claims)
+	if err != nil {
+		return ErrPreviewSourceInstall
+	}
+	defer startStream.Close()
+	if _, err := workspaceagent.StartPreviewApplication(ctx, startStream); err != nil {
 		return ErrPreviewSourceInstall
 	}
 	return nil

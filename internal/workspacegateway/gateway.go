@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/previewprotocol"
 	"github.com/mo3789530/hako/internal/workspacesession"
 	"golang.org/x/net/websocket"
 )
@@ -172,6 +173,9 @@ func (g *Gateway) servePort(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	check := func(ctx context.Context, claims workspacesession.Claims) error {
+		if previewprotocol.IsRuntimeWorkspaceID(string(claims.WorkspaceID)) && uint16(portValue) != previewprotocol.ApplicationPort {
+			return errors.New("Preview application route is not available")
+		}
 		if g.config.PortAuthorizer == nil {
 			return errors.New("Workspace port forwarding is disabled")
 		}

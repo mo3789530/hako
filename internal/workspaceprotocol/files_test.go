@@ -59,12 +59,16 @@ func TestFileControlFramesRejectUnsafeRequestsAndMalformedResponses(t *testing.T
 	if err := WriteFileRequest(&bytes.Buffer{}, FileRequest{Operation: "install_archive", Path: "/workspace/src", Size: 1, Digest: validDigest}); err != nil {
 		t.Fatalf("valid Preview source install request rejected: %v", err)
 	}
+	if err := WriteFileRequest(&bytes.Buffer{}, FileRequest{Operation: "start_preview", Path: "/workspace/src/.hako/preview.yaml"}); err != nil {
+		t.Fatalf("valid Preview start request rejected: %v", err)
+	}
 	for _, response := range []FileResponse{
 		{OK: true, Size: -1},
 		{OK: true, Size: FileMaxBytes + 1},
 		{OK: true, Code: "not_found"},
 		{OK: false},
 		{OK: false, Code: "unexpected"},
+		{OK: false, Port: 3000, Code: "transfer_failed"},
 	} {
 		if err := WriteFileResponse(&bytes.Buffer{}, response); !errors.Is(err, ErrInvalidFileTransfer) {
 			t.Errorf("invalid response %+v error=%v", response, err)

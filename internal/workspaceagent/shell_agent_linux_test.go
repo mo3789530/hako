@@ -11,6 +11,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -209,6 +211,73 @@ func TestWorkspaceShellAgentExecRequiresDedicatedOneUseTicket(t *testing.T) {
 	if replay, err := dialWorkspaceAgentChannel(server.URL, origin, replayTicket, "exec"); err == nil {
 		_ = replay.Close()
 		t.Fatal("replayed exec ticket was accepted")
+	}
+}
+
+func TestWorkspaceShellAgentStartsPreviewThroughOneUseFileTransferTicket(t *testing.T) {
+	if _, err := os.Stat("/usr/bin/python3"); err != nil {
+		t.Skip("/usr/bin/python3 is required for the Preview Agent integration test")
+	}
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src", ".hako"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "version: 1\ncommand:\n  - python3\n  - -c\n  - |\n    import socket\n    s = socket.socket()\n    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n    s.bind(('127.0.0.1', 3000))\n    s.listen()\n    while True:\n      c, _ = s.accept()\n      c.close()\n"
+	if err := os.WriteFile(filepath.Join(root, "src", ".hako", "preview.yaml"), []byte(manifest), 0600); err != nil {
+		t.Fatal(err)
+	}
+	uid, gid := testShellIdentity(t, root)
+	agent, err := newWorkspaceShellAgent(map[string]ed25519.PublicKey{"rp-preview": public}, "https://gateway.hako.test",
+		func(spec WorkspaceMountSpec) (*ShellManager, error) {
+			return NewShellManager(ShellConfig{WorkspaceRoot: root, RunAsUID: uid, RunAsGID: gid})
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindWorkspaceTestExecRoot(agent, root)
+	if err := agent.BindWorkspaceRuntime("microvm-preview", testMountSpec()); err != nil {
+		t.Fatal(err)
+	}
+	files, err := newWorkspaceFilesAt(root, uid, gid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.BindWorkspaceFileRuntime(files); err != nil {
+		_ = files.Close()
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(agent)
+	defer server.Close()
+	issuer := &AgentTicketIssuer{KeyID: "rp-preview", PrivateKey: private, TTL: time.Minute}
+	ticket, _, err := issuer.Issue(AgentTicket{UserID: "controller", TenantID: "tenant-1", WorkspaceID: "workspace-1",
+		ResourcePlane: "rp-1", MicroVMID: "microvm-preview", Permission: workspacesession.PermissionFileTransfer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := dialWorkspaceAgentChannel(server.URL, "https://gateway.hako.test", ticket, "files")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := StartPreviewApplication(context.Background(), stream)
+	_ = stream.Close()
+	if err != nil || port != PreviewApplicationPort {
+		_ = agent.Close()
+		t.Fatalf("start Guest Preview application port=%d error=%v", port, err)
+	}
+	connection, err := net.DialTimeout("tcp", "127.0.0.1:3000", time.Second)
+	if err != nil {
+		_ = agent.Close()
+		t.Fatalf("Guest Preview did not listen on the authorized application port: %v", err)
+	}
+	_ = connection.Close()
+	_ = agent.Close()
+	if connection, err := net.DialTimeout("tcp", "127.0.0.1:3000", 100*time.Millisecond); err == nil {
+		_ = connection.Close()
+		t.Fatal("Guest Agent close left Preview application running")
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/mo3789530/hako/internal/agenttask"
 	"github.com/mo3789530/hako/internal/api"
 	"github.com/mo3789530/hako/internal/auth"
+	"github.com/mo3789530/hako/internal/previewprotocol"
 	"github.com/mo3789530/hako/internal/store/githubregistry"
 	"github.com/mo3789530/hako/internal/workspacesession"
 )
@@ -51,14 +52,14 @@ func parseGitHubRepositoryPreviewForwardCLI(args []string) (githubRepositoryPrev
 	flags.Int64Var(&input.repositoryID, "repository", 0, "GitHub repository ID")
 	flags.Int64Var(&input.pullRequest, "pull-request", 0, "Pull request number")
 	flags.StringVar(&input.localPort, "local-port", "0", "Local loopback port (0 selects an available port)")
-	var remotePort uint
-	flags.UintVar(&remotePort, "remote-port", 0, "Workspace application port")
+	remotePort := uint(previewprotocol.ApplicationPort)
+	flags.UintVar(&remotePort, "remote-port", uint(previewprotocol.ApplicationPort), "Preview application port (3000)")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		return input, errors.New("invalid Preview forward arguments")
 	}
 	input.tenantID = strings.TrimSpace(input.tenantID)
-	if input.tenantID == "" || input.installationID <= 0 || input.repositoryID <= 0 || input.pullRequest <= 0 || remotePort == 0 || remotePort > 65535 {
-		return input, errors.New("--tenant, positive --installation, --repository, --pull-request, and --remote-port are required")
+	if input.tenantID == "" || input.installationID <= 0 || input.repositoryID <= 0 || input.pullRequest <= 0 || remotePort != uint(previewprotocol.ApplicationPort) {
+		return input, errors.New("--tenant, positive --installation, --repository, and --pull-request are required; --remote-port must be 3000")
 	}
 	localPort, err := strconv.ParseUint(input.localPort, 10, 16)
 	if err != nil || (localPort == 0 && input.localPort != "0") {

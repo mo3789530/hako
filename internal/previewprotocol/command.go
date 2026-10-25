@@ -14,9 +14,10 @@ import (
 )
 
 const (
-	AggregateType   = "repository_preview_runtime"
-	ActionProvision = "provision"
-	ActionCleanup   = "cleanup"
+	AggregateType          = "repository_preview_runtime"
+	ActionProvision        = "provision"
+	ActionCleanup          = "cleanup"
+	ApplicationPort uint16 = 3000
 )
 
 var (
@@ -25,6 +26,8 @@ var (
 	claimIDPattern       = regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`)
 	headSHAPattern       = regexp.MustCompile(`^[a-fA-F0-9]{40}$`)
 )
+
+func IsRuntimeWorkspaceID(value string) bool { return workspaceIDPattern.MatchString(value) }
 
 type Command struct {
 	SchemaVersion      int       `json:"schema_version"`

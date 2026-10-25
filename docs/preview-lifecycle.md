@@ -58,17 +58,35 @@ separate loopback-only forward:
 ```bash
 hako github repository previews forward --tenant <tenant> \
   --installation <installation-id> --repository <repository-id> \
-  --pull-request <number> --remote-port 3000 [--local-port 0]
+  --pull-request <number> [--local-port 0]
 ```
 
 The CLI binds only to `127.0.0.1`, requests a fresh Preview Session scoped to
 `port-forward` for each local connection, and revokes it when that connection
 closes. The remote destination is a numeric port on the Preview MicroVM; no
-host or public route is accepted. The Gateway's configured port authorizer
-must allow that port. This command only provides the authorized tunnel: it
-does not start an application, infer a port from repository files, or create a
-public Preview URL. Preview application startup and production port-policy
-wiring remain incomplete.
+host or public route is accepted. Preview Sessions are restricted at the
+Gateway to the application port `3000`; all other ports are denied even if the
+general Workspace port policy allows them. The Gateway's configured port
+authorizer must also allow `3000`.
+
+An opted-in repository must include `.hako/preview.yaml` in the pinned PR
+commit:
+
+```yaml
+version: 1
+command:
+  - npm
+  - run
+  - dev
+```
+
+The command is an argv array, runs with `/workspace/src` as its working
+directory and a minimal environment (`PORT=3000`, `HOST=127.0.0.1`), and runs
+as the unprivileged Guest Agent user. Hako waits until `127.0.0.1:3000` accepts
+connections before acknowledging Preview provisioning. Startup failure
+compensates by deleting that exact generation's MicroVM. App logs are not
+persisted yet. The CLI opens the local URL for the Preview application; no
+public application URL or inbound port is created.
 
 The CLI creates a fresh Preview Session for each Gateway WebSocket connection,
 uses the logical runtime Workspace ID returned by that API response for
@@ -242,8 +260,9 @@ default-off `preview_runtime_source` object. No Secret was retrieved and no
 Terraform apply was performed. The deploy gate still requires the matching
 ticket public key and file-transfer endpoint in the immutable Guest image,
 Resource Plane egress/connectivity validation, Gateway routing/publication,
-and an end-to-end real MicroVM test. The resource adapter prepares source only;
-it does not yet start the Preview application.
+and an end-to-end real MicroVM test. The resource adapter installs the source
+and starts the repository-declared Preview process. Production Gateway
+port-policy composition and real MicroVM validation remain open.
 
 Each present Preview records a fixed `expires_at` using the Tenant's configured
 Preview lifetime (24 hours when no quota row exists). `synchronize` deliveries

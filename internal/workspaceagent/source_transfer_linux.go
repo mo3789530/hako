@@ -39,6 +39,27 @@ func TransferSourceArchive(ctx context.Context, stream io.ReadWriteCloser, archi
 	return nil
 }
 
+// StartPreviewApplication asks the bound Guest Agent to start the command from
+// its installed .hako/preview.yaml manifest and waits for its fixed loopback
+// port to pass the Guest-side readiness check.
+func StartPreviewApplication(ctx context.Context, stream io.ReadWriteCloser) (uint16, error) {
+	if ctx == nil || stream == nil || ctx.Err() != nil {
+		return 0, ErrSourceTransfer
+	}
+	stopClose := context.AfterFunc(ctx, func() { _ = stream.Close() })
+	defer stopClose()
+	if err := workspaceprotocol.WriteFileRequest(stream, workspaceprotocol.FileRequest{
+		Operation: "start_preview", Path: "/workspace/src/.hako/preview.yaml",
+	}); err != nil {
+		return 0, ErrSourceTransfer
+	}
+	response, err := workspaceprotocol.ReadFileResponse(stream)
+	if err != nil || !response.OK || response.Port != PreviewApplicationPort || response.Size != 0 {
+		return 0, ErrPreviewApplication
+	}
+	return response.Port, nil
+}
+
 type sourceTransferContextReader struct {
 	ctx    context.Context
 	reader io.Reader

@@ -33,6 +33,7 @@ type FileRequest struct {
 type FileResponse struct {
 	OK   bool   `json:"ok"`
 	Size int64  `json:"size"`
+	Port uint16 `json:"port,omitempty"`
 	Code string `json:"code,omitempty"`
 }
 
@@ -53,7 +54,7 @@ func ReadFileRequest(r io.Reader) (FileRequest, error) {
 
 func WriteFileResponse(w io.Writer, response FileResponse) error {
 	if w == nil || response.Size < 0 || response.Size > FileMaxBytes || (response.OK && response.Code != "") ||
-		(!response.OK && (response.Size != 0 || !validFileErrorCode(response.Code))) {
+		(!response.OK && (response.Size != 0 || response.Port != 0 || !validFileErrorCode(response.Code))) {
 		return ErrInvalidFileTransfer
 	}
 	return writeFileControl(w, fileResponseFrame, response)
@@ -62,7 +63,7 @@ func WriteFileResponse(w io.Writer, response FileResponse) error {
 func ReadFileResponse(r io.Reader) (FileResponse, error) {
 	var response FileResponse
 	if err := readFileControl(r, fileResponseFrame, &response); err != nil || response.Size < 0 || response.Size > FileMaxBytes ||
-		(response.OK && response.Code != "") || (!response.OK && (response.Size != 0 || !validFileErrorCode(response.Code))) {
+		(response.OK && response.Code != "") || (!response.OK && (response.Size != 0 || response.Port != 0 || !validFileErrorCode(response.Code))) {
 		return FileResponse{}, ErrInvalidFileTransfer
 	}
 	return response, nil
@@ -81,6 +82,8 @@ func validFileRequest(request FileRequest) bool {
 	case "install_archive":
 		digest, err := hex.DecodeString(request.Digest)
 		return request.Path == "/workspace/src" && request.Size > 0 && request.Size <= FileMaxBytes && err == nil && len(digest) == 32 && hex.EncodeToString(digest) == request.Digest
+	case "start_preview":
+		return request.Path == "/workspace/src/.hako/preview.yaml" && request.Size == 0 && request.Digest == ""
 	default:
 		return false
 	}

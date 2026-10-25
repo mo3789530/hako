@@ -128,14 +128,14 @@ func TestParseGitHubRepositoryPreviewForwardCLI(t *testing.T) {
 	if err != nil || got.tenantID != "tenant_a" || got.installationID != 4 || got.repositoryID != 8 || got.pullRequest != 19 || got.remotePort != 3000 || got.localPort != "0" {
 		t.Fatalf("parse Preview forward = %+v error=%v", got, err)
 	}
-	custom, err := parseGitHubRepositoryPreviewForwardCLI([]string{"--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "--remote-port", "65535", "--local-port", "8123"})
-	if err != nil || custom.remotePort != 65535 || custom.localPort != "8123" {
+	custom, err := parseGitHubRepositoryPreviewForwardCLI([]string{"--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "--remote-port", "3000", "--local-port", "8123"})
+	if err != nil || custom.remotePort != 3000 || custom.localPort != "8123" {
 		t.Fatalf("parse Preview forward custom ports = %+v error=%v", custom, err)
 	}
 	for _, args := range [][]string{
-		{}, {"--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19"},
+		{},
 		{"--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "--remote-port", "0"},
-		{"--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "--remote-port", "65536"},
+		{"--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "--remote-port", "5432"},
 		{"--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "--remote-port", "3000", "--local-port", "65536"},
 		{"--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "--remote-port", "3000", "extra"},
 	} {
