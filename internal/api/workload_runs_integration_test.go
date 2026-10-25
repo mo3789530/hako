@@ -346,6 +346,18 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox_events WHERE aggregate_id=$1 AND event_type='workload_attempt.dispatch'`, retryVerifierAttempt).Scan(&retryDispatchEvents); err != nil || retryDispatchEvents != 1 {
 		t.Fatalf("queued verifier dispatch outbox count=%d error=%v", retryDispatchEvents, err)
 	}
+	duplicateQueuedSubmission := request("runs-member", http.MethodPost, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_member/agent-publication/publish")
+	if duplicateQueuedSubmission.Code != http.StatusAccepted || publicationSubmitter.calls != 0 {
+		t.Fatalf("duplicate active verifier submit = HTTP %d calls=%d body=%s", duplicateQueuedSubmission.Code, publicationSubmitter.calls, duplicateQueuedSubmission.Body.String())
+	}
+	var activeVerifierAttempt string
+	if err := pool.QueryRow(ctx, `SELECT verifier_attempt_id FROM workload_agent_proposal_verifications WHERE tenant_id='tenant_runs_a' AND agent_run_id='run_owned_member'`).Scan(&activeVerifierAttempt); err != nil || activeVerifierAttempt != retryVerifierAttempt {
+		t.Fatalf("active retry binding changed from %q to %q: %v", retryVerifierAttempt, activeVerifierAttempt, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox_events WHERE event_type='workload_attempt.dispatch' AND aggregate_id IN
+		(SELECT id FROM workload_run_attempts WHERE workload_run_id='run_verifier_api')`).Scan(&retryDispatchEvents); err != nil || retryDispatchEvents != 1 {
+		t.Fatalf("duplicate active submit created extra dispatch events=%d error=%v", retryDispatchEvents, err)
+	}
 	if _, err := pool.Exec(ctx, `UPDATE workload_run_attempts SET state='failed',cleanup_confirmed_at=NULL,updated_at=$1 WHERE id=$2`, now, retryVerifierAttempt); err != nil {
 		t.Fatalf("mark verifier retry as failed without cleanup proof: %v", err)
 	}
@@ -453,7 +465,7 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 	publicationSubmitter.result.TenantID = "tenant_runs_a"
 	var publicationAuditCount int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE tenant_id='tenant_runs_a' AND actor_user_id='usr_runs_member'
-		AND action='workload.agent_proposal.publish' AND target_id='run_owned_member'`).Scan(&publicationAuditCount); err != nil || publicationAuditCount != 5 {
+		AND action='workload.agent_proposal.publish' AND target_id='run_owned_member'`).Scan(&publicationAuditCount); err != nil || publicationAuditCount != 6 {
 		t.Fatalf("publication submit success/failure audit count=%d error=%v", publicationAuditCount, err)
 	}
 	if hiddenSubmit := request("runs-member", http.MethodPost, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_owner/agent-publication/publish"); hiddenSubmit.Code != http.StatusNotFound {

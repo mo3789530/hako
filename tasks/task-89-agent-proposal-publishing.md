@@ -118,6 +118,9 @@ verifies local queue/API ordering only; no worker, GitHub, or AWS service runs.
 It also verifies cleanup-unconfirmed failures return `409 verification_not_ready`
 and the initial attempt plus two retries cap at `409 verification_retry_limit`
 without calling the Broker or creating an extra dispatch event.
+Submitting again while the replacement attempt is active returns the same
+queued attempt, creates no duplicate dispatch event, and does not call the
+Broker.
 
 The authenticated Control Plane publication API integration path also covers
 empty-body enforcement, malformed Run identity rejection before broker access,

@@ -170,6 +170,8 @@ and the Broker submitter receives no call until verification is completed.
 The same API test verifies `409 verification_not_ready` before cleanup
 confirmation and `409 verification_retry_limit` after the initial attempt plus
 two retries, without an extra Broker call or dispatch event.
+Repeating submit while verification is active reuses the current attempt and
+does not duplicate its Outbox command.
 
 Added `make verify-workload-microvm-artifact` so the Agent ZIP check is
 repeatable: it validates the public-key JSON, exact package contents, key-byte
