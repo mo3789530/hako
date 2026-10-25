@@ -618,41 +618,66 @@ func TestWorkloadRunIdempotencyTransitionsTimeoutAndArtifacts(t *testing.T) {
 	}); !errors.Is(err, ErrIdempotencyConflict) {
 		t.Fatalf("different request with same key error = %v", err)
 	}
+	for _, transition := range []struct {
+		expectedRevision int64
+		nextState        domain.WorkloadRunState
+		checkStatus      string
+	}{
+		{expectedRevision: 1, nextState: domain.WorkloadProvisioning, checkStatus: "in_progress"},
+		{expectedRevision: 2, nextState: domain.WorkloadRunning, checkStatus: "in_progress"},
+	} {
+		stored, err = transaction.Within(ctx, pool, policy, func(ctx context.Context, tx pgx.Tx) (domain.WorkloadRun, error) {
+			return Transition(ctx, tx, TransitionInput{TenantID: run.TenantID, RunID: run.ID,
+				ExpectedRevision: transition.expectedRevision, NextState: transition.nextState,
+				OccurredAt: now.Add(time.Duration(transition.expectedRevision+1) * time.Second)})
+		})
+		if err != nil || stored.State != transition.nextState {
+			t.Fatalf("transition Workload Run to %s = %+v err=%v", transition.nextState, stored, err)
+		}
+		if err := pool.QueryRow(ctx, `SELECT status FROM workload_github_checks WHERE tenant_id=$1 AND workload_run_id=$2`,
+			run.TenantID, run.ID).Scan(&checkStatus); err != nil || checkStatus != transition.checkStatus {
+			t.Fatalf("GitHub Check after %s = %q err=%v", transition.nextState, checkStatus, err)
+		}
+		if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM outbox_events WHERE aggregate_id=$1 AND event_type='workload_run.github_check_requested'`, run.ID).
+			Scan(&checkEvents); err != nil || checkEvents != int(transition.expectedRevision+1) {
+			t.Fatalf("GitHub Check Outbox count after %s = %d err=%v", transition.nextState, checkEvents, err)
+		}
+	}
 	events, err := transaction.Within(ctx, pool, policy, func(ctx context.Context, tx pgx.Tx) ([]domain.WorkloadRunEvent, error) {
 		return ListEvents(ctx, tx, run.TenantID, run.ID)
 	})
-	if err != nil || len(events) != 1 || events[0].Type != "workload.pending" {
+	if err != nil || len(events) != 3 || events[0].Type != "workload.pending" || events[1].Type != "workload.provisioning" || events[2].Type != "workload.running" {
 		t.Fatalf("creation events = %+v err=%v", events, err)
 	}
 	stored, err = transaction.Within(ctx, pool, policy, func(ctx context.Context, tx pgx.Tx) (domain.WorkloadRun, error) {
-		return RequestCancel(ctx, tx, run.TenantID, run.ID, now.Add(time.Second))
+		return RequestCancel(ctx, tx, run.TenantID, run.ID, now.Add(4*time.Second))
 	})
-	if err != nil || stored.DesiredState != domain.WorkloadDesiredCancelled || stored.Revision != 2 {
+	if err != nil || stored.DesiredState != domain.WorkloadDesiredCancelled || stored.Revision != 4 {
 		t.Fatalf("cancel request = %+v err=%v", stored, err)
 	}
 	_, err = transaction.Within(ctx, pool, policy, func(ctx context.Context, tx pgx.Tx) (domain.WorkloadRun, error) {
-		return RequestCancel(ctx, tx, run.TenantID, run.ID, now.Add(2*time.Second))
+		return RequestCancel(ctx, tx, run.TenantID, run.ID, now.Add(5*time.Second))
 	})
 	if err != nil {
 		t.Fatalf("repeated cancel request: %v", err)
 	}
 	completed, err := transaction.Within(ctx, pool, policy, func(ctx context.Context, tx pgx.Tx) (domain.WorkloadRun, error) {
 		return Transition(ctx, tx, TransitionInput{TenantID: run.TenantID, RunID: run.ID,
-			ExpectedRevision: 2, NextState: domain.WorkloadCancelled, OccurredAt: now.Add(3 * time.Second)})
+			ExpectedRevision: 4, NextState: domain.WorkloadCancelled, OccurredAt: now.Add(6 * time.Second)})
 	})
-	if err != nil || completed.State != domain.WorkloadCancelled || completed.CompletedAt == nil || completed.Revision != 3 {
+	if err != nil || completed.State != domain.WorkloadCancelled || completed.CompletedAt == nil || completed.Revision != 5 {
 		t.Fatalf("cancel transition = %+v err=%v", completed, err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT status, conclusion FROM workload_github_checks WHERE tenant_id = $1 AND workload_run_id = $2`, run.TenantID, run.ID).
 		Scan(&checkStatus, &checkConclusion); err != nil || checkStatus != "completed" || checkConclusion != "cancelled" {
 		t.Fatalf("terminal GitHub Check mapping = %q/%q err=%v", checkStatus, checkConclusion, err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM outbox_events WHERE aggregate_id = $1 AND event_type = 'workload_run.github_check_requested'`, run.ID).Scan(&checkEvents); err != nil || checkEvents != 2 {
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM outbox_events WHERE aggregate_id = $1 AND event_type = 'workload_run.github_check_requested'`, run.ID).Scan(&checkEvents); err != nil || checkEvents != 4 {
 		t.Fatalf("GitHub Check transition Outbox event count = %d err=%v", checkEvents, err)
 	}
 	if _, err := transaction.Within(ctx, pool, policy, func(ctx context.Context, tx pgx.Tx) (domain.WorkloadRun, error) {
 		return Transition(ctx, tx, TransitionInput{TenantID: run.TenantID, RunID: run.ID,
-			ExpectedRevision: 3, NextState: domain.WorkloadRunning, OccurredAt: now.Add(4 * time.Second)})
+			ExpectedRevision: 5, NextState: domain.WorkloadRunning, OccurredAt: now.Add(7 * time.Second)})
 	}); !errors.Is(err, ErrTransitionConflict) {
 		t.Fatalf("terminal run transition error = %v", err)
 	}

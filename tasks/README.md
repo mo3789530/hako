@@ -56,6 +56,12 @@ route, missing login/API URL, and forbidden Tenant response. Focused
 `TestWorkspaceBasicCLI` tests pass. This pins the client contract; deployed
 MicroVM/Gateway behavior remains an external runtime gate.
 
+Task 41 local coverage follow-up (2026-10-25): the PostgreSQL Run lifecycle
+test now verifies the durable GitHub Check progression from `queued` through
+`in_progress` to `completed`, with Outbox events emitted atomically for each
+visible Check update. This does not verify deployed queue delivery or live
+GitHub access.
+
 Task 52 workflow policy read API was added on 2026-10-25. Tenant members can
 inspect the active repository allowlist through the authenticated API/CLI;
 configuration remains Owner/Admin-only. API/CLI and PostgreSQL integration

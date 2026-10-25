@@ -102,3 +102,15 @@ delivery until those pieces and deployment review are complete. See
 - Database changes use migrations and do not store Installation tokens.
 - No Check is attached using a branch name or a Repository ID from an untrusted webhook without Tenant registry validation.
 - Docs describe App permission changes and rollback.
+
+## Workload Check state transition integration (2026-10-25)
+
+The PostgreSQL Workload Run lifecycle integration test now advances one Run
+from `pending` through `provisioning` and `running` to `cancelled`. It asserts
+the durable GitHub Check is `queued`, then `in_progress`, then `completed`,
+and that each visible Check state change writes its corresponding Outbox event
+with the state transition in the same transaction. The existing test also
+checks immutable SHA binding, remote Check ID persistence, duplicate cancel,
+terminal result mapping, and rejection of a stale state transition. This is
+local database/outbox evidence; the dedicated consumer deployment and live
+GitHub delivery remain approval-gated.
