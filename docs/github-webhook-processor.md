@@ -5,6 +5,22 @@ event side effects on the request path. `cmd/hako-webhook-processor-lambda`
 drains supported Installation lifecycle, repository-membership, and (when
 explicitly enabled) repository trigger events from that inbox.
 
+The same scheduled Lambda can optionally drain accepted Issue-to-Agent command
+deliveries. This is a separate default-off path: set
+`HAKO_AGENT_ISSUE_COMMANDS_ENABLED=true` only together with
+`HAKO_WORKLOAD_RUNS_ENABLED=true` and `HAKO_NATIVE_AGENT_ENABLED=true`. It
+uses the Control Plane-only GitHub Broker Agent Issue-context endpoint over
+mTLS. Configure `HAKO_AGENT_ISSUE_CONTEXT_BROKER_URL` and file paths in
+`HAKO_AGENT_ISSUE_BROKER_CLIENT_CERT_FILE`,
+`HAKO_AGENT_ISSUE_BROKER_CLIENT_KEY_FILE`, and
+`HAKO_AGENT_ISSUE_BROKER_CA_FILE`. The certificate must identify the caller as
+`spiffe://hako/control-plane`. File contents are read only when the feature is
+enabled and are not logged. Both the repository event batch and Issue command
+batch are attempted each invocation; any failure asks EventBridge to retry.
+This wiring does not provision certificates, private connectivity, or enable
+the feature in Terraform. Keep the flag off until Broker reachability and
+runtime execution controls have been deployed and verified.
+
 ## Processing contract
 
 - A batch is bounded to 10 deliveries by the scheduled Lambda (the store

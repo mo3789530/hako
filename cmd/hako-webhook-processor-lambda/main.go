@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log"
@@ -12,6 +14,7 @@ import (
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/mo3789530/hako/internal/githubbroker"
 	"github.com/mo3789530/hako/internal/store/dsql"
 	webhookstore "github.com/mo3789530/hako/internal/store/githubwebhook"
 	"github.com/mo3789530/hako/internal/store/transaction"
@@ -33,11 +36,35 @@ func handlerFor(run runOnce) func(context.Context, events.CloudWatchEvent) error
 	return func(ctx context.Context, _ events.CloudWatchEvent) error {
 		stats, err := run(ctx)
 		if err != nil {
-			log.Printf("GitHub repository event batch failed (failure_class=process_batch claimed=%d processed=%d workload_runs_created=%d actions_runner_jobs_admitted=%d deferred=%d raw_payloads_purged=%d)", stats.Claimed, stats.Processed, stats.WorkloadRunsCreated, stats.ActionsRunnerJobsAdmitted, stats.Deferred, stats.RawPayloadsPurged)
-			return errors.New("GitHub repository event batch failed")
+			log.Printf("GitHub webhook processor batch failed (failure_class=process_batch claimed=%d processed=%d workload_runs_created=%d actions_runner_jobs_admitted=%d deferred=%d raw_payloads_purged=%d)", stats.Claimed, stats.Processed, stats.WorkloadRunsCreated, stats.ActionsRunnerJobsAdmitted, stats.Deferred, stats.RawPayloadsPurged)
+			return errors.New("GitHub webhook processor batch failed")
 		}
-		log.Printf("GitHub repository event batch complete (claimed=%d processed=%d workload_runs_created=%d actions_runner_jobs_admitted=%d deferred=%d raw_payloads_purged=%d)", stats.Claimed, stats.Processed, stats.WorkloadRunsCreated, stats.ActionsRunnerJobsAdmitted, stats.Deferred, stats.RawPayloadsPurged)
+		log.Printf("GitHub webhook processor batch complete (claimed=%d processed=%d workload_runs_created=%d actions_runner_jobs_admitted=%d deferred=%d raw_payloads_purged=%d)", stats.Claimed, stats.Processed, stats.WorkloadRunsCreated, stats.ActionsRunnerJobsAdmitted, stats.Deferred, stats.RawPayloadsPurged)
 		return nil
+	}
+}
+
+func combineRuns(first, second runOnce) runOnce {
+	return func(ctx context.Context) (webhookstore.BatchStats, error) {
+		var stats webhookstore.BatchStats
+		var errs []error
+		for _, run := range []runOnce{first, second} {
+			if run == nil {
+				continue
+			}
+			current, err := run(ctx)
+			stats.Claimed += current.Claimed
+			stats.Processed += current.Processed
+			stats.WorkloadRunsCreated += current.WorkloadRunsCreated
+			stats.RepositoryPreviewsUpdated += current.RepositoryPreviewsUpdated
+			stats.ActionsRunnerJobsAdmitted += current.ActionsRunnerJobsAdmitted
+			stats.Deferred += current.Deferred
+			stats.RawPayloadsPurged += current.RawPayloadsPurged
+			if err != nil {
+				errs = append(errs, err)
+			}
+		}
+		return stats, errors.Join(errs...)
 	}
 }
 
@@ -46,7 +73,7 @@ func buildHandler(ctx context.Context) (func(context.Context, events.CloudWatchE
 	if err != nil {
 		return nil, fmt.Errorf("connect Hako webhook processor database: %w", err)
 	}
-	return handlerFor(func(ctx context.Context) (webhookstore.BatchStats, error) {
+	repositoryRun := func(ctx context.Context) (webhookstore.BatchStats, error) {
 		now := time.Now().UTC()
 		workloadTriggersEnabled := strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_WEBHOOK_WORKLOAD_TRIGGERS_ENABLED")), "true")
 		actionsRunnerAdmissionsEnabled := strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_GITHUB_ACTIONS_RUNNER_ADMISSIONS_ENABLED")), "true")
@@ -62,7 +89,78 @@ func buildHandler(ctx context.Context) (func(context.Context, events.CloudWatchE
 			createRun = workloadjobs.CreateWebhookRepositoryRun
 		}
 		return webhookstore.ProcessBatchWithRepositoryPreviews(ctx, pool, transaction.DefaultPolicy(), 10, now, createRun, workloadjobs.ApplyWebhookRepositoryPreview)
-	}), nil
+	}
+	issueRun, err := agentIssueCommandRun(os.Getenv, pool)
+	if err != nil {
+		return nil, err
+	}
+	return handlerFor(combineRuns(repositoryRun, issueRun)), nil
+}
+
+func agentIssueCommandRun(getenv func(string) string, pool *pgxpool.Pool) (runOnce, error) {
+	if getenv == nil {
+		return nil, fmt.Errorf("environment reader is required")
+	}
+	enabled := strings.EqualFold(strings.TrimSpace(getenv("HAKO_AGENT_ISSUE_COMMANDS_ENABLED")), "true")
+	if !enabled {
+		return nil, nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(getenv("HAKO_WORKLOAD_RUNS_ENABLED")), "true") ||
+		!strings.EqualFold(strings.TrimSpace(getenv("HAKO_NATIVE_AGENT_ENABLED")), "true") {
+		return nil, fmt.Errorf("Agent Issue command processing requires Workload Run and Native Agent execution gates")
+	}
+	if pool == nil {
+		return nil, fmt.Errorf("Agent Issue command processing requires a database pool")
+	}
+	provider, err := agentIssueContextProviderFromFiles(getenv)
+	if err != nil {
+		return nil, err
+	}
+	return func(ctx context.Context) (webhookstore.BatchStats, error) {
+		return workloadjobs.ProcessAgentIssueCommandBatch(ctx, pool, transaction.DefaultPolicy(), 10, provider, time.Now().UTC())
+	}, nil
+}
+
+func agentIssueContextProviderFromFiles(getenv func(string) string) (*githubbroker.HTTPAgentIssueContextProvider, error) {
+	baseURL := strings.TrimSpace(getenv("HAKO_AGENT_ISSUE_CONTEXT_BROKER_URL"))
+	certPath := strings.TrimSpace(getenv("HAKO_AGENT_ISSUE_BROKER_CLIENT_CERT_FILE"))
+	keyPath := strings.TrimSpace(getenv("HAKO_AGENT_ISSUE_BROKER_CLIENT_KEY_FILE"))
+	caPath := strings.TrimSpace(getenv("HAKO_AGENT_ISSUE_BROKER_CA_FILE"))
+	if baseURL == "" || certPath == "" || keyPath == "" || caPath == "" {
+		return nil, fmt.Errorf("Agent Issue mTLS Broker URL, client certificate, private key, and CA files are required")
+	}
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		return nil, fmt.Errorf("read Agent Issue Broker client certificate")
+	}
+	defer clear(certPEM)
+	keyPEM, err := os.ReadFile(keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("read Agent Issue Broker client key")
+	}
+	defer clear(keyPEM)
+	caPEM, err := os.ReadFile(caPath)
+	if err != nil {
+		return nil, fmt.Errorf("read Agent Issue Broker CA bundle")
+	}
+	defer clear(caPEM)
+	certificate, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("parse Agent Issue Broker client identity")
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("parse Agent Issue Broker CA bundle")
+	}
+	client, err := githubbroker.NewAgentIssueContextMTLSClient(certificate, roots)
+	if err != nil {
+		return nil, fmt.Errorf("configure Agent Issue Broker mTLS client")
+	}
+	provider, err := githubbroker.NewHTTPAgentIssueContextProvider(baseURL, client)
+	if err != nil {
+		return nil, fmt.Errorf("configure Agent Issue Broker endpoint")
+	}
+	return provider, nil
 }
 
 func openDatabase(ctx context.Context) (*pgxpool.Pool, error) {

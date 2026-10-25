@@ -1,5 +1,24 @@
 # Task 53: Native Pipeline and Issue-to-Agent Workflow
 
+## 2026-10-25 follow-up: scheduled Agent Issue batch composition
+
+`cmd/hako-webhook-processor-lambda` can now run the Issue-to-Agent inbox
+processor alongside its repository webhook batch. It is disabled by default
+and requires `HAKO_AGENT_ISSUE_COMMANDS_ENABLED`,
+`HAKO_WORKLOAD_RUNS_ENABLED`, and `HAKO_NATIVE_AGENT_ENABLED` to be explicitly
+true. The Broker endpoint and mTLS client identity are configured through
+`HAKO_AGENT_ISSUE_CONTEXT_BROKER_URL` and certificate/key/CA file paths; the
+client identity must be the Control Plane SPIFFE identity. The scheduled
+handler attempts both batches and returns a bounded retry error if either
+fails.
+
+Unit coverage checks the gates, combined stats/error behavior, and safe
+handling of missing or unreadable TLS files. This is code composition only:
+Terraform does not provision the certificate or private Broker connectivity,
+the feature remains disabled in deployment, and Native Agent execution remains
+unavailable until its runtime security and network controls are deployed and
+validated. See [Webhook Processor runtime configuration](../docs/github-webhook-processor.md).
+
 Status: In Progress (versioned manifest selection, fixed-catalog execution, durable per-pipeline results, and independent pipeline Checks through the existing Checks consumer are implemented and locally verified. Issue command authorization requires a verified GitHub identity that is a member of the resolved Tenant, an active Installation binding, exact repository identity, and a pre-existing Factory opt-in. A Tenant-App-only read scope, bounded Issue/default-branch SHA reader, Control Plane-only mTLS broker, and an atomic Issue inbox processor that creates one immutable Agent Run plus a bounded task record are locally composed and PostgreSQL-tested. The Resource Plane Worker retrieves the bounded task over mTLS and validates current attempt and immutable Run/App/Repository/branch/commit pins. A context digest is bound from launch specification through signed Start/Source tickets and guest `/run`; guest checks it before exposing task text in memory to a process factory. Purpose-scoped `native_agent` model credential metadata/API/CLI, a per-Repository default-off gate, an attempt/provenance-fenced in-process resolver, and an allowlisted Resource Plane mTLS Broker endpoint/client are implemented. The Worker now resolves model credentials after validating the immutable Issue task and sends them only in a no-store, attempt-ticket-bound HTTPS Start request to the allocated MicroVM. The Guest forwards the byte buffer only to an explicitly credential-capable process factory, clears request buffers, and redacts the credential from bounded output; the default Go-test factory remains incapable and fails closed. Linux Job command processes now use fail-closed cgroup v2 CPU/memory/PID scopes when launched as the fixed non-root identity; pipeline command budgets reserve fixed Service catalog requests first. Target Lambda MicroVM cgroup delegation/effective limits and egress remain unverified, so Agent scheduling and execution stay disabled pending a production isolated model executor and target network/resource validation. Service container orchestration is local and opt-in; live Agent write execution remains unavailable, and branch/PR policy is dormant configuration. Priority: P3.
 
 Runtime profile follow-up: profiles are now keyed by Workload kind, Runtime Class,
