@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"github.com/labstack/echo/v5"
 	"github.com/mo3789530/hako/internal/authz"
 	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/store/audit"
 	"github.com/mo3789530/hako/internal/store/transaction"
 	"github.com/mo3789530/hako/internal/store/workloads"
 )
@@ -117,6 +119,12 @@ func publishWorkloadAgentProposal(pool transaction.Beginner, submitter AgentProp
 				ORDER BY generation DESC LIMIT 1`, tenantID, runID).Scan(&latest)
 			if err != nil || latest == "" {
 				return "", workloads.ErrNotFound
+			}
+			details, _ := json.Marshal(map[string]string{"attempt_id": latest})
+			if err := audit.Append(ctx, tx, audit.Event{TenantID: tenantID, ActorID: user.ID,
+				Action: "workload.agent_proposal.publish", TargetType: "workload_run", TargetID: string(runID),
+				Details: details, OccurredAt: time.Now().UTC()}); err != nil {
+				return "", err
 			}
 			return latest, nil
 		})

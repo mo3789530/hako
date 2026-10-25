@@ -263,6 +263,8 @@ cross-Tenant callers receive 404. The API chooses the latest attempt in its
 database transaction, and the Broker independently revalidates the exact
 attempt and all proposal/App/Repository/Check pins before a GitHub write.
 Repeating the request is idempotent. Responses use `Cache-Control: no-store`
-and contain only branch/PR metadata. The route is omitted unless the Broker
+and contain only branch/PR metadata. Each authorized submit request is recorded
+in the Tenant audit log with the selected attempt ID and no proposal or
+credential data. The route is omitted unless the Broker
 client is configured. The matching CLI is
 `hako workload publication show|submit <tenant-id> <agent-run-id>`.

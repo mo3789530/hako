@@ -324,6 +324,11 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 		!strings.Contains(submitted.Body.String(), `"pull_request_number":23`) || publicationSubmitter.attemptID != "attempt_publish_api" {
 		t.Fatalf("Agent publication submit = HTTP %d body=%s attempt=%q", submitted.Code, submitted.Body.String(), publicationSubmitter.attemptID)
 	}
+	var publicationAuditCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE tenant_id='tenant_runs_a' AND actor_user_id='usr_runs_member'
+		AND action='workload.agent_proposal.publish' AND target_id='run_owned_member'`).Scan(&publicationAuditCount); err != nil || publicationAuditCount != 1 {
+		t.Fatalf("publication submit audit count=%d error=%v", publicationAuditCount, err)
+	}
 	if hiddenSubmit := request("runs-member", http.MethodPost, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_owner/agent-publication/publish"); hiddenSubmit.Code != http.StatusNotFound {
 		t.Fatalf("member submitted another requester's Agent proposal: HTTP %d %s", hiddenSubmit.Code, hiddenSubmit.Body.String())
 	}
