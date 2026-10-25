@@ -392,6 +392,84 @@ func TestGitHubRepositoryPreviewSessionCLIsCallTenantScopedAPI(t *testing.T) {
 	}
 }
 
+func TestGitHubRepositoryPreviewCLIsFailClosedOnMissingLoginOrAPIURL(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	previous := cliCredentialGetter
+	t.Cleanup(func() { cliCredentialGetter = previous })
+	args := []string{"list", "--tenant", "tenant_cli", "--installation", "42", "--repository", "7"}
+
+	t.Run("missing login", func(t *testing.T) {
+		t.Setenv("HAKO_API_URL", server.URL)
+		cliCredentialGetter = repositoryCLICredentials("")
+		if _, err := listGitHubRepositoryPreviewsCLI(args); err == nil {
+			t.Fatal("Preview list accepted missing login")
+		}
+		if _, err := createGitHubRepositoryPreviewSessionCLI([]string{"create", "--tenant", "tenant_cli", "--installation", "42", "--repository", "7", "--pull-request", "19"}); err == nil {
+			t.Fatal("Preview session creation accepted missing login")
+		}
+	})
+	t.Run("missing API URL", func(t *testing.T) {
+		t.Setenv("HAKO_API_URL", "")
+		cliCredentialGetter = repositoryCLICredentials(fmt.Sprintf(`{"access_token":"preview-token","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+			time.Now().UTC().Format(time.RFC3339)))
+		if _, err := listGitHubRepositoryPreviewsCLI(args); err == nil {
+			t.Fatal("Preview list accepted missing API URL")
+		}
+	})
+	if requests != 0 {
+		t.Fatalf("configuration failures reached API %d times", requests)
+	}
+}
+
+func TestGitHubRepositoryPreviewCLIsPropagateAPIRejections(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Header.Get("Authorization") != "Bearer preview-token" {
+			t.Errorf("Authorization = %q", r.Header.Get("Authorization"))
+		}
+		http.Error(w, `{"error":"Tenant access denied"}`, http.StatusForbidden)
+	}))
+	defer server.Close()
+	t.Setenv("HAKO_API_URL", server.URL)
+	previous := cliCredentialGetter
+	cliCredentialGetter = repositoryCLICredentials(fmt.Sprintf(`{"access_token":"preview-token","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+		time.Now().UTC().Format(time.RFC3339)))
+	t.Cleanup(func() { cliCredentialGetter = previous })
+
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{name: "list", call: func() error {
+			_, err := listGitHubRepositoryPreviewsCLI([]string{"list", "--tenant", "tenant_cli", "--installation", "42", "--repository", "7"})
+			return err
+		}},
+		{name: "create session", call: func() error {
+			_, err := createGitHubRepositoryPreviewSessionCLI([]string{"create", "--tenant", "tenant_cli", "--installation", "42", "--repository", "7", "--pull-request", "19"})
+			return err
+		}},
+		{name: "revoke session", call: func() error {
+			return revokeGitHubRepositoryPreviewSessionCLI([]string{"--tenant", "tenant_cli", "--installation", "42", "--repository", "7", "--pull-request", "19", "--session", "0123456789abcdef0123456789abcdef0123456789abcdef"})
+		}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.call(); err == nil {
+				t.Fatal("Preview CLI accepted a forbidden API response")
+			}
+		})
+	}
+	if requests != len(cases) {
+		t.Fatalf("API requests = %d, want %d", requests, len(cases))
+	}
+}
+
 func TestOpenGitHubRepositoryPreviewUsesSessionAndTLSGateway(t *testing.T) {
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

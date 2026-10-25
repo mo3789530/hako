@@ -564,3 +564,14 @@ selected tests in this target, not full-package coverage. This validates local
 orchestration and database fences only. Queue and schedule deployment, the
 matching ARM64 Guest image, and live Lambda MicroVM/Gateway behavior remain
 unverified.
+
+## Preview CLI authorization failure coverage (2026-10-25)
+
+The Tenant-scoped Preview listing and Preview Session create/revoke CLI paths
+now have tests for API `403` responses; listing/session creation also reject
+missing login, and listing rejects a missing API URL. The tests verify
+configuration errors do not reach the API and authorization denial is
+propagated for each operation. Focused statement coverage is 85.7%
+for Preview listing and Session creation; the revoke path's request/response
+contract is additionally covered by the existing successful lifecycle test.
+No live GitHub, AWS, or Resource Plane endpoint is contacted.
