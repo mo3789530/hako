@@ -33,9 +33,9 @@ type EFSAPI interface {
 }
 
 type Identity struct {
-	TenantID        domain.TenantID
-	WorkspaceID     domain.WorkspaceID
-	ResourcePlaneID domain.ResourcePlaneID
+	TenantID        domain.TenantID        `json:"tenant_id"`
+	WorkspaceID     domain.WorkspaceID     `json:"workspace_id"`
+	ResourcePlaneID domain.ResourcePlaneID `json:"resource_plane_id"`
 }
 
 // Binding is safe to retain in the Resource Plane journal: it identifies the

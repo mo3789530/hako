@@ -29,8 +29,18 @@ pairs and returns a stable, read-only report: `referenced`, `unbound_candidate`,
 `missing_access_point`. The caller must include terminal journal tombstones
 until cleanup is confirmed. An unbound AP can be a create whose journal write
 has not completed, so candidate output is not deletion authorization; check
-in-flight operations and the retention policy before taking action. This is a
-library primitive and is not yet wired to a scheduled AWS reconciler or CLI.
+in-flight operations and the retention policy before taking action.
+`go run ./cmd/hako-workspace-efs-reconcile --region ap-northeast-1 --filesystem fs-0123456789abcdef0 --bindings ./workspace-bindings.json`
+connects the primitive to the configured Resource Plane EFS API. The input is a
+strict JSON array of `{ "identity": { "tenant_id", "workspace_id",
+"resource_plane_id" }, "binding": { ... } }` records exported from the durable
+runtime journal. Include terminal tombstones until AP cleanup is confirmed.
+The command uses the ambient AWS SDK credential chain only for paginated
+`DescribeAccessPoints` calls, has a 60-second deadline, bounds input to 16 MiB
+and 100,000 records, and emits a deterministic JSON report marked
+`read_only: true`. It has no create/delete call path and reports sanitized
+errors. This tool does not export or enumerate S3 journals on its own, and it
+never adopts or deletes an AP.
 
 The runtime journal schema has an immutable `storage_binding` field and
 validates its shape across encode/decode. The Lambda MicroVM adapter now
