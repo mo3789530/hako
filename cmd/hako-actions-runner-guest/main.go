@@ -55,6 +55,7 @@ func run() error {
 	if err != nil {
 		return errors.New("configure ephemeral runner process")
 	}
+	defer consumer.Stop()
 	guest, err := actionsrunner.NewRunnerGuestRuntime(publicKey, consumer)
 	if err != nil {
 		return errors.New("configure MicroVM guest identity handler")
@@ -65,19 +66,24 @@ func run() error {
 	}
 	server := &http.Server{Handler: guest, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second,
 		WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
-	serveResult := make(chan error, 1)
-	go func() { serveResult <- server.Serve(listener) }()
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	return serveGuest(ctx, listener, server)
+}
+
+func serveGuest(ctx context.Context, listener net.Listener, server *http.Server) error {
+	if ctx == nil || listener == nil || server == nil || server.Handler == nil {
+		return errors.New("runner guest server is not configured")
+	}
+	serveResult := make(chan error, 1)
+	go func() { serveResult <- server.Serve(listener) }()
 	select {
 	case err := <-serveResult:
-		consumer.Stop()
 		if !errors.Is(err, http.ErrServerClosed) {
 			return errors.New("runner guest HTTP server stopped unexpectedly")
 		}
 		return nil
 	case <-ctx.Done():
-		consumer.Stop()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {

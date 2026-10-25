@@ -64,3 +64,16 @@ Run one authorized Claude Code Action workflow job on one isolated Lambda MicroV
 - This is handshake and route evidence using ephemeral test certificates. It
   does not verify production certificate issuance, distribution, rotation,
   network reachability, AWS IAM, Lambda MicroVM execution, or live GitHub APIs.
+
+## Guest process lifecycle and bootstrap key coverage (2026-10-25)
+
+The Actions Runner Guest now stops its process consumer on every post-creation
+startup/serve exit, including Guest handler and listener setup failures. Its
+HTTP serving/shutdown loop is isolated behind an injected listener/context and
+tested for invalid configuration, graceful cancellation, and unexpected
+listener closure. Bootstrap key tests reject missing/empty/oversized files,
+private keys, non-Ed25519 keys, malformed DER/PEM, trailing content, and unsafe
+paths. `go test -race ./cmd/hako-actions-runner-guest` reports 54.2% package
+coverage, with the key loader and default resolver fully covered. The focused
+PostgreSQL Actions Runner lifecycle integration suite passes; this remains
+local process evidence, not a Lambda MicroVM or production signal-delivery test.
