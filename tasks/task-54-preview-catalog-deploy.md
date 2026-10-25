@@ -552,3 +552,15 @@ Region and account against its registered Resource Plane. `docs/resource-plane-r
 records the producer/dispatcher boundary. A new Control Plane Terraform plan
 test checks the exact IAM resource and rejects a queue URL for a different
 account/Region; `make terraform-test` now runs it. No AWS policy was applied.
+
+## Local lifecycle verification refresh (2026-10-25)
+
+`make test-preview-expiry-integration` passed against the already-running local
+PostgreSQL. It exercised selected store, cleanup/provision workers, dispatcher,
+Resource Controller, Workload Run, API, and GitHub Broker lifecycle cases.
+The target reports focused statement coverage of 70.5% for `previewcleanup`,
+77.0% for `previewprovision`, and 69.6% for `previewdispatch`; these are the
+selected tests in this target, not full-package coverage. This validates local
+orchestration and database fences only. Queue and schedule deployment, the
+matching ARM64 Guest image, and live Lambda MicroVM/Gateway behavior remain
+unverified.
