@@ -62,6 +62,11 @@ test now verifies the durable GitHub Check progression from `queued` through
 visible Check update. This does not verify deployed queue delivery or live
 GitHub access.
 
+Task 47 CLI dispatch follow-up (2026-10-25): `hako create`, `hako list`, and
+`hako get` now share a directly testable handler with the real process entry
+point. HTTP-backed tests cover output, paging, invalid arguments before API
+access, and output-write failure handling.
+
 Task 52 workflow policy read API was added on 2026-10-25. Tenant members can
 inspect the active repository allowlist through the authenticated API/CLI;
 configuration remains Owner/Admin-only. API/CLI and PostgreSQL integration

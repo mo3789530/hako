@@ -208,6 +208,13 @@ URL fail-closed behavior, and propagation of a Tenant authorization failure.
 These tests complement the lifecycle PostgreSQL E2E by pinning the CLI-to-API
 request contract; they do not establish production Gateway or MicroVM behavior.
 
+The `create`, `list`, and `get` command dispatch now uses a testable handler
+that the process entry point also calls. HTTP-backed CLI tests verify the
+printed accepted Workspace/Operation, requested page and row formatting,
+argument rejection before network access, and a nonzero result when output
+writing fails. This covers the user-facing command boundary without spawning
+the process or changing its asynchronous lifecycle semantics.
+
 ## Local terminal mode and resize coverage (2026-10-25)
 
 Added Linux PTY tests for `hako shell` local terminal handling. They verify

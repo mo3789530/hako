@@ -420,27 +420,13 @@ func main() {
 			os.Exit(code)
 		}
 	case len(os.Args) >= 3 && len(os.Args) <= 5 && os.Args[1] == "list":
-		limit, offset, err := parseCLIPage(os.Args[3:])
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "hako list: %v\n", err)
-			os.Exit(2)
+		if code := runWorkspaceBasicCLI("list", os.Args[2:], os.Stdout, os.Stderr); code != 0 {
+			os.Exit(code)
 		}
-		result, err := listWorkspaces(os.Args[2], limit, offset)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "hako list: %v\n", err)
-			os.Exit(1)
-		}
-		for _, item := range result.Items {
-			fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%s\n", item.Workspace.ID, item.Workspace.Name, item.Status.DesiredState, item.Status.ObservedState)
-		}
-		fmt.Fprintf(os.Stdout, "Showing %d of %d workspaces (limit=%d offset=%d)\n", len(result.Items), result.Total, result.Limit, result.Offset)
 	case len(os.Args) == 4 && os.Args[1] == "get":
-		workspace, err := getWorkspace(os.Args[2], os.Args[3])
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "hako get: %v\n", err)
-			os.Exit(1)
+		if code := runWorkspaceBasicCLI("get", os.Args[2:], os.Stdout, os.Stderr); code != 0 {
+			os.Exit(code)
 		}
-		fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%s\n", workspace.Workspace.ID, workspace.Workspace.Name, workspace.Status.DesiredState, workspace.Status.ObservedState)
 	case len(os.Args) >= 4 && os.Args[1] == "wait":
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
@@ -449,27 +435,9 @@ func main() {
 			os.Exit(1)
 		}
 	case (len(os.Args) == 4 || len(os.Args) == 6) && os.Args[1] == "create":
-		idempotencyKey := ""
-		if len(os.Args) == 6 {
-			if os.Args[4] != "--idempotency-key" {
-				fmt.Fprintln(os.Stderr, "usage: hako create <tenant-id> <workspace-name> [--idempotency-key <key>]")
-				os.Exit(2)
-			}
-			idempotencyKey = os.Args[5]
-		} else {
-			generatedKey, err := idgen.New("req_")
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "hako create: %v\n", err)
-				os.Exit(1)
-			}
-			idempotencyKey = generatedKey
+		if code := runWorkspaceBasicCLI("create", os.Args[2:], os.Stdout, os.Stderr); code != 0 {
+			os.Exit(code)
 		}
-		created, err := createWorkspace(os.Args[2], os.Args[3], idempotencyKey)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "hako create: %v\nRetry the same request with --idempotency-key %s\n", err, idempotencyKey)
-			os.Exit(1)
-		}
-		fmt.Fprintf(os.Stdout, "Workspace %s accepted: %s (desired=%s observed=%s, operation=%s, request-key=%s)\n", created.Name, created.ID, created.DesiredState, created.ObservedState, created.OperationID, idempotencyKey)
 	case len(os.Args) >= 4 && len(os.Args) <= 7 && (os.Args[1] == "suspend" || os.Args[1] == "resume" || os.Args[1] == "delete"):
 		action, tenantID, workspaceID := os.Args[1], os.Args[2], os.Args[3]
 		options, err := parseWorkspaceActionOptions(action, os.Args[4:])
