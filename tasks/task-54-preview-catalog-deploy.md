@@ -192,14 +192,18 @@ Add optional repository-level preview environments and service metadata/deploy p
 - `go test ./...` passed. PostgreSQL Preview lifecycle E2E passed against the
   local `hako-dev-postgres`, including stale delivery, close/reopen, Tenant
   scoping, and duplicate replay.
-- Remaining: implement durable Lambda MicroVM/Gateway provider operations;
-  Preview Workspace/Run binding to Lambda MicroVM, expiring
-  Tenant-scoped Gateway route, timeout/merge sweep, provider-backed MicroVM /
-  route cleanup executor, activate the scheduled producer/result consumer only
-  after AWS queue policies and DSQL role grants are reviewed, and add lifecycle
-  wiring into `hako open`. Placement selection/reservation is implemented
-  locally but is not yet connected to a provider-backed runtime. See
-  [`Preview lifecycle`](../docs/preview-lifecycle.md).
+- The implementation below supersedes this earlier lifecycle snapshot:
+  durable Preview generation claims, placement reservation, Resource Plane
+  command/result routing, Lambda MicroVM journal adapter, brokered immutable
+  checkout, S3 source staging, Guest one-use install, app startup, Gateway
+  sessions, and the loopback `hako github repository previews open|forward`
+  flows are now locally composed and tested. See the current status at the top
+  of this task and [`Preview lifecycle`](../docs/preview-lifecycle.md).
+- Remaining: build and execute the matching ARM64 Guest image, deploy and
+  verify the default-off queue/schedule/DSQL/IAM configuration, and run the
+  provision→connect→cleanup path on a real Lambda MicroVM/Gateway. These are
+  AWS runtime/deployment gates and have not been performed. OIDC STS exchange
+  and deployment execution remain deliberately disabled.
 
 ## Preview result Lambda composition (2026-10-25)
 
