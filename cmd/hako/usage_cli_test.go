@@ -64,7 +64,7 @@ func TestTenantUsageAndQuotaCLIUseAuthenticatedTenantScopedAPI(t *testing.T) {
 	if err != nil || limits.Revision != 3 || limits.WorkspacesLimit != 10 {
 		t.Fatalf("tenant quota limits = %+v, error = %v", limits, err)
 	}
-	updated, err := setTenantQuotaLimits("tenant_quota", 8, 4, 0, 0, 0, 0, 0, 0)
+	updated, err := setTenantQuotaLimits("tenant_quota", 8, 4, 0, 0, 0, 0, 0, 0, 0, 0)
 	if err != nil || updated.Revision != 4 || updated.WorkspacesLimit != 8 || updated.ArtifactBytesLimit != limits.ArtifactBytesLimit {
 		t.Fatalf("updated tenant quotas = %+v, error = %v", updated, err)
 	}

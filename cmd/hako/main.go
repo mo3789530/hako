@@ -256,7 +256,7 @@ func main() {
 			os.Exit(1)
 		}
 		_ = json.NewEncoder(os.Stdout).Encode(limits)
-	case len(os.Args) >= 7 && len(os.Args) <= 15 && os.Args[1] == "tenant" && os.Args[2] == "quota" && os.Args[3] == "set":
+	case len(os.Args) >= 7 && len(os.Args) <= 24 && os.Args[1] == "tenant" && os.Args[2] == "quota" && os.Args[3] == "set":
 		target, skipConfirmation, err := parseTenantQuotaSetArgs(os.Args[4:])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "hako tenant quota set: %v\n", err)
@@ -267,7 +267,8 @@ func main() {
 				return setTenantQuotaLimits(tenantID, target.WorkspacesLimit, target.WorkloadRunsLimit,
 					target.QueuedWorkloadRunsLimit,
 					target.ArtifactBytesLimit, target.WorkspaceServiceMemoryBytesLimit, target.WorkspaceServiceMilliCPULimit,
-					target.PreviewRunsLimit, target.PreviewLifetimeSecondsLimit)
+					target.PreviewRunsLimit, target.PreviewLifetimeSecondsLimit,
+					target.WorkspaceComputeMilliCPULimit, target.WorkspaceComputeMemoryMiBLimit)
 			})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "hako tenant quota set: %v\n", err)
@@ -1495,7 +1496,7 @@ func getTenantQuotaLimits(tenantID string) (api.TenantQuotaLimits, error) {
 	return api.GetTenantQuotaLimits(context.Background(), apiURL, accessToken, tenantID, nil)
 }
 
-func setTenantQuotaLimits(tenantID string, workspacesLimit, workloadRunsLimit, queuedWorkloadRunsLimit int16, artifactBytesLimit, serviceMemoryBytesLimit, serviceMilliCPULimit int64, previewRunsLimit int16, previewLifetimeSeconds int64) (api.TenantQuotaLimits, error) {
+func setTenantQuotaLimits(tenantID string, workspacesLimit, workloadRunsLimit, queuedWorkloadRunsLimit int16, artifactBytesLimit, serviceMemoryBytesLimit, serviceMilliCPULimit int64, previewRunsLimit int16, previewLifetimeSeconds, workspaceComputeMilliCPULimit, workspaceComputeMemoryMiBLimit int64) (api.TenantQuotaLimits, error) {
 	accessToken, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
 	if err != nil {
 		return api.TenantQuotaLimits{}, err
@@ -1504,7 +1505,8 @@ func setTenantQuotaLimits(tenantID string, workspacesLimit, workloadRunsLimit, q
 	if apiURL == "" {
 		return api.TenantQuotaLimits{}, errors.New("HAKO_API_URL is required")
 	}
-	if queuedWorkloadRunsLimit == 0 || artifactBytesLimit == 0 || serviceMemoryBytesLimit == 0 || serviceMilliCPULimit == 0 || previewRunsLimit == 0 || previewLifetimeSeconds == 0 {
+	clearWorkspaceComputeLimits := workspaceComputeMilliCPULimit < 0 || workspaceComputeMemoryMiBLimit < 0
+	if queuedWorkloadRunsLimit == 0 || artifactBytesLimit == 0 || serviceMemoryBytesLimit == 0 || serviceMilliCPULimit == 0 || previewRunsLimit == 0 || previewLifetimeSeconds == 0 || workspaceComputeMilliCPULimit == 0 || workspaceComputeMemoryMiBLimit == 0 {
 		current, err := api.GetTenantQuotaLimits(context.Background(), apiURL, accessToken, tenantID, nil)
 		if err != nil {
 			return api.TenantQuotaLimits{}, fmt.Errorf("read current Tenant quota settings: %w", err)
@@ -1530,19 +1532,30 @@ func setTenantQuotaLimits(tenantID string, workspacesLimit, workloadRunsLimit, q
 		if previewLifetimeSeconds == 0 {
 			previewLifetimeSeconds = current.PreviewLifetimeSecondsLimit
 		}
+		if workspaceComputeMilliCPULimit == 0 {
+			workspaceComputeMilliCPULimit = current.WorkspaceComputeMilliCPULimit
+		}
+		if workspaceComputeMemoryMiBLimit == 0 {
+			workspaceComputeMemoryMiBLimit = current.WorkspaceComputeMemoryMiBLimit
+		}
+	}
+	if clearWorkspaceComputeLimits {
+		workspaceComputeMilliCPULimit, workspaceComputeMemoryMiBLimit = 0, 0
 	}
 	return api.SetTenantQuotaLimits(context.Background(), apiURL, accessToken, tenantID,
 		api.TenantQuotaLimits{WorkspacesLimit: workspacesLimit, WorkloadRunsLimit: workloadRunsLimit, QueuedWorkloadRunsLimit: queuedWorkloadRunsLimit,
 			PreviewRunsLimit: previewRunsLimit, PreviewLifetimeSecondsLimit: previewLifetimeSeconds, ArtifactBytesLimit: artifactBytesLimit,
-			WorkspaceServiceMemoryBytesLimit: serviceMemoryBytesLimit, WorkspaceServiceMilliCPULimit: serviceMilliCPULimit}, nil)
+			WorkspaceServiceMemoryBytesLimit: serviceMemoryBytesLimit, WorkspaceServiceMilliCPULimit: serviceMilliCPULimit,
+			WorkspaceComputeMilliCPULimit: workspaceComputeMilliCPULimit, WorkspaceComputeMemoryMiBLimit: workspaceComputeMemoryMiBLimit}, nil)
 }
 
 func parseTenantQuotaSetArgs(args []string) (api.TenantQuotaLimits, bool, error) {
 	if len(args) < 3 {
-		return api.TenantQuotaLimits{}, false, errors.New("usage: hako tenant quota set <tenant-id> <workspaces 1-10> <workload-runs 1-5> [artifact-storage-GiB 1-100 [service-memory-GiB 1-2 service-millicpu 1-1500 [preview-runs 1-5 preview-lifetime-hours 1-24]]] [--queued-workload-runs 1-5] [--yes]")
+		return api.TenantQuotaLimits{}, false, errors.New("usage: hako tenant quota set <tenant-id> <workspaces 1-10> <workload-runs 1-5> [artifact-storage-GiB 1-100 [service-memory-GiB 1-2 service-millicpu 1-1500 [preview-runs 1-5 preview-lifetime-hours 1-24]]] [--queued-workload-runs 1-5] [--workspace-compute-cpu-millicores 1-80000] [--workspace-compute-memory-mib 1-163840] [--no-workspace-compute-limits] [--yes]")
 	}
 	skipConfirmation := false
 	queuedWorkloadRuns := int64(0)
+	workspaceComputeCPU, workspaceComputeMemory := int64(0), int64(0)
 	filtered := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--queued-workload-runs" {
@@ -1555,6 +1568,39 @@ func parseTenantQuotaSetArgs(args []string) (api.TenantQuotaLimits, bool, error)
 			}
 			queuedWorkloadRuns = value
 			i++
+			continue
+		}
+		if args[i] == "--workspace-compute-cpu-millicores" || args[i] == "--workspace-compute-memory-mib" {
+			if i+1 >= len(args) {
+				return api.TenantQuotaLimits{}, false, fmt.Errorf("%s requires one value", args[i])
+			}
+			value, err := strconv.ParseInt(args[i+1], 10, 64)
+			maximum := int64(80000)
+			if args[i] == "--workspace-compute-memory-mib" {
+				maximum = 163840
+			}
+			if err != nil || value < 1 || value > maximum {
+				return api.TenantQuotaLimits{}, false, fmt.Errorf("%s must be 1-%d", args[i], maximum)
+			}
+			if args[i] == "--workspace-compute-cpu-millicores" {
+				if workspaceComputeCPU != 0 {
+					return api.TenantQuotaLimits{}, false, errors.New("Workspace compute CPU limit was supplied more than once")
+				}
+				workspaceComputeCPU = value
+			} else {
+				if workspaceComputeMemory != 0 {
+					return api.TenantQuotaLimits{}, false, errors.New("Workspace compute memory limit was supplied more than once")
+				}
+				workspaceComputeMemory = value
+			}
+			i++
+			continue
+		}
+		if args[i] == "--no-workspace-compute-limits" {
+			if workspaceComputeCPU != 0 || workspaceComputeMemory != 0 {
+				return api.TenantQuotaLimits{}, false, errors.New("cannot combine --no-workspace-compute-limits with explicit compute limits")
+			}
+			workspaceComputeCPU, workspaceComputeMemory = -1, -1
 			continue
 		}
 		filtered = append(filtered, args[i])
@@ -1582,6 +1628,8 @@ func parseTenantQuotaSetArgs(args []string) (api.TenantQuotaLimits, bool, error)
 		return api.TenantQuotaLimits{}, false, errors.New("queued Workload Run limit cannot exceed total Workload Run limit")
 	}
 	limits := api.TenantQuotaLimits{TenantID: args[0], WorkspacesLimit: int16(workspaces), WorkloadRunsLimit: int16(workloads)}
+	limits.WorkspaceComputeMilliCPULimit = workspaceComputeCPU
+	limits.WorkspaceComputeMemoryMiBLimit = workspaceComputeMemory
 	if queuedWorkloadRuns > 0 {
 		limits.QueuedWorkloadRunsLimit = int16(queuedWorkloadRuns)
 	}
@@ -1614,6 +1662,12 @@ func parseTenantQuotaSetArgs(args []string) (api.TenantQuotaLimits, bool, error)
 }
 
 func mergeTenantQuotaDefaults(target, current api.TenantQuotaLimits) api.TenantQuotaLimits {
+	if target.WorkspaceComputeMilliCPULimit == 0 {
+		target.WorkspaceComputeMilliCPULimit = current.WorkspaceComputeMilliCPULimit
+	}
+	if target.WorkspaceComputeMemoryMiBLimit == 0 {
+		target.WorkspaceComputeMemoryMiBLimit = current.WorkspaceComputeMemoryMiBLimit
+	}
 	if target.QueuedWorkloadRunsLimit == 0 {
 		target.QueuedWorkloadRunsLimit = current.QueuedWorkloadRunsLimit
 		if target.QueuedWorkloadRunsLimit > target.WorkloadRunsLimit {
@@ -1669,14 +1723,19 @@ func confirmTenantQuotaUpdate(input io.Reader, output io.Writer, current api.Ten
 	if input == nil || output == nil {
 		return false, errors.New("confirmation input and output are required; pass --yes for automation")
 	}
-	if _, err := fmt.Fprintf(output, "Tenant %s quota update (current usage → requested limit):\n  Workspaces: %d → %d (current limit %d)\n  Workload Runs: %d → %d (current limit %d)\n  Queued Workload Runs: %d → %d (current limit %d)\n  Preview Runs: %d → %d (current limit %d)\n  Artifact bytes: %d used + %d reserved → %d (current limit %d)\n  Service memory bytes: current limit %d → %d\n  Service millicores: current limit %d → %d\nApply this quota change? [y/N] ",
+	if target.WorkspaceComputeMilliCPULimit < 0 || target.WorkspaceComputeMemoryMiBLimit < 0 {
+		target.WorkspaceComputeMilliCPULimit, target.WorkspaceComputeMemoryMiBLimit = 0, 0
+	}
+	if _, err := fmt.Fprintf(output, "Tenant %s quota update (current usage → requested limit):\n  Workspaces: %d → %d (current limit %d)\n  Workload Runs: %d → %d (current limit %d)\n  Queued Workload Runs: %d → %d (current limit %d)\n  Preview Runs: %d → %d (current limit %d)\n  Artifact bytes: %d used + %d reserved → %d (current limit %d)\n  Service memory bytes: current limit %d → %d\n  Service millicores: current limit %d → %d\n  Workspace compute reservations: %dmCPU / %dMiB used (%d profiles missing) → %dmCPU / %dMiB limits\nApply this quota change? [y/N] ",
 		target.TenantID, usage.WorkspacesUsed, target.WorkspacesLimit, current.WorkspacesLimit,
 		usage.WorkloadRunsUsed, target.WorkloadRunsLimit, current.WorkloadRunsLimit,
 		usage.QueuedWorkloadRunsUsed, target.QueuedWorkloadRunsLimit, current.QueuedWorkloadRunsLimit,
 		usage.PreviewRunsUsed, target.PreviewRunsLimit, current.PreviewRunsLimit,
 		usage.ArtifactBytesUsed, usage.ArtifactBytesReserved, target.ArtifactBytesLimit, current.ArtifactBytesLimit,
 		current.WorkspaceServiceMemoryBytesLimit, target.WorkspaceServiceMemoryBytesLimit,
-		current.WorkspaceServiceMilliCPULimit, target.WorkspaceServiceMilliCPULimit); err != nil {
+		current.WorkspaceServiceMilliCPULimit, target.WorkspaceServiceMilliCPULimit,
+		usage.WorkspaceComputeCPUMilliUsed, usage.WorkspaceComputeMemoryMiBUsed, usage.WorkspaceComputeProfilesMissing,
+		target.WorkspaceComputeMilliCPULimit, target.WorkspaceComputeMemoryMiBLimit); err != nil {
 		return false, err
 	}
 	answer, err := bufio.NewReader(input).ReadString('\n')
@@ -1691,14 +1750,16 @@ func writeTenantUsage(output io.Writer, tenantID string, usage api.TenantUsage) 
 	if output == nil || tenantID == "" || usage.WorkspacesUsed < 0 || usage.WorkspacesLimit < 1 {
 		return errors.New("Tenant quota usage is invalid")
 	}
-	if usage.WorkloadRunsUsed < 0 || usage.WorkloadRunsLimit < 1 || usage.QueuedWorkloadRunsUsed < 0 || usage.QueuedWorkloadRunsLimit < 1 || usage.QueuedWorkloadRunsLimit > usage.WorkloadRunsLimit || usage.PreviewRunsUsed < 0 || usage.PreviewRunsLimit < 1 || usage.PreviewLifetimeLimit < 300 || usage.PreviewLifetimeLimit > 86400 || usage.ArtifactBytesUsed < 0 || usage.ArtifactBytesReserved < 0 || usage.ArtifactBytesLimit < 1 {
+	if usage.WorkloadRunsUsed < 0 || usage.WorkloadRunsLimit < 1 || usage.QueuedWorkloadRunsUsed < 0 || usage.QueuedWorkloadRunsLimit < 1 || usage.QueuedWorkloadRunsLimit > usage.WorkloadRunsLimit || usage.PreviewRunsUsed < 0 || usage.PreviewRunsLimit < 1 || usage.PreviewLifetimeLimit < 300 || usage.PreviewLifetimeLimit > 86400 || usage.ArtifactBytesUsed < 0 || usage.ArtifactBytesReserved < 0 || usage.ArtifactBytesLimit < 1 || usage.WorkspaceComputeCPUMilliUsed < 0 || usage.WorkspaceComputeMemoryMiBUsed < 0 || usage.WorkspaceComputeProfilesMissing < 0 {
 		return errors.New("Tenant quota usage is invalid")
 	}
-	_, err := fmt.Fprintf(output, "Tenant %s quota: Workspaces %d/%d reserved; concurrent Workload Runs %d/%d; queued Workload Runs %d/%d; Previews %d/%d (max lifetime %s); artifacts %d stored + %d reserved / %d bytes\n",
+	_, err := fmt.Fprintf(output, "Tenant %s quota: Workspaces %d/%d reserved; concurrent Workload Runs %d/%d; queued Workload Runs %d/%d; Previews %d/%d (max lifetime %s); artifacts %d stored + %d reserved / %d bytes; Workspace compute reservations %dmCPU/%dMiB (%d profiles missing) / %dmCPU/%dMiB limits\n",
 		tenantID, usage.WorkspacesUsed, usage.WorkspacesLimit, usage.WorkloadRunsUsed, usage.WorkloadRunsLimit,
 		usage.QueuedWorkloadRunsUsed, usage.QueuedWorkloadRunsLimit,
 		usage.PreviewRunsUsed, usage.PreviewRunsLimit, time.Duration(usage.PreviewLifetimeLimit)*time.Second,
-		usage.ArtifactBytesUsed, usage.ArtifactBytesReserved, usage.ArtifactBytesLimit)
+		usage.ArtifactBytesUsed, usage.ArtifactBytesReserved, usage.ArtifactBytesLimit,
+		usage.WorkspaceComputeCPUMilliUsed, usage.WorkspaceComputeMemoryMiBUsed, usage.WorkspaceComputeProfilesMissing,
+		usage.WorkspaceComputeCPUMilliLimit, usage.WorkspaceComputeMemoryMiBLimit)
 	return err
 }
 

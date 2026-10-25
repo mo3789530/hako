@@ -123,6 +123,8 @@ func TestParseTenantQuotaSetArgs(t *testing.T) {
 	}{
 		{name: "required limits", args: []string{"tenant_1", "8", "4"}, wantLimits: api.TenantQuotaLimits{TenantID: "tenant_1", WorkspacesLimit: 8, WorkloadRunsLimit: 4}},
 		{name: "queued backlog flag", args: []string{"tenant_1", "8", "4", "--queued-workload-runs", "2"}, wantLimits: api.TenantQuotaLimits{TenantID: "tenant_1", WorkspacesLimit: 8, WorkloadRunsLimit: 4, QueuedWorkloadRunsLimit: 2}},
+		{name: "compute limits", args: []string{"tenant_1", "8", "4", "--workspace-compute-cpu-millicores", "4000", "--workspace-compute-memory-mib", "8192"}, wantLimits: api.TenantQuotaLimits{TenantID: "tenant_1", WorkspacesLimit: 8, WorkloadRunsLimit: 4, WorkspaceComputeMilliCPULimit: 4000, WorkspaceComputeMemoryMiBLimit: 8192}},
+		{name: "clear compute limits", args: []string{"tenant_1", "8", "4", "--no-workspace-compute-limits"}, wantLimits: api.TenantQuotaLimits{TenantID: "tenant_1", WorkspacesLimit: 8, WorkloadRunsLimit: 4, WorkspaceComputeMilliCPULimit: -1, WorkspaceComputeMemoryMiBLimit: -1}},
 		{name: "artifact and yes", args: []string{"tenant_1", "8", "4", "20", "--yes"}, wantYes: true, wantLimits: api.TenantQuotaLimits{TenantID: "tenant_1", WorkspacesLimit: 8, WorkloadRunsLimit: 4, ArtifactBytesLimit: 20 << 30}},
 		{name: "all limits", args: []string{"tenant_1", "8", "4", "20", "2", "1200", "3", "12"}, wantLimits: api.TenantQuotaLimits{TenantID: "tenant_1", WorkspacesLimit: 8, WorkloadRunsLimit: 4, ArtifactBytesLimit: 20 << 30, WorkspaceServiceMemoryBytesLimit: 2 << 30, WorkspaceServiceMilliCPULimit: 1200, PreviewRunsLimit: 3, PreviewLifetimeSecondsLimit: 12 * 3600}},
 		{name: "yes must be final", args: []string{"tenant_1", "8", "4", "--yes", "20"}, wantErr: true},
@@ -145,10 +147,11 @@ func TestParseTenantQuotaSetArgs(t *testing.T) {
 
 func TestMergeTenantQuotaDefaults(t *testing.T) {
 	current := api.TenantQuotaLimits{QueuedWorkloadRunsLimit: 4, ArtifactBytesLimit: 10 << 30, WorkspaceServiceMemoryBytesLimit: 1 << 30,
-		WorkspaceServiceMilliCPULimit: 900, PreviewRunsLimit: 2, PreviewLifetimeSecondsLimit: 3600}
+		WorkspaceServiceMilliCPULimit: 900, PreviewRunsLimit: 2, PreviewLifetimeSecondsLimit: 3600, WorkspaceComputeMilliCPULimit: 3000, WorkspaceComputeMemoryMiBLimit: 6000}
 	target := mergeTenantQuotaDefaults(api.TenantQuotaLimits{TenantID: "tenant_1", WorkspacesLimit: 8, WorkloadRunsLimit: 4}, current)
 	if target.QueuedWorkloadRunsLimit != 4 || target.ArtifactBytesLimit != current.ArtifactBytesLimit || target.WorkspaceServiceMemoryBytesLimit != current.WorkspaceServiceMemoryBytesLimit ||
-		target.WorkspaceServiceMilliCPULimit != current.WorkspaceServiceMilliCPULimit || target.PreviewRunsLimit != current.PreviewRunsLimit || target.PreviewLifetimeSecondsLimit != current.PreviewLifetimeSecondsLimit {
+		target.WorkspaceServiceMilliCPULimit != current.WorkspaceServiceMilliCPULimit || target.PreviewRunsLimit != current.PreviewRunsLimit || target.PreviewLifetimeSecondsLimit != current.PreviewLifetimeSecondsLimit ||
+		target.WorkspaceComputeMilliCPULimit != current.WorkspaceComputeMilliCPULimit || target.WorkspaceComputeMemoryMiBLimit != current.WorkspaceComputeMemoryMiBLimit {
 		t.Fatalf("omitted settings should retain existing values: %+v", target)
 	}
 }
@@ -257,7 +260,7 @@ func TestWriteTenantUsage(t *testing.T) {
 	if err := writeTenantUsage(&output, "tenant_1", api.TenantUsage{WorkspacesUsed: 3, WorkspacesLimit: 10, WorkloadRunsUsed: 2, WorkloadRunsLimit: 5, QueuedWorkloadRunsUsed: 1, QueuedWorkloadRunsLimit: 5, PreviewRunsUsed: 1, PreviewRunsLimit: 2, PreviewLifetimeLimit: 86400, ArtifactBytesUsed: 1234, ArtifactBytesReserved: 104857600, ArtifactBytesLimit: 10737418240}); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := output.String(), "Tenant tenant_1 quota: Workspaces 3/10 reserved; concurrent Workload Runs 2/5; queued Workload Runs 1/5; Previews 1/2 (max lifetime 24h0m0s); artifacts 1234 stored + 104857600 reserved / 10737418240 bytes\n"; got != want {
+	if got, want := output.String(), "Tenant tenant_1 quota: Workspaces 3/10 reserved; concurrent Workload Runs 2/5; queued Workload Runs 1/5; Previews 1/2 (max lifetime 24h0m0s); artifacts 1234 stored + 104857600 reserved / 10737418240 bytes; Workspace compute reservations 0mCPU/0MiB (0 profiles missing) / 0mCPU/0MiB limits\n"; got != want {
 		t.Fatalf("usage output=%q want=%q", got, want)
 	}
 	if err := writeTenantUsage(&output, "tenant_1", api.TenantUsage{WorkspacesUsed: 11, WorkspacesLimit: 10, WorkloadRunsLimit: 5, QueuedWorkloadRunsUsed: 6, QueuedWorkloadRunsLimit: 5, PreviewRunsLimit: 2, PreviewLifetimeLimit: 86400, ArtifactBytesLimit: 10737418240}); err != nil {

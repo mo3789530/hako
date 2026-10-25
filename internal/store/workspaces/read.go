@@ -27,18 +27,23 @@ type ListResult struct {
 // QuotaUsage reports the Tenant-wide active Workspace count used by admission.
 // A pending deletion remains active until the Resource Plane confirms cleanup.
 type QuotaUsage struct {
-	WorkspacesUsed          int64 `json:"workspaces_used"`
-	WorkspacesLimit         int64 `json:"workspaces_limit"`
-	WorkloadRunsUsed        int64 `json:"workload_runs_used"`
-	WorkloadRunsLimit       int64 `json:"workload_runs_limit"`
-	QueuedWorkloadRunsUsed  int64 `json:"queued_workload_runs_used"`
-	QueuedWorkloadRunsLimit int64 `json:"queued_workload_runs_limit"`
-	PreviewRunsUsed         int64 `json:"preview_runs_used"`
-	PreviewRunsLimit        int64 `json:"preview_runs_limit"`
-	PreviewLifetimeLimit    int64 `json:"preview_lifetime_seconds_limit"`
-	ArtifactBytesUsed       int64 `json:"artifact_bytes_used"`
-	ArtifactBytesReserved   int64 `json:"artifact_bytes_reserved"`
-	ArtifactBytesLimit      int64 `json:"artifact_bytes_limit"`
+	WorkspacesUsed                  int64 `json:"workspaces_used"`
+	WorkspacesLimit                 int64 `json:"workspaces_limit"`
+	WorkloadRunsUsed                int64 `json:"workload_runs_used"`
+	WorkloadRunsLimit               int64 `json:"workload_runs_limit"`
+	QueuedWorkloadRunsUsed          int64 `json:"queued_workload_runs_used"`
+	QueuedWorkloadRunsLimit         int64 `json:"queued_workload_runs_limit"`
+	PreviewRunsUsed                 int64 `json:"preview_runs_used"`
+	PreviewRunsLimit                int64 `json:"preview_runs_limit"`
+	PreviewLifetimeLimit            int64 `json:"preview_lifetime_seconds_limit"`
+	ArtifactBytesUsed               int64 `json:"artifact_bytes_used"`
+	ArtifactBytesReserved           int64 `json:"artifact_bytes_reserved"`
+	ArtifactBytesLimit              int64 `json:"artifact_bytes_limit"`
+	WorkspaceComputeCPUMilliUsed    int64 `json:"workspace_compute_milli_cpu_used"`
+	WorkspaceComputeMemoryMiBUsed   int64 `json:"workspace_compute_memory_mib_used"`
+	WorkspaceComputeProfilesMissing int64 `json:"workspace_compute_profiles_missing"`
+	WorkspaceComputeCPUMilliLimit   int64 `json:"workspace_compute_milli_cpu_limit"`
+	WorkspaceComputeMemoryMiBLimit  int64 `json:"workspace_compute_memory_mib_limit"`
 }
 
 func ReadQuotaUsage(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID) (QuotaUsage, error) {
@@ -78,6 +83,12 @@ func ReadQuotaUsage(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID) (Q
 		return QuotaUsage{}, fmt.Errorf("read Tenant artifact storage reservations: %w", err)
 	}
 	usage.ArtifactBytesLimit = limits.ArtifactBytes
+	usage.WorkspaceComputeCPUMilliUsed, usage.WorkspaceComputeMemoryMiBUsed, usage.WorkspaceComputeProfilesMissing, err = quotas.ReadWorkspaceComputeUsage(ctx, tx, tenantID)
+	if err != nil {
+		return QuotaUsage{}, err
+	}
+	usage.WorkspaceComputeCPUMilliLimit = limits.WorkspaceComputeMilliCPU
+	usage.WorkspaceComputeMemoryMiBLimit = limits.WorkspaceComputeMemoryMiB
 	return usage, nil
 }
 

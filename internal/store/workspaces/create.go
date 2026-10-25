@@ -221,6 +221,9 @@ func Create(ctx context.Context, pool transaction.Beginner, input CreateInput, p
 			if err := resourcecapacity.RecordWorkspace(ctx, tx, workspace.ID, selectedPlacement.ResourcePlaneID, workspace.RuntimeClass, createdAt); err != nil {
 				return CreateResult{}, err
 			}
+			if err := quotas.EnforceWorkspaceComputeAdmission(ctx, tx, input.TenantID); err != nil {
+				return CreateResult{}, err
+			}
 
 			storedOperation, err := operations.InsertOrGet(ctx, tx, selectedOperation, request)
 			if err != nil {

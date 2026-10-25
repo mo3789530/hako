@@ -85,18 +85,23 @@ type WorkspaceListResult struct {
 }
 
 type TenantUsage struct {
-	WorkspacesUsed          int64 `json:"workspaces_used"`
-	WorkspacesLimit         int64 `json:"workspaces_limit"`
-	WorkloadRunsUsed        int64 `json:"workload_runs_used"`
-	WorkloadRunsLimit       int64 `json:"workload_runs_limit"`
-	QueuedWorkloadRunsUsed  int64 `json:"queued_workload_runs_used"`
-	QueuedWorkloadRunsLimit int64 `json:"queued_workload_runs_limit"`
-	PreviewRunsUsed         int64 `json:"preview_runs_used"`
-	PreviewRunsLimit        int64 `json:"preview_runs_limit"`
-	PreviewLifetimeLimit    int64 `json:"preview_lifetime_seconds_limit"`
-	ArtifactBytesUsed       int64 `json:"artifact_bytes_used"`
-	ArtifactBytesReserved   int64 `json:"artifact_bytes_reserved"`
-	ArtifactBytesLimit      int64 `json:"artifact_bytes_limit"`
+	WorkspacesUsed                  int64 `json:"workspaces_used"`
+	WorkspacesLimit                 int64 `json:"workspaces_limit"`
+	WorkloadRunsUsed                int64 `json:"workload_runs_used"`
+	WorkloadRunsLimit               int64 `json:"workload_runs_limit"`
+	QueuedWorkloadRunsUsed          int64 `json:"queued_workload_runs_used"`
+	QueuedWorkloadRunsLimit         int64 `json:"queued_workload_runs_limit"`
+	PreviewRunsUsed                 int64 `json:"preview_runs_used"`
+	PreviewRunsLimit                int64 `json:"preview_runs_limit"`
+	PreviewLifetimeLimit            int64 `json:"preview_lifetime_seconds_limit"`
+	ArtifactBytesUsed               int64 `json:"artifact_bytes_used"`
+	ArtifactBytesReserved           int64 `json:"artifact_bytes_reserved"`
+	ArtifactBytesLimit              int64 `json:"artifact_bytes_limit"`
+	WorkspaceComputeCPUMilliUsed    int64 `json:"workspace_compute_milli_cpu_used"`
+	WorkspaceComputeMemoryMiBUsed   int64 `json:"workspace_compute_memory_mib_used"`
+	WorkspaceComputeProfilesMissing int64 `json:"workspace_compute_profiles_missing"`
+	WorkspaceComputeCPUMilliLimit   int64 `json:"workspace_compute_milli_cpu_limit"`
+	WorkspaceComputeMemoryMiBLimit  int64 `json:"workspace_compute_memory_mib_limit"`
 }
 
 type TenantQuotaLimits struct {
@@ -109,6 +114,8 @@ type TenantQuotaLimits struct {
 	ArtifactBytesLimit               int64  `json:"artifact_bytes_limit"`
 	WorkspaceServiceMemoryBytesLimit int64  `json:"service_memory_bytes_limit"`
 	WorkspaceServiceMilliCPULimit    int64  `json:"service_milli_cpu_limit"`
+	WorkspaceComputeMilliCPULimit    int64  `json:"workspace_compute_milli_cpu_limit"`
+	WorkspaceComputeMemoryMiBLimit   int64  `json:"workspace_compute_memory_mib_limit"`
 	Revision                         int64  `json:"revision"`
 	UpdatedBy                        string `json:"updated_by,omitempty"`
 }
@@ -515,7 +522,9 @@ func GetTenantUsage(ctx context.Context, baseURL, accessToken, tenantID string, 
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil || result.WorkspacesUsed < 0 || result.WorkspacesLimit < 1 || result.WorkloadRunsUsed < 0 || result.WorkloadRunsLimit < 1 ||
 		result.QueuedWorkloadRunsUsed < 0 || result.QueuedWorkloadRunsLimit < 1 ||
-		result.QueuedWorkloadRunsLimit > result.WorkloadRunsLimit || result.PreviewRunsUsed < 0 || result.PreviewRunsLimit < 1 || result.PreviewLifetimeLimit < 300 || result.PreviewLifetimeLimit > 86400 || result.ArtifactBytesUsed < 0 || result.ArtifactBytesReserved < 0 || result.ArtifactBytesLimit < 1 {
+		result.QueuedWorkloadRunsLimit > result.WorkloadRunsLimit || result.PreviewRunsUsed < 0 || result.PreviewRunsLimit < 1 || result.PreviewLifetimeLimit < 300 || result.PreviewLifetimeLimit > 86400 || result.ArtifactBytesUsed < 0 || result.ArtifactBytesReserved < 0 || result.ArtifactBytesLimit < 1 ||
+		result.WorkspaceComputeCPUMilliUsed < 0 || result.WorkspaceComputeMemoryMiBUsed < 0 || result.WorkspaceComputeProfilesMissing < 0 ||
+		result.WorkspaceComputeCPUMilliLimit < 0 || result.WorkspaceComputeCPUMilliLimit > 80000 || result.WorkspaceComputeMemoryMiBLimit < 0 || result.WorkspaceComputeMemoryMiBLimit > 163840 {
 		return TenantUsage{}, errors.New("Hako API returned invalid Tenant quota usage")
 	}
 	return result, nil
@@ -543,7 +552,8 @@ func GetTenantQuotaLimits(ctx context.Context, baseURL, accessToken, tenantID st
 		result.QueuedWorkloadRunsLimit < 1 || result.QueuedWorkloadRunsLimit > result.WorkloadRunsLimit ||
 		result.PreviewRunsLimit < 1 || result.PreviewRunsLimit > 5 || result.PreviewLifetimeSecondsLimit < 300 || result.PreviewLifetimeSecondsLimit > 86400 ||
 		result.ArtifactBytesLimit < 1 || result.ArtifactBytesLimit > 100<<30 || result.WorkspaceServiceMemoryBytesLimit < 1 ||
-		result.WorkspaceServiceMemoryBytesLimit > 2<<30 || result.WorkspaceServiceMilliCPULimit < 1 || result.WorkspaceServiceMilliCPULimit > 1500 {
+		result.WorkspaceServiceMemoryBytesLimit > 2<<30 || result.WorkspaceServiceMilliCPULimit < 1 || result.WorkspaceServiceMilliCPULimit > 1500 ||
+		result.WorkspaceComputeMilliCPULimit < 0 || result.WorkspaceComputeMilliCPULimit > 80000 || result.WorkspaceComputeMemoryMiBLimit < 0 || result.WorkspaceComputeMemoryMiBLimit > 163840 {
 		return TenantQuotaLimits{}, errors.New("Hako API returned invalid Tenant quota limits")
 	}
 	return result, nil
@@ -555,7 +565,8 @@ func SetTenantQuotaLimits(ctx context.Context, baseURL, accessToken, tenantID st
 		limits.QueuedWorkloadRunsLimit < 1 || limits.QueuedWorkloadRunsLimit > limits.WorkloadRunsLimit ||
 		limits.PreviewRunsLimit < 1 || limits.PreviewRunsLimit > 5 || limits.PreviewLifetimeSecondsLimit < 300 || limits.PreviewLifetimeSecondsLimit > 86400 ||
 		limits.ArtifactBytesLimit < 1 || limits.ArtifactBytesLimit > 100<<30 || limits.WorkspaceServiceMemoryBytesLimit < 1 ||
-		limits.WorkspaceServiceMemoryBytesLimit > 2<<30 || limits.WorkspaceServiceMilliCPULimit < 1 || limits.WorkspaceServiceMilliCPULimit > 1500 {
+		limits.WorkspaceServiceMemoryBytesLimit > 2<<30 || limits.WorkspaceServiceMilliCPULimit < 1 || limits.WorkspaceServiceMilliCPULimit > 1500 ||
+		limits.WorkspaceComputeMilliCPULimit < 0 || limits.WorkspaceComputeMilliCPULimit > 80000 || limits.WorkspaceComputeMemoryMiBLimit < 0 || limits.WorkspaceComputeMemoryMiBLimit > 163840 {
 		return result, errors.New("Tenant limits are out of range for Workspaces, Workloads, artifacts, or Workspace Services")
 	}
 	endpoint, err := apiEndpoint(baseURL, "/v1/tenants/"+url.PathEscape(tenantID)+"/quotas")
@@ -566,7 +577,9 @@ func SetTenantQuotaLimits(ctx context.Context, baseURL, accessToken, tenantID st
 		"queued_workload_runs_limit": limits.QueuedWorkloadRunsLimit,
 		"preview_runs_limit":         limits.PreviewRunsLimit, "preview_lifetime_seconds_limit": limits.PreviewLifetimeSecondsLimit,
 		"artifact_bytes_limit": limits.ArtifactBytesLimit, "service_memory_bytes_limit": limits.WorkspaceServiceMemoryBytesLimit,
-		"service_milli_cpu_limit": limits.WorkspaceServiceMilliCPULimit})
+		"service_milli_cpu_limit":            limits.WorkspaceServiceMilliCPULimit,
+		"workspace_compute_milli_cpu_limit":  limits.WorkspaceComputeMilliCPULimit,
+		"workspace_compute_memory_mib_limit": limits.WorkspaceComputeMemoryMiBLimit})
 	if err != nil {
 		return result, err
 	}
@@ -583,7 +596,8 @@ func SetTenantQuotaLimits(ctx context.Context, baseURL, accessToken, tenantID st
 		result.QueuedWorkloadRunsLimit < 1 || result.QueuedWorkloadRunsLimit > result.WorkloadRunsLimit ||
 		result.PreviewRunsLimit < 1 || result.PreviewRunsLimit > 5 || result.PreviewLifetimeSecondsLimit < 300 || result.PreviewLifetimeSecondsLimit > 86400 ||
 		result.ArtifactBytesLimit < 1 || result.ArtifactBytesLimit > 100<<30 || result.WorkspaceServiceMemoryBytesLimit < 1 ||
-		result.WorkspaceServiceMemoryBytesLimit > 2<<30 || result.WorkspaceServiceMilliCPULimit < 1 || result.WorkspaceServiceMilliCPULimit > 1500 {
+		result.WorkspaceServiceMemoryBytesLimit > 2<<30 || result.WorkspaceServiceMilliCPULimit < 1 || result.WorkspaceServiceMilliCPULimit > 1500 ||
+		result.WorkspaceComputeMilliCPULimit < 0 || result.WorkspaceComputeMilliCPULimit > 80000 || result.WorkspaceComputeMemoryMiBLimit < 0 || result.WorkspaceComputeMemoryMiBLimit > 163840 {
 		return TenantQuotaLimits{}, errors.New("Hako API returned invalid Tenant quota limits")
 	}
 	return result, nil

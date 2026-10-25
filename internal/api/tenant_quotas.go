@@ -18,14 +18,16 @@ import (
 )
 
 type tenantQuotaRequest struct {
-	Workspaces             int16 `json:"workspaces_limit"`
-	ConcurrentWorkloadRuns int16 `json:"workload_runs_limit"`
-	QueuedWorkloadRuns     int16 `json:"queued_workload_runs_limit"`
-	PreviewRuns            int16 `json:"preview_runs_limit"`
-	PreviewLifetimeSeconds int64 `json:"preview_lifetime_seconds_limit"`
-	ArtifactBytes          int64 `json:"artifact_bytes_limit"`
-	ServiceMemoryBytes     int64 `json:"service_memory_bytes_limit"`
-	ServiceMilliCPU        int64 `json:"service_milli_cpu_limit"`
+	Workspaces                int16  `json:"workspaces_limit"`
+	ConcurrentWorkloadRuns    int16  `json:"workload_runs_limit"`
+	QueuedWorkloadRuns        int16  `json:"queued_workload_runs_limit"`
+	PreviewRuns               int16  `json:"preview_runs_limit"`
+	PreviewLifetimeSeconds    int64  `json:"preview_lifetime_seconds_limit"`
+	ArtifactBytes             int64  `json:"artifact_bytes_limit"`
+	ServiceMemoryBytes        int64  `json:"service_memory_bytes_limit"`
+	ServiceMilliCPU           int64  `json:"service_milli_cpu_limit"`
+	WorkspaceComputeMilliCPU  *int64 `json:"workspace_compute_milli_cpu_limit"`
+	WorkspaceComputeMemoryMiB *int64 `json:"workspace_compute_memory_mib_limit"`
 }
 
 func getTenantQuotas(pool transaction.Beginner) echo.HandlerFunc {
@@ -86,15 +88,26 @@ func putTenantQuotas(pool transaction.Beginner) echo.HandlerFunc {
 					request.QueuedWorkloadRuns = request.ConcurrentWorkloadRuns
 				}
 			}
-			updated, err := quotas.SetWithQueueAndPreview(ctx, tx, tenantID, user.ID, request.Workspaces, request.ConcurrentWorkloadRuns, request.QueuedWorkloadRuns,
-				request.PreviewRuns, request.PreviewLifetimeSeconds, request.ArtifactBytes, request.ServiceMemoryBytes, request.ServiceMilliCPU, now)
+			workspaceComputeMilliCPU := current.WorkspaceComputeMilliCPU
+			if request.WorkspaceComputeMilliCPU != nil {
+				workspaceComputeMilliCPU = *request.WorkspaceComputeMilliCPU
+			}
+			workspaceComputeMemoryMiB := current.WorkspaceComputeMemoryMiB
+			if request.WorkspaceComputeMemoryMiB != nil {
+				workspaceComputeMemoryMiB = *request.WorkspaceComputeMemoryMiB
+			}
+			updated, err := quotas.SetWithComputeQueueAndPreview(ctx, tx, tenantID, user.ID, request.Workspaces, request.ConcurrentWorkloadRuns, request.QueuedWorkloadRuns,
+				request.PreviewRuns, request.PreviewLifetimeSeconds, request.ArtifactBytes, request.ServiceMemoryBytes, request.ServiceMilliCPU,
+				workspaceComputeMilliCPU, workspaceComputeMemoryMiB, now)
 			if err != nil {
 				return quotas.Limits{}, err
 			}
 			details, err := json.Marshal(map[string]any{"workspaces_limit": updated.Workspaces, "workload_runs_limit": updated.ConcurrentWorkloadRuns,
 				"queued_workload_runs_limit": updated.QueuedWorkloadRuns, "preview_runs_limit": updated.PreviewRuns, "preview_lifetime_seconds_limit": updated.PreviewLifetimeSeconds,
 				"artifact_bytes_limit": updated.ArtifactBytes, "service_memory_bytes_limit": updated.WorkspaceServiceMemoryBytes,
-				"service_milli_cpu_limit": updated.WorkspaceServiceMilliCPU})
+				"service_milli_cpu_limit":            updated.WorkspaceServiceMilliCPU,
+				"workspace_compute_milli_cpu_limit":  updated.WorkspaceComputeMilliCPU,
+				"workspace_compute_memory_mib_limit": updated.WorkspaceComputeMemoryMiB})
 			if err != nil {
 				return quotas.Limits{}, err
 			}
@@ -113,6 +126,9 @@ func putTenantQuotas(pool transaction.Beginner) echo.HandlerFunc {
 		if errors.Is(err, quotas.ErrBelowCurrentUsage) {
 			return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "quota_below_current_usage", Message: "Tenant quota cannot be lower than currently reserved usage"}})
 		}
+		if errors.Is(err, quotas.ErrComputeProfileMissing) {
+			return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "workspace_compute_profile_missing", Message: "Tenant compute quotas require configured Runtime Class CPU and memory reservation profiles for all active Workspaces"}})
+		}
 		if err != nil {
 			return databaseUnavailable(c)
 		}
@@ -121,5 +137,5 @@ func putTenantQuotas(pool transaction.Beginner) echo.HandlerFunc {
 }
 
 func invalidTenantQuotaRequest(c *echo.Context) error {
-	return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_quota", Message: "Workspace limit 1-10, Workload Run and queued Workload limits 1-5 (queued cannot exceed Workload), Preview limit 1-5, Preview lifetime 300-86400 seconds, artifact bytes 1-107374182400, Service memory bytes 1-2147483648, and Service millicores 1-1500 are required"}})
+	return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_quota", Message: "Workspace limit 1-10, Workload Run and queued Workload limits 1-5 (queued cannot exceed Workload), Preview limit 1-5, Preview lifetime 300-86400 seconds, artifact bytes 1-107374182400, Service memory bytes 1-2147483648, Service millicores 1-1500, Workspace compute millicores 0-80000, and Workspace compute memory MiB 0-163840 are required"}})
 }

@@ -644,6 +644,10 @@ func TestTenantMembershipRouteResolvesUserAndRejectsNonMembers(t *testing.T) {
 	if otherMemberServicesResponse.Code != http.StatusNotFound {
 		t.Fatalf("Tenant member read another member's Workspace Services: HTTP %d %s", otherMemberServicesResponse.Code, otherMemberServicesResponse.Body.String())
 	}
+	if _, err := pool.Exec(ctx, `INSERT INTO runtime_class_resources (runtime_class, cpu_millicores, memory_mib, updated_at)
+		VALUES ('standard', 750, 800, $1) ON CONFLICT (runtime_class) DO UPDATE SET cpu_millicores=EXCLUDED.cpu_millicores, memory_mib=EXCLUDED.memory_mib, updated_at=EXCLUDED.updated_at`, time.Now().UTC()); err != nil {
+		t.Fatalf("configure standard Runtime Class reservation profile: %v", err)
+	}
 	foreignWorkspace, err := workspaces.Create(ctx, pool, workspaces.CreateInput{
 		TenantID: "tenant_other", OwnerID: "usr_other", Name: "foreign-dev",
 		RuntimeClass: "standard", Image: "hako/go:test", ResourcePlaneID: "rp_test", IdempotencyKey: "foreign-workspace",
@@ -658,21 +662,23 @@ func TestTenantMembershipRouteResolvesUserAndRejectsNonMembers(t *testing.T) {
 	}
 	defaultQuota := requestTenantQuota(t, handler, otherOwnerToken, http.MethodGet, "tenant_other", "")
 	var configuredLimits struct {
-		TenantID           string `json:"tenant_id"`
-		Workspaces         int16  `json:"workspaces_limit"`
-		WorkloadRuns       int16  `json:"workload_runs_limit"`
-		QueuedWorkloadRuns int16  `json:"queued_workload_runs_limit"`
-		PreviewRuns        int16  `json:"preview_runs_limit"`
-		PreviewLifetime    int64  `json:"preview_lifetime_seconds_limit"`
-		ArtifactBytes      int64  `json:"artifact_bytes_limit"`
-		ServiceMemoryBytes int64  `json:"service_memory_bytes_limit"`
-		ServiceMilliCPU    int64  `json:"service_milli_cpu_limit"`
+		TenantID               string `json:"tenant_id"`
+		Workspaces             int16  `json:"workspaces_limit"`
+		WorkloadRuns           int16  `json:"workload_runs_limit"`
+		QueuedWorkloadRuns     int16  `json:"queued_workload_runs_limit"`
+		PreviewRuns            int16  `json:"preview_runs_limit"`
+		PreviewLifetime        int64  `json:"preview_lifetime_seconds_limit"`
+		ArtifactBytes          int64  `json:"artifact_bytes_limit"`
+		ServiceMemoryBytes     int64  `json:"service_memory_bytes_limit"`
+		ServiceMilliCPU        int64  `json:"service_milli_cpu_limit"`
+		WorkspaceComputeCPU    int64  `json:"workspace_compute_milli_cpu_limit"`
+		WorkspaceComputeMemory int64  `json:"workspace_compute_memory_mib_limit"`
 	}
-	if defaultQuota.Code != http.StatusOK || json.Unmarshal(defaultQuota.Body.Bytes(), &configuredLimits) != nil || configuredLimits.Workspaces != 10 || configuredLimits.WorkloadRuns != 5 || configuredLimits.QueuedWorkloadRuns != 5 || configuredLimits.PreviewRuns != 2 || configuredLimits.PreviewLifetime != 86400 || configuredLimits.ArtifactBytes != 10<<30 || configuredLimits.ServiceMemoryBytes != 2<<30 || configuredLimits.ServiceMilliCPU != 1500 {
+	if defaultQuota.Code != http.StatusOK || json.Unmarshal(defaultQuota.Body.Bytes(), &configuredLimits) != nil || configuredLimits.Workspaces != 10 || configuredLimits.WorkloadRuns != 5 || configuredLimits.QueuedWorkloadRuns != 5 || configuredLimits.PreviewRuns != 2 || configuredLimits.PreviewLifetime != 86400 || configuredLimits.ArtifactBytes != 10<<30 || configuredLimits.ServiceMemoryBytes != 2<<30 || configuredLimits.ServiceMilliCPU != 1500 || configuredLimits.WorkspaceComputeCPU != 0 || configuredLimits.WorkspaceComputeMemory != 0 {
 		t.Fatalf("Tenant without override should receive platform quota defaults: HTTP %d %s", defaultQuota.Code, defaultQuota.Body.String())
 	}
-	setQuota := requestTenantQuota(t, handler, otherOwnerToken, http.MethodPut, "tenant_other", `{"workspaces_limit":2,"workload_runs_limit":3,"queued_workload_runs_limit":1,"preview_runs_limit":1,"preview_lifetime_seconds_limit":3600,"artifact_bytes_limit":2147483648,"service_memory_bytes_limit":1073741824,"service_milli_cpu_limit":750}`)
-	if setQuota.Code != http.StatusOK || json.Unmarshal(setQuota.Body.Bytes(), &configuredLimits) != nil || configuredLimits.Workspaces != 2 || configuredLimits.WorkloadRuns != 3 || configuredLimits.QueuedWorkloadRuns != 1 || configuredLimits.PreviewRuns != 1 || configuredLimits.PreviewLifetime != 3600 || configuredLimits.ArtifactBytes != 2147483648 || configuredLimits.ServiceMemoryBytes != 1073741824 || configuredLimits.ServiceMilliCPU != 750 {
+	setQuota := requestTenantQuota(t, handler, otherOwnerToken, http.MethodPut, "tenant_other", `{"workspaces_limit":3,"workload_runs_limit":3,"queued_workload_runs_limit":1,"preview_runs_limit":1,"preview_lifetime_seconds_limit":3600,"artifact_bytes_limit":2147483648,"service_memory_bytes_limit":1073741824,"service_milli_cpu_limit":750,"workspace_compute_milli_cpu_limit":1500,"workspace_compute_memory_mib_limit":1600}`)
+	if setQuota.Code != http.StatusOK || json.Unmarshal(setQuota.Body.Bytes(), &configuredLimits) != nil || configuredLimits.Workspaces != 3 || configuredLimits.WorkloadRuns != 3 || configuredLimits.QueuedWorkloadRuns != 1 || configuredLimits.PreviewRuns != 1 || configuredLimits.PreviewLifetime != 3600 || configuredLimits.ArtifactBytes != 2147483648 || configuredLimits.ServiceMemoryBytes != 1073741824 || configuredLimits.ServiceMilliCPU != 750 || configuredLimits.WorkspaceComputeCPU != 1500 || configuredLimits.WorkspaceComputeMemory != 1600 {
 		t.Fatalf("Tenant Owner should configure lower Tenant quotas: HTTP %d %s", setQuota.Code, setQuota.Body.String())
 	}
 	secondOtherWorkspace := requestCreateWorkspace(t, handler, otherOwnerToken, "tenant_other", `{"name":"quota-two"}`, "quota-two")
@@ -695,7 +701,7 @@ func TestTenantMembershipRouteResolvesUserAndRejectsNonMembers(t *testing.T) {
 	}
 	otherUsage := requestWorkspaceUsage(t, handler, otherOwnerToken, "tenant_other")
 	var reducedUsage workspaces.QuotaUsage
-	if otherUsage.Code != http.StatusOK || json.Unmarshal(otherUsage.Body.Bytes(), &reducedUsage) != nil || reducedUsage.WorkspacesUsed != 2 || reducedUsage.WorkspacesLimit != 2 || reducedUsage.WorkloadRunsUsed != 1 || reducedUsage.WorkloadRunsLimit != 3 || reducedUsage.PreviewRunsUsed != 1 || reducedUsage.PreviewRunsLimit != 1 || reducedUsage.PreviewLifetimeLimit != 3600 || reducedUsage.ArtifactBytesUsed != 0 || reducedUsage.ArtifactBytesReserved != 100<<20 || reducedUsage.ArtifactBytesLimit != 2147483648 {
+	if otherUsage.Code != http.StatusOK || json.Unmarshal(otherUsage.Body.Bytes(), &reducedUsage) != nil || reducedUsage.WorkspacesUsed != 2 || reducedUsage.WorkspacesLimit != 3 || reducedUsage.WorkloadRunsUsed != 1 || reducedUsage.WorkloadRunsLimit != 3 || reducedUsage.PreviewRunsUsed != 1 || reducedUsage.PreviewRunsLimit != 1 || reducedUsage.PreviewLifetimeLimit != 3600 || reducedUsage.ArtifactBytesUsed != 0 || reducedUsage.ArtifactBytesReserved != 100<<20 || reducedUsage.ArtifactBytesLimit != 2147483648 || reducedUsage.WorkspaceComputeCPUMilliUsed != 1500 || reducedUsage.WorkspaceComputeMemoryMiBUsed != 1600 || reducedUsage.WorkspaceComputeProfilesMissing != 0 || reducedUsage.WorkspaceComputeCPUMilliLimit != 1500 || reducedUsage.WorkspaceComputeMemoryMiBLimit != 1600 {
 		t.Fatalf("usage must report effective Tenant-specific limits: HTTP %d %s usage=%+v", otherUsage.Code, otherUsage.Body.String(), reducedUsage)
 	}
 	previewQuotaBelowUsage := requestTenantQuota(t, handler, otherOwnerToken, http.MethodPut, "tenant_other", `{"workspaces_limit":2,"workload_runs_limit":3,"preview_runs_limit":1,"preview_lifetime_seconds_limit":900,"artifact_bytes_limit":2147483648,"service_memory_bytes_limit":1073741824,"service_milli_cpu_limit":750}`)
@@ -703,8 +709,31 @@ func TestTenantMembershipRouteResolvesUserAndRejectsNonMembers(t *testing.T) {
 		t.Fatalf("Preview lifetime update below active Run timeout must conflict: HTTP %d %s", previewQuotaBelowUsage.Code, previewQuotaBelowUsage.Body.String())
 	}
 	overConfiguredWorkspaceLimit := requestCreateWorkspace(t, handler, otherOwnerToken, "tenant_other", `{"name":"over-configured-quota"}`, "over-configured-quota")
-	if overConfiguredWorkspaceLimit.Code != http.StatusConflict || !strings.Contains(overConfiguredWorkspaceLimit.Body.String(), `"workspace_quota_exceeded"`) {
-		t.Fatalf("Workspace admission must honor Tenant-specific limit: HTTP %d %s", overConfiguredWorkspaceLimit.Code, overConfiguredWorkspaceLimit.Body.String())
+	if overConfiguredWorkspaceLimit.Code != http.StatusConflict || !strings.Contains(overConfiguredWorkspaceLimit.Body.String(), `"workspace_compute_quota_exceeded"`) {
+		t.Fatalf("Workspace admission must honor Tenant compute reservation limit: HTTP %d %s", overConfiguredWorkspaceLimit.Code, overConfiguredWorkspaceLimit.Body.String())
+	}
+	computeQuotaBelowUsage := requestTenantQuota(t, handler, otherOwnerToken, http.MethodPut, "tenant_other", `{"workspaces_limit":3,"workload_runs_limit":3,"queued_workload_runs_limit":3,"preview_runs_limit":1,"preview_lifetime_seconds_limit":3600,"artifact_bytes_limit":2147483648,"service_memory_bytes_limit":1073741824,"service_milli_cpu_limit":750,"workspace_compute_milli_cpu_limit":1499,"workspace_compute_memory_mib_limit":1600}`)
+	if computeQuotaBelowUsage.Code != http.StatusConflict || !strings.Contains(computeQuotaBelowUsage.Body.String(), `"quota_below_current_usage"`) {
+		t.Fatalf("compute quota update below current reservations must conflict: HTTP %d %s", computeQuotaBelowUsage.Code, computeQuotaBelowUsage.Body.String())
+	}
+	var quotaTwoWorkspaceID domain.WorkspaceID
+	if err := pool.QueryRow(ctx, `SELECT id FROM workspaces WHERE tenant_id='tenant_other' AND name='quota-two'`).Scan(&quotaTwoWorkspaceID); err != nil {
+		t.Fatalf("read second Tenant Workspace ID: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE resource_plane_reservations SET cpu_millicores=NULL, memory_mib=NULL WHERE workspace_id=$1`, quotaTwoWorkspaceID); err != nil {
+		t.Fatalf("simulate a legacy Workspace without a compute profile: %v", err)
+	}
+	computeQuotaWithUnknownProfile := requestTenantQuota(t, handler, otherOwnerToken, http.MethodPut, "tenant_other", `{"workspaces_limit":3,"workload_runs_limit":3,"queued_workload_runs_limit":3,"preview_runs_limit":1,"preview_lifetime_seconds_limit":3600,"artifact_bytes_limit":2147483648,"service_memory_bytes_limit":1073741824,"service_milli_cpu_limit":750,"workspace_compute_milli_cpu_limit":1500,"workspace_compute_memory_mib_limit":1600}`)
+	if computeQuotaWithUnknownProfile.Code != http.StatusConflict || !strings.Contains(computeQuotaWithUnknownProfile.Body.String(), `"workspace_compute_profile_missing"`) {
+		t.Fatalf("compute quota update with an unknown active profile must fail closed: HTTP %d %s", computeQuotaWithUnknownProfile.Code, computeQuotaWithUnknownProfile.Body.String())
+	}
+	createWithUnknownComputeProfile := requestCreateWorkspace(t, handler, otherOwnerToken, "tenant_other", `{"name":"unknown-compute-profile"}`, "unknown-compute-profile")
+	if createWithUnknownComputeProfile.Code != http.StatusConflict || !strings.Contains(createWithUnknownComputeProfile.Body.String(), `"workspace_compute_profile_missing"`) {
+		t.Fatalf("Workspace admission with an unknown active profile must fail closed: HTTP %d %s", createWithUnknownComputeProfile.Code, createWithUnknownComputeProfile.Body.String())
+	}
+	clearComputeLimits := requestTenantQuota(t, handler, otherOwnerToken, http.MethodPut, "tenant_other", `{"workspaces_limit":3,"workload_runs_limit":3,"queued_workload_runs_limit":3,"preview_runs_limit":1,"preview_lifetime_seconds_limit":3600,"artifact_bytes_limit":2147483648,"service_memory_bytes_limit":1073741824,"service_milli_cpu_limit":750,"workspace_compute_milli_cpu_limit":0,"workspace_compute_memory_mib_limit":0}`)
+	if clearComputeLimits.Code != http.StatusOK || !strings.Contains(clearComputeLimits.Body.String(), `"workspace_compute_milli_cpu_limit":0`) {
+		t.Fatalf("Tenant Owner should be able to disable optional compute limits: HTTP %d %s", clearComputeLimits.Code, clearComputeLimits.Body.String())
 	}
 	memberList := requestWorkspaceList(t, handler, createToken, "tenant_member", "")
 	var memberPage workspaces.ListResult

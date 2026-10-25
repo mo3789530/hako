@@ -1462,6 +1462,12 @@ func createWorkspace(pool transaction.Beginner, config WorkspaceCreateConfig) ec
 		if errors.Is(err, workspaces.ErrWorkspaceQuotaExceeded) {
 			return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "workspace_quota_exceeded", Message: "Tenant workspace limit reached (10)"}})
 		}
+		if errors.Is(err, quotas.ErrWorkspaceComputeQuotaExceeded) {
+			return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "workspace_compute_quota_exceeded", Message: "Tenant Workspace compute reservation limit reached"}})
+		}
+		if errors.Is(err, quotas.ErrComputeProfileMissing) {
+			return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "workspace_compute_profile_missing", Message: "Tenant compute quotas require a configured Runtime Class CPU and memory reservation profile"}})
+		}
 		if errors.Is(err, workspaces.ErrWorkspaceNameConflict) {
 			return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "workspace_name_conflict", Message: "Workspace name is already in use in this Tenant"}})
 		}

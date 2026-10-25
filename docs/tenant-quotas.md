@@ -7,7 +7,7 @@ GET /v1/tenants/{tenant_id}/quotas
 PUT /v1/tenants/{tenant_id}/quotas
 Content-Type: application/json
 
-{"workspaces_limit": 6, "workload_runs_limit": 3, "queued_workload_runs_limit": 2, "preview_runs_limit": 2, "preview_lifetime_seconds_limit": 86400, "artifact_bytes_limit": 2147483648, "service_memory_bytes_limit": 1073741824, "service_milli_cpu_limit": 750}
+{"workspaces_limit": 6, "workload_runs_limit": 3, "queued_workload_runs_limit": 2, "preview_runs_limit": 2, "preview_lifetime_seconds_limit": 86400, "artifact_bytes_limit": 2147483648, "service_memory_bytes_limit": 1073741824, "service_milli_cpu_limit": 750, "workspace_compute_milli_cpu_limit": 4000, "workspace_compute_memory_mib_limit": 8192}
 ```
 
 Defaults and platform ceilings are 10 active Workspaces, 5 concurrent
@@ -20,13 +20,24 @@ queue slot while retaining the concurrent Run reservation. Per-Workspace
 aggregate Service request limits default to 2 GiB and
 1500 millicores and can be lowered per Tenant; the fixed platform ceilings
 remain 2 GiB/1500 millicores until Runtime Class enforcement is verified.
+Tenant Workspace compute budgets can additionally cap the sum of active
+Workspace Runtime Class reservation profiles at 80,000 millicores and 163,840
+MiB. A value of zero disables that Tenant aggregate cap. These are profile
+reservation weights from `runtime_class_resources`, not measured or guaranteed
+Lambda CPU/RAM, and are separate from per-Plane capacity admission. When a
+Tenant enables either cap, every active Workspace must have a CPU and memory
+profile; missing profiles fail closed. Workspace creation reserves the profile
+weights transactionally under the Tenant quota OCC guard, while confirmed
+Workspace deletion releases them. Lowering a cap below existing reservations
+returns HTTP 409. Usage exposes the aggregate reservation and the number of
+active Workspaces with missing profiles.
 Artifact and Service limits are specified in bytes/millicores in the API. A
 change below current reserved usage returns HTTP 409
 `quota_below_current_usage`; malformed or out-of-range values return HTTP 400
 `invalid_quota`. Updates are audited as `tenant.quota.update`.
 
 `hako tenant quota get <tenant-id>` reads the limits, and
-`hako tenant quota set <tenant-id> <workspaces 1-10> <workload-runs 1-5> [artifact-storage-GiB 1-100 [service-memory-GiB 1-2 service-millicpu 1-1500 [preview-runs 1-5 preview-lifetime-hours 1-24]]] [--queued-workload-runs 1-5] [--yes]`
+`hako tenant quota set <tenant-id> <workspaces 1-10> <workload-runs 1-5> [artifact-storage-GiB 1-100 [service-memory-GiB 1-2 service-millicpu 1-1500 [preview-runs 1-5 preview-lifetime-hours 1-24]]] [--queued-workload-runs 1-5] [--workspace-compute-cpu-millicores 1-80000] [--workspace-compute-memory-mib 1-163840] [--no-workspace-compute-limits] [--yes]`
 updates them. Before mutation, the CLI reads the current limits and aggregate
 usage and displays both the current reservations and requested limits. It
 applies the change only after `y` or `yes`; `--yes` skips the prompt for

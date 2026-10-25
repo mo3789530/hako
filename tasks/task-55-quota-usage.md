@@ -70,10 +70,14 @@ resource usage remains future work; the CLI continues to label these values
 as reservations/configured limits and does not imply billing.
 Priority: P3.
 
-The queued-Workload budget portion is implemented and locally verified. Task 55
-remains in progress: Tenant-specific compute-class ceilings/capacity budgets
-have not been modeled or enforced, and quotas are reservations rather than
-measured runtime usage.
+The queued-Workload budget and Tenant aggregate Workspace compute reservation
+portions are implemented and locally verified. Tenant Owners/Admins can set
+optional profile-based CPU and memory reservation ceilings. Workspace create
+admission and quota updates check active reservation snapshots under the shared
+Tenant OCC guard; active Workspaces without a Runtime Class profile fail closed
+when a compute ceiling is enabled. Usage reports missing profiles separately.
+These budgets are estimates, not measured runtime usage; billing remains future
+work.
 
 ## Goal
 
@@ -81,7 +85,7 @@ Protect Tenant and platform capacity and make expected resource use visible befo
 
 ## Work
 
-- Define limits for concurrent Workload Runs, compute class, queue backlog, service memory/CPU, artifact bytes, and preview lifetime.
+- Define limits for concurrent Workload Runs, profile-based aggregate Workspace compute CPU/memory, queue backlog, service memory/CPU, artifact bytes, and preview lifetime.
 - Add transactional admission/reservation and release-on-terminal/cleanup semantics; do not trust user-reported actual usage as authoritative billing data.
 - Add Tenant Owner/Admin APIs for quota configuration and read-only usage views with pagination.
 - Show validation, current usage, estimated Runtime class, and safe confirmation in CLI without exposing other Tenant usage.
