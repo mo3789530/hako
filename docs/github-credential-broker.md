@@ -133,8 +133,9 @@ service are separate release operations and are not performed by this target.
 
 ## Production work not performed
 
-- Provision the broker workload role with only the required DSQL access, exact purpose-specific `sts:AssumeRole` permissions, CloudWatch logging/metrics, and no MicroVM/Workspace lifecycle permissions.
+- `enable_github_broker_service` now defines a default-off ARM64 ECS/Fargate service, its execution/task roles, exact DSQL access, private NLB target registration, and Secret ARN injection. Build with `make build-github-broker-image`; image publication and AWS apply remain separate. Map the exported `github_broker_task_role_arn` to `hako_github_broker` and apply the bootstrap SQL/migrations/grants before enabling it.
 - Issue and rotate broker server/client certificates from a dedicated trust root; monitor expiry and reject stale/revoked identities. The repository does not provision or distribute these certificates.
-- Put the service on a private authenticated network path and configure the API/worker's broker URL, client identity and CA bundle.
+- Create the private NLB TCP target group/listener, DNS name matching the Broker server certificate, API and task subnets/security groups, VPC routes/endpoints, and restricted GitHub egress. Terraform receives these as explicit pre-created inputs and does not create a public endpoint.
+- The API Lambda's Broker client URL and exact Secret ARNs are wired when the service is enabled. Provision the client certificate/key/CA Secrets and confirm the API VPC can reach DSQL, Secrets Manager, and the private NLB; no PEM values are Terraform inputs.
 - Deploy and test the API/worker integration, exact Role trust policies, Secret versions, and recovery/alerting. Do not enable Tenant-owned App activation until Tasks 60 and 71 pass.
 - AWS `apply`, live GitHub changes, real Secret retrieval and Tenant cutover require explicit approval.

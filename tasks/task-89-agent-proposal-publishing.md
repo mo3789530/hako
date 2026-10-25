@@ -9,8 +9,11 @@ API/CLI queued response, default-off exact S3 proposal read IAM contracts, and
 a composed PostgreSQL Broker route test are implemented locally. The Broker
 can now load its TLS material from either complete PEM environment values or
 complete file paths, enabling task Secret injection without Terraform secret
-contents. ECS deployment/wiring and Lambda MicroVM execution verification
-remain open). Priority: P3.
+contents. The Control Plane Terraform now includes a default-off private
+ARM64 ECS/Fargate service, least-privilege task/execution roles, exact TLS
+Secret references, Broker DSQL access, API Lambda mTLS Secret-ARN loading and
+optional VPC attachment. ECS deployment, private network/Secret provisioning,
+and Lambda MicroVM execution verification remain open). Priority: P3.
 Depends on Tasks 39, 40, 53, 57, and 59.
 
 ## Goal
@@ -222,5 +225,16 @@ Repository. The proposal remains untrusted. Hako must never merge or deploy it.
 - Added a non-root, static ARM64 Broker container image and
   `make build-github-broker-image`. Image publication, private ECS service,
   runtime role mapping, and deployed MicroVM integration remain separate.
+- Added default-off Control Plane Terraform for the Broker task/service and
+  API connectivity. The service requires a digest-pinned image, pre-created
+  private NLB TCP target group, private API/task subnets and security groups,
+  callback URL, and exact server/client TLS Secret ARNs. The task role receives
+  DSQL `DbConnect`; its execution role reads only the three server TLS Secrets,
+  while the API role reads only the three client TLS Secrets. The API Lambda
+  attaches to the configured VPC only when the Broker service is enabled and
+  reads mTLS material from Secrets Manager at startup. Proposal S3 reading
+  remains independently activated by explicit bucket and exact object ARN
+  inputs. Mock plans verify default-off behavior, exact Secrets, ARM64, private
+  IP assignment, and API VPC wiring. No AWS apply or Secret retrieval occurred.
 - Still open: deployed Broker configuration and Lambda MicroVM execution
   verification. No AWS apply or production activation has been performed.

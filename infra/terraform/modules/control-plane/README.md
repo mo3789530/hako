@@ -4,6 +4,28 @@ Creates a Cognito-protected HTTP API, an arm64 API Lambda, an encrypted Aurora D
 
 It does not create the Cognito User Pool, run SQL migrations, create Resource Plane messaging/compute, or deploy the Workload Scheduler. The Dispatcher publishes directly to Resource Plane command queues; the optional Checks queue is a separate Control Plane result-delivery queue. The optional `enable_github_checks_delivery` (default `false`) creates a dedicated encrypted Checks queue/DLQ, a send-only Dispatcher grant, an ECS/Fargate task role with receive-only queue and DSQL-connect permissions, and queue age/depth/DLQ alarms. Optional `github_checks_alarm_actions` SNS topics receive alarm/OK actions. The separate `enable_github_checks_consumer_service` (default `false`) optionally deploys the ARM64 Fargate service/task definition, private-subnet network attachment, restricted execution/task roles, and exact Secrets Manager references for broker mTLS. It requires a pre-created ECS cluster, network/security groups, a digest-pinned ECR image whose account/Region/repository must match the exact repository ARN allowed by the task execution role, broker URL, and operator-provisioned Secrets.
 
+The `enable_github_broker_service` option (default `false`) creates the ARM64
+private ECS/Fargate Broker service, its task and execution roles, exact DSQL
+`DbConnect`, exact ECR/log/three server-TLS-Secret permissions, and a task
+definition that contains Secret ARNs but no PEM contents. It also configures
+the API Lambda for VPC access and grants it only the three exact client-TLS
+Secret reads (plus VPC ENI lifecycle permissions required by Lambda). Build the
+image with `make build-github-broker-image`, publish it separately, and pin its
+digest through `github_broker_image_uri`; no image push or AWS apply is done
+here. Provide a pre-created ECS cluster, private NLB TCP target group, private
+task/API subnets and security groups, private Broker URL, callback URL, and
+operator-created server/client TLS Secrets. The API Lambda subnets must route
+to DSQL and Secrets Manager and to the private NLB. Broker task subnets must
+reach DSQL, Secrets Manager/STS, and GitHub API via the approved egress path.
+Map output `github_broker_task_role_arn` to `hako_github_broker` using the
+bootstrap SQL, then apply migrations and grants before enabling the service.
+The API reads its mTLS client material from the configured Secret ARNs at
+startup; rotate by replacing the Lambda execution generation after updating
+those Secrets. Proposal S3 access is activated only when
+`github_broker_agent_proposal_bucket` is non-empty and exact matching
+`tenant_agent_proposal_artifact_object_arns` are configured. The managed
+Resource Plane bucket must independently grant that Broker role access.
+
 Build the API package with `make build-api-lambda` before planning/applying. If enabling the scheduled Dispatcher, also run `make build-dispatcher-lambda`, configure `enable_outbox_dispatcher` and the versioned Resource Plane manifest. Checks delivery additionally requires `enable_github_checks_delivery=true`, which is validated to require the Dispatcher; the module creates a dedicated ECS task role and exports `github_checks_consumer_task_role_arn`. Configure optional SNS notifications through `github_checks_alarm_actions`. If enabling the GitHub Webhook Processor, run `make build-webhook-processor-lambda` and set `enable_github_webhook_processor`. Automatic Workspace idle suspension is independently opt-in through `enable_workspace_idle_reconciler` (default `false`); build `make build-workspace-idle-reconciler-lambda` before enabling it. The stable `workspace_idle_reconciler_role_arn` exists while disabled so an operator can map the dedicated `hako_workspace_idle_reconciler` DSQL role and apply its table grants before activating the one-minute default schedule. The Lambda only creates normal suspend Operations and never calls Resource Plane/provider APIs. Tenant policy is separately disabled by default. To enable tenant GitHub App setup, configure the App slug/ID/client ID, HTTPS OAuth callback URL, and client-secret ARN, then set `github_app_setup_enabled=true`; see [`docs/github-installation-setup.md`](../../../../docs/github-installation-setup.md). Follow [`docs/control-plane-terraform.md`](../../../../docs/control-plane-terraform.md) for the safe deployment order. SQL role bootstrap and migrations are operator-run. The API Lambda uses `dsql:DbConnect` only; the API role must not receive the separate `dsql:DbConnectAdmin` migration policy. The Dispatcher, Webhook Processor, idle reconciler, Checks consumer, and Preview result consumer have separate least-privilege DSQL roles. The Preview result consumer is column-scoped and receives only configured same-Region result queues. The Dispatcher also sends to manifest-listed command queues and, when enabled, the Checks queue.
 
 The Dispatcher IAM test in `dispatcher-preview-queue.tftest.hcl` verifies that a manifest-listed Preview queue gets only `sqs:SendMessage` on its exact ARN and that a URL from a different account/Region is rejected. `make terraform-test` runs this Control Plane plan test with the other Terraform contract tests.

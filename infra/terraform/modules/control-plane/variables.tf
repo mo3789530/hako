@@ -67,7 +67,7 @@ variable "tenant_github_webhook_reader_role_arns" {
 }
 
 variable "github_broker_role_name" {
-  description = "Existing Control Plane IAM role name used only by the Hako GitHub Credential Broker. Required when Tenant private-key reader Roles are configured."
+  description = "Hako GitHub Credential Broker task role name. Created when its ECS service is enabled; otherwise it must already exist when broker-specific policies are configured."
   type        = string
   default     = ""
 
@@ -537,6 +537,274 @@ variable "github_checks_consumer_memory" {
 
 variable "github_checks_dsql_database" {
   description = "Aurora DSQL database name used by the Checks consumer."
+  type        = string
+  default     = "postgres"
+}
+
+variable "enable_github_broker_service" {
+  description = "Deploy the private ARM64 GitHub Credential Broker as an ECS/Fargate service. Defaults off."
+  type        = bool
+  default     = false
+
+  validation {
+    condition = !var.enable_github_broker_service || (
+      var.github_broker_role_name != "" &&
+      can(regex("^https://[^?#]+$", var.github_broker_private_url)) &&
+      can(regex("^arn:[^:]+:ecs:[^:]+:[0-9]{12}:cluster/.+$", var.github_broker_cluster_arn)) &&
+      length(var.github_broker_subnet_ids) > 0 &&
+      length(var.github_broker_security_group_ids) > 0 &&
+      length(var.github_broker_api_subnet_ids) > 0 &&
+      length(var.github_broker_api_security_group_ids) > 0 &&
+      var.github_broker_api_client_cert_secret_arn != "" &&
+      var.github_broker_api_client_key_secret_arn != "" &&
+      var.github_broker_api_ca_secret_arn != "" &&
+      can(regex("^arn:[^:]+:elasticloadbalancing:[^:]+:[0-9]{12}:targetgroup/.+$", var.github_broker_tcp_target_group_arn)) &&
+      can(regex("^([0-9]{12})\\.dkr\\.ecr\\.([a-z0-9-]+)\\.amazonaws\\.com/(.+)@sha256:[0-9a-f]{64}$", var.github_broker_image_uri)) &&
+      try(
+        split(":", var.github_broker_ecr_repository_arn)[0] == "arn" &&
+        split(":", var.github_broker_ecr_repository_arn)[2] == "ecr" &&
+        split(":", var.github_broker_ecr_repository_arn)[3] == var.aws_region &&
+        split(":", var.github_broker_ecr_repository_arn)[3] == regex("^([0-9]{12})\\.dkr\\.ecr\\.([a-z0-9-]+)\\.amazonaws\\.com/(.+)@sha256:[0-9a-f]{64}$", var.github_broker_image_uri)[1] &&
+        split(":", var.github_broker_ecr_repository_arn)[4] == regex("^([0-9]{12})\\.dkr\\.ecr\\.([a-z0-9-]+)\\.amazonaws\\.com/(.+)@sha256:[0-9a-f]{64}$", var.github_broker_image_uri)[0] &&
+        split(":", var.github_broker_ecr_repository_arn)[5] == "repository/${regex("^([0-9]{12})\\.dkr\\.ecr\\.([a-z0-9-]+)\\.amazonaws\\.com/(.+)@sha256:[0-9a-f]{64}$", var.github_broker_image_uri)[2]}",
+        false
+      ) &&
+      can(regex("^https://[^?#]+$", var.github_broker_callback_url)) &&
+      (var.github_broker_agent_proposal_bucket == "" || (var.github_broker_agent_proposal_prefix != "" && length(var.tenant_agent_proposal_artifact_object_arns) > 0 && alltrue([for arn in var.tenant_agent_proposal_artifact_object_arns : arn == "arn:aws:s3:::${var.github_broker_agent_proposal_bucket}/${var.github_broker_agent_proposal_prefix}/*/*/*/agent-changes/*.zip"]))) &&
+      var.github_broker_tls_cert_secret_arn != "" &&
+      var.github_broker_tls_key_secret_arn != "" &&
+      var.github_broker_client_ca_secret_arn != ""
+    )
+    error_message = "The Broker service requires its exact role name, ECS cluster, private subnets/security groups, TCP target group, digest-pinned same-account/Region ECR image, HTTPS callback URL, and three TLS Secret ARNs."
+  }
+}
+
+variable "github_broker_cluster_arn" {
+  description = "Pre-created ECS cluster ARN for the private GitHub Broker service."
+  type        = string
+  default     = ""
+}
+
+variable "github_broker_private_url" {
+  description = "Private HTTPS NLB origin used by the API Lambda for Broker mTLS requests; certificate SAN must match this host."
+  type        = string
+  default     = ""
+}
+
+variable "github_broker_api_subnet_ids" {
+  description = "Private subnets for the API Lambda when Broker connectivity is enabled; routes/endpoints must reach DSQL, Secrets Manager, and the private NLB."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for id in var.github_broker_api_subnet_ids : can(regex("^subnet-[A-Za-z0-9]+$", id))])
+    error_message = "github_broker_api_subnet_ids must contain subnet IDs."
+  }
+}
+
+variable "github_broker_api_security_group_ids" {
+  description = "Security groups for the API Lambda ENIs; egress must be restricted to required endpoints and Broker NLB."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for id in var.github_broker_api_security_group_ids : can(regex("^sg-[A-Za-z0-9]+$", id))])
+    error_message = "github_broker_api_security_group_ids must contain security group IDs."
+  }
+}
+
+variable "github_broker_api_client_cert_secret_arn" {
+  description = "Secrets Manager ARN for the Control Plane mTLS client certificate used by the API Lambda."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.github_broker_api_client_cert_secret_arn == "" || can(regex("^arn:aws:secretsmanager:${var.aws_region}:[0-9]{12}:secret:.+$", var.github_broker_api_client_cert_secret_arn))
+    error_message = "github_broker_api_client_cert_secret_arn must be empty or a same-Region Secrets Manager ARN."
+  }
+}
+
+variable "github_broker_api_client_key_secret_arn" {
+  description = "Secrets Manager ARN for the Control Plane mTLS client private key used by the API Lambda."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.github_broker_api_client_key_secret_arn == "" || can(regex("^arn:aws:secretsmanager:${var.aws_region}:[0-9]{12}:secret:.+$", var.github_broker_api_client_key_secret_arn))
+    error_message = "github_broker_api_client_key_secret_arn must be empty or a same-Region Secrets Manager ARN."
+  }
+}
+
+variable "github_broker_api_ca_secret_arn" {
+  description = "Secrets Manager ARN for the Broker server trust CA used by the API Lambda."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.github_broker_api_ca_secret_arn == "" || can(regex("^arn:aws:secretsmanager:${var.aws_region}:[0-9]{12}:secret:.+$", var.github_broker_api_ca_secret_arn))
+    error_message = "github_broker_api_ca_secret_arn must be empty or a same-Region Secrets Manager ARN."
+  }
+}
+
+variable "github_broker_api_tls_kms_key_arn" {
+  description = "Optional customer-managed KMS key ARN encrypting the API Lambda's Broker mTLS Secrets."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.github_broker_api_tls_kms_key_arn == "" || can(regex("^arn:[^:]+:kms:[^:]+:[0-9]{12}:key/.+$", var.github_broker_api_tls_kms_key_arn))
+    error_message = "github_broker_api_tls_kms_key_arn must be empty or a KMS key ARN."
+  }
+}
+
+variable "github_broker_subnet_ids" {
+  description = "Private subnet IDs for Broker Fargate tasks; public IP assignment is always disabled."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for id in var.github_broker_subnet_ids : can(regex("^subnet-[A-Za-z0-9]+$", id))])
+    error_message = "github_broker_subnet_ids must contain subnet IDs."
+  }
+}
+
+variable "github_broker_security_group_ids" {
+  description = "Pre-created security groups restricting Broker ingress to the private TCP target path and outbound dependencies."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for id in var.github_broker_security_group_ids : can(regex("^sg-[A-Za-z0-9]+$", id))])
+    error_message = "github_broker_security_group_ids must contain security group IDs."
+  }
+}
+
+variable "github_broker_tcp_target_group_arn" {
+  description = "Pre-created private NLB TCP target group ARN for TLS passthrough to the Broker mTLS listener on port 8443."
+  type        = string
+  default     = ""
+}
+
+variable "github_broker_image_uri" {
+  description = "ARM64 Broker image URI pinned by sha256 digest."
+  type        = string
+  default     = ""
+}
+
+variable "github_broker_ecr_repository_arn" {
+  description = "Exact private ECR repository ARN from which the Fargate execution role may pull the Broker image."
+  type        = string
+  default     = ""
+}
+
+variable "github_broker_callback_url" {
+  description = "Exact HTTPS OAuth callback URL configured for the Tenant GitHub App setup flow."
+  type        = string
+  default     = ""
+}
+
+variable "github_broker_tls_cert_secret_arn" {
+  description = "Secrets Manager ARN containing the Broker server certificate PEM."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.github_broker_tls_cert_secret_arn == "" || can(regex("^arn:aws:secretsmanager:${var.aws_region}:[0-9]{12}:secret:.+$", var.github_broker_tls_cert_secret_arn))
+    error_message = "github_broker_tls_cert_secret_arn must be empty or a same-Region Secrets Manager ARN."
+  }
+}
+
+variable "github_broker_tls_key_secret_arn" {
+  description = "Secrets Manager ARN containing the Broker server private-key PEM."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.github_broker_tls_key_secret_arn == "" || can(regex("^arn:aws:secretsmanager:${var.aws_region}:[0-9]{12}:secret:.+$", var.github_broker_tls_key_secret_arn))
+    error_message = "github_broker_tls_key_secret_arn must be empty or a same-Region Secrets Manager ARN."
+  }
+}
+
+variable "github_broker_client_ca_secret_arn" {
+  description = "Secrets Manager ARN containing the client CA bundle PEM trusted by the Broker."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.github_broker_client_ca_secret_arn == "" || can(regex("^arn:aws:secretsmanager:${var.aws_region}:[0-9]{12}:secret:.+$", var.github_broker_client_ca_secret_arn))
+    error_message = "github_broker_client_ca_secret_arn must be empty or a same-Region Secrets Manager ARN."
+  }
+}
+
+variable "github_broker_tls_kms_key_arn" {
+  description = "Optional customer-managed KMS key ARN encrypting the Broker TLS Secrets."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.github_broker_tls_kms_key_arn == "" || can(regex("^arn:[^:]+:kms:[^:]+:[0-9]{12}:key/.+$", var.github_broker_tls_kms_key_arn))
+    error_message = "github_broker_tls_kms_key_arn must be empty or a KMS key ARN."
+  }
+}
+
+variable "github_broker_agent_proposal_bucket" {
+  description = "Optional Resource Plane S3 bucket name enabling Broker Agent proposal publishing. Empty leaves the route disabled."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.github_broker_agent_proposal_bucket == "" || can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.github_broker_agent_proposal_bucket))
+    error_message = "github_broker_agent_proposal_bucket must be empty or an S3 bucket name."
+  }
+}
+
+variable "github_broker_agent_proposal_prefix" {
+  description = "Optional exact S3 key prefix for Agent proposal reads; empty means bucket root."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.github_broker_agent_proposal_prefix == "" || (can(regex("^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$", var.github_broker_agent_proposal_prefix)) && !strcontains(var.github_broker_agent_proposal_prefix, ".."))
+    error_message = "github_broker_agent_proposal_prefix must be an exact relative S3 key prefix."
+  }
+}
+
+variable "github_broker_desired_count" {
+  description = "Desired count of stateless Broker Fargate tasks."
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.github_broker_desired_count >= 1 && var.github_broker_desired_count <= 10 && floor(var.github_broker_desired_count) == var.github_broker_desired_count
+    error_message = "github_broker_desired_count must be a whole number between 1 and 10."
+  }
+}
+
+variable "github_broker_cpu" {
+  description = "Fargate task CPU units for the Broker."
+  type        = number
+  default     = 512
+
+  validation {
+    condition = contains([256, 512, 1024, 2048, 4096], var.github_broker_cpu) && (
+      var.github_broker_cpu == 256 ? contains([512, 1024, 2048], var.github_broker_memory) :
+      var.github_broker_cpu == 512 ? var.github_broker_memory >= 1024 && var.github_broker_memory <= 4096 && var.github_broker_memory % 1024 == 0 :
+      var.github_broker_cpu == 1024 ? var.github_broker_memory >= 2048 && var.github_broker_memory <= 8192 && var.github_broker_memory % 1024 == 0 :
+      var.github_broker_cpu == 2048 ? var.github_broker_memory >= 4096 && var.github_broker_memory <= 16384 && var.github_broker_memory % 1024 == 0 :
+      var.github_broker_memory >= 8192 && var.github_broker_memory <= 30720 && var.github_broker_memory % 1024 == 0
+    )
+    error_message = "Broker CPU/memory must be a valid Fargate task size combination."
+  }
+}
+
+variable "github_broker_memory" {
+  description = "Fargate task memory in MiB for the Broker."
+  type        = number
+  default     = 1024
+}
+
+variable "github_broker_dsql_database" {
+  description = "Aurora DSQL database name used by the Broker."
   type        = string
   default     = "postgres"
 }

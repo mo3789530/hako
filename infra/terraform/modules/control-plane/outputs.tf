@@ -118,6 +118,21 @@ output "github_checks_consumer_execution_role_arn" {
   value       = try(aws_iam_role.github_checks_consumer_execution[0].arn, null)
 }
 
+output "github_broker_task_role_arn" {
+  description = "IAM Role ARN for the optional GitHub Broker task; map this identity to hako_github_broker in Aurora DSQL."
+  value       = try(aws_iam_role.github_broker_service[0].arn, null)
+}
+
+output "github_broker_execution_role_arn" {
+  description = "ECS task execution role ARN with exact ECR, log, and Broker TLS Secret read permissions."
+  value       = try(aws_iam_role.github_broker_execution[0].arn, null)
+}
+
+output "github_broker_service_arn" {
+  description = "ARN of the optional private GitHub Broker ECS service; null unless enabled."
+  value       = try(aws_ecs_service.github_broker[0].id, null)
+}
+
 output "github_checks_consumer_service_arn" {
   description = "ARN of the optional ECS/Fargate GitHub Checks consumer service."
   value       = try(aws_ecs_service.github_checks_consumer[0].id, null)

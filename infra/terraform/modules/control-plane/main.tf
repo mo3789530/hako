@@ -552,6 +552,202 @@ resource "aws_ecs_service" "github_checks_consumer" {
   tags = local.common_tags
 }
 
+resource "aws_iam_role" "github_broker_service" {
+  count = var.enable_github_broker_service ? 1 : 0
+
+  name = var.github_broker_role_name
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "ecs-tasks.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+      Condition = {
+        ArnLike      = { "aws:SourceArn" = "arn:${data.aws_partition.current.partition}:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*" }
+        StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
+      }
+    }]
+  })
+  tags = merge(local.common_tags, { "hako:role-purpose" = "github-credential-broker" })
+}
+
+resource "aws_iam_role_policy" "github_broker_dsql" {
+  count = var.enable_github_broker_service ? 1 : 0
+
+  name = "${var.api_name}-github-broker-dsql"
+  role = aws_iam_role.github_broker_service[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "ConnectAsGitHubBroker"
+      Effect   = "Allow"
+      Action   = ["dsql:DbConnect"]
+      Resource = aws_dsql_cluster.control_plane.arn
+    }]
+  })
+}
+
+resource "aws_iam_role" "github_broker_execution" {
+  count = var.enable_github_broker_service ? 1 : 0
+
+  name = "${var.api_name}-github-broker-execution"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "ecs-tasks.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+      Condition = {
+        ArnLike      = { "aws:SourceArn" = "arn:${data.aws_partition.current.partition}:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*" }
+        StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
+      }
+    }]
+  })
+  tags = merge(local.common_tags, { "hako:role-purpose" = "github-broker-task-execution" })
+}
+
+resource "aws_iam_role_policy" "github_broker_execution" {
+  count = var.enable_github_broker_service ? 1 : 0
+
+  name = "${var.api_name}-github-broker-execution"
+  role = aws_iam_role.github_broker_execution[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = concat([
+      {
+        Sid      = "AuthenticateToECR"
+        Effect   = "Allow"
+        Action   = ["ecr:GetAuthorizationToken"]
+        Resource = "*"
+      },
+      {
+        Sid      = "PullOnlyBrokerImage"
+        Effect   = "Allow"
+        Action   = ["ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]
+        Resource = var.github_broker_ecr_repository_arn
+      },
+      {
+        Sid      = "WriteOnlyBrokerLogs"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "${aws_cloudwatch_log_group.github_broker[0].arn}:*"
+      },
+      {
+        Sid      = "ReadOnlyBrokerServerTLSSecrets"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = [var.github_broker_tls_cert_secret_arn, var.github_broker_tls_key_secret_arn, var.github_broker_client_ca_secret_arn]
+      }
+      ], var.github_broker_tls_kms_key_arn == "" ? [] : [{
+        Sid      = "DecryptBrokerServerTLSSecrets"
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt"]
+        Resource = var.github_broker_tls_kms_key_arn
+        Condition = {
+          StringEquals = {
+            "kms:ViaService" = "secretsmanager.${var.aws_region}.${data.aws_partition.current.dns_suffix}"
+            "kms:EncryptionContext:SecretARN" = [
+              var.github_broker_tls_cert_secret_arn,
+              var.github_broker_tls_key_secret_arn,
+              var.github_broker_client_ca_secret_arn,
+            ]
+          }
+        }
+    }])
+  })
+}
+
+resource "aws_cloudwatch_log_group" "github_broker" {
+  count = var.enable_github_broker_service ? 1 : 0
+
+  name              = "/ecs/${var.api_name}-github-broker"
+  retention_in_days = var.lambda_log_retention_days
+  tags              = local.common_tags
+}
+
+resource "aws_ecs_task_definition" "github_broker" {
+  count = var.enable_github_broker_service ? 1 : 0
+
+  family                   = "${var.api_name}-github-broker"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = tostring(var.github_broker_cpu)
+  memory                   = tostring(var.github_broker_memory)
+  execution_role_arn       = aws_iam_role.github_broker_execution[0].arn
+  task_role_arn            = aws_iam_role.github_broker_service[0].arn
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "ARM64"
+  }
+  container_definitions = jsonencode([{
+    name                   = "github-broker"
+    image                  = var.github_broker_image_uri
+    essential              = true
+    readonlyRootFilesystem = true
+    stopTimeout            = 60
+    portMappings           = [{ containerPort = 8443, hostPort = 8443, protocol = "tcp" }]
+    environment = [
+      { name = "AWS_REGION", value = var.aws_region },
+      { name = "HAKO_DSQL_HOST", value = "${aws_dsql_cluster.control_plane.identifier}.dsql.${var.aws_region}.on.aws" },
+      { name = "HAKO_DSQL_USER", value = "hako_github_broker" },
+      { name = "HAKO_DSQL_DATABASE", value = var.github_broker_dsql_database },
+      { name = "HAKO_GITHUB_BROKER_CALLBACK_URL", value = var.github_broker_callback_url },
+      { name = "HAKO_GITHUB_BROKER_LISTEN_ADDR", value = ":8443" },
+      { name = "HAKO_GITHUB_BROKER_AGENT_PROPOSAL_BUCKET", value = var.github_broker_agent_proposal_bucket },
+      { name = "HAKO_GITHUB_BROKER_AGENT_PROPOSAL_PREFIX", value = var.github_broker_agent_proposal_prefix },
+    ]
+    secrets = [
+      { name = "HAKO_GITHUB_BROKER_TLS_CERT_PEM", valueFrom = var.github_broker_tls_cert_secret_arn },
+      { name = "HAKO_GITHUB_BROKER_TLS_KEY_PEM", valueFrom = var.github_broker_tls_key_secret_arn },
+      { name = "HAKO_GITHUB_BROKER_CLIENT_CA_PEM", valueFrom = var.github_broker_client_ca_secret_arn },
+    ]
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = aws_cloudwatch_log_group.github_broker[0].name
+        "awslogs-region"        = var.aws_region
+        "awslogs-stream-prefix" = "broker"
+      }
+    }
+  }])
+  tags = local.common_tags
+}
+
+resource "aws_ecs_service" "github_broker" {
+  count = var.enable_github_broker_service ? 1 : 0
+
+  name                               = "${var.api_name}-github-broker"
+  cluster                            = var.github_broker_cluster_arn
+  task_definition                    = aws_ecs_task_definition.github_broker[0].arn
+  desired_count                      = var.github_broker_desired_count
+  launch_type                        = "FARGATE"
+  platform_version                   = "LATEST"
+  enable_execute_command             = false
+  enable_ecs_managed_tags            = true
+  propagate_tags                     = "SERVICE"
+  deployment_maximum_percent         = 200
+  deployment_minimum_healthy_percent = 50
+
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
+  network_configuration {
+    subnets          = var.github_broker_subnet_ids
+    security_groups  = var.github_broker_security_group_ids
+    assign_public_ip = false
+  }
+
+  load_balancer {
+    target_group_arn = var.github_broker_tcp_target_group_arn
+    container_name   = "github-broker"
+    container_port   = 8443
+  }
+
+  tags = local.common_tags
+}
+
 resource "aws_iam_role" "api_lambda" {
   name = "${var.api_name}-api-lambda"
   assume_role_policy = jsonencode({
@@ -651,7 +847,32 @@ resource "aws_iam_role_policy" "api_lambda" {
         Action   = ["dsql:DbConnect"]
         Resource = aws_dsql_cluster.control_plane.arn
       }
-      ], var.github_webhook_secret_arn == "" ? [] : [{
+      ], var.enable_github_broker_service ? [{
+        Sid      = "ReadOnlyBrokerClientTLSSecrets"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = [var.github_broker_api_client_cert_secret_arn, var.github_broker_api_client_key_secret_arn, var.github_broker_api_ca_secret_arn]
+        }] : [], var.enable_github_broker_service && var.github_broker_api_tls_kms_key_arn != "" ? [{
+        Sid      = "DecryptBrokerClientTLSSecrets"
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt"]
+        Resource = var.github_broker_api_tls_kms_key_arn
+        Condition = {
+          StringEquals = {
+            "kms:ViaService" = "secretsmanager.${var.aws_region}.${data.aws_partition.current.dns_suffix}"
+            "kms:EncryptionContext:SecretARN" = [
+              var.github_broker_api_client_cert_secret_arn,
+              var.github_broker_api_client_key_secret_arn,
+              var.github_broker_api_ca_secret_arn,
+            ]
+          }
+        }
+        }] : [], var.enable_github_broker_service ? [{
+        Sid      = "ManageOnlyLambdaVPCNetworkInterfaces"
+        Effect   = "Allow"
+        Action   = ["ec2:CreateNetworkInterface", "ec2:DeleteNetworkInterface", "ec2:DescribeNetworkInterfaces", "ec2:DescribeSubnets", "ec2:DescribeSecurityGroups", "ec2:DescribeVpcs", "ec2:AssignPrivateIpAddresses", "ec2:UnassignPrivateIpAddresses"]
+        Resource = "*"
+        }] : [], var.github_webhook_secret_arn == "" ? [] : [{
         Sid      = "ReadGitHubWebhookSecret"
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
@@ -688,6 +909,8 @@ resource "aws_iam_role_policy" "api_lambda" {
 module "github_broker_tenant_iam" {
   source = "../github-broker-tenant-iam"
 
+  depends_on = [aws_iam_role.github_broker_service]
+
   broker_role_name                         = var.github_broker_role_name
   policy_name_prefix                       = var.api_name
   tenant_private_key_reader_role_arns      = var.tenant_github_private_key_reader_role_arns
@@ -707,6 +930,14 @@ resource "aws_lambda_function" "api" {
   source_code_hash = filebase64sha256(var.api_lambda_zip_path)
   memory_size      = var.api_lambda_memory_size
   timeout          = var.api_lambda_timeout_seconds
+
+  dynamic "vpc_config" {
+    for_each = var.enable_github_broker_service ? [1] : []
+    content {
+      subnet_ids         = var.github_broker_api_subnet_ids
+      security_group_ids = var.github_broker_api_security_group_ids
+    }
+  }
 
   environment {
     variables = {
@@ -730,6 +961,10 @@ resource "aws_lambda_function" "api" {
       HAKO_RESOURCE_PLANE_HEALTH_REPORT_SECRET_ARNS    = jsonencode(var.resource_plane_health_report_secret_arns)
       HAKO_RESOURCE_PLANE_WORKLOAD_SPEC_SECRET_ARNS    = jsonencode(var.resource_plane_workload_spec_secret_arns)
       HAKO_RESOURCE_PLANE_ARTIFACT_CLEANUP_SECRET_ARNS = jsonencode(var.resource_plane_artifact_cleanup_secret_arns)
+      HAKO_TENANT_GITHUB_OAUTH_BROKER_URL              = var.enable_github_broker_service ? var.github_broker_private_url : ""
+      HAKO_TENANT_GITHUB_OAUTH_CLIENT_CERT_SECRET_ARN  = var.enable_github_broker_service ? var.github_broker_api_client_cert_secret_arn : ""
+      HAKO_TENANT_GITHUB_OAUTH_CLIENT_KEY_SECRET_ARN   = var.enable_github_broker_service ? var.github_broker_api_client_key_secret_arn : ""
+      HAKO_TENANT_GITHUB_OAUTH_BROKER_CA_SECRET_ARN    = var.enable_github_broker_service ? var.github_broker_api_ca_secret_arn : ""
     }
   }
 
@@ -752,6 +987,14 @@ resource "aws_lambda_function" "api_image" {
   architectures = ["arm64"]
   memory_size   = var.api_lambda_memory_size
   timeout       = var.api_lambda_timeout_seconds
+
+  dynamic "vpc_config" {
+    for_each = var.enable_github_broker_service ? [1] : []
+    content {
+      subnet_ids         = var.github_broker_api_subnet_ids
+      security_group_ids = var.github_broker_api_security_group_ids
+    }
+  }
 
   environment {
     variables = {
@@ -776,6 +1019,10 @@ resource "aws_lambda_function" "api_image" {
       HAKO_RESOURCE_PLANE_HEALTH_REPORT_SECRET_ARNS    = jsonencode(var.resource_plane_health_report_secret_arns)
       HAKO_RESOURCE_PLANE_WORKLOAD_SPEC_SECRET_ARNS    = jsonencode(var.resource_plane_workload_spec_secret_arns)
       HAKO_RESOURCE_PLANE_ARTIFACT_CLEANUP_SECRET_ARNS = jsonencode(var.resource_plane_artifact_cleanup_secret_arns)
+      HAKO_TENANT_GITHUB_OAUTH_BROKER_URL              = var.enable_github_broker_service ? var.github_broker_private_url : ""
+      HAKO_TENANT_GITHUB_OAUTH_CLIENT_CERT_SECRET_ARN  = var.enable_github_broker_service ? var.github_broker_api_client_cert_secret_arn : ""
+      HAKO_TENANT_GITHUB_OAUTH_CLIENT_KEY_SECRET_ARN   = var.enable_github_broker_service ? var.github_broker_api_client_key_secret_arn : ""
+      HAKO_TENANT_GITHUB_OAUTH_BROKER_CA_SECRET_ARN    = var.enable_github_broker_service ? var.github_broker_api_ca_secret_arn : ""
     }
   }
 
