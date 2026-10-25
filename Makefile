@@ -239,6 +239,8 @@ terraform-validate:
 	done
 
 terraform-test:
+	$(TERRAFORM) -chdir=infra/terraform/modules/control-plane init -backend=false -input=false
+	$(TERRAFORM) -chdir=infra/terraform/modules/control-plane test
 	$(TERRAFORM) -chdir=infra/terraform/modules/resource-plane init -backend=false -input=false
 	$(TERRAFORM) -chdir=infra/terraform/modules/resource-plane test
 	$(TERRAFORM) -chdir=infra/terraform/modules/workspace-storage init -backend=false -input=false

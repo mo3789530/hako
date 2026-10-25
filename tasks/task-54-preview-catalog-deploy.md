@@ -545,4 +545,6 @@ role would be denied by IAM at publish time. The Control Plane now derives the
 Preview queue ARN from the manifest and grants `sqs:SendMessage` only to those
 exact ARNs. Terraform input validation also checks the Preview queue URL's
 Region and account against its registered Resource Plane. `docs/resource-plane-registration.md`
-records the producer/dispatcher boundary. No AWS policy was applied.
+records the producer/dispatcher boundary. A new Control Plane Terraform plan
+test checks the exact IAM resource and rejects a queue URL for a different
+account/Region; `make terraform-test` now runs it. No AWS policy was applied.
