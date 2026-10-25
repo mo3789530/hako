@@ -142,6 +142,14 @@ Repository. The proposal remains untrusted. Hako must never merge or deploy it.
   isolation and metadata redaction; API client and CLI tests cover the route
   and output. The record selected for display follows the latest Agent attempt
   generation.
+- `githubapp.TokenClient.AgentProposalPublishToken` now provides the
+  credential primitive for a Tenant-owned Agent Run only. It requires exact
+  Tenant App integration/config/credential-generation pins and requests one
+  Repository with only `contents:write` and `pull_requests:write`; GitHub's
+  returned repository and permission set are checked, and its cache key is
+  distinct from read-only and Checks grants. Synthetic-key unit tests verify
+  the scope and reject cross-Tenant/non-Agent requests. The token is not
+  exposed through an HTTP endpoint and is not yet connected to a publisher.
 - Still open: verifier retry, broker-only exact-scope write credentials,
   branch/PR create and lost-response recovery, and API/CLI submit/retry UX. AWS
   IAM and Lambda MicroVM execution remain unverified.

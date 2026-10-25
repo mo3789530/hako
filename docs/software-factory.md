@@ -396,6 +396,10 @@ and lost-response recovery, and API/CLI submit/retry UX. The authenticated
 `GET .../agent-publication` endpoint and `hako workload publication show`
 display only safe state, branch, confirmed commit, PR number, and timestamps;
 they omit artifact references, digests, tokens, and verifier internals.
+The Tenant App token client also has a synthetic-test-covered minting primitive
+for a single-Repository `contents:write` + `pull_requests:write` grant, keyed
+separately from other scopes. It is not yet exposed by the Broker or connected
+to GitHub publication.
 Terraform IAM and AWS execution have not been verified.
 
 Treat `.hako/factory.yaml`, workflow files, action references, shell steps,

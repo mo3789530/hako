@@ -253,6 +253,70 @@ func TestAgentContextTokenIsTenantPinnedAndUsesSeparateReadOnlyScopes(t *testing
 	}
 }
 
+func TestAgentProposalPublishTokenIsTenantPinnedAndExactWriteScope(t *testing.T) {
+	var mintCount atomic.Int32
+	now := time.Date(2026, 10, 24, 0, 0, 0, 0, time.UTC)
+	client, _ := newTestTokenClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/app/installations/77", "/repos/acme/api/installation":
+			_, _ = io.WriteString(w, `{"id":77,"app_id":12,"suspended_at":null}`)
+		case "/app/installations/77/access_tokens":
+			mintCount.Add(1)
+			var body struct {
+				RepositoryIDs []int64           `json:"repository_ids"`
+				Permissions   map[string]string `json:"permissions"`
+			}
+			if json.NewDecoder(r.Body).Decode(&body) != nil || len(body.RepositoryIDs) != 1 || body.RepositoryIDs[0] != 88 ||
+				len(body.Permissions) != 2 || body.Permissions["contents"] != "write" || body.Permissions["pull_requests"] != "write" {
+				t.Error("Agent proposal token did not request exactly repository-scoped Contents/write and Pull Requests/write")
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"token": testTokenValue, "expires_at": now.Add(time.Hour),
+				"permissions":  map[string]string{"contents": "write", "pull_requests": "write", "metadata": "read"},
+				"repositories": []map[string]int{{"id": 88}}})
+		default:
+			t.Errorf("unexpected GitHub endpoint %s", r.URL.Path)
+		}
+	}))
+	client.config.TenantID = "tenant_one"
+	client.config.IntegrationID = "integration_one"
+	client.config.ConfigRevision = 2
+	client.config.CredentialGeneration = 3
+	client.now = func() time.Time { return now }
+	checkAuth := func(_ context.Context, identity TenantAppIdentity) error {
+		if identity.TenantID != "tenant_one" || identity.IntegrationID != "integration_one" || identity.ConfigRevision != 2 || identity.CredentialGeneration != 3 {
+			return errors.New("wrong pinned Tenant App")
+		}
+		return nil
+	}
+	authorizer := scopedRepositoryAuthorizer{repositoryAuthorizerFunc: repositoryAuthorizerFunc(func(_ context.Context, tenant domain.TenantID, installation, repository int64) (RepositoryAccess, error) {
+		if tenant != "tenant_one" || installation != 77 || repository != 88 {
+			return RepositoryAccess{}, errors.New("repository denied")
+		}
+		return RepositoryAccess{Owner: "acme", Name: "api"}, nil
+	}), check: checkAuth}
+	client.tenantAppAuth = authorizer
+	client.authorizer = authorizer
+	run := domain.WorkloadRun{ID: "run_agent_publish", TenantID: "tenant_one", Kind: domain.WorkloadAgent,
+		GitHubInstallation: 77, GitHubRepository: 88, GitHubIntegrationID: "integration_one",
+		GitHubConfigRevision: 2, GitHubCredentialGeneration: 3}
+	if _, _, err := client.AgentProposalPublishToken(context.Background(), domain.WorkloadRun{TenantID: "tenant_other", Kind: domain.WorkloadAgent,
+		GitHubInstallation: 77, GitHubRepository: 88, GitHubIntegrationID: "integration_one", GitHubConfigRevision: 2, GitHubCredentialGeneration: 3}); err == nil {
+		t.Fatal("cross-Tenant Agent publication token was issued")
+	}
+	if _, _, err := client.AgentProposalPublishToken(context.Background(), domain.WorkloadRun{TenantID: "tenant_one", Kind: domain.WorkloadJob,
+		GitHubInstallation: 77, GitHubRepository: 88, GitHubIntegrationID: "integration_one", GitHubConfigRevision: 2, GitHubCredentialGeneration: 3}); err == nil {
+		t.Fatal("non-Agent Run received a publication token")
+	}
+	token, access, err := client.AgentProposalPublishToken(context.Background(), run)
+	if err != nil || token.Value() != testTokenValue || access != (RepositoryAccess{Owner: "acme", Name: "api"}) {
+		t.Fatalf("Agent proposal publish token = redacted token, %+v, error=%v", access, err)
+	}
+	if _, _, err := client.AgentProposalPublishToken(context.Background(), run); err != nil || mintCount.Load() != 1 {
+		t.Fatalf("scoped token cache failed or mixed permissions: mint count=%d error=%v", mintCount.Load(), err)
+	}
+}
+
 func TestResolveAgentIssueContextReturnsImmutableDefaultBranchCommit(t *testing.T) {
 	now := time.Date(2026, 10, 24, 0, 0, 0, 0, time.UTC)
 	commit := strings.Repeat("a", 40)

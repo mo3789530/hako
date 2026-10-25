@@ -393,6 +393,47 @@ func (c *TokenClient) ChecksToken(ctx context.Context, tenant domain.TenantID, i
 	return result, err
 }
 
+// AgentProposalPublishToken mints a Tenant-owned-App token restricted to one
+// Repository and exactly Contents/write plus Pull Requests/write. The token is
+// returned only to the trusted broker process; callers must never serialize
+// it, send it to a Worker, or expose it through an API response.
+func (c *TokenClient) AgentProposalPublishToken(ctx context.Context, run domain.WorkloadRun) (InstallationToken, RepositoryAccess, error) {
+	if c == nil || ctx == nil || c.authorizer == nil || c.tenantAppAuth == nil || c.config.IntegrationID == "" ||
+		run.Kind != domain.WorkloadAgent || run.TenantID == "" || run.TenantID != c.config.TenantID ||
+		run.GitHubIntegrationID != c.config.IntegrationID || run.GitHubConfigRevision != c.config.ConfigRevision ||
+		run.GitHubCredentialGeneration != c.config.CredentialGeneration || run.GitHubInstallation <= 0 || run.GitHubRepository <= 0 {
+		return InstallationToken{}, RepositoryAccess{}, credentialError("invalid_request")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	select {
+	case c.gate <- struct{}{}:
+	case <-ctx.Done():
+		return InstallationToken{}, RepositoryAccess{}, ctx.Err()
+	}
+	defer func() { <-c.gate }()
+	permissions := map[string]string{"contents": "write", "pull_requests": "write"}
+	key := tokenCacheKey{tenant: run.TenantID, integration: c.config.IntegrationID, appID: c.config.AppID,
+		configRevision: c.config.ConfigRevision, credentialGeneration: c.config.CredentialGeneration,
+		installation: run.GitHubInstallation, repository: run.GitHubRepository,
+		permissionScope: "contents:write,pull_requests:write"}
+	access, err := c.authorize(ctx, key)
+	if err != nil {
+		return InstallationToken{}, RepositoryAccess{}, err
+	}
+	token, err := c.scopedInstallationToken(ctx, key, permissions)
+	if err != nil {
+		delete(c.cache, key)
+		return InstallationToken{}, RepositoryAccess{}, err
+	}
+	current, err := c.authorize(ctx, key)
+	if err != nil || current != access {
+		delete(c.cache, key)
+		return InstallationToken{}, RepositoryAccess{}, credentialError("repository_not_authorized")
+	}
+	return token, access, nil
+}
+
 // ActionsRunnerRegistrationToken mints one repository-scoped, short-lived
 // runner configuration credential. It is tenant-owned-App only, independently
 // rechecks the current Runner opt-in, and deliberately does not cache either
