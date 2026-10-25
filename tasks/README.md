@@ -164,6 +164,9 @@ Task 89 API follow-up (2026-10-25): the PostgreSQL publication integration
 test verifies request-body and malformed-identity rejection before Broker
 access, generic error redaction, and a mismatched Tenant response from the
 Broker. Successful and failed attempts are audited; invalid requests are not.
+It now also composes verifier retry through the API: one replacement attempt
+and dispatch Outbox are persisted, the route returns `202 verification_queued`,
+and the Broker submitter receives no call until verification is completed.
 
 Added `make verify-workload-microvm-artifact` so the Agent ZIP check is
 repeatable: it validates the public-key JSON, exact package contents, key-byte

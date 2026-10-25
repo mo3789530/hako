@@ -285,16 +285,80 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 		detail.Artifacts[0].SHA256 != strings.Repeat("a", 64) || strings.Contains(own.Body.String(), "private-artifacts") {
 		t.Fatalf("Run detail did not expose safe artifact metadata: detail=%+v body=%s err=%v", detail, own.Body.String(), err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE workload_runs SET kind='agent' WHERE tenant_id='tenant_runs_a' AND id='run_owned_member'`); err != nil {
-		t.Fatalf("mark proposal Run as Agent: %v", err)
+	proposalSHA, baseSHA := strings.Repeat("b", 64), strings.Repeat("a", 40)
+	if _, err := pool.Exec(ctx, `UPDATE workload_runs SET kind='agent',state='succeeded',desired_state='running',completed_at=$1,
+		commit_sha=$2,github_installation_id=9301,github_repository_id=9302 WHERE tenant_id='tenant_runs_a' AND id='run_owned_member'`, now, baseSHA); err != nil {
+		t.Fatalf("mark proposal Run as successful Agent Run: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE tenant_github_repositories SET factory_enabled=true,factory_enabled_at=$1 WHERE tenant_id='tenant_runs_a' AND installation_id=9301 AND github_repository_id=9302`, now); err != nil {
+		t.Fatalf("enable factory for proposal Run: %v", err)
+	}
+	// Free one fixture reservation so the API retry can exercise real admission
+	// under the Tenant's maximum concurrent Run quota.
+	if _, err := pool.Exec(ctx, `UPDATE workload_runs SET state='failed',desired_state='cancelled',completed_at=$1,revision=revision+1 WHERE tenant_id='tenant_runs_a' AND id='run_owned_owner'`, now); err != nil {
+		t.Fatalf("terminalize unused requester-visibility fixture: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM workload_quota_slots WHERE tenant_id='tenant_runs_a' AND workload_run_id='run_owned_owner'`); err != nil {
+		t.Fatalf("release unused Run fixture quota: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM workload_artifact_quota_reservations WHERE tenant_id='tenant_runs_a' AND workload_run_id='run_owned_owner'`); err != nil {
+		t.Fatalf("release unused Run fixture artifact quota: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO workload_run_attempts(id,tenant_id,workload_run_id,generation,attempt_number,resource_plane_id,idempotency_token,state,cleanup_confirmed_at,created_at,updated_at)
+		VALUES('attempt_publish_api','tenant_runs_a','run_owned_member',1,1,'rp_runs_a','publish-api-token','succeeded',$1,$1,$1)`, now); err != nil {
+		t.Fatalf("seed successful Agent attempt for publication: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO workload_artifacts(id,tenant_id,workload_run_id,kind,storage_ref,size_bytes,sha256,redacted,created_at)
+		VALUES('artifact_agent_proposal_api','tenant_runs_a','run_owned_member','agent_changes','s3://private/proposal-api.zip',128,$1,false,$2)`, proposalSHA, now); err != nil {
+		t.Fatalf("seed Agent proposal artifact: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO workload_runs(id,tenant_id,kind,requested_by,github_installation_id,github_repository_id,commit_sha,ref,trigger_event,trigger_branch,runtime_class,trust_level,desired_state,state,resource_plane_id,idempotency_key,request_hash,timeout_seconds,timeout_at,completed_at,error_code,revision,created_at,updated_at)
+		VALUES('run_verifier_api','tenant_runs_a','job','usr_runs_member',9301,9302,$1,'refs/heads/main','pull_request','main','standard','untrusted','running','failed','rp_runs_a','verify-api-key','verify-api-hash',600,$2,$3,'test_failed',1,$4,$4)`, baseSHA, now.Add(time.Hour), now, now); err != nil {
+		t.Fatalf("seed failed verifier Run: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO workload_run_attempts(id,tenant_id,workload_run_id,generation,attempt_number,resource_plane_id,idempotency_token,state,cleanup_confirmed_at,created_at,updated_at)
+		VALUES('attempt_verifier_api_initial','tenant_runs_a','run_verifier_api',1,1,'rp_runs_a','verify-api-token','failed',$1,$1,$1)`, now); err != nil {
+		t.Fatalf("seed cleaned failed verifier attempt: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO workload_agent_proposal_verifications(tenant_id,agent_run_id,agent_attempt_id,proposal_artifact_id,proposal_sha256,base_commit_sha,verifier_run_id,verifier_attempt_id,created_at)
+		VALUES('tenant_runs_a','run_owned_member','attempt_publish_api','artifact_agent_proposal_api',$1,$2,'run_verifier_api','attempt_verifier_api_initial',$3)`, proposalSHA, baseSHA, now); err != nil {
+		t.Fatalf("seed failed verifier binding: %v", err)
+	}
+	publicationSubmitter := &fakeAgentProposalPublicationSubmitter{result: AgentProposalPublicationSubmission{TenantID: "tenant_runs_a",
+		WorkloadRunID: "run_owned_member", State: "pull_request_created", BaseBranch: "main", BranchName: "hako/proposal-api",
+		BranchCommitSHA: strings.Repeat("d", 40), PullRequestNumber: 23}}
+	handler = NewHandler(verifier, pool, WorkspaceCreateConfig{WorkloadRunsEnabled: true,
+		ResourcePlaneWorkspaceSessionKeyResolver: keyResolver, AgentProposalPublicationSubmitter: publicationSubmitter})
+	queuedSubmission := request("runs-member", http.MethodPost, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_member/agent-publication/publish")
+	if queuedSubmission.Code != http.StatusAccepted || queuedSubmission.Header().Get("Cache-Control") != "no-store" ||
+		!strings.Contains(queuedSubmission.Body.String(), `"state":"verification_queued"`) || publicationSubmitter.calls != 0 {
+		t.Fatalf("queued verifier submission = HTTP %d calls=%d body=%s", queuedSubmission.Code, publicationSubmitter.calls, queuedSubmission.Body.String())
+	}
+	var retryVerifierAttempt string
+	if err := pool.QueryRow(ctx, `SELECT verifier_attempt_id FROM workload_agent_proposal_verifications WHERE tenant_id='tenant_runs_a' AND agent_run_id='run_owned_member'`).Scan(&retryVerifierAttempt); err != nil || retryVerifierAttempt == "attempt_verifier_api_initial" {
+		t.Fatalf("verification binding was not updated to retry attempt %q: %v", retryVerifierAttempt, err)
+	}
+	var retryState string
+	var retryDispatchEvents int
+	if err := pool.QueryRow(ctx, `SELECT state FROM workload_run_attempts WHERE id=$1`, retryVerifierAttempt).Scan(&retryState); err != nil || retryState != "dispatch_pending" {
+		t.Fatalf("queued verifier attempt state=%q error=%v", retryState, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox_events WHERE aggregate_id=$1 AND event_type='workload_attempt.dispatch'`, retryVerifierAttempt).Scan(&retryDispatchEvents); err != nil || retryDispatchEvents != 1 {
+		t.Fatalf("queued verifier dispatch outbox count=%d error=%v", retryDispatchEvents, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE workload_run_attempts SET state='succeeded',cleanup_confirmed_at=$1,updated_at=$1 WHERE id=$2`, now, retryVerifierAttempt); err != nil {
+		t.Fatalf("complete retried verifier attempt: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE workload_runs SET state='succeeded',completed_at=$1,error_code=NULL,revision=revision+1,updated_at=$1 WHERE id='run_verifier_api'`, now); err != nil {
+		t.Fatalf("complete retried verifier Run: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO workload_agent_proposal_publications
 		(tenant_id,agent_run_id,agent_attempt_id,proposal_artifact_id,proposal_sha256,base_commit_sha,
 		 verifier_run_id,verifier_attempt_id,verifier_generation,installation_id,repository_id,integration_id,
 		 config_revision,credential_generation,default_branch,policy_sha256,branch_name,state,created_at,updated_at)
-		VALUES ('tenant_runs_a','run_owned_member','attempt_publication','artifact_run_detail',$1,$2,
-		 'run_owned_owner','attempt_verifier',1,9301,9302,NULL,0,0,'main',$3,'hako/agent/proposal-test','requested',$4,$4)`,
-		strings.Repeat("b", 64), strings.Repeat("a", 40), strings.Repeat("c", 64), now); err != nil {
+		VALUES ('tenant_runs_a','run_owned_member','attempt_publish_api','artifact_agent_proposal_api',$1,$2,
+		 'run_verifier_api',$5,2,9301,9302,NULL,0,0,'main',$3,'hako/agent/proposal-test','requested',$4,$4)`,
+		proposalSHA, baseSHA, strings.Repeat("c", 64), now, retryVerifierAttempt); err != nil {
 		t.Fatalf("seed Agent publication status: %v", err)
 	}
 	publicationStatus := request("runs-member", http.MethodGet, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_member/agent-publication")
@@ -313,15 +377,6 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 	if crossTenantPublication := request("runs-other", http.MethodGet, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_member/agent-publication"); crossTenantPublication.Code != http.StatusNotFound {
 		t.Fatalf("cross-Tenant member could see Agent publication: HTTP %d %s", crossTenantPublication.Code, crossTenantPublication.Body.String())
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO workload_run_attempts(id,tenant_id,workload_run_id,generation,attempt_number,resource_plane_id,idempotency_token,state,created_at,updated_at)
-		VALUES('attempt_publish_api','tenant_runs_a','run_owned_member',1,1,'rp_runs_a','publish-api-token','succeeded',$1,$1)`, now); err != nil {
-		t.Fatalf("seed latest Agent attempt for publication submit: %v", err)
-	}
-	publicationSubmitter := &fakeAgentProposalPublicationSubmitter{result: AgentProposalPublicationSubmission{TenantID: "tenant_runs_a",
-		WorkloadRunID: "run_owned_member", State: "pull_request_created", BaseBranch: "main", BranchName: "hako/proposal-api",
-		BranchCommitSHA: strings.Repeat("d", 40), PullRequestNumber: 23}}
-	handler = NewHandler(verifier, pool, WorkspaceCreateConfig{WorkloadRunsEnabled: true,
-		ResourcePlaneWorkspaceSessionKeyResolver: keyResolver, AgentProposalPublicationSubmitter: publicationSubmitter})
 	submitted := request("runs-member", http.MethodPost, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_member/agent-publication/publish")
 	if submitted.Code != http.StatusOK || submitted.Header().Get("Cache-Control") != "no-store" ||
 		!strings.Contains(submitted.Body.String(), `"pull_request_number":23`) || publicationSubmitter.attemptID != "attempt_publish_api" {
@@ -358,7 +413,7 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 	publicationSubmitter.result.TenantID = "tenant_runs_a"
 	var publicationAuditCount int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE tenant_id='tenant_runs_a' AND actor_user_id='usr_runs_member'
-		AND action='workload.agent_proposal.publish' AND target_id='run_owned_member'`).Scan(&publicationAuditCount); err != nil || publicationAuditCount != 3 {
+		AND action='workload.agent_proposal.publish' AND target_id='run_owned_member'`).Scan(&publicationAuditCount); err != nil || publicationAuditCount != 4 {
 		t.Fatalf("publication submit success/failure audit count=%d error=%v", publicationAuditCount, err)
 	}
 	if hiddenSubmit := request("runs-member", http.MethodPost, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_owner/agent-publication/publish"); hiddenSubmit.Code != http.StatusNotFound {
@@ -398,11 +453,12 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 		t.Fatalf("resolve artifact grant = HTTP %d grant=%+v body=%s", resolveRecorder.Code, grant, resolveRecorder.Body.String())
 	}
 
-	cancelled := request("runs-member", http.MethodPost, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_member/cancel")
+	cancelRunPath := "/v1/tenants/tenant_runs_a/workload-runs/" + string(pendingRuns[0].ID) + "/cancel"
+	cancelled := request("runs-member", http.MethodPost, cancelRunPath)
 	if cancelled.Code != http.StatusAccepted || !strings.Contains(cancelled.Body.String(), `"desired_state":"cancelled"`) {
 		t.Fatalf("cancel own Workload Run = HTTP %d %s", cancelled.Code, cancelled.Body.String())
 	}
-	replayed := request("runs-member", http.MethodPost, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_member/cancel")
+	replayed := request("runs-member", http.MethodPost, cancelRunPath)
 	if replayed.Code != http.StatusAccepted {
 		t.Fatalf("idempotent cancellation returned HTTP %d %s", replayed.Code, replayed.Body.String())
 	}

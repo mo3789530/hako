@@ -108,6 +108,14 @@ Repository. The proposal remains untrusted. Hako must never merge or deploy it.
 
 ## Local implementation progress (2026-10-25)
 
+The Control Plane PostgreSQL integration test now composes the failed-verifier
+retry through the publication API. After a cleaned failed attempt, `publish`
+creates exactly one replacement verifier attempt and dispatch Outbox event,
+returns `202 verification_queued` with `Cache-Control: no-store`, and does not
+call the Broker submitter. The test then completes that verifier attempt and
+continues through the publication success and sanitized failure cases. This
+verifies local queue/API ordering only; no worker, GitHub, or AWS service runs.
+
 The authenticated Control Plane publication API integration path also covers
 empty-body enforcement, malformed Run identity rejection before broker access,
 sanitized Broker errors, and mismatched Tenant identity in a Broker response.
