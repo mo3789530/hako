@@ -193,6 +193,15 @@ func TestTenantAppVerifyRunsProofOutsideTransactionAndRechecksRevision(t *testin
 	})
 	handler := NewHandler(verifier, pool, WorkspaceCreateConfig{GitHubAppManagementEnabled: true, GitHubAppProofVerifier: proof})
 	token := signTenantAPIToken(t, key, issuer, "verify-owner", "openid hako/api")
+	withoutProofHandler := NewHandler(verifier, pool, WorkspaceCreateConfig{GitHubAppManagementEnabled: true})
+	unconfiguredReq := httptest.NewRequest(http.MethodPost, "/v1/tenants/tenant_verify_apps/github/apps/unconfigured/verify", strings.NewReader(`{"expected_revision":1}`))
+	unconfiguredReq.Header.Set("Content-Type", "application/json")
+	unconfiguredReq.Header.Set("Authorization", "Bearer "+token)
+	unconfiguredRes := httptest.NewRecorder()
+	withoutProofHandler.ServeHTTP(unconfiguredRes, unconfiguredReq)
+	if unconfiguredRes.Code != http.StatusConflict || !strings.Contains(unconfiguredRes.Body.String(), `"code":"github_app_not_ready"`) || strings.Contains(unconfiguredRes.Body.String(), "not implemented") {
+		t.Fatalf("missing trusted proof broker response = HTTP %d: %s", unconfiguredRes.Code, unconfiguredRes.Body.String())
+	}
 	call := func(method, path, body, idempotency string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")

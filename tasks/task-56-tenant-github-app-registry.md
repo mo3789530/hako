@@ -36,3 +36,10 @@ Implement the metadata/API foundation in [ADR 0007](../docs/adr/0007-tenant-gith
   no real GitHub or AWS calls occur. The same `cmd/hako` suite exercises the
   existing Repository configuration CLI paths; aggregate statement coverage is
   now 46.9%.
+
+## Verification configuration response (2026-10-25)
+
+The API's internal error now describes the actual missing dependency (trusted
+proof verifier unavailable), rather than claiming verification is not
+implemented. A PostgreSQL API integration assertion confirms the Owner-facing
+response remains `409 github_app_not_ready` when no proof broker is configured.

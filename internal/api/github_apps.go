@@ -19,7 +19,7 @@ import (
 	"github.com/mo3789530/hako/internal/store/transaction"
 )
 
-var errGitHubAppNotReady = errors.New("Tenant GitHub App verification/activation is not implemented")
+var errGitHubAppNotReady = errors.New("Tenant GitHub App proof verifier is unavailable")
 var errGitHubAppVerificationFailed = errors.New("Tenant GitHub App identity verification failed")
 
 type TenantGitHubAppProofVerifier interface {
