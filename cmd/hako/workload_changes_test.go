@@ -94,3 +94,42 @@ func TestAgentChangesArtifactRequiresSingleUnredactedSuccessfulAgentArtifact(t *
 		})
 	}
 }
+
+func TestDownloadWorkloadArtifactExpectedRejectsTicketMismatchWithoutReplacingFile(t *testing.T) {
+	content := []byte("proposal")
+	actualDigest := sha256.Sum256(content)
+	actualSHA := hex.EncodeToString(actualDigest[:])
+	expected := domain.WorkloadArtifactSummary{
+		ID: "artifact_changes", Kind: "agent_changes", SizeBytes: int64(len(content)), SHA256: strings.Repeat("a", 64),
+	}
+	gatewayReached := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/tenants/tenant_changes/workload-runs/run_changes/artifacts/artifact_changes/download-ticket" {
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"ticket": "mismatched-ticket", "expires_at": time.Now().Add(time.Minute),
+				"size_bytes": len(content), "sha256": actualSHA, "kind": "agent_changes"})
+			return
+		}
+		gatewayReached = true
+		t.Errorf("Gateway must not receive request after metadata mismatch: %s %s", r.Method, r.URL.Path)
+		http.Error(w, "unexpected", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	output := filepath.Join(t.TempDir(), "changes.zip")
+	if err := os.WriteFile(output, []byte("keep existing file"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	err := downloadWorkloadArtifactExpected(t.Context(), server.URL, server.URL, "access",
+		"tenant_changes", "run_changes", "artifact_changes", output, server.Client(), &expected)
+	if err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("download error = %v, want ticket metadata mismatch", err)
+	}
+	if gatewayReached {
+		t.Fatal("Gateway was contacted with a ticket that did not match Run metadata")
+	}
+	got, readErr := os.ReadFile(output)
+	if readErr != nil || string(got) != "keep existing file" {
+		t.Fatalf("existing destination = %q, error = %v", got, readErr)
+	}
+}

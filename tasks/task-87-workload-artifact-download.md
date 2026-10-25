@@ -27,12 +27,19 @@ Control Plane.
 - `hako workload artifact download <tenant> <run> <artifact> --out <path>`
   checks the response length and SHA-256, then atomically installs a mode-0600
   local file. A failed transfer leaves an existing destination unchanged.
+- `hako workload changes download <tenant> <run> --out <path>` resolves the
+  unique unredacted `agent_changes` artifact from a successful Agent Run. It
+  verifies Tenant/Run identity and proposal bounds, requires the download
+  ticket metadata to match the Run summary before contacting the Gateway, and
+  labels the result as an untrusted proposal. It never applies the proposal.
 
 ## Verification
 
 - Unit tests cover ticket expiry/tampering, signed Resource Plane grant
   requests, Gateway TLS/ticket binding/streaming, S3 bucket and prefix fences,
-  and CLI integrity/atomic-file behavior.
+  and CLI integrity/atomic-file behavior. Agent proposal CLI tests cover Run
+  selection, private file permissions, and a mismatched ticket that must not
+  contact the Gateway or replace an existing destination.
 - PostgreSQL integration covers authorized ticket issuance, requester/Tenant
   visibility, signed grant resolution, and membership revocation.
 - OpenTofu mock tests verify default-off behavior and exact artifact-prefix IAM.
