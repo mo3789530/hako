@@ -36,7 +36,8 @@ explicit deployment approval.
 `make test-api-lambda-rie-smoke` additionally runs the exact API binary and
 Lambda Web Adapter from that image under AWS's Runtime Interface Emulator. It
 submits representative HTTP API v2 events and checks the returned proxy
-statuses (`/healthz` 200, unauthenticated `/v1/health` 401). It is an actual
+statuses (`/healthz` 200, unauthenticated `/v1/health` 401), JSON bodies,
+content type, request-ID header, and response encoding. It is an actual
 local extension/event-conversion acceptance; RIE does not reproduce Lambda
 orchestration, API Gateway JWT authorization, AWS IAM/network behavior, or a
 deployed candidate. Those remain separate approved AWS checks.

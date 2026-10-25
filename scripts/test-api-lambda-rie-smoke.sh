@@ -74,6 +74,7 @@ fi
 invoke_and_check() {
   local path="$1"
   local expected_status="$2"
+  local expected_body_code="$3"
   local event
   event="$(python3 - "$path" <<'PY'
 import json
@@ -107,19 +108,33 @@ PY
     --output "$response_file" --request POST \
     --header 'content-type: application/json' --data "$event" \
     "http://127.0.0.1:${port}/2015-03-31/functions/function/invocations"
-  python3 - "$response_file" "$path" "$expected_status" <<'PY'
+  python3 - "$response_file" "$path" "$expected_status" "$expected_body_code" <<'PY'
 import json
 import sys
 
-filename, path, expected = sys.argv[1], sys.argv[2], int(sys.argv[3])
+filename, path, expected, expected_body_code = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
 with open(filename, encoding="utf-8") as response_file:
     result = json.load(response_file)
 actual = result.get("statusCode")
 if actual != expected:
     raise SystemExit(f"{path}: expected statusCode {expected}, received {actual}: {result!r}")
-print(f"API Gateway v2 {path}: statusCode={actual}")
+headers = {str(key).lower(): str(value) for key, value in result.get("headers", {}).items()}
+if "application/json" not in headers.get("content-type", "").lower():
+    raise SystemExit(f"{path}: missing JSON Content-Type header: {headers!r}")
+if not headers.get("x-hako-request-id", "").startswith("req_"):
+    raise SystemExit(f"{path}: missing Hako request ID response header: {headers!r}")
+try:
+    body = json.loads(result.get("body", ""))
+except (TypeError, json.JSONDecodeError) as error:
+    raise SystemExit(f"{path}: response body is not JSON: {error}")
+body_code = body.get("status") if expected_body_code == "ok" else body.get("error", {}).get("code")
+if body_code != expected_body_code:
+    raise SystemExit(f"{path}: expected body code {expected_body_code!r}, received {body!r}")
+if result.get("isBase64Encoded", False) is not False:
+    raise SystemExit(f"{path}: unexpected base64 response encoding: {result!r}")
+print(f"API Gateway v2 {path}: statusCode={actual}, JSON body/header verified")
 PY
 }
 
-invoke_and_check /healthz 200
-invoke_and_check /v1/health 401
+invoke_and_check /healthz 200 ok
+invoke_and_check /v1/health 401 unauthorized

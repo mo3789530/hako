@@ -86,7 +86,8 @@ The Lambda Runtime Interface Emulator path is repeatable with
 Lambda Web Adapter used by the production image, then copies them into a
 test-only AWS Lambda provided base image with RIE. The test submits representative
 HTTP API v2 events through RIE and asserts the returned proxy `statusCode` for
-both the public and authenticated health routes. It uses the host network so
+both the public and authenticated health routes, including JSON body, content
+type, Hako request-ID header, and non-base64 response shape. It uses the host network so
 the image can reach local PostgreSQL; the RIE port (8080 by default) must be
 available. RIE validates local runtime/extension and event conversion behavior,
 but does not emulate Lambda orchestration, API Gateway's JWT authorizer, AWS
