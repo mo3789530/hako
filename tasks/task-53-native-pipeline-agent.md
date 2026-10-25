@@ -1,6 +1,6 @@
 # Task 53: Native Pipeline and Issue-to-Agent Workflow
 
-Status: In Progress (versioned manifest selection, fixed-catalog execution, durable per-pipeline results, and independent pipeline Checks through the existing Checks consumer are implemented and locally verified. Issue command authorization requires a verified GitHub identity that is a member of the resolved Tenant, an active Installation binding, exact repository identity, and a pre-existing Factory opt-in. A Tenant-App-only read scope, bounded Issue/default-branch SHA reader, Control Plane-only mTLS broker, and an atomic Issue inbox processor that creates one immutable Agent Run plus a bounded task record are locally composed and PostgreSQL-tested. The Resource Plane Worker now retrieves the bounded task over mTLS and validates current attempt and immutable Run/App/Repository/branch/commit pins. A context digest is bound from launch specification through signed Start/Source tickets and guest `/run`; guest checks it before exposing task text in memory to a process factory. Purpose-scoped `native_agent` model credential metadata/API/CLI, a per-Repository default-off gate, an attempt/provenance-fenced in-process resolver, and an allowlisted Resource Plane mTLS Broker endpoint/client are implemented. The Workload Worker and guest runtime do not yet call the credential endpoint. Scheduling remains disabled (dispatcher/batch are Job-only), and the default guest process factory rejects Agent Runs until an isolated model-backed executor and runtime resource/network enforcement exist. Service container orchestration and live Agent write execution remain; branch/PR policy is implemented as dormant configuration). Priority: P3.
+Status: In Progress (versioned manifest selection, fixed-catalog execution, durable per-pipeline results, and independent pipeline Checks through the existing Checks consumer are implemented and locally verified. Issue command authorization requires a verified GitHub identity that is a member of the resolved Tenant, an active Installation binding, exact repository identity, and a pre-existing Factory opt-in. A Tenant-App-only read scope, bounded Issue/default-branch SHA reader, Control Plane-only mTLS broker, and an atomic Issue inbox processor that creates one immutable Agent Run plus a bounded task record are locally composed and PostgreSQL-tested. The Resource Plane Worker retrieves the bounded task over mTLS and validates current attempt and immutable Run/App/Repository/branch/commit pins. A context digest is bound from launch specification through signed Start/Source tickets and guest `/run`; guest checks it before exposing task text in memory to a process factory. Purpose-scoped `native_agent` model credential metadata/API/CLI, a per-Repository default-off gate, an attempt/provenance-fenced in-process resolver, and an allowlisted Resource Plane mTLS Broker endpoint/client are implemented. The Worker and Guest still do not call the model-credential endpoint. Linux Job command processes now use fail-closed cgroup v2 CPU/memory/PID scopes when launched as the fixed non-root identity; pipeline command budgets reserve fixed Service catalog requests first. Target Lambda MicroVM cgroup delegation/effective limits and egress remain unverified, so Agent scheduling and execution stay disabled pending the isolated model executor, credential handoff, and target network/resource validation. Service container orchestration is local and opt-in; live Agent write execution remains unavailable, and branch/PR policy is dormant configuration. Priority: P3.
 
 Runtime profile follow-up: profiles are now keyed by Workload kind, Runtime Class,
 and trust level. A Job profile cannot be implicitly reused by Agent or Preview;
@@ -373,11 +373,12 @@ target gates pass.
   exceeds the selected Resource Plane Job profile's allocatable ceiling. The
   trusted ceiling is frozen into the launch specification, MicroVM `/run`
   binding, and signed Agent tickets before Guest manifest evaluation.
-- [ ] Enforce each service's catalog memory/CPU limits at container runtime
-  and enforce the aggregate Job budget for commands plus sidecars. The
-  Resource Plane now rejects a declared pipeline budget above the selected
-  profile's allocatable ceiling, but the runtime cgroup limits still need
-  Lambda MicroVM validation.
+- [x] Apply catalog Service limits and enforce aggregate declared Job
+  CPU/memory for commands plus sidecars: the fixed services use their catalog
+  cgroups, and Linux non-root command processes receive the pipeline budget
+  remaining after those reservations. The selected profile ceiling is checked
+  before scheduling. Target Lambda MicroVM cgroup delegation/effective-limit
+  validation remains an operational gate.
 - [ ] Bind service ports only to the MicroVM loopback interface. Permit only
   the registry traffic needed to obtain pinned catalog images; do not provide
   arbitrary Internet or AWS access to the Job or its service containers. Host
@@ -398,13 +399,35 @@ target gates pass.
   the Lambda MicroVM. Keep Agent scheduling disabled until its separate
   executor, credential policy, and network/resource gates pass.
 
-The checked items above are locally implemented and tested. Podman now
-confirms effective cgroup v2 memory/CPU/PID values as well as container
-metadata. They do not establish the pinned ARM64 nerdctl behavior or Lambda
-MicroVM enforcement. The remaining unchecked items include aggregate command
-plus sidecar cgroup limits, verified container egress denial, and cleanup
-confirmation in the target runtime; Service and Agent production admission
-must remain disabled until those gates pass.
+The checked items above have local implementations and tests. Podman confirms
+effective cgroup v2 memory/CPU/PID values for Service containers, while Linux
+command processes receive an attempt-scoped cgroup with the remaining pipeline
+budget. The current host does not permit creating a cgroup under
+`/sys/fs/cgroup`, so tests cover budget calculation and fail-closed behavior,
+not effective command-process kernel limits. Target ARM64 nerdctl, Lambda
+MicroVM delegation/enforcement, container egress, and cleanup confirmation
+remain unverified; Service and Agent production admission must remain disabled
+until those gates pass.
+
+## Linux Job command cgroup limits (2026-10-25)
+
+- Added `LinuxJobCgroupManager` under the Workload Agent. For the fixed
+  non-root Job command identity it requires a cgroup v2 root with `cpu`,
+  `memory`, and `pids` enabled, creates a unique attempt/process scope, applies
+  `memory.max`, `cpu.max`, and `pids.max`, and starts the process atomically
+  inside that cgroup with `SysProcAttr.UseCgroupFD`. Cancellation/finish kills
+  remaining descendants and removes the cgroup before returning terminal
+  completion. Missing controllers, writes, or cleanup fail closed.
+- Pipeline process limits subtract the immutable catalog CPU/memory requests
+  for declared Service containers. Service containers keep their own fixed
+  catalog limits, making the requested CPU and memory caps sum to the pipeline
+  budget. This is local Linux implementation evidence, not proof that the
+  Lambda MicroVM exposes a writable/delegated cgroup v2 hierarchy.
+- The `hako-agent` image composition uses `HAKO_JOB_CGROUP_ROOT` or
+  `/sys/fs/cgroup`; no cgroup is created during startup. The host used for
+  these tests has a read-only cgroup mount for this user, so effective kernel
+  enforcement remains a target-MicroVM gate. Agent scheduling stays disabled.
+- `go test -p=1 ./internal/workloadagent ./cmd/hako-agent ./internal/workloadcontroller -count=1` passes. Tests cover catalog-budget subtraction, invalid budgets, cgroup event parsing, and rejection when a usable cgroup v2 hierarchy is absent.
 
 ## Process identity isolation (2026-10-24)
 

@@ -485,7 +485,17 @@ support; `GoTestProcessFactory` declares support only when an attempt-scoped
 provisioner is configured. The default resolver and default workload image
 continue to reject/disable services. This local composition does not establish
 Lambda MicroVM cgroup enforcement, target-image availability, or egress policy.
-The Job command process budget is not yet enforced as an aggregate cgroup limit.
+For a non-root Job command, the trusted Agent now requires a Resource Plane
+configured cgroup v2 root with `cpu`, `memory`, and `pids` controllers enabled.
+It creates a fresh cgroup, starts the command atomically inside it, applies
+`memory.max`, `cpu.max`, and `pids.max`, and kills/removes the cgroup before
+reporting terminal completion. Pipeline command limits are the declared
+pipeline budget minus the fixed catalog sidecar reservations; each sidecar has
+its own catalog limit, so the configured CPU and memory ceilings add up to the
+pipeline budget. Missing controllers, failed writes, or incomplete cleanup
+fail the command closed. The current host does not allow creating cgroups under
+`/sys/fs/cgroup`, and Lambda MicroVM cgroup delegation/effective limits remain
+unverified.
 
 `make test-job-services-podman` runs the production service engine against a
 local rootless Podman daemon through a test-only CLI adapter. It requires a
@@ -519,10 +529,12 @@ no pipeline fails the Run instead of silently falling back.
 The current Agent runtime supports only `standard` with `registry-only`
 network policy. Unless the opt-in Job Service manager is composed, it rejects
 manifests declaring service containers. `network: none` and other runtime
-classes are rejected. Memory and CPU values are parsed and bounded,
-but are not yet enforced against the selected MicroVM profile. Tool
-executables must exist in the selected immutable MicroVM image; missing tools
-fail the Run.
+classes are rejected. Memory and CPU values are bounded by the Resource Plane
+profile and applied to the fixed non-root command through its cgroup v2 scope.
+If the trusted cgroup root/controllers cannot be used or cleaned, execution
+fails closed. This local implementation does not prove that the selected
+Lambda MicroVM image exposes working cgroup delegation. Tool executables must
+exist in the selected immutable MicroVM image; missing tools fail the Run.
 
 Webhook-created Runs persist the normalized trigger kind and selection branch
 alongside the immutable commit: push events store the branch after

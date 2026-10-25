@@ -32,7 +32,7 @@ func TestCatalogCommandRunsAsDedicatedIdentity(t *testing.T) {
 	}
 	output := &strings.Builder{}
 	err := runCatalogCommand(context.Background(), t.TempDir(), "/usr/bin/id", []string{"-u"},
-		[]string{"PATH=/usr/bin:/bin"}, output, 65532, 65532)
+		[]string{"PATH=/usr/bin:/bin"}, output, 65532, 65532, nil)
 	if err != nil || strings.TrimSpace(output.String()) != "65532" {
 		t.Fatalf("catalog command identity output = %q, err=%v", output.String(), err)
 	}
@@ -41,7 +41,7 @@ func TestCatalogCommandRunsAsDedicatedIdentity(t *testing.T) {
 func TestCatalogCommandRejectsInvalidIdentityBeforeStart(t *testing.T) {
 	output := io.Discard
 	err := runCatalogCommand(context.Background(), t.TempDir(), "/should/not/run", nil,
-		[]string{"PATH=/usr/bin:/bin"}, output, 65532, 0)
+		[]string{"PATH=/usr/bin:/bin"}, output, 65532, 0, nil)
 	if err == nil || err != ErrExecutionPlan {
 		t.Fatalf("invalid identity error = %v, want ErrExecutionPlan", err)
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/factoryconfig"
 	"github.com/mo3789530/hako/internal/runtime/fake"
+	"github.com/mo3789530/hako/internal/servicecatalog"
 	"github.com/mo3789530/hako/internal/workloadjobs"
 	"github.com/mo3789530/hako/internal/workloadjournal"
 	"github.com/mo3789530/hako/internal/workloadsource"
@@ -24,10 +25,11 @@ import (
 const defaultAgentOutputLimit = 1 << 20
 
 var (
-	ErrExecutionPlan            = errors.New("trusted Workload execution plan is invalid")
-	ErrFactoryManifest          = errors.New("Hako factory manifest is invalid for this Run")
-	ErrAgentExecutorUnavailable = errors.New("native Agent executor is not configured")
-	ErrProcessExit              = errors.New("Workload process exited unsuccessfully")
+	ErrExecutionPlan                = errors.New("trusted Workload execution plan is invalid")
+	ErrFactoryManifest              = errors.New("Hako factory manifest is invalid for this Run")
+	ErrAgentExecutorUnavailable     = errors.New("native Agent executor is not configured")
+	ErrProcessExit                  = errors.New("Workload process exited unsuccessfully")
+	ErrJobResourceLimitsUnavailable = errors.New("Job process resource limits are unavailable")
 )
 
 type ExecutionPlan struct {
@@ -66,6 +68,18 @@ type ProcessFactory interface {
 
 type AttemptLogWriter interface {
 	PutAttemptLogs(context.Context, workloadjournal.Command, []byte, string) (workloadjobs.WorkloadLogArtifact, error)
+}
+
+// JobProcessResourceScope places child commands in an attempt-scoped kernel
+// resource group. Production Linux execution requires this for untrusted
+// repository commands with a non-root command identity.
+type JobProcessResourceScope interface {
+	FileDescriptor() int
+	Close(context.Context) error
+}
+
+type JobProcessResourceLimiter interface {
+	Open(context.Context, int, int) (JobProcessResourceScope, error)
 }
 
 type ProcessConfig struct {
@@ -421,12 +435,13 @@ func (w *boundedOutput) snapshot() ([]byte, bool) {
 // Lambda MicroVM is the isolation boundary; this process receives a minimal
 // environment and is killed as a process group on cancellation/deadline.
 type GoTestProcessFactory struct {
-	GoBinary     string
-	GitBinary    string
-	GoCache      string
-	ModuleCache  string
-	JobServices  JobServiceProvisioner
-	EgressPolicy JobEgressPolicy
+	GoBinary       string
+	GitBinary      string
+	GoCache        string
+	ModuleCache    string
+	JobServices    JobServiceProvisioner
+	EgressPolicy   JobEgressPolicy
+	ResourceLimits JobProcessResourceLimiter
 	// CommandUID/GID drop repository-controlled commands below the trusted
 	// Agent process. Both must be set together; zero/zero preserves the caller
 	// identity for local development and tests.
@@ -498,6 +513,17 @@ func (f GoTestProcessFactory) Start(ctx context.Context, plan ExecutionPlan, out
 	cmd := exec.CommandContext(ctx, goBinary, "test", "./...")
 	cmd.Dir, cmd.Env, cmd.Stdout, cmd.Stderr = repository, env, output, output
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Credential: credential}
+	var resourceScope JobProcessResourceScope
+	if f.CommandUID != 0 || f.CommandGID != 0 {
+		resourceScope, err = f.openResourceScope(ctx, plan.JobMemoryLimitMB, plan.JobCPULimitMillis)
+		if err != nil {
+			return nil, ErrExecutionPlan
+		}
+		if err := attachJobProcessScope(cmd.SysProcAttr, resourceScope); err != nil {
+			closeJobResourceScope(resourceScope)
+			return nil, ErrExecutionPlan
+		}
+	}
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
 			return os.ErrProcessDone
@@ -509,9 +535,12 @@ func (f GoTestProcessFactory) Start(ctx context.Context, plan ExecutionPlan, out
 	}
 	cmd.WaitDelay = 2 * time.Second
 	if err := cmd.Start(); err != nil {
+		if resourceScope != nil {
+			closeJobResourceScope(resourceScope)
+		}
 		return nil, ErrAgentBusy
 	}
-	return &execManagedProcess{cmd: cmd}, nil
+	return &execManagedProcess{cmd: cmd, scope: resourceScope}, nil
 }
 
 func (f GoTestProcessFactory) startFactoryPipelines(ctx context.Context, plan ExecutionPlan, output io.Writer) (ManagedProcess, error) {
@@ -537,9 +566,20 @@ func (f GoTestProcessFactory) startFactoryPipelines(ctx context.Context, plan Ex
 			pipelineCtx, cancel := context.WithTimeout(ctx, time.Duration(pipeline.TimeoutSecond)*time.Second)
 			_, _ = fmt.Fprintf(output, "[Hako] pipeline %s\n", pipeline.Pipeline)
 			pipelineResult := workloadjobs.WorkloadPipelineResult{Name: pipeline.Pipeline, Status: "succeeded"}
+			var resourceScope JobProcessResourceScope
+			if f.CommandUID != 0 || f.CommandGID != 0 {
+				memoryMB, cpuMillis, budgetErr := pipelineProcessBudget(pipeline)
+				if budgetErr == nil {
+					resourceScope, budgetErr = f.openResourceScope(pipelineCtx, memoryMB, cpuMillis)
+				}
+				if budgetErr != nil {
+					result = processExit{code: 1, err: ErrJobResourceLimitsUnavailable}
+					pipelineResult = workloadjobs.WorkloadPipelineResult{Name: pipeline.Pipeline, Status: "failed", ExitCode: 1, ErrorCode: "resource_limits_unavailable"}
+				}
+			}
 			var serviceSession JobServiceSession
 			serviceEnvironment := []string(nil)
-			if len(pipeline.Services) != 0 {
+			if result.err == nil && len(pipeline.Services) != 0 {
 				var err error
 				serviceSession, err = f.JobServices.Start(pipelineCtx, plan.Identity, pipeline)
 				if err != nil {
@@ -604,7 +644,7 @@ func (f GoTestProcessFactory) startFactoryPipelines(ctx context.Context, plan Ex
 					}
 					break
 				}
-				if err := runCatalogCommand(pipelineCtx, plan.RepositoryPath, executable, command.Args, env, output, f.CommandUID, f.CommandGID); err != nil {
+				if err := runCatalogCommand(pipelineCtx, plan.RepositoryPath, executable, command.Args, env, output, f.CommandUID, f.CommandGID, resourceScope); err != nil {
 					if termination, pipelineOutcome, terminated := pipelineContextExit(pipeline.Pipeline, pipelineCtx.Err()); terminated {
 						result, pipelineResult = termination, pipelineOutcome
 					} else if termination, pipelineOutcome, terminated := pipelineContextExit(pipeline.Pipeline, ctx.Err()); terminated {
@@ -634,6 +674,16 @@ func (f GoTestProcessFactory) startFactoryPipelines(ctx context.Context, plan Ex
 				if cleanupErr != nil {
 					result = processExit{code: 1, err: ErrJobServiceCleanup}
 					pipelineResult = workloadjobs.WorkloadPipelineResult{Name: pipeline.Pipeline, Status: "failed", ExitCode: 1, ErrorCode: "service_cleanup_incomplete"}
+				}
+			}
+			if resourceScope != nil {
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				cleanupErr := resourceScope.Close(cleanupCtx)
+				cleanupCancel()
+				resourceScope = nil
+				if cleanupErr != nil {
+					result = processExit{code: 1, err: ErrJobResourceLimitsUnavailable}
+					pipelineResult = workloadjobs.WorkloadPipelineResult{Name: pipeline.Pipeline, Status: "failed", ExitCode: 1, ErrorCode: "resource_limits_cleanup_failed"}
 				}
 			}
 			if result.err == nil && ctx.Err() != nil {
@@ -719,7 +769,8 @@ func (p *factoryPipelineProcess) Wait() (int, error) {
 	return result.code, result.err
 }
 
-func runCatalogCommand(ctx context.Context, directory, executable string, args, env []string, output io.Writer, uid, gid uint32) error {
+func runCatalogCommand(ctx context.Context, directory, executable string, args, env []string, output io.Writer, uid, gid uint32,
+	resourceScope JobProcessResourceScope) error {
 	credential, err := commandCredential(uid, gid)
 	if err != nil {
 		return ErrExecutionPlan
@@ -727,6 +778,11 @@ func runCatalogCommand(ctx context.Context, directory, executable string, args, 
 	cmd := exec.CommandContext(ctx, executable, args...)
 	cmd.Dir, cmd.Env, cmd.Stdout, cmd.Stderr = directory, env, output, output
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Credential: credential}
+	if resourceScope != nil {
+		if err := attachJobProcessScope(cmd.SysProcAttr, resourceScope); err != nil {
+			return ErrJobResourceLimitsUnavailable
+		}
+	}
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
 			return os.ErrProcessDone
@@ -741,6 +797,59 @@ func runCatalogCommand(ctx context.Context, directory, executable string, args, 
 		return ErrAgentBusy
 	}
 	return cmd.Wait()
+}
+
+func attachJobProcessScope(attributes *syscall.SysProcAttr, scope JobProcessResourceScope) error {
+	if attributes == nil || scope == nil || scope.FileDescriptor() < 0 {
+		return ErrJobResourceLimitsUnavailable
+	}
+	attributes.UseCgroupFD = true
+	attributes.CgroupFD = scope.FileDescriptor()
+	return nil
+}
+
+func (f GoTestProcessFactory) openResourceScope(ctx context.Context, memoryMB, cpuMillis int) (JobProcessResourceScope, error) {
+	if f.ResourceLimits == nil || memoryMB < 1 || cpuMillis < 1 {
+		return nil, ErrJobResourceLimitsUnavailable
+	}
+	scope, err := f.ResourceLimits.Open(ctx, memoryMB, cpuMillis)
+	if err != nil || scope == nil || scope.FileDescriptor() < 0 {
+		if scope != nil {
+			closeJobResourceScope(scope)
+		}
+		return nil, ErrJobResourceLimitsUnavailable
+	}
+	return scope, nil
+}
+
+func closeJobResourceScope(scope JobProcessResourceScope) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = scope.Close(ctx)
+}
+
+func pipelineProcessBudget(pipeline factoryconfig.ExecutionPlan) (int, int, error) {
+	if pipeline.MemoryMB < 1 || pipeline.CPUMillis < 1 {
+		return 0, 0, ErrExecutionPlan
+	}
+	var serviceMemoryBytes int64
+	var serviceCPUMillis int64
+	for _, name := range pipeline.Services {
+		template, err := servicecatalog.Resolve(name)
+		if err != nil {
+			return 0, 0, ErrExecutionPlan
+		}
+		serviceMemoryBytes += template.Resources.MemoryBytes
+		serviceCPUMillis += int64(template.Resources.MilliCPU)
+	}
+	const bytesPerMiB = int64(1 << 20)
+	serviceMemoryMB := (serviceMemoryBytes + bytesPerMiB - 1) / bytesPerMiB
+	processMemoryMB := int64(pipeline.MemoryMB) - serviceMemoryMB
+	processCPUMillis := int64(pipeline.CPUMillis) - serviceCPUMillis
+	if processMemoryMB < 1 || processCPUMillis < 1 {
+		return 0, 0, ErrExecutionPlan
+	}
+	return int(processMemoryMB), int(processCPUMillis), nil
 }
 
 func commandCredential(uid, gid uint32) (*syscall.Credential, error) {
@@ -761,10 +870,22 @@ func catalogExitCode(err error) int {
 	return 1
 }
 
-type execManagedProcess struct{ cmd *exec.Cmd }
+type execManagedProcess struct {
+	cmd   *exec.Cmd
+	scope JobProcessResourceScope
+}
 
 func (p *execManagedProcess) Wait() (int, error) {
 	err := p.cmd.Wait()
+	if p.scope != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		closeErr := p.scope.Close(ctx)
+		cancel()
+		if closeErr != nil {
+			return 1, ErrJobResourceLimitsUnavailable
+		}
+		p.scope = nil
+	}
 	if err == nil {
 		return 0, nil
 	}

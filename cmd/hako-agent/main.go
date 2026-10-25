@@ -51,6 +51,10 @@ func run() error {
 	if err != nil {
 		return errors.New("configure Job Service runtime")
 	}
+	jobCgroupRoot := strings.TrimSpace(os.Getenv("HAKO_JOB_CGROUP_ROOT"))
+	if jobCgroupRoot == "" {
+		jobCgroupRoot = "/sys/fs/cgroup"
+	}
 	if jobContainerd != nil {
 		defer func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -66,13 +70,14 @@ func run() error {
 		RequireRuntimeBinding: true,
 		AllowJobServices:      jobServices != nil,
 		ProcessFactory: workloadagent.GoTestProcessFactory{
-			GoBinary:     "/usr/local/go/bin/go",
-			GoCache:      "/tmp/hako-go-cache",
-			ModuleCache:  strings.TrimSpace(os.Getenv("HAKO_GO_MODULE_CACHE")),
-			JobServices:  jobServices,
-			EgressPolicy: workloadagent.LinuxJobEgressPolicy{},
-			CommandUID:   65532,
-			CommandGID:   65532,
+			GoBinary:       "/usr/local/go/bin/go",
+			GoCache:        "/tmp/hako-go-cache",
+			ModuleCache:    strings.TrimSpace(os.Getenv("HAKO_GO_MODULE_CACHE")),
+			JobServices:    jobServices,
+			EgressPolicy:   workloadagent.LinuxJobEgressPolicy{},
+			ResourceLimits: workloadagent.LinuxJobCgroupManager{Root: jobCgroupRoot},
+			CommandUID:     65532,
+			CommandGID:     65532,
 		},
 	})
 	if err != nil {
