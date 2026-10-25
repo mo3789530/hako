@@ -16,6 +16,14 @@ confirmed positive egress on the ordinary bridge and blocked egress on an
 internal bridge. These are local/fake/host-Podman acceptances, not proof of
 ARM64 nerdctl or Lambda MicroVM behavior. PostgreSQL remained running.
 
+Coverage follow-up (2026-10-25): `make test-coverage` passed with Podman
+required and reported 70.8% repository-wide statement coverage. The separate
+API package run reported 75.6%; new tests pin six invalid-request JSON error
+envelopes (workspace, Workload, GitHub Installation, artifact access, Service
+action, and quota). The CLI package reported 66.7% in its integration-tagged
+package run. Coverage identifies untested code but does not itself establish
+behavior outside these local tests.
+
 Task 52 workflow policy read API was added on 2026-10-25. Tenant members can
 inspect the active repository allowlist through the authenticated API/CLI;
 configuration remains Owner/Admin-only. API/CLI and PostgreSQL integration
