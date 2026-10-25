@@ -297,6 +297,17 @@ Production deployment requires a trusted protected ref and configured human
 approval. Never infer trust merely from a workflow label, issue comment, branch
 name, or self-reported YAML setting.
 
+Native Agent model credentials are resolved by the Resource Plane Worker
+through the allowlisted mTLS Broker only after the active Run and immutable
+Issue context have been validated. The Worker sends the key only in the
+no-store HTTPS Start request authenticated for that MicroVM and signed Agent
+attempt. The Guest passes the byte buffer only to a process factory that
+explicitly declares model-credential support, clears transient buffers, and
+redacts the key from bounded output. The default Go-test factory does not have
+this capability; no production Native Agent executor is configured and Agent
+execution remains disabled. Local tests use synthetic keys and do not read
+AWS Secrets Manager.
+
 Treat `.hako/factory.yaml`, workflow files, action references, shell steps,
 container images, cache contents, and webhook payloads as untrusted inputs.
 The Native pipeline schema needs a version, strict parser, allowlisted step

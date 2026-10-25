@@ -17,16 +17,17 @@ var ErrLambdaComposition = errors.New("Lambda MicroVM Workload composition is in
 // repository checkout, and S3 stores are injected so composition can be tested
 // locally without loading real credentials or contacting AWS.
 type LambdaWorkloadHandlerConfig struct {
-	ResourcePlaneID string
-	Journal         workloadjournal.Store
-	LambdaAPI       LambdaAPI
-	Resolver        Resolver
-	SourceArchives  workloadsource.SourceArchiveReader
-	AttemptLogs     workloadagent.AttemptLogWriter
-	AgentTransport  http.RoundTripper
-	AgentTasks      AgentTaskProvider
-	Runtime         LambdaConfig
-	Now             func() time.Time
+	ResourcePlaneID       string
+	Journal               workloadjournal.Store
+	LambdaAPI             LambdaAPI
+	Resolver              Resolver
+	SourceArchives        workloadsource.SourceArchiveReader
+	AttemptLogs           workloadagent.AttemptLogWriter
+	AgentTransport        http.RoundTripper
+	AgentTasks            AgentTaskProvider
+	AgentModelCredentials AgentModelCredentialProvider
+	Runtime               LambdaConfig
+	Now                   func() time.Time
 }
 
 type LambdaWorkloadRecoveryHandlerConfig struct {
@@ -68,7 +69,8 @@ func NewLambdaWorkloadController(config LambdaWorkloadHandlerConfig) (*Controlle
 	if err != nil {
 		return nil, ErrLambdaComposition
 	}
-	agent := NewHTTPAgentRunner(workloadagent.NewClient(config.AgentTransport), config.SourceArchives, config.AttemptLogs, config.AgentTasks)
+	agent := NewHTTPAgentRunnerWithModelCredentials(workloadagent.NewClient(config.AgentTransport), config.SourceArchives,
+		config.AttemptLogs, config.AgentTasks, config.AgentModelCredentials)
 	runtime, err := NewLambdaMicroVM(config.LambdaAPI, config.Journal, config.Resolver, agent, config.Runtime, now)
 	if err != nil {
 		return nil, ErrLambdaComposition

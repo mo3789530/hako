@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -70,7 +71,7 @@ func (b *memoryAgentBackend) Start(_ context.Context, claims TicketClaims, req S
 		return b.err
 	}
 	if b.starts > 0 {
-		if claims.Identity.Command() != b.identity || claims.MicroVMID != b.vmID || req != b.start {
+		if claims.Identity.Command() != b.identity || claims.MicroVMID != b.vmID || !reflect.DeepEqual(req, b.start) {
 			return ErrAttemptConflict
 		}
 		return nil

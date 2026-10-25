@@ -135,6 +135,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) start(w http.ResponseWriter, r *http.Request, claims TicketClaims) {
+	w.Header().Set("Cache-Control", "no-store")
 	if r.Header.Get("X-Hako-Idempotency-Token") != claims.Identity.IdempotencyToken {
 		http.Error(w, "invalid Hako Agent request", http.StatusBadRequest)
 		return
@@ -150,10 +151,13 @@ func (s *Server) start(w http.ResponseWriter, r *http.Request, claims TicketClai
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxProtocolBody+1))
 	if err != nil || len(body) > maxProtocolBody {
+		clear(body)
 		http.Error(w, "invalid Hako Agent request", http.StatusRequestEntityTooLarge)
 		return
 	}
+	defer clear(body)
 	var input StartRequest
+	defer func() { clear(input.AgentModelCredential) }()
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&input) != nil || decoder.Decode(new(any)) != io.EOF || validateStart(input) != nil || input.Identity.Command() != claims.Identity.Command() {

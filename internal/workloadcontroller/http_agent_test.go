@@ -31,6 +31,19 @@ type fixedAgentTaskProvider struct {
 	id    workloadjournal.Command
 }
 
+type fixedAgentModelCredentialProvider struct {
+	credential []byte
+	err        error
+	calls      int
+	id         workloadjournal.Command
+}
+
+func (p *fixedAgentModelCredentialProvider) ResolveAgentModelCredential(_ context.Context, id workloadjournal.Command) ([]byte, error) {
+	p.calls++
+	p.id = id
+	return p.credential, p.err
+}
+
 func (p *fixedAgentTaskProvider) ResolveAgentTask(_ context.Context, id workloadjournal.Command) (workloadagent.AgentTask, error) {
 	p.calls++
 	p.id = id
@@ -102,6 +115,8 @@ func TestHTTPAgentRunnerResolvesAndTransfersBoundIssueTask(t *testing.T) {
 	provider := &fixedAgentTaskProvider{task: task}
 	archiveBytes := []byte("verified Agent source archive")
 	var sourceUploaded, taskStarted bool
+	modelCredential := []byte("sk-ant-test-secret")
+	modelProvider := &fixedAgentModelCredentialProvider{credential: modelCredential}
 	transport := agentRoundTrip(func(req *http.Request) (*http.Response, error) {
 		switch {
 		case strings.HasSuffix(req.URL.Path, "/source"):
@@ -116,7 +131,7 @@ func TestHTTPAgentRunnerResolvesAndTransfersBoundIssueTask(t *testing.T) {
 			if err := json.NewDecoder(req.Body).Decode(&start); err != nil {
 				t.Fatal(err)
 			}
-			if start.Kind != domain.WorkloadAgent || start.AgentTask == nil || *start.AgentTask != task {
+			if start.Kind != domain.WorkloadAgent || start.AgentTask == nil || *start.AgentTask != task || !bytes.Equal(start.AgentModelCredential, []byte("sk-ant-test-secret")) {
 				t.Fatalf("Agent task context was not transferred intact: %+v", start)
 			}
 			taskStarted = true
@@ -128,15 +143,16 @@ func TestHTTPAgentRunnerResolvesAndTransfersBoundIssueTask(t *testing.T) {
 		}
 	})
 	reader := &fixedSourceArchiveReader{archive: workloadsource.SourceArchive{Body: io.NopCloser(bytes.NewReader(archiveBytes)), Size: int64(len(archiveBytes))}}
-	runner := NewHTTPAgentRunner(workloadagent.NewClient(transport), reader, nil, provider)
+	runner := NewHTTPAgentRunnerWithModelCredentials(workloadagent.NewClient(transport), reader, nil, provider, modelProvider)
 	err := runner.Start(context.Background(), AgentConnection{MicroVMID: "vm_1", Endpoint: "https://microvm_1.lambda-microvm.ap-northeast-1.on.aws",
 		AuthToken: "one-use-token", AgentTicket: "agent-ticket", SourceTicket: "source-ticket"}, Specification{Identity: id,
 		Kind: domain.WorkloadAgent, GitHubIntegrationID: task.IntegrationID, GitHubInstallationID: task.InstallationID, GitHubRepositoryID: task.RepositoryID,
 		AgentTaskContextSHA256: task.ContextSHA256,
 		SourceDigest:           strings.Repeat("a", 64), CommitSHA: task.CommitSHA, TriggerEvent: "issue_comment", TriggerBranch: task.DefaultBranch,
 		Deadline: time.Now().UTC().Add(time.Hour), ArtifactPrefix: "s3://bucket/artifacts/tenant_1/run_1/attempt_1/"})
-	if err != nil || !sourceUploaded || !taskStarted || provider.calls != 1 || provider.id != id {
-		t.Fatalf("Agent task dispatch err=%v source=%t started=%t provider calls=%d identity=%+v", err, sourceUploaded, taskStarted, provider.calls, provider.id)
+	if err != nil || !sourceUploaded || !taskStarted || provider.calls != 1 || provider.id != id ||
+		modelProvider.calls != 1 || modelProvider.id != id || !bytes.Equal(modelCredential, make([]byte, len(modelCredential))) {
+		t.Fatalf("Agent task dispatch err=%v source=%t started=%t task calls=%d model calls=%d identity=%+v", err, sourceUploaded, taskStarted, provider.calls, modelProvider.calls, modelProvider.id)
 	}
 }
 

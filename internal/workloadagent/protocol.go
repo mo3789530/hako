@@ -39,12 +39,27 @@ func (i Identity) Command() workloadjournal.Command {
 }
 
 type StartRequest struct {
-	Identity     Identity            `json:"identity"`
-	Kind         domain.WorkloadKind `json:"kind,omitempty"`
-	AgentTask    *AgentTask          `json:"agent_task,omitempty"`
-	SourceDigest string              `json:"source_digest"`
-	CommitSHA    string              `json:"commit_sha"`
-	Deadline     time.Time           `json:"deadline"`
+	Identity             Identity            `json:"identity"`
+	Kind                 domain.WorkloadKind `json:"kind,omitempty"`
+	AgentTask            *AgentTask          `json:"agent_task,omitempty"`
+	AgentModelCredential []byte              `json:"agent_model_credential,omitempty"`
+	SourceDigest         string              `json:"source_digest"`
+	CommitSHA            string              `json:"commit_sha"`
+	Deadline             time.Time           `json:"deadline"`
+}
+
+func (StartRequest) String() string   { return "[REDACTED Workload Agent start request]" }
+func (StartRequest) GoString() string { return "[REDACTED Workload Agent start request]" }
+
+const maxAgentModelCredentialBytes = 8 << 10
+
+func bytesContainNUL(value []byte) bool {
+	for _, b := range value {
+		if b == 0 || b == '\r' || b == '\n' {
+			return true
+		}
+	}
+	return false
 }
 
 // AgentTask contains untrusted Issue text for an explicitly admitted Agent

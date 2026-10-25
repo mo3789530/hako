@@ -1,6 +1,7 @@
 package workloadagent
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -81,6 +82,20 @@ type fakeProcessFactory struct {
 	plan    ExecutionPlan
 	output  []byte
 	err     error
+}
+
+type nativeAgentCredentialFactory struct {
+	process *fakeManagedProcess
+	got     []byte
+}
+
+func (f *nativeAgentCredentialFactory) SupportsNativeAgentCredential() bool { return true }
+
+func (f *nativeAgentCredentialFactory) Start(ctx context.Context, plan ExecutionPlan, output io.Writer) (ManagedProcess, error) {
+	f.got = append([]byte(nil), plan.AgentModelCredential...)
+	_, _ = output.Write(plan.AgentModelCredential)
+	f.process = &fakeManagedProcess{ctx: ctx, done: make(chan struct{})}
+	return f.process, nil
 }
 
 func (f *fakeProcessFactory) Start(ctx context.Context, plan ExecutionPlan, output io.Writer) (ManagedProcess, error) {
@@ -227,6 +242,82 @@ func TestProcessBackendKeepsAgentTaskInMemoryAndFailsClosedOnTaskDrift(t *testin
 	logs, logsErr := backend.Logs(context.Background(), TicketClaims{MicroVMID: "microvm_1", Identity: IdentityFromCommand(id), Operation: OperationLogs})
 	if err != nil || logsErr != nil || result.Status != domain.WorkloadSucceeded || strings.Contains(string(logs), body) {
 		t.Fatalf("Agent result/logs exposed task text or failed: %+v logs=%q err=%v logsErr=%v", result, logs, err, logsErr)
+	}
+}
+
+func TestProcessBackendDeliversModelCredentialOnlyToCapableFactoryAndRedactsOutput(t *testing.T) {
+	now := time.Now().UTC()
+	id := testIdentity()
+	task := AgentTask{TenantID: id.TenantID, WorkloadRunID: id.WorkloadRunID, IntegrationID: "integration_cred", DeliveryID: "delivery_12345678",
+		InstallationID: 71, RepositoryID: 81, IssueNumber: 3, CommentID: 4, DefaultBranch: "main", CommitSHA: strings.Repeat("b", 40),
+		Title: "Add feature", Body: "Implement the requested feature"}
+	task.ContextSHA256 = AgentTaskContextSHA256(task)
+	plan := ExecutionPlan{Identity: id, Kind: domain.WorkloadAgent, RepositoryPath: "/workspace/source", SourceDigest: strings.Repeat("a", 64),
+		CommitSHA: task.CommitSHA, TriggerEvent: "issue_comment", TriggerBranch: task.DefaultBranch,
+		AgentIntegrationID: task.IntegrationID, AgentInstallationID: task.InstallationID, AgentRepositoryID: task.RepositoryID,
+		AgentTaskContextSHA256: task.ContextSHA256, Deadline: now.Add(time.Hour)}
+	credential := []byte("sk-ant-secret-for-one-agent-attempt")
+	factory := &nativeAgentCredentialFactory{}
+	defer clear(factory.got)
+	backend, err := NewProcessBackend(ProcessConfig{Resolver: fixedExecutionResolver{plan: plan}, Factory: factory, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close(context.Background())
+	claims := planTicketClaims("microvm_1", id, OperationStart, plan)
+	request := StartRequest{Identity: IdentityFromCommand(id), Kind: domain.WorkloadAgent, AgentTask: &task,
+		AgentModelCredential: credential, SourceDigest: plan.SourceDigest, CommitSHA: plan.CommitSHA, Deadline: plan.Deadline}
+	if err := backend.Start(context.Background(), claims, request); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(factory.got, []byte("sk-ant-secret-for-one-agent-attempt")) || !bytes.Equal(credential, make([]byte, len(credential))) {
+		t.Fatal("model credential was not delivered to the capable factory and cleared from the request")
+	}
+	if !bytes.Equal(factory.got, []byte("sk-ant-secret-for-one-agent-attempt")) {
+		t.Fatal("factory copy unexpectedly changed before execution completed")
+	}
+	factory.process.finish(0, nil)
+	waitForAgentTerminal(t, backend, id)
+	logs, err := backend.Logs(context.Background(), TicketClaims{MicroVMID: "microvm_1", Identity: IdentityFromCommand(id), Operation: OperationLogs})
+	if err != nil || bytes.Contains(logs, []byte("sk-ant-secret-for-one-agent-attempt")) || !bytes.Contains(logs, []byte("[REDACTED]")) {
+		t.Fatalf("Agent model credential was not redacted from logs: logs=%q err=%v", logs, err)
+	}
+	backend.mu.Lock()
+	retained := backend.attempt != nil && len(backend.attempt.modelCredential) != 0
+	backend.mu.Unlock()
+	if retained {
+		t.Fatal("terminal Agent attempt retained its model credential")
+	}
+}
+
+func TestProcessBackendRejectsModelCredentialForGenericFactory(t *testing.T) {
+	now := time.Now().UTC()
+	id := testIdentity()
+	task := AgentTask{TenantID: id.TenantID, WorkloadRunID: id.WorkloadRunID, IntegrationID: "integration_cred", DeliveryID: "delivery_12345678",
+		InstallationID: 71, RepositoryID: 81, IssueNumber: 3, CommentID: 4, DefaultBranch: "main", CommitSHA: strings.Repeat("b", 40),
+		Title: "Add feature", Body: "Implement the requested feature"}
+	task.ContextSHA256 = AgentTaskContextSHA256(task)
+	plan := ExecutionPlan{Identity: id, Kind: domain.WorkloadAgent, SourceDigest: strings.Repeat("a", 64), CommitSHA: task.CommitSHA,
+		TriggerEvent: "issue_comment", TriggerBranch: task.DefaultBranch, AgentIntegrationID: task.IntegrationID,
+		AgentInstallationID: task.InstallationID, AgentRepositoryID: task.RepositoryID,
+		AgentTaskContextSHA256: task.ContextSHA256, Deadline: now.Add(time.Hour)}
+	factory := &fakeProcessFactory{}
+	backend, err := NewProcessBackend(ProcessConfig{Resolver: fixedExecutionResolver{plan: plan}, Factory: factory, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close(context.Background())
+	credential := []byte("sk-ant-must-not-reach-generic-factory")
+	claims := planTicketClaims("microvm_1", id, OperationStart, plan)
+	request := StartRequest{Identity: IdentityFromCommand(id), Kind: domain.WorkloadAgent, AgentTask: &task,
+		AgentModelCredential: credential, SourceDigest: plan.SourceDigest, CommitSHA: plan.CommitSHA, Deadline: plan.Deadline}
+	if err := backend.Start(context.Background(), claims, request); err != nil || factory.starts != 0 || !bytes.Equal(credential, make([]byte, len(credential))) {
+		t.Fatalf("generic process factory received or retained model credential: starts=%d err=%v", factory.starts, err)
+	}
+	result, err := backend.Result(context.Background(), TicketClaims{MicroVMID: "microvm_1", Identity: IdentityFromCommand(id), Operation: OperationResult})
+	logs, logsErr := backend.Logs(context.Background(), TicketClaims{MicroVMID: "microvm_1", Identity: IdentityFromCommand(id), Operation: OperationLogs})
+	if err != nil || logsErr != nil || result.ErrorCode != "agent_executor_unavailable" || bytes.Contains(logs, []byte("sk-ant-must-not-reach-generic-factory")) {
+		t.Fatalf("credential-incompatible Agent was not safely failed: result=%+v logs=%q err=%v logsErr=%v", result, logs, err, logsErr)
 	}
 }
 

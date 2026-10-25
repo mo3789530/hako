@@ -1,6 +1,6 @@
 # Task 53: Native Pipeline and Issue-to-Agent Workflow
 
-Status: In Progress (versioned manifest selection, fixed-catalog execution, durable per-pipeline results, and independent pipeline Checks through the existing Checks consumer are implemented and locally verified. Issue command authorization requires a verified GitHub identity that is a member of the resolved Tenant, an active Installation binding, exact repository identity, and a pre-existing Factory opt-in. A Tenant-App-only read scope, bounded Issue/default-branch SHA reader, Control Plane-only mTLS broker, and an atomic Issue inbox processor that creates one immutable Agent Run plus a bounded task record are locally composed and PostgreSQL-tested. The Resource Plane Worker retrieves the bounded task over mTLS and validates current attempt and immutable Run/App/Repository/branch/commit pins. A context digest is bound from launch specification through signed Start/Source tickets and guest `/run`; guest checks it before exposing task text in memory to a process factory. Purpose-scoped `native_agent` model credential metadata/API/CLI, a per-Repository default-off gate, an attempt/provenance-fenced in-process resolver, and an allowlisted Resource Plane mTLS Broker endpoint/client are implemented. The Worker and Guest still do not call the model-credential endpoint. Linux Job command processes now use fail-closed cgroup v2 CPU/memory/PID scopes when launched as the fixed non-root identity; pipeline command budgets reserve fixed Service catalog requests first. Target Lambda MicroVM cgroup delegation/effective limits and egress remain unverified, so Agent scheduling and execution stay disabled pending the isolated model executor, credential handoff, and target network/resource validation. Service container orchestration is local and opt-in; live Agent write execution remains unavailable, and branch/PR policy is dormant configuration. Priority: P3.
+Status: In Progress (versioned manifest selection, fixed-catalog execution, durable per-pipeline results, and independent pipeline Checks through the existing Checks consumer are implemented and locally verified. Issue command authorization requires a verified GitHub identity that is a member of the resolved Tenant, an active Installation binding, exact repository identity, and a pre-existing Factory opt-in. A Tenant-App-only read scope, bounded Issue/default-branch SHA reader, Control Plane-only mTLS broker, and an atomic Issue inbox processor that creates one immutable Agent Run plus a bounded task record are locally composed and PostgreSQL-tested. The Resource Plane Worker retrieves the bounded task over mTLS and validates current attempt and immutable Run/App/Repository/branch/commit pins. A context digest is bound from launch specification through signed Start/Source tickets and guest `/run`; guest checks it before exposing task text in memory to a process factory. Purpose-scoped `native_agent` model credential metadata/API/CLI, a per-Repository default-off gate, an attempt/provenance-fenced in-process resolver, and an allowlisted Resource Plane mTLS Broker endpoint/client are implemented. The Worker now resolves model credentials after validating the immutable Issue task and sends them only in a no-store, attempt-ticket-bound HTTPS Start request to the allocated MicroVM. The Guest forwards the byte buffer only to an explicitly credential-capable process factory, clears request buffers, and redacts the credential from bounded output; the default Go-test factory remains incapable and fails closed. Linux Job command processes now use fail-closed cgroup v2 CPU/memory/PID scopes when launched as the fixed non-root identity; pipeline command budgets reserve fixed Service catalog requests first. Target Lambda MicroVM cgroup delegation/effective limits and egress remain unverified, so Agent scheduling and execution stay disabled pending a production isolated model executor and target network/resource validation. Service container orchestration is local and opt-in; live Agent write execution remains unavailable, and branch/PR policy is dormant configuration. Priority: P3.
 
 Runtime profile follow-up: profiles are now keyed by Workload kind, Runtime Class,
 and trust level. A Job profile cannot be implicitly reused by Agent or Preview;
@@ -164,8 +164,7 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   read-only access to task records; the API role does not. Its bounded response
   is `no-store`. The Worker now calls this endpoint over mTLS, validates the
   task against the exact active attempt, and fails closed before source upload
-  when task retrieval or pin validation fails. Agent dispatch and model
-  credential delivery remain disabled.
+  when task retrieval or pin validation fails. Agent dispatch remains disabled unless the separate model-access policy and runtime gates are satisfied.
 - Resource Plane execution metadata schema v3 now carries `kind` and the
   correlation ID. Legacy v1/v2 metadata remains Job-compatible; v3 accepts
   only Job or Agent, and Agent metadata requires an `issue_comment` trigger
@@ -299,10 +298,15 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   Worker process; endpoint tests cover mTLS identity, strict request decoding,
   response bounds, and cache policy. A PostgreSQL integration test crosses the
   DB resolver, broker Service, and HTTP route with a synthetic SecretReader;
-  it verifies the allowed Plane response and foreign-plane rejection. The
-  Worker and guest process are not yet composed with this client; Agent
-  execution remains disabled, and these tests did not call AWS or retrieve a
-  real Secret.
+  it verifies the allowed Plane response and foreign-plane rejection. The Resource Plane Worker now composes this mTLS client into Agent dispatch.
+  After source verification/upload it obtains the current attempt credential
+  and sends it through the MicroVM authenticated Start endpoint. The guest
+  passes it only to a `NativeAgentCredentialProcessFactory`, rejects generic
+  factories, clears request/launch buffers, redacts completed output, and
+  clears its in-memory copy on terminal completion. Worker, Guest, and HTTP
+  unit tests use synthetic values; they do not call AWS or retrieve a real
+  Secret. No production Native Agent executor is configured, so Agent
+  scheduling and execution remain disabled.
 
 - Added a shared `internal/agenttask` canonical digest implementation used by
   Control Plane persistence, Broker validation, Resource Plane Worker, and
@@ -314,9 +318,9 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   against the already-running local PostgreSQL. `git diff --check` passes.
 - Agent dispatch remains intentionally unavailable: the generic dispatcher
   and scheduler accept Jobs only, and the default guest factory rejects Agent
-  work until the model-backed executor, Tenant credential policy, and runtime
-  resource/network policy are implemented. No AWS apply or real Secret read
-  was performed.
+  work until the production isolated model executor and runtime resource/network
+  policy are implemented. The Tenant credential policy and local handoff
+  primitives exist, but no AWS apply or real Secret read was performed.
 - Resource Plane profile selection now includes `WorkloadKind`. Tests prove an
   Agent Run cannot borrow the otherwise valid Job profile and is rejected
   before repository source materialization. Profile configuration defaults an
@@ -484,9 +488,10 @@ deployed recovery scheduling and Lambda MicroVM termination remain unverified.
   strict JSON policy file, bounded audit metadata, and a PostgreSQL migration.
   Configuration requires an active, Factory-enabled Tenant Repository; turning
   the Factory off clears the policy. The API explicitly returns
-  `execution_enabled: false`, because the isolated Agent executor, model
-  credential handoff, and runtime network/resource enforcement are not yet
-  available. This does not grant GitHub write credentials or schedule Agent
+  `execution_enabled: false`, because the production isolated Agent executor
+  and target runtime network/resource enforcement are not yet available. The
+  local model credential handoff is inert unless an authorized Agent Run is
+  dispatched and a credential-capable Guest factory is configured. This does not grant GitHub write credentials or schedule Agent
   Runs.
 - Unit/client/CLI tests cover policy scope and malformed input. A PostgreSQL
   Owner/Admin integration test verifies dormant configuration, cross-Tenant
@@ -505,4 +510,23 @@ deployed recovery scheduling and Lambda MicroVM termination remain unverified.
   tested at empty, exact-limit, oversized, control-byte, and non-ASCII edges.
   `go test ./internal/modelcredentialbroker -cover` reports 51.5% statement
   coverage. PostgreSQL provenance/rotation behavior remains in the integration
-  suite; Agent scheduling and credential delivery remain disabled.
+  suite; Agent scheduling and production execution remain disabled.
+
+## Native Agent credential handoff (2026-10-25)
+
+- Wired the Resource Plane Worker to the Tenant-scoped model-credential mTLS
+  client. A credential is requested only after the exact Agent task pins have
+  been validated and source upload succeeds, then sent to the allocated
+  MicroVM through its no-store HTTPS Start route and signed attempt ticket.
+- The Guest protocol bounds credentials to 8 KiB and rejects control bytes.
+  Its default Go-test factory cannot consume the key and fails Agent execution
+  closed. A factory must explicitly implement
+  `NativeAgentCredentialProcessFactory`; its Start call receives the transient
+  bytes, which are cleared on return. The backend retains a temporary copy only
+  for output redaction, then clears it when the process reaches a terminal
+  state. HTTP request/response buffers and bounded output buffers are cleared.
+- Added tests for Worker identity/payload/clear behavior, credential-capable
+  factory handoff, rejection by a generic factory, and terminal log redaction.
+  `go test -p=1 ./... -count=1` passed. The tests use synthetic values; no AWS
+  Secret was read. No production model executor is configured, so Agent
+  dispatch remains disabled.

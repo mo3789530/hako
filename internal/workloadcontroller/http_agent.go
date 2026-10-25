@@ -17,14 +17,22 @@ type AgentTaskProvider interface {
 	ResolveAgentTask(context.Context, workloadjournal.Command) (workloadagent.AgentTask, error)
 }
 
+// AgentModelCredentialProvider resolves one current attempt's Tenant-owned
+// model key through the Resource Plane mTLS Broker. Callers must return an
+// owned buffer that the Workload runner can clear after delivery.
+type AgentModelCredentialProvider interface {
+	ResolveAgentModelCredential(context.Context, workloadjournal.Command) ([]byte, error)
+}
+
 // HTTPAgentRunner implements the controller's AgentRunner contract using the
 // private, versioned protocol. It deliberately has no logging hook for the
 // ephemeral AWS proxy token.
 type HTTPAgentRunner struct {
-	client  *workloadagent.Client
-	sources workloadsource.SourceArchiveReader
-	logs    workloadagent.AttemptLogWriter
-	tasks   AgentTaskProvider
+	client           *workloadagent.Client
+	sources          workloadsource.SourceArchiveReader
+	logs             workloadagent.AttemptLogWriter
+	tasks            AgentTaskProvider
+	modelCredentials AgentModelCredentialProvider
 }
 
 func NewHTTPAgentRunner(client *workloadagent.Client, sources workloadsource.SourceArchiveReader, logs workloadagent.AttemptLogWriter, tasks ...AgentTaskProvider) *HTTPAgentRunner {
@@ -38,6 +46,13 @@ func NewHTTPAgentRunner(client *workloadagent.Client, sources workloadsource.Sou
 	return &HTTPAgentRunner{client: client, sources: sources, logs: logs, tasks: taskProvider}
 }
 
+func NewHTTPAgentRunnerWithModelCredentials(client *workloadagent.Client, sources workloadsource.SourceArchiveReader,
+	logs workloadagent.AttemptLogWriter, tasks AgentTaskProvider, credentials AgentModelCredentialProvider) *HTTPAgentRunner {
+	runner := NewHTTPAgentRunner(client, sources, logs, tasks)
+	runner.modelCredentials = credentials
+	return runner
+}
+
 func (r *HTTPAgentRunner) Start(ctx context.Context, conn AgentConnection, spec Specification) error {
 	if r == nil || r.client == nil || r.sources == nil || conn.MicroVMID == "" {
 		return ErrMicroVMNotReady
@@ -49,7 +64,7 @@ func (r *HTTPAgentRunner) Start(ctx context.Context, conn AgentConnection, spec 
 		Identity: workloadagent.IdentityFromCommand(spec.Identity), Kind: spec.Kind, SourceDigest: spec.SourceDigest, CommitSHA: spec.CommitSHA, Deadline: spec.Deadline.UTC(),
 	}
 	if spec.Kind == domain.WorkloadAgent {
-		if r.tasks == nil {
+		if r.tasks == nil || r.modelCredentials == nil {
 			return ErrExecutionMaterialization
 		}
 		task, err := r.tasks.ResolveAgentTask(ctx, spec.Identity)
@@ -71,7 +86,28 @@ func (r *HTTPAgentRunner) Start(ctx context.Context, conn AgentConnection, spec 
 	if err := r.client.UploadSource(ctx, conn.Endpoint, conn.AuthToken, conn.SourceTicket, spec.Identity, spec.SourceDigest, spec.CommitSHA, archive.Size, archive.Body); err != nil {
 		return err
 	}
+	if spec.Kind == domain.WorkloadAgent {
+		credential, err := r.modelCredentials.ResolveAgentModelCredential(ctx, spec.Identity)
+		if err != nil || !validAgentModelCredential(credential) {
+			clear(credential)
+			return ErrExecutionMaterialization
+		}
+		defer clear(credential)
+		start.AgentModelCredential = credential
+	}
 	return r.client.Start(ctx, conn.Endpoint, conn.AuthToken, conn.AgentTicket, start)
+}
+
+func validAgentModelCredential(credential []byte) bool {
+	if len(credential) == 0 || len(credential) > 8<<10 {
+		return false
+	}
+	for _, b := range credential {
+		if b == 0 || b == '\r' || b == '\n' {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *HTTPAgentRunner) GetStatus(ctx context.Context, conn AgentConnection, id workloadjournal.Command) (workloadjournal.ExecutionState, error) {

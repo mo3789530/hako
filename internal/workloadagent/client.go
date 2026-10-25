@@ -66,6 +66,7 @@ func NewClient(transport http.RoundTripper) *Client {
 }
 
 func (c *Client) Start(ctx context.Context, endpoint, authToken, agentTicket string, in StartRequest) error {
+	defer clear(in.AgentModelCredential)
 	if err := validateStart(in); err != nil {
 		return err
 	}
@@ -211,8 +212,10 @@ func (c *Client) call(ctx context.Context, method, endpoint, token, agentTicket 
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil || len(encoded) > maxProtocolBody {
+			clear(encoded)
 			return 0, ErrProtocolRequest
 		}
+		defer clear(encoded)
 		payload = bytes.NewReader(encoded)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), payload)
@@ -221,6 +224,7 @@ func (c *Client) call(ctx context.Context, method, endpoint, token, agentTicket 
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Hako-Agent-Protocol", ProtocolVersion)
+	req.Header.Set("Cache-Control", "no-store")
 	req.Header.Set("X-aws-proxy-auth", token)
 	req.Header.Set("X-aws-proxy-port", "8080")
 	req.Header.Set("Authorization", "Bearer "+agentTicket)
@@ -274,10 +278,11 @@ func validateStart(in StartRequest) error {
 		return ErrProtocolRequest
 	}
 	if in.Kind == domain.WorkloadAgent {
-		if in.AgentTask == nil || !ValidateAgentTask(*in.AgentTask, in.Identity, in.CommitSHA) {
+		if in.AgentTask == nil || !ValidateAgentTask(*in.AgentTask, in.Identity, in.CommitSHA) ||
+			len(in.AgentModelCredential) > maxAgentModelCredentialBytes || bytesContainNUL(in.AgentModelCredential) {
 			return ErrProtocolRequest
 		}
-	} else if in.AgentTask != nil {
+	} else if in.AgentTask != nil || len(in.AgentModelCredential) != 0 {
 		return ErrProtocolRequest
 	}
 	return nil

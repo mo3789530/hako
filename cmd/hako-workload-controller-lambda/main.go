@@ -30,6 +30,7 @@ import (
 	"github.com/mo3789530/hako/internal/artifactretention"
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/githubbroker"
+	"github.com/mo3789530/hako/internal/store/modelcredentials"
 	"github.com/mo3789530/hako/internal/workloadagent"
 	"github.com/mo3789530/hako/internal/workloadcontroller"
 	"github.com/mo3789530/hako/internal/workloadjournal"
@@ -185,6 +186,10 @@ func compose(ctx context.Context, awsCfg aws.Config, config deploymentConfig) (w
 	if err != nil {
 		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("configure Agent task broker client")
 	}
+	agentModelCredentialClient, err := githubbroker.NewHTTPAgentModelCredentialClient(config.BrokerURL, brokerClient)
+	if err != nil {
+		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("configure Agent model credential broker client")
+	}
 	awsS3 := s3.NewFromConfig(awsCfg)
 	journal, err := workloadjournal.NewS3Store(awsS3, config.JournalBucket, config.JournalPrefix)
 	if err != nil {
@@ -238,6 +243,7 @@ func compose(ctx context.Context, awsCfg aws.Config, config deploymentConfig) (w
 	controllerConfig := workloadcontroller.LambdaWorkloadHandlerConfig{
 		ResourcePlaneID: string(config.ResourcePlaneID), Journal: journal, LambdaAPI: lambdamicrovms.NewFromConfig(awsCfg), Resolver: resolver,
 		SourceArchives: archiveReader, AttemptLogs: logWriter, AgentTasks: brokerAgentTaskProvider{client: agentTaskClient},
+		AgentModelCredentials: brokerAgentModelCredentialProvider{client: agentModelCredentialClient},
 		Runtime: workloadcontroller.LambdaConfig{ImageIdentifier: config.Runtime.ImageIdentifier, ImageVersion: config.Runtime.ImageVersion,
 			ImageDigest: config.Runtime.ImageDigest, IngressConnector: config.Runtime.IngressConnector,
 			VPCEgressConnector: config.Runtime.VPCEgressConnector, AgentTicketIssuer: ticketIssuer},
@@ -254,6 +260,19 @@ func compose(ctx context.Context, awsCfg aws.Config, config deploymentConfig) (w
 
 type brokerAgentTaskProvider struct {
 	client *githubbroker.HTTPAgentTaskClient
+}
+
+type brokerAgentModelCredentialProvider struct {
+	client *githubbroker.HTTPAgentModelCredentialClient
+}
+
+func (p brokerAgentModelCredentialProvider) ResolveAgentModelCredential(ctx context.Context, id workloadjournal.Command) ([]byte, error) {
+	if p.client == nil {
+		return nil, errors.New("Agent model credential broker is unavailable")
+	}
+	return p.client.Issue(ctx, modelcredentials.AgentRunIdentity{TenantID: domain.TenantID(id.TenantID),
+		WorkloadRunID: domain.WorkloadRunID(id.WorkloadRunID), AttemptID: id.AttemptID, Generation: id.Generation,
+		ResourcePlaneID: domain.ResourcePlaneID(id.ResourcePlaneID)})
 }
 
 func (p brokerAgentTaskProvider) ResolveAgentTask(ctx context.Context, id workloadjournal.Command) (workloadagent.AgentTask, error) {

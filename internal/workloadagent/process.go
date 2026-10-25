@@ -1,6 +1,7 @@
 package workloadagent
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -48,9 +49,13 @@ type ExecutionPlan struct {
 	AgentRepositoryID      int64
 	AgentTaskContextSHA256 string
 	AgentTask              *AgentTask
+	AgentModelCredential   []byte
 	FactoryPipelines       []factoryconfig.ExecutionPlan
 	Deadline               time.Time
 }
+
+func (ExecutionPlan) String() string   { return "[REDACTED Workload execution plan]" }
+func (ExecutionPlan) GoString() string { return "[REDACTED Workload execution plan]" }
 
 // ExecutionResolver must resolve a repository path from the trusted attempt
 // record. No path or command is accepted from the repository or HTTP request.
@@ -64,6 +69,14 @@ type ManagedProcess interface {
 
 type ProcessFactory interface {
 	Start(context.Context, ExecutionPlan, io.Writer) (ManagedProcess, error)
+}
+
+// NativeAgentCredentialProcessFactory is an explicit capability: a factory
+// must consume the attempt-scoped model credential during Start and must not
+// retain the provided byte slice after returning.
+type NativeAgentCredentialProcessFactory interface {
+	ProcessFactory
+	SupportsNativeAgentCredential() bool
 }
 
 type AttemptLogWriter interface {
@@ -100,13 +113,14 @@ type ProcessBackend struct {
 }
 
 type processAttempt struct {
-	claims TicketClaims
-	plan   ExecutionPlan
-	state  workloadjournal.ExecutionState
-	result workloadjobs.WorkloadResult
-	logs   []byte
-	output *boundedOutput
-	cancel context.CancelFunc
+	claims          TicketClaims
+	plan            ExecutionPlan
+	state           workloadjournal.ExecutionState
+	result          workloadjobs.WorkloadResult
+	logs            []byte
+	modelCredential []byte
+	output          *boundedOutput
+	cancel          context.CancelFunc
 }
 
 func NewProcessBackend(config ProcessConfig) (*ProcessBackend, error) {
@@ -130,6 +144,9 @@ func NewProcessBackend(config ProcessConfig) (*ProcessBackend, error) {
 }
 
 func (b *ProcessBackend) Start(ctx context.Context, claims TicketClaims, req StartRequest) error {
+	if b != nil {
+		defer clear(req.AgentModelCredential)
+	}
 	if b == nil || ctx == nil || claims.Operation != OperationStart || claims.Execution == nil || claims.Identity.Command() != req.Identity.Command() || validateStart(req) != nil ||
 		claims.Execution.SourceDigest != req.SourceDigest || claims.Execution.CommitSHA != req.CommitSHA || !claims.Execution.Deadline.Equal(req.Deadline) {
 		return ErrProtocolRequest
@@ -186,10 +203,21 @@ func (b *ProcessBackend) Start(ctx context.Context, claims TicketClaims, req Sta
 		task := *req.AgentTask
 		plan.AgentTask = &task
 	}
+	if len(req.AgentModelCredential) != 0 {
+		credentialFactory, ok := b.config.Factory.(NativeAgentCredentialProcessFactory)
+		if req.Kind != domain.WorkloadAgent || !ok || !credentialFactory.SupportsNativeAgentCredential() {
+			b.recordAgentExecutorUnavailable(claims, req)
+			return nil
+		}
+		plan.AgentModelCredential = req.AgentModelCredential
+	}
+	modelCredentialForRedaction := append([]byte(nil), req.AgentModelCredential...)
 	processCtx, cancel := context.WithDeadline(b.root, plan.Deadline)
 	output := &boundedOutput{limit: b.config.MaxOutput}
 	process, err := b.config.Factory.Start(processCtx, plan, output)
+	clear(plan.AgentModelCredential)
 	if err != nil {
+		clear(modelCredentialForRedaction)
 		cancel()
 		if errors.Is(err, ErrAgentExecutorUnavailable) {
 			b.recordAgentExecutorUnavailable(claims, req)
@@ -198,7 +226,7 @@ func (b *ProcessBackend) Start(ctx context.Context, claims TicketClaims, req Sta
 		return ErrAgentBusy
 	}
 	attempt := &processAttempt{claims: claims, plan: plan, state: workloadjournal.Running,
-		output: output, cancel: cancel}
+		output: output, cancel: cancel, modelCredential: modelCredentialForRedaction}
 	b.attempt = attempt
 	b.waitGroup.Add(1)
 	go b.wait(attempt, processCtx, process)
@@ -369,11 +397,15 @@ func (b *ProcessBackend) wait(a *processAttempt, processCtx context.Context, pro
 		}
 	}
 	logs, truncated := a.output.snapshot()
+	a.output.clear()
 	if truncated {
 		// Do not retain a prefix that could end in the middle of a secret.
 		logs = []byte("[Hako Agent] output limit exceeded; logs withheld\n")
 	}
 	logs = fake.RedactJobLogs(logs, secrets)
+	if len(a.modelCredential) != 0 {
+		logs = bytes.ReplaceAll(logs, a.modelCredential, []byte("[REDACTED]"))
+	}
 	if len(logs) > maxAgentLogBytes {
 		logs = []byte("[Hako Agent] redacted logs exceeded the transfer limit; logs withheld\n")
 	}
@@ -393,6 +425,8 @@ func (b *ProcessBackend) wait(a *processAttempt, processCtx context.Context, pro
 	a.state = workloadjournal.ExecutionState(result.Status)
 	a.result = result
 	a.logs = append([]byte(nil), logs...)
+	clear(a.modelCredential)
+	a.modelCredential = nil
 	b.mu.Unlock()
 	a.cancel()
 }
@@ -429,6 +463,16 @@ func (w *boundedOutput) snapshot() ([]byte, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return append([]byte(nil), w.data...), w.truncated
+}
+
+func (w *boundedOutput) clear() {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	clear(w.data)
+	w.data = nil
 }
 
 // GoTestProcessFactory deliberately runs one fixed command without a shell.
