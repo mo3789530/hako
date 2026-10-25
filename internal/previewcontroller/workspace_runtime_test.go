@@ -209,7 +209,7 @@ func TestWorkspaceRuntimeAdapterRejectsForeignPlaneAndInvalidProviderBinding(t *
 }
 
 func TestPreviewControllerComposesWorkspaceRuntimeAdapterAndResult(t *testing.T) {
-	now := time.Date(2026, 10, 25, 4, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second)
 	runtime := &previewWorkspaceRuntimeFake{state: domain.ObservedWorkspaceRunning, kind: previewRuntimeResourceKind,
 		externalID: "microvm-preview-e2e", generation: 1}
 	adapter, err := NewWorkspaceRuntimeAdapter("rp-test", runtime, func() time.Time { return now })
