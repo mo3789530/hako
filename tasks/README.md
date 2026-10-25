@@ -6,6 +6,8 @@
 
 `make test-integration-local`を2026-10-25に再実行し、`go test -tags=integration -p=1 ./... -count=1`が全パッケージで成功した。既に起動中のローカルPostgreSQLを使用し、テスト後も`hako-dev-postgres`が稼働中であることを確認した。直近の対象コードにはloopback-only OpenSSH/Workspace host-key実装と、sshd listener readiness待機・起動失敗時cleanupを含む。その後のfocused SSH testでは、ローカルOpenSSH 10.2p1がWorkspaceのsshd設定を`sshd -t`で受理することを確認済み。これはローカル統合受入の証拠であり、AWS配備、Lambda MicroVM上の実行、Secrets取得やGitHub/AWS外部接続の証拠ではない。
 
+Task 84 host-network smoke is repeatable with `make test-workspace-podman-network` (pinned x86_64 Alpine, positive TCP egress control, and `--internal` denial). It validates Podman bridge behavior only; it does not replace nerdctl/CNI ARM64 image or Lambda MicroVM verification.
+
 ## 着手ルール
 
 1. `P0`から順に、依存タスクが完了しているものを一件だけ選ぶ。

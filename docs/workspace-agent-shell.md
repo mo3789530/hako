@@ -246,7 +246,9 @@ unless `network inspect` confirms `Internal=true`. The pinned nerdctl-full
 bundle must include CNI plugins 1.1.0 or later for network isolation. This
 blocks Service-container external network access when the runtime honors the
 internal-network contract, but it does not establish MicroVM-wide egress
-filtering or prove the deployed Lambda image. The process environment excludes
+filtering or prove the deployed Lambda image. `make test-workspace-podman-network`
+provides a host-only Podman positive-control smoke test for `--internal`; it
+does not test nerdctl's CNI plugin. The process environment excludes
 ambient AWS and other credentials. Persistent catalog
 volumes are placed below `/workspace/.hako/services/` with symlink escape
 checks. Removing a Service first removes its container and then recursively

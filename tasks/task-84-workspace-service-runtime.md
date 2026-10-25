@@ -160,14 +160,18 @@ CLI/network metadata evidence only, not a container egress test.
 ## Podman egress smoke test (2026-10-25)
 
 Pulled the x86_64 Alpine 3.22 image to match the local Podman host. A container
-on the regular `podman` bridge fetched `http://1.1.1.1` successfully (including
-the HTTPS redirect). The same image and command on a temporary
-`podman network create --internal` bridge failed with `Network unreachable`;
+on the regular `podman` bridge opened TCP to `1.1.1.1:80`. The same image and
+probe on a temporary `podman network create --internal` bridge failed with
+`Network unreachable`;
 `podman network inspect` reported `internal=true`, and the temporary network
 was removed. The positive control shows this host permits container egress,
 so the internal-network failure is meaningful Podman evidence. This directly
 tests Podman's bridge behavior only; it does not execute `NerdctlServiceEngine`,
 nerdctl's bundled CNI firewall plugin, the ARM64 image, or a Lambda MicroVM.
+The check is now repeatable with `make test-workspace-podman-network`, which
+uses a pinned x86_64 Alpine image, verifies that the control bridge permits
+egress, creates and removes a temporary internal bridge, and fails if either
+the positive or negative control behaves unexpectedly.
 
 ## Goal
 
