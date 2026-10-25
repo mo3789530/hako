@@ -37,7 +37,11 @@ Control Plane.
 
 - Unit tests cover ticket expiry/tampering, signed Resource Plane grant
   requests, Gateway TLS/ticket binding/streaming, S3 bucket and prefix fences,
-  and CLI integrity/atomic-file behavior. Agent proposal CLI tests cover Run
+  CLI integrity/atomic-file behavior, and CLI rejection of a nil output writer,
+  malformed arguments, missing login, and missing API/Gateway URLs before any
+  network request. The CLI artifact download orchestration function is 94.4%
+  statement-covered and `cmd/hako` is 62.1% covered in the current local suite.
+  Agent proposal CLI tests cover Run
   selection, private file permissions, and a mismatched ticket that must not
   contact the Gateway or replace an existing destination.
 - PostgreSQL integration covers authorized ticket issuance, requester/Tenant

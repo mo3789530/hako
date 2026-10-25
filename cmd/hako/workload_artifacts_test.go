@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -66,6 +67,37 @@ func TestDownloadWorkloadArtifactCLIUsesAuthorizedTicketAndGateway(t *testing.T)
 	}
 	if !strings.Contains(output.String(), "artifact_cli saved to "+outputPath) {
 		t.Fatalf("CLI success output = %q", output.String())
+	}
+}
+
+func TestDownloadWorkloadArtifactCLIFailsBeforeNetworkOnInvalidConfiguration(t *testing.T) {
+	previous := cliCredentialGetter
+	t.Cleanup(func() { cliCredentialGetter = previous })
+	args := []string{"tenant_cli", "run_cli", "artifact_cli", "--out", filepath.Join(t.TempDir(), "artifact.log")}
+	for _, test := range []struct {
+		name       string
+		output     io.Writer
+		args       []string
+		credential string
+		apiURL     string
+		gatewayURL string
+		want       string
+	}{
+		{name: "nil output", args: args, want: "output is unavailable"},
+		{name: "invalid arguments", output: io.Discard, args: []string{"tenant_cli"}, want: "usage:"},
+		{name: "missing credentials", output: io.Discard, args: args, credential: "", want: "saved Hako login is invalid"},
+		{name: "missing API URL", output: io.Discard, args: args, credential: fmt.Sprintf(`{"access_token":"test-token","token_type":"Bearer","expires_in":3600,"stored_at":%q}`, time.Now().UTC().Format(time.RFC3339)), want: "HAKO_API_URL is required"},
+		{name: "missing Gateway URL", output: io.Discard, args: args, credential: fmt.Sprintf(`{"access_token":"test-token","token_type":"Bearer","expires_in":3600,"stored_at":%q}`, time.Now().UTC().Format(time.RFC3339)), apiURL: "https://api.example.test", want: "HAKO_GATEWAY_URL is required"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HAKO_API_URL", test.apiURL)
+			t.Setenv("HAKO_GATEWAY_URL", test.gatewayURL)
+			cliCredentialGetter = workloadCLICredentials(test.credential)
+			err := downloadWorkloadArtifactCLIWithOutput(test.args, test.output)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("download error = %v, want substring %q", err, test.want)
+			}
+		})
 	}
 }
 
