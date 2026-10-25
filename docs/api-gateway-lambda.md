@@ -81,6 +81,18 @@ This runs the image in ordinary HTTP mode; Lambda Web Adapter event conversion
 still requires invoking the candidate Lambda with API Gateway v2 events in the
 approved AWS test account.
 
+The Lambda Runtime Interface Emulator path is repeatable with
+`make test-api-lambda-rie-smoke`. It builds the same API binary and pinned
+Lambda Web Adapter used by the production image, then copies them into a
+test-only AWS Lambda provided base image with RIE. The test submits representative
+HTTP API v2 events through RIE and asserts the returned proxy `statusCode` for
+both the public and authenticated health routes. It uses the host network so
+the image can reach local PostgreSQL; the RIE port (8080 by default) must be
+available. RIE validates local runtime/extension and event conversion behavior,
+but does not emulate Lambda orchestration, API Gateway's JWT authorizer, AWS
+networking, or IAM. The real candidate invocation and cutover still require
+the approved AWS test account. See the [AWS RIE guide](https://github.com/aws/aws-lambda-runtime-interface-emulator).
+
 Terraform creates a private same-Region ECR repository with immutable tags,
 scan-on-push, AES-256 encryption, Lambda-scoped image retrieval permission,
 and lifecycle cleanup for untagged artifacts after seven days. Tagged releases

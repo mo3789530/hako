@@ -1,0 +1,14 @@
+# Local-only image for AWS Lambda Runtime Interface Emulator verification.
+# Keep the application binary and Lambda Web Adapter identical to the production OCI image.
+FROM public.ecr.aws/lambda/provided@sha256:2161c8c439f558301813c62d11f013ce43ae425d9a1c18274781b710341583a1
+COPY --from=localhost/hako-api:rie-smoke /bootstrap /var/task/bootstrap
+COPY --from=localhost/hako-api:rie-smoke /opt/extensions/lambda-adapter /opt/extensions/lambda-adapter
+
+ENV HAKO_API_HTTP_MODE=false \
+    AWS_LWA_PORT=8081 \
+    AWS_LWA_READINESS_CHECK_PORT=8081 \
+    AWS_LWA_READINESS_CHECK_PROTOCOL=http \
+    AWS_LWA_READINESS_CHECK_PATH=/healthz \
+    AWS_LWA_READINESS_CHECK_HEALTHY_STATUS=200-299
+
+CMD ["bootstrap"]
