@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -553,6 +554,21 @@ func TestReadGitHubRepositoryPreviewLogsUsesReadOnlySessionAndRevokes(t *testing
 		&output, apiServer.Client(), &tls.Config{RootCAs: gatewayTLS.RootCAs})
 	if err != nil || output.String() != string(logs) || created.Load() != 1 || revoked.Load() != 1 {
 		t.Fatalf("Preview logs output=%q created=%d revoked=%d error=%v", output.String(), created.Load(), revoked.Load(), err)
+	}
+}
+
+type previewLogShortWriter struct{}
+
+func (previewLogShortWriter) Write(data []byte) (int, error) {
+	if len(data) == 0 {
+		return 0, nil
+	}
+	return len(data) - 1, nil
+}
+
+func TestWritePreviewLogsRejectsShortWrite(t *testing.T) {
+	if err := writePreviewLogs(previewLogShortWriter{}, []byte("preview output")); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("short Preview log write error=%v", err)
 	}
 }
 

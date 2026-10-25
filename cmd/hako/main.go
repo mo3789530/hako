@@ -797,8 +797,19 @@ func readGitHubRepositoryPreviewLogsWith(ctx context.Context, args []string, std
 	if _, err := io.ReadFull(connection, logs); err != nil {
 		return errors.New("Preview log stream ended before the complete bounded response")
 	}
-	if _, err := stdout.Write(logs); err != nil {
+	return writePreviewLogs(stdout, logs)
+}
+
+func writePreviewLogs(stdout io.Writer, logs []byte) error {
+	if stdout == nil {
+		return errors.New("Preview log output is required")
+	}
+	written, err := stdout.Write(logs)
+	if err != nil {
 		return errors.New("write Preview logs")
+	}
+	if written != len(logs) {
+		return io.ErrShortWrite
 	}
 	return nil
 }

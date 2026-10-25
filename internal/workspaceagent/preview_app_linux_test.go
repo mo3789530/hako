@@ -3,6 +3,7 @@
 package workspaceagent
 
 import (
+	"bytes"
 	"context"
 	"net"
 	"os"
@@ -10,7 +11,33 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mo3789530/hako/internal/workspaceprotocol"
 )
+
+func TestPreviewLogBufferRetainsOnlyLatestBoundedTail(t *testing.T) {
+	buffer := &previewLogBuffer{}
+	first := bytes.Repeat([]byte{'a'}, int(workspaceprotocol.PreviewLogsMaxBytes)-8)
+	last := []byte("last-log")
+	if n, err := buffer.Write(first); err != nil || n != len(first) {
+		t.Fatalf("write initial log bytes=%d error=%v", n, err)
+	}
+	if n, err := buffer.Write(last); err != nil || n != len(last) {
+		t.Fatalf("write final log bytes=%d error=%v", n, err)
+	}
+	want := append(append([]byte(nil), first...), last...)
+	got := buffer.Snapshot()
+	if len(got) != int(workspaceprotocol.PreviewLogsMaxBytes) || !bytes.Equal(got, want) {
+		t.Fatalf("Preview log tail length=%d, want %d and exact newest bytes", len(got), workspaceprotocol.PreviewLogsMaxBytes)
+	}
+	if n, err := buffer.Write([]byte("x")); err != nil || n != 1 {
+		t.Fatalf("write overflow byte=%d error=%v", n, err)
+	}
+	got = buffer.Snapshot()
+	if len(got) != int(workspaceprotocol.PreviewLogsMaxBytes) || !bytes.Equal(got[len(got)-1:], []byte("x")) {
+		t.Fatalf("Preview log buffer did not retain bounded newest byte: len=%d tail=%q", len(got), got[len(got)-1:])
+	}
+}
 
 func TestDecodePreviewManifestIsStrictAndBounded(t *testing.T) {
 	valid := []byte("version: 1\ncommand: [sh, -c, 'exec sleep 1']\n")
