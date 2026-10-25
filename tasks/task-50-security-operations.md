@@ -171,6 +171,11 @@ and [usage metering/billing](../docs/adr/0013-usage-metering-and-billing.md).
 Each names an accountable owner role, scope, requirements, non-goals, and
 revisit conditions. They defer implementation and do not approve AWS changes.
 
+Full local integration refresh (2026-10-25): `make test-integration-local`
+passed every package with the `integration` build tag against isolated schemas
+in the already-running PostgreSQL database. This covers the local PostgreSQL
+acceptance suite; it does not validate AWS deployment or live MicroVM behavior.
+
 Gateway observability follow-up: an active Session lookup failure already closed
 the WSS stream and emitted a redacted failure log, but was indistinguishable
 from a normal client disconnect in the lifecycle metric. It now emits the
