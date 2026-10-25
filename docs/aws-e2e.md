@@ -64,8 +64,13 @@ environment variables before calling STS. It explicitly loads each named
 profile in the configured region, compares both returned account IDs to the
 allowlist, and prints only account IDs/region/run ID (never caller ARN). Run
 `make test-aws-e2e-guard` to test these checks with stubbed STS responses; this
-target makes no AWS calls. The guard is not yet wired to resource creation or
-cleanup, and the actual Workspace AWS E2E remains unimplemented.
+target makes no AWS calls. `internal/awse2e.MutationGate` also provides a
+per-mutation guard: it revalidates opt-in/configuration, target plane, region,
+run ownership tags, and the selected profile's current account identity before
+calling a supplied mutation callback. Fake-based tests verify rejected
+requests never invoke the callback. No AWS resource operation or cleanup path
+is wired through this helper yet, and the actual Workspace AWS E2E remains
+unimplemented.
 
 ## Provisioning and cleanup runbook
 
@@ -109,7 +114,8 @@ creating resources and ask the test-account owner to resolve it.
 
 This document defines environment isolation, opt-in conditions, CI boundary,
 and cleanup expectations. The read-only STS preflight/account allowlist guard
-is implemented and locally tested. The actual AWS lifecycle E2E test, guard
-enforcement at each resource mutation, test stack ownership, runtime/Gateway
-connectivity assertions, and automated resource cleanup are not implemented
-yet.
+and a reusable per-mutation guard helper are implemented and locally tested.
+The helper is not connected to actual AWS mutations. The AWS lifecycle E2E
+test, enforced guard coverage for each resource operation, test stack
+ownership, runtime/Gateway connectivity assertions, and automated resource
+cleanup are not implemented yet.

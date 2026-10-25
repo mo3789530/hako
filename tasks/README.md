@@ -123,8 +123,9 @@ strict opt-in, dedicated account/profile allowlist, Management/production
 account denylist, run ID, and Region before making read-only STS identity
 lookups. `make test-aws-e2e-guard` uses mocked STS and verifies rejected
 preflight cases cause zero lookups. It is not connected to mutations or
-cleanup; real Workspace E2E, per-operation identity rechecks, and automated
-cleanup remain open.
+cleanup. A fake-tested `MutationGate` helper now rechecks account, region, and
+run ownership immediately before a supplied callback; actual AWS operations
+are not wired through it. Real Workspace E2E and automated cleanup remain open.
 
 Task 61's published contract/cost documentation now reflects the explicit
 1–28,800 second `RunMicrovm` API range and separates Dockerfile snapshot builds

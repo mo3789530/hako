@@ -34,6 +34,13 @@ lookup occurs when any configuration, opt-in, or ambient-credential guard
 fails. Resource creation/cleanup is not wired to this command; the actual AWS
 Workspace E2E remains unimplemented and requires separate approval.
 
+`internal/awse2e.MutationGate` is a reusable guard for an individual mutation.
+It rechecks opt-in/configuration, plane, region, run ownership tags, and the
+current STS account identity before invoking a callback. Unit tests use a fake
+identity lookup and verify a rejected operation never reaches the callback.
+No AWS resource operation or cleanup path is wired through it yet, so this is
+not evidence that a real AWS mutation is currently guarded.
+
 ## Local OCI image smoke
 
 `make test-api-lambda-image-smoke` builds the API OCI image for the local
