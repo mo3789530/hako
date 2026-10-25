@@ -180,6 +180,23 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   guest process factory returns a sanitized terminal
   `agent_executor_unavailable` failure for Agent Runs.
 
+## Local Agent executor progress (2026-10-25)
+
+- Added an injectable `NativeAgentProcessFactory` with a bounded Anthropic tool
+  loop. Its only tools are repository file listing/reading, constrained atomic
+  file writes, and a fixed offline `go test ./...` verifier. It has no generic
+  shell, GitHub, AWS, or arbitrary network tool. Paths reject traversal,
+  symlinks, credential-like files/content, and protected policy/infrastructure
+  locations; edit counts and bytes, turns, tool calls, file sizes, and test
+  resources are bounded. A Run with edits cannot finish successfully without a
+  successful test pass.
+- Scripted model tests cover write → fixed tests → successful completion,
+  untested-write rejection, and path/secret/symlink protections. Tests use
+  synthetic credentials only. The executor is not selected by the production
+  `hako-agent` composition; Agent scheduling therefore remains disabled. Patch
+  artifact return, branch/PR creation, target MicroVM egress/cgroup proof, and
+  production image wiring remain incomplete.
+
 ## Local verification refresh (2026-10-24)
 
 - Added a Job/attempt-scoped `CatalogJobServiceManager` contract and connected

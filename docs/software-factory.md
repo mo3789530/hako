@@ -308,18 +308,18 @@ this capability; no production Native Agent executor is configured and Agent
 execution remains disabled. Local tests use synthetic keys and do not read
 AWS Secrets Manager.
 
-The codebase now also has an unused `AnthropicMessagesClient` transport
-foundation. It sends only to Anthropic's fixed HTTPS Messages endpoint, disables
-proxy discovery and redirects, bounds request/response and tool-input sizes,
-and returns errors without provider response bodies. Its unit tests use a
-synthetic key and an in-process transport; no live API request is made. This
-does not provide a Native Agent tool loop, does not enable model execution, and
-does not create an artifact or Pull Request from Agent changes. Anthropic's
+The codebase has an Anthropic Messages transport and an injectable Native Agent
+process factory. The factory exposes only bounded `list_files`, `read_file`,
+`write_file`, and fixed offline `go test ./...` tools; it rejects protected or
+secret paths, symlinks, path traversal, excessive edits, and completion after
+changes unless tests pass. Unit tests use a scripted model and synthetic
+credential; no live API request is made. The factory is not composed into the
+production `hako-agent` image, and Agent scheduling remains disabled. It also
+does not return a patch artifact or create a GitHub branch/Pull Request, and
+does not prove target MicroVM egress or cgroup enforcement. Anthropic's
 client-side tool protocol requires the application to execute each returned
 tool call and send a tool result back in a subsequent Messages request; see
 [Anthropic tool use](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/overview).
-Any future tools must be Hako-owned bounded operations, never a generic shell
-or unrestricted network client.
 
 Treat `.hako/factory.yaml`, workflow files, action references, shell steps,
 container images, cache contents, and webhook payloads as untrusted inputs.
