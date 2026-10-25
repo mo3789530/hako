@@ -210,8 +210,9 @@ func TestWorkloadResultFencesAttemptsAndPersistsTerminalMetadata(t *testing.T) {
 		Status: domain.WorkloadSucceeded, CompletedAt: now.Add(30 * time.Second),
 		ChangeBundle: &WorkloadChangeArtifact{StorageRef: "s3://hako-results/run_result_agent/agent-changes/change.zip",
 			SizeBytes: 128, SHA256: strings.Repeat("c", 64)}}
-	if _, err := pool.Exec(ctx, `UPDATE tenant_github_repositories SET factory_enabled=true,factory_enabled_at=$1
-		WHERE tenant_id='tenant_result' AND installation_id=901 AND github_repository_id=902`, now); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE tenant_github_repositories SET factory_enabled=true,factory_enabled_at=$1,agent_write_policy=$2::jsonb
+		WHERE tenant_id='tenant_result' AND installation_id=901 AND github_repository_id=902`, now,
+		`{"enabled":true,"branch_prefixes":["hako/agent/"],"allow_pull_requests":true,"required_checks":["hako/lint","hako/test"],"require_checks_to_pass":true}`); err != nil {
 		t.Fatal(err)
 	}
 	if outcome, err := handler.Handle(ctx, agentResult); err != nil || outcome != ResultApplied {
@@ -243,6 +244,27 @@ func TestWorkloadResultFencesAttemptsAndPersistsTerminalMetadata(t *testing.T) {
 	}
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM workload_github_checks WHERE tenant_id='tenant_result' AND workload_run_id=$1`, verifierRunID).Scan(&externalChecks); err != nil || externalChecks != 0 {
 		t.Fatalf("base-only GitHub Checks were emitted for verifier: count=%d err=%v", externalChecks, err)
+	}
+	evidence, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (workloads.AgentProposalPublicationEvidence, error) {
+		return workloads.ResolveAgentProposalPublicationEvidence(ctx, tx, "tenant_result", "run_result_agent", "attempt_result_agent", now.Add(time.Minute))
+	})
+	if err != nil || evidence.ProposalSHA256 != strings.Repeat("c", 64) || evidence.BaseCommitSHA != commit ||
+		evidence.VerifierRunID != domain.WorkloadRunID(verifierRunID) || evidence.DefaultBranch != "main" ||
+		!evidence.PassedChecks["hako/lint"] || !evidence.PassedChecks["hako/test"] || !evidence.Policy.AllowPullRequests {
+		t.Fatalf("publication evidence did not bind all required identities/checks: %+v err=%v", evidence, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE workload_agent_proposal_verification_checks SET status='failed',exit_code=1
+		WHERE tenant_id='tenant_result' AND verifier_run_id=$1 AND pipeline_name='test'`, verifierRunID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (workloads.AgentProposalPublicationEvidence, error) {
+		return workloads.ResolveAgentProposalPublicationEvidence(ctx, tx, "tenant_result", "run_result_agent", "attempt_result_agent", now.Add(time.Minute))
+	}); !errors.Is(err, workloads.ErrAgentProposalPublicationNotReady) {
+		t.Fatalf("failed required verifier Check authorized publication: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE workload_agent_proposal_verification_checks SET status='succeeded',exit_code=0
+		WHERE tenant_id='tenant_result' AND verifier_run_id=$1 AND pipeline_name='test'`, verifierRunID); err != nil {
+		t.Fatal(err)
 	}
 	cancelledAgentResult := WorkloadResult{SchemaVersion: 1, TenantID: "tenant_result", WorkloadRunID: "run_result_agent_cancel",
 		AttemptID: "attempt_result_agent_cancel", Generation: 1, ResourcePlaneID: "rp_result", CommitSHA: commit,

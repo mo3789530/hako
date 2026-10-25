@@ -372,10 +372,21 @@ the proposal digest and base commit. The initial queued base-SHA Check and
 verifier Check delivery are suppressed so GitHub cannot be shown a pass on the
 unmodified commit.
 
-Task 89 remains open: matching the digest-bound evidence against required
-Repository Check policy, safe verifier retry, publication idempotency, brokered
-exact-scope write credentials, branch/PR create/recovery, and API/CLI status.
-Terraform IAM and AWS execution have not been verified.
+The Control Plane now has a read-only publication evidence resolver. It
+revalidates the successful Agent artifact and latest cleanup-confirmed attempt,
+the successful latest verifier attempt, matching Tenant/Repository/App
+generation/Resource Plane/base commit, active installation and current
+Factory/write policy. It accepts a required Check only when the stored result
+is successful and bound to the exact proposal SHA, base commit, verifier
+attempt, and generation. Repository policy names such as `hako/test` map to
+the corresponding pipeline Check; unknown Check names fail closed. The
+resolver returns the current default branch and policy pins alongside the
+evidence, but does not issue credentials or perform GitHub writes. Callers must
+revalidate/fence these pins around external GitHub calls.
+
+Task 89 remains open: safe verifier retry, publication idempotency, brokered
+exact-scope write credentials, branch/PR create and recovery, and API/CLI
+status. Terraform IAM and AWS execution have not been verified.
 
 Treat `.hako/factory.yaml`, workflow files, action references, shell steps,
 container images, cache contents, and webhook payloads as untrusted inputs.
