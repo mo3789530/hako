@@ -76,13 +76,22 @@ func TestDownloadAgentChangesCLIUsesRunMetadataAndAuthorizedGateway(t *testing.T
 }
 
 func TestDownloadAgentChangesCLIRejectsUnsuccessfulOrMismatchedRunsBeforeTicket(t *testing.T) {
+	validArtifact := domain.WorkloadArtifactSummary{ID: "artifact_changes", Kind: "agent_changes", SizeBytes: 16,
+		SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
 	for _, test := range []struct {
 		name string
 		run  domain.WorkloadRun
 	}{
 		{name: "wrong tenant", run: domain.WorkloadRun{ID: "run_changes", TenantID: "tenant_other", Kind: domain.WorkloadAgent, State: domain.WorkloadSucceeded}},
+		{name: "wrong run", run: domain.WorkloadRun{ID: "run_other", TenantID: "tenant_cli", Kind: domain.WorkloadAgent, State: domain.WorkloadSucceeded}},
 		{name: "not successful", run: domain.WorkloadRun{ID: "run_changes", TenantID: "tenant_cli", Kind: domain.WorkloadAgent, State: domain.WorkloadFailed}},
 		{name: "no proposal", run: domain.WorkloadRun{ID: "run_changes", TenantID: "tenant_cli", Kind: domain.WorkloadAgent, State: domain.WorkloadSucceeded}},
+		{name: "ambiguous proposals", run: domain.WorkloadRun{ID: "run_changes", TenantID: "tenant_cli", Kind: domain.WorkloadAgent, State: domain.WorkloadSucceeded,
+			Artifacts: []domain.WorkloadArtifactSummary{validArtifact, validArtifact}}},
+		{name: "redacted proposal", run: domain.WorkloadRun{ID: "run_changes", TenantID: "tenant_cli", Kind: domain.WorkloadAgent, State: domain.WorkloadSucceeded,
+			Artifacts: []domain.WorkloadArtifactSummary{{ID: validArtifact.ID, Kind: validArtifact.Kind, SizeBytes: validArtifact.SizeBytes, SHA256: validArtifact.SHA256, Redacted: true}}}},
+		{name: "invalid proposal digest", run: domain.WorkloadRun{ID: "run_changes", TenantID: "tenant_cli", Kind: domain.WorkloadAgent, State: domain.WorkloadSucceeded,
+			Artifacts: []domain.WorkloadArtifactSummary{{ID: validArtifact.ID, Kind: validArtifact.Kind, SizeBytes: validArtifact.SizeBytes, SHA256: "not-a-digest"}}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ticketRequested := false
@@ -108,6 +117,53 @@ func TestDownloadAgentChangesCLIRejectsUnsuccessfulOrMismatchedRunsBeforeTicket(
 				t.Fatal("invalid Agent Run requested an artifact ticket")
 			}
 		})
+	}
+}
+
+func TestDownloadAgentChangesCLIRequiresRunBoundTicketBeforeGatewayAccess(t *testing.T) {
+	content := []byte("synthetic proposal")
+	digest := sha256.Sum256(content)
+	artifact := domain.WorkloadArtifactSummary{ID: "artifact_changes", Kind: "agent_changes", SizeBytes: int64(len(content)), SHA256: hex.EncodeToString(digest[:])}
+	outputPath := filepath.Join(t.TempDir(), "proposal.zip")
+	if err := os.WriteFile(outputPath, []byte("existing proposal"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	gatewayReached := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/tenants/tenant_cli/workload-runs/run_changes":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(domain.WorkloadRun{ID: "run_changes", TenantID: "tenant_cli", Kind: domain.WorkloadAgent,
+				State: domain.WorkloadSucceeded, Artifacts: []domain.WorkloadArtifactSummary{artifact}})
+		case "/v1/tenants/tenant_cli/workload-runs/run_changes/artifacts/artifact_changes/download-ticket":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"ticket": "short-lived-ticket", "expires_at": time.Now().Add(time.Minute),
+				"size_bytes": artifact.SizeBytes + 1, "sha256": artifact.SHA256, "kind": artifact.Kind})
+		default:
+			gatewayReached = true
+			t.Errorf("Gateway was contacted with untrusted Run artifact metadata: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HAKO_API_URL", server.URL)
+	t.Setenv("HAKO_GATEWAY_URL", server.URL)
+	previous := cliCredentialGetter
+	cliCredentialGetter = workloadCLICredentials(fmt.Sprintf(`{"access_token":"changes-access","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+		time.Now().UTC().Format(time.RFC3339)))
+	t.Cleanup(func() { cliCredentialGetter = previous })
+
+	err := downloadAgentChangesCLIWithOutput([]string{"tenant_cli", "run_changes", "--out", outputPath}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "ticket does not match") {
+		t.Fatalf("mismatched ticket error = %v", err)
+	}
+	if gatewayReached {
+		t.Fatal("Gateway was contacted with a ticket that did not match the Run metadata")
+	}
+	got, err := os.ReadFile(outputPath)
+	if err != nil || string(got) != "existing proposal" {
+		t.Fatalf("mismatched ticket changed destination: %q err=%v", got, err)
 	}
 }
 

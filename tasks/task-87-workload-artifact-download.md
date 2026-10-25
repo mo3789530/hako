@@ -64,3 +64,14 @@ foreign Tenant, non-successful Run, or missing proposal stop before requesting
 an artifact ticket. `go test ./cmd/hako -count=1 -coverprofile=...` passes;
 the CLI package reports 65.7% statement coverage and the public command wrapper
 is 100% covered. This is local CLI/API/Gateway contract evidence only.
+
+## Agent proposal download rejection coverage (2026-10-25)
+
+The CLI tests now reject a mismatched Run ID, multiple proposal artifacts,
+redacted proposal metadata, and malformed proposal digests before requesting
+a download ticket. A separate test verifies that a ticket whose size differs
+from the successful Run's immutable artifact metadata is rejected before the
+Gateway is contacted and leaves an existing destination untouched. The
+`downloadAgentChangesCLIWithOutput` handler reaches 76.9% statement coverage
+under the focused Agent proposal tests. These tests use synthetic Run/API and
+Gateway responses; no external GitHub, S3, or AWS service is contacted.
