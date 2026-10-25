@@ -1,0 +1,2 @@
+CREATE INDEX workload_agent_proposal_verifications_verifier_idx
+    ON workload_agent_proposal_verifications(tenant_id, verifier_run_id, verifier_attempt_id);

@@ -107,3 +107,12 @@ Repository. The proposal remains untrusted. Hako must never merge or deploy it.
   traversal, protected paths, secret content, symlinks, duplicate entries, and
   size limits. This is only a source materialization primitive: it does not run
   tests, create a verifier Run, or authorize a GitHub write.
+- Migration `000181` and `BindAgentProposalVerification` persist an immutable
+  relation from the exact successful, cleanup-confirmed Agent attempt and
+  `agent_changes` artifact digest/base commit to a separate untrusted Job Run
+  and attempt. The store verifies same-Tenant Repository/App-generation/base
+  pins, latest attempts, live verifier state, and retry identity inside the
+  transaction. A scoped getter exposes binding metadata without returning the
+  artifact storage reference. The focused PostgreSQL integration test passes;
+  scheduling, source-byte handoff/materialization, required Check evidence,
+  and any publication path remain unimplemented.

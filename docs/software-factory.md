@@ -352,9 +352,16 @@ The Resource Plane source library also provides
 `ApplyAgentProposalArchive`: it verifies the pinned base source archive,
 applies a validated proposal in a private temporary checkout, and emits a new
 deterministic source archive with both base-source and proposal digests. This
-is input preparation for the separate verifier Workload. It does not execute
-repository code, create a Run, or establish passing Checks; the verifier
-Workload and digest-bound Check persistence remain unimplemented.
+is input preparation for the separate verifier Workload. Migration `000181`
+and the `workload_agent_proposal_verifications` store now bind an
+`agent_changes` artifact digest and immutable base commit to one separate
+untrusted Job Run and attempt. Binding is accepted only after the Agent Run
+succeeded, its latest attempt is `cleanup_confirmed`, and the verifier Run pins
+the same Tenant, Repository, App generation, and base commit. Exact retries are
+idempotent and a changed digest or verifier identity conflicts. This is
+persistence groundwork: it does not yet create/schedule the verifier Run,
+provide proposal bytes to its source materializer, run checks, or persist
+digest-bound Check results.
 
 Treat `.hako/factory.yaml`, workflow files, action references, shell steps,
 container images, cache contents, and webhook payloads as untrusted inputs.
