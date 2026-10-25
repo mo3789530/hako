@@ -57,6 +57,51 @@ func TestTenantAppMetadataAPIIsDraftOnlyOwnerScopedAndDefaultOff(t *testing.T) {
 	ownerToken := signTenantAPIToken(t, key, issuer, "apps-owner", "openid hako/api")
 	adminToken := signTenantAPIToken(t, key, issuer, "apps-admin", "openid hako/api")
 	memberToken := signTenantAPIToken(t, key, issuer, "apps-member", "openid hako/api")
+	for _, query := range []string{
+		`INSERT INTO github_credential_bindings (id,tenant_id,github_app_id,status,private_key_secret_ref,oauth_secret_ref,webhook_secret_ref,approved_at,private_key_reader_role_arn,private_key_secret_version_id,oauth_reader_role_arn,oauth_secret_version_id,webhook_secret_reader_role_arn,webhook_secret_version_id) VALUES ('binding_apps_migration','tenant_apps',789,'approved','arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:tenant-apps-private','arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:tenant-apps-oauth','arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:tenant-apps-webhook',now(),'arn:aws:iam::123456789012:role/hako/private-apps','11111111111111111111111111111111','arn:aws:iam::123456789012:role/hako/oauth-apps','22222222222222222222222222222222','arn:aws:iam::123456789012:role/hako/webhook-apps','33333333333333333333333333333333')`,
+		`INSERT INTO github_app_registrations (id,github_app_id,mode,owner_tenant_id,slug,client_id,created_at) VALUES ('registration_apps_migration',789,'tenant_owned','tenant_apps','migration-app','migration-client',now())`,
+		`INSERT INTO tenant_github_integrations (id,tenant_id,app_registration_id,github_app_id,credential_binding_id,status,config_revision,credential_generation,idempotency_key,request_sha256,created_by,created_at,updated_at) VALUES ('integration_apps_migration','tenant_apps','registration_apps_migration',789,'binding_apps_migration','active',4,9,'migration-app-key','migration-app-hash','usr_apps_owner',now(),now())`,
+		`INSERT INTO tenant_github_installations (tenant_id,installation_id,github_app_id,account_login,status,requested_by,requested_at,updated_at) VALUES ('tenant_apps',12301,789,'apps-safe','active','usr_apps_owner',now(),now()),('tenant_apps',12302,790,'apps-mismatch','active','usr_apps_owner',now(),now())`,
+		`INSERT INTO github_app_installation_bindings (installation_id,tenant_id,bound_at) VALUES (12301,'tenant_apps',now()),(12302,'tenant_apps',now())`,
+	} {
+		if _, err := pool.Exec(ctx, query); err != nil {
+			t.Fatalf("seed migration API fixture: %v", err)
+		}
+	}
+	migrationPath := "/v1/tenants/tenant_apps/github/apps/integration_apps_migration/migration"
+	migrationRequest := func(token, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, migrationPath, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		return res
+	}
+	if response := migrationRequest(memberToken, `{"action":"plan","expected_revision":4,"expected_generation":9,"installation_ids":[12301]}`); response.Code != http.StatusNotFound {
+		t.Fatalf("Tenant Member migration plan HTTP %d, want hidden 404", response.Code)
+	}
+	if response := migrationRequest(ownerToken, `{"action":"backfill","expected_revision":4,"expected_generation":9,"installation_ids":[12301]}`); response.Code != http.StatusBadRequest {
+		t.Fatalf("unconfirmed backfill HTTP %d, want 400", response.Code)
+	}
+	blockedPlan := migrationRequest(ownerToken, `{"action":"plan","expected_revision":4,"expected_generation":9,"installation_ids":[12301,12302]}`)
+	var blockedResult GitHubAppMetadataResult
+	if blockedPlan.Code != http.StatusOK || json.Unmarshal(blockedPlan.Body.Bytes(), &blockedResult) != nil || blockedResult.Migration == nil || blockedResult.Migration.CanBackfill || len(blockedResult.Migration.Installations) != 2 || blockedResult.Migration.Installations[1].Disposition != "blocked_app_id_mismatch" {
+		t.Fatalf("migration dry-run did not report unsafe App ID: HTTP %d body=%s", blockedPlan.Code, blockedPlan.Body.String())
+	}
+	conflictingBackfill := migrationRequest(ownerToken, `{"action":"backfill","expected_revision":4,"expected_generation":9,"installation_ids":[12301,12302],"confirm":true}`)
+	if conflictingBackfill.Code != http.StatusConflict {
+		t.Fatalf("unsafe mixed backfill HTTP %d, want 409: %s", conflictingBackfill.Code, conflictingBackfill.Body.String())
+	}
+	var migrated int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM tenant_github_app_installation_bindings WHERE integration_id='integration_apps_migration'`).Scan(&migrated); err != nil || migrated != 0 {
+		t.Fatalf("blocked mixed batch partially backfilled %d rows: %v", migrated, err)
+	}
+	if response := migrationRequest(adminToken, `{"action":"backfill","expected_revision":4,"expected_generation":9,"installation_ids":[12301],"confirm":true}`); response.Code != http.StatusOK {
+		t.Fatalf("confirmed safe backfill HTTP %d: %s", response.Code, response.Body.String())
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM tenant_github_app_installation_bindings WHERE integration_id='integration_apps_migration' AND installation_id=12301`).Scan(&migrated); err != nil || migrated != 1 {
+		t.Fatalf("confirmed backfill count = %d err=%v", migrated, err)
+	}
 	call := func(token, method, path, body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
@@ -121,12 +166,15 @@ func TestTenantAppMetadataAPIIsDraftOnlyOwnerScopedAndDefaultOff(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM tenant_github_default_integrations`).Scan(&defaults); err != nil || defaults != 0 {
 		t.Fatal("metadata API changed defaults")
 	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM tenant_github_integrations WHERE status = 'active'`).Scan(&active); err != nil || active != 0 {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM tenant_github_integrations WHERE status = 'active' AND id <> 'integration_apps_migration'`).Scan(&active); err != nil || active != 0 {
 		t.Fatal("metadata API activated an App")
 	}
 	var auditCount int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE action IN ('tenant.github_app.add','tenant.github_app.disable')`).Scan(&auditCount); err != nil || auditCount != 2 {
 		t.Fatal("creation/disable audit transaction or replay dedup failed")
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE tenant_id='tenant_apps' AND actor_user_id='usr_apps_admin' AND action='tenant.github_app.installation_backfill' AND target_id='integration_apps_migration'`).Scan(&auditCount); err != nil || auditCount != 1 {
+		t.Fatalf("confirmed migration audit count = %d err=%v", auditCount, err)
 	}
 	// Default configuration does not expose management routes at all.
 	defaultHandler := NewHandler(verifier, pool)

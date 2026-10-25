@@ -145,6 +145,12 @@ pins malformed/missing/short/oversized reasons, foreign-Tenant integration
 hiding, and replay-rate exhaustion (`429` plus `Retry-After`). The focused test
 passes locally without GitHub or AWS access.
 
+Task 70 migration API follow-up (2026-10-25): the Tenant GitHub App API test
+now composes dry-run and confirmed backfill with Owner/Admin authorization,
+App-ID conflict rejection, all-or-nothing behavior, and audit verification.
+The focused isolated-PostgreSQL integration test passes; no real credentials
+or external cutover are involved.
+
 Added `make verify-workload-microvm-artifact` so the Agent ZIP check is
 repeatable: it validates the public-key JSON, exact package contents, key-byte
 identity, and static ELF64/AArch64 architecture. Focused key validation tests

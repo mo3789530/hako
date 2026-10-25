@@ -22,3 +22,12 @@ Status: Implemented locally; production migration/cutover remains approval-gated
 - Tests cover dry-run immutability, idempotent rerun, App ID mismatch, unknown historical App identity, atomic mixed-batch rollback, stale revision/generation, legacy Run drain, activation, and preserved legacy Run pins. PostgreSQL/API integration test commands and final results are recorded in the handoff response.
 - Related operator/API contract: [Tenant GitHub App design](../docs/tenant-github-apps.md), [API contract](../docs/api-contract.md).
 - 実AWS apply、実Secret取得、外部設定変更はこのタスクのローカル実装に含めない。
+
+## API integration coverage follow-up (2026-10-25)
+
+The Tenant App API integration path now verifies Owner/Admin authorization,
+read-only dry-run, explicit confirmation for backfill, blocked mixed-App
+Installation batches with no partial write, successful safe backfill, and the
+atomic actor/target audit record. The focused test runs against isolated local
+PostgreSQL and uses synthetic App/credential references; it performs no
+production cutover or Secret retrieval.
