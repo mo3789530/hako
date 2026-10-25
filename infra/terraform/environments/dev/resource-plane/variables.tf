@@ -215,6 +215,16 @@ variable "workspace_gateway_deployment" {
   default     = null
 }
 
+variable "resource_plane_network_observability" {
+  description = "Optional VPC Flow Logs for a caller-owned Resource Plane VPC. No networking is created or modified."
+  type = object({
+    vpc_id             = string
+    log_retention_days = optional(number, 90)
+    kms_key_arn        = optional(string, "")
+  })
+  default = null
+}
+
 variable "max_receive_count" {
   description = "Receives before messages move to the corresponding DLQ."
   type        = number

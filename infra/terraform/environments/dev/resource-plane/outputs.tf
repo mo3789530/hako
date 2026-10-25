@@ -257,3 +257,11 @@ output "workspace_gateway_task_role_arn" {
 output "workspace_gateway_alarm_names" {
   value = module.resource_plane.workspace_gateway_alarm_names
 }
+
+output "resource_plane_vpc_flow_log_id" {
+  value = module.resource_plane.resource_plane_vpc_flow_log_id
+}
+
+output "resource_plane_vpc_flow_logs_group_name" {
+  value = module.resource_plane.resource_plane_vpc_flow_logs_group_name
+}

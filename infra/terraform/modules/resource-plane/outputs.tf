@@ -38,6 +38,16 @@ output "results_dlq_arn" {
   value       = aws_sqs_queue.results_dlq.arn
 }
 
+output "resource_plane_vpc_flow_log_id" {
+  description = "VPC Flow Log ID, or null while network observability is disabled."
+  value       = try(aws_flow_log.resource_plane_vpc[0].id, null)
+}
+
+output "resource_plane_vpc_flow_logs_group_name" {
+  description = "CloudWatch Logs group for Resource Plane VPC Flow Logs, or null while disabled."
+  value       = try(aws_cloudwatch_log_group.resource_plane_vpc_flow_logs[0].name, null)
+}
+
 output "preview_runtime_commands_queue_url" {
   description = "URL of the dedicated Preview runtime command queue; null unless Preview runtime deployment is configured."
   value       = try(aws_sqs_queue.preview_runtime_commands[0].url, null)

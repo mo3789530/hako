@@ -53,7 +53,8 @@ module "resource_plane" {
       file_system_arn = module.workspace_storage[0].file_system_arn
     } : null
   )
-  workspace_gateway_deployment = var.workspace_gateway_deployment
+  workspace_gateway_deployment         = var.workspace_gateway_deployment
+  resource_plane_network_observability = var.resource_plane_network_observability
 }
 
 module "workspace_storage" {

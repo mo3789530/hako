@@ -585,6 +585,25 @@ variable "actions_runner_cleanup_deployment" {
   }
 }
 
+variable "resource_plane_network_observability" {
+  description = "Optional VPC Flow Logs contract for a caller-owned Resource Plane VPC. Null leaves network logging disabled; the module does not create or modify VPCs, routes, or subnets."
+  type = object({
+    vpc_id             = string
+    log_retention_days = optional(number, 90)
+    kms_key_arn        = optional(string, "")
+  })
+  default = null
+
+  validation {
+    condition = var.resource_plane_network_observability == null || (
+      can(regex("^vpc-[0-9a-f]{8,17}$", var.resource_plane_network_observability.vpc_id)) &&
+      contains([1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653], var.resource_plane_network_observability.log_retention_days) &&
+      (var.resource_plane_network_observability.kms_key_arn == "" || can(regex("^arn:(aws|aws-us-gov|aws-cn):kms:[a-z0-9-]+:[0-9]{12}:key/[A-Fa-f0-9-]+$", var.resource_plane_network_observability.kms_key_arn)))
+    )
+    error_message = "Network observability requires a VPC ID, a supported CloudWatch Logs retention period, and an optional exact KMS key ARN."
+  }
+}
+
 variable "max_receive_count" {
   description = "Receives before SQS moves a command/result message to its DLQ."
   type        = number

@@ -46,6 +46,19 @@ The Control Plane Workload execution-metadata route is disabled unless `resource
 
 The cross-account queue policies allow the exact Dispatcher role to send only to Workspace and (when enabled/configured) Workload command queues, the exact Workspace Operation result consumer role to consume only that result queue, and the exact Workload result consumer role to consume only the dedicated Workload result queue. The Workspace Resource Controller role remains limited to Workspace commands, Operation results, and its log group. The optional Workload runtime policy is opt-in separately from queues; it contains the exact image, attempt-prefix S3/KMS, recovery-lease, and Secret scopes described above. It still does not grant broker access, attach a Lambda/event source, provision VPC endpoints, or prove live permissions. See [`resource-plane-queues-and-dlq.md`](resource-plane-queues-and-dlq.md) for redrive and failure operations.
 
+Resource Plane VPC Flow Logs for a caller-owned VPC are separately opt-in via
+`resource_plane_network_observability`. The module creates a dedicated
+CloudWatch log group with explicit retention and optional KMS encryption, a
+publishing role trusted by `vpc-flow-logs.amazonaws.com` with account- and
+Region-scoped source conditions, and an `ALL` traffic Flow Log at 60-second
+aggregation. Log stream writes are limited to that dedicated group; the only
+wildcard resource is read-only `logs:DescribeLogGroups`. This input does not
+create or change VPCs, subnets, routes, NAT, security groups, or endpoints, and
+does not prove an egress policy is effective. It defaults to `null`; mock plan
+tests cover disabled and enabled configurations without AWS calls or apply.
+Trust conditions follow the [AWS VPC Flow Logs CloudWatch Logs role
+guidance](https://docs.aws.amazon.com/vpc/latest/userguide/flow-logs-iam-role.html).
+
 ### Resource Plane deployment plan tests
 
 `make terraform-test` initializes the Resource Plane, Workspace Storage, GitHub Broker Tenant IAM, and Tenant model credential reader Role modules and runs mock-provider plan tests. Set `TERRAFORM=tofu` (for example, `make TERRAFORM=tofu terraform-test`) to run the same targets with OpenTofu. They assert that the Workspace MicroVM, Workload, and Workspace Service Lambdas, command mappings, recovery schedules, and runtime IAM remain absent by default; validate the Workspace MicroVM opt-in ZIP/profile, exact image and S3 object permissions, absence of S3 list/delete access, queue exclusivity, and dynamic EFS role requirement; validate Workload wiring and exact queue/Secret/MicroVM permissions; and verify the broker-only exact private-key and model-credential reader allowlists, target-role trust/Secret/KMS scope, default-off behavior, and purpose separation. The plan tests do not call AWS APIs or apply resources. The integration test also verifies that a dotted recovery lease key such as `lease.json` is accepted while `..` is rejected by the Terraform variable contract.
