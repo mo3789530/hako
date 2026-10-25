@@ -609,5 +609,16 @@ credentials by default and remain untrusted proposals requiring human review.
 Authorized `GET /v1/tenants/{tenant_id}/workload-runs/{run_id}` responses and
 `hako workload show` include artifact metadata (kind, size, SHA-256, redaction
 status, and timestamps). They deliberately omit the Resource Plane storage
-reference. Artifact bytes are not downloadable through this interface yet;
-retrieval requires a separately authorized, short-lived artifact access path.
+reference. `hako workload artifact download <tenant> <run> <artifact> --out
+<path>` requests a two-minute, single-artifact HMAC ticket from the Control
+Plane, then downloads bytes directly from the configured Resource Plane
+Gateway. The Control Plane rechecks tenant membership and Run visibility when
+issuing the ticket and again when the Gateway resolves its storage grant. The
+ticket contains no storage URI; the internal grant is Plane-authenticated and
+returns only a bounded S3 reference to that Resource Plane. The Gateway reads
+only its configured artifact bucket/prefix, and the CLI verifies the declared
+size and SHA-256 before atomically installing a mode-0600 output file. Artifact
+download is unavailable unless the Gateway's optional bucket and prefix are
+configured. Local tests cover the authorization, stream, integrity, and exact
+Terraform IAM boundaries; AWS deployment and live MicroVM-to-S3 retrieval are
+not verified by those tests.

@@ -14,6 +14,8 @@ locals {
   workspace_gateway_ecr_repository_arn = var.workspace_gateway_deployment == null || length(local.workspace_gateway_image_parts) != 3 ? "" : "arn:${data.aws_partition.current.partition}:ecr:${local.workspace_gateway_image_parts[1]}:${local.workspace_gateway_image_parts[0]}:repository/${local.workspace_gateway_image_parts[2]}"
   workspace_gateway_journal_prefix     = var.workspace_gateway_deployment == null ? "" : trim(var.workspace_gateway_deployment.journal_prefix, "/")
   workspace_gateway_journal_key        = local.workspace_gateway_journal_prefix == "" ? "${var.resource_plane_id}/*" : "${local.workspace_gateway_journal_prefix}/${var.resource_plane_id}/*"
+  workspace_gateway_artifact_prefix    = var.workspace_gateway_deployment == null ? "" : var.workspace_gateway_deployment.workload_artifact_prefix
+  workspace_gateway_artifact_key       = local.workspace_gateway_artifact_prefix == "" ? "" : "${local.workspace_gateway_artifact_prefix}/*"
   workspace_gateway_alb_name           = "${substr(var.resource_plane_id, 0, 20)}-gw-${substr(sha1(var.resource_plane_id), 0, 8)}"
   workspace_gateway_target_group_name  = "${substr(var.resource_plane_id, 0, 19)}-gwt-${substr(sha1(var.resource_plane_id), 0, 8)}"
   workspace_gateway_secret_loader_command = var.workspace_gateway_deployment == null ? "" : join("\n", [
@@ -259,6 +261,11 @@ resource "aws_iam_role_policy" "workspace_gateway_task" {
           StringEquals             = { "kms:ViaService" = "secretsmanager.${data.aws_region.current.name}.${data.aws_partition.current.dns_suffix}" }
           "ForAnyValue:StringLike" = { "kms:EncryptionContext:SecretARN" = local.workspace_gateway_secret_arns }
         }
+        }], var.workspace_gateway_deployment.workload_artifact_bucket_name == "" ? [] : [{
+        Sid      = "ReadOnlyConfiguredWorkloadArtifactPrefix"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "${var.workspace_gateway_deployment.workload_artifact_bucket_arn}/${local.workspace_gateway_artifact_key}"
     }])
   })
 }
@@ -352,6 +359,8 @@ resource "aws_ecs_task_definition" "workspace_gateway" {
         { name = "HAKO_GATEWAY_ALLOWED_ORIGINS", value = join(",", var.workspace_gateway_deployment.allowed_origins) },
         { name = "HAKO_WORKSPACE_RUNTIME_JOURNAL_BUCKET", value = var.workspace_gateway_deployment.journal_bucket_name },
         { name = "HAKO_WORKSPACE_RUNTIME_JOURNAL_PREFIX", value = local.workspace_gateway_journal_prefix },
+        { name = "HAKO_WORKLOAD_ARTIFACT_BUCKET", value = var.workspace_gateway_deployment.workload_artifact_bucket_name },
+        { name = "HAKO_WORKLOAD_ARTIFACT_PREFIX", value = local.workspace_gateway_artifact_prefix },
         { name = "HAKO_GATEWAY_MAX_CONNECTIONS", value = tostring(var.workspace_gateway_deployment.max_connections) },
         { name = "HAKO_GATEWAY_MAX_CONNECTIONS_PER_WORKSPACE", value = tostring(var.workspace_gateway_deployment.max_connections_per_workspace) },
         { name = "HAKO_GATEWAY_SESSION_RECHECK_INTERVAL", value = "15s" },

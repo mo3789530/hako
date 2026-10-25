@@ -213,6 +213,8 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 			getActiveWorkspaceSession(pool, workspaceConfig.ResourcePlaneWorkspaceSessionKeyResolver))
 		e.POST("/v1/internal/resource-planes/:resource_plane_id/workspace-ports/authorize",
 			authorizeResourcePlaneWorkspacePort(pool, workspaceConfig.ResourcePlaneWorkspaceSessionKeyResolver))
+		e.POST("/v1/internal/resource-planes/:resource_plane_id/workload-artifacts/:artifact_id/access",
+			resolveResourcePlaneWorkloadArtifact(pool, workspaceConfig.ResourcePlaneWorkspaceSessionKeyResolver))
 	}
 	if setupVerifier != nil || workspaceConfig.TenantGitHubSetupResolver != nil {
 		e.GET("/v1/integrations/github/setup/callback", completeGitHubInstallationSetup(pool, setupVerifier, workspaceConfig.TenantGitHubSetupResolver))
@@ -364,6 +366,11 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
 	protected.GET("/v1/tenants/:tenant_id/workload-runs/:run_id", getWorkloadRun(pool),
 		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+	if workspaceConfig.ResourcePlaneWorkspaceSessionKeyResolver != nil {
+		protected.POST("/v1/tenants/:tenant_id/workload-runs/:run_id/artifacts/:artifact_id/download-ticket",
+			createWorkloadArtifactAccessTicket(pool, workspaceConfig.ResourcePlaneWorkspaceSessionKeyResolver),
+			RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+	}
 	protected.POST("/v1/tenants/:tenant_id/workload-runs/:run_id/cancel", cancelWorkloadRun(pool),
 		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
 	return e

@@ -828,16 +828,19 @@ run "workload_controller_rejects_traversal_in_recovery_lease_key" {
       "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/ticket-key-AbCdEf",
     ]
     workload_controller_runtime = {
-      microvm_image_arn         = "arn:aws:lambda:ap-northeast-1:123456789012:microvm-image:hako-standard"
-      ingress_connector_arn     = "arn:aws:lambda:ap-northeast-1:aws:network-connector:aws-network-connector:ALL_INGRESS"
-      egress_connector_arn      = "arn:aws:lambda:ap-northeast-1:123456789012:network-connector:hako-egress"
-      journal_bucket_arn        = "arn:aws:s3:::hako-journal-bucket"
-      journal_prefix            = "v1/journal"
-      recovery_lease_object_arn = "arn:aws:s3:::hako-journal-bucket/v1/journal/recovery/../lease.json"
-      source_bucket_arn         = "arn:aws:s3:::hako-source-bucket"
-      source_prefix             = "v1/source"
-      artifact_bucket_arn       = "arn:aws:s3:::hako-artifact-bucket"
-      artifact_prefix           = "v1/artifacts"
+      microvm_image_arn             = "arn:aws:lambda:ap-northeast-1:123456789012:microvm-image:hako-standard"
+      ingress_connector_arn         = "arn:aws:lambda:ap-northeast-1:aws:network-connector:aws-network-connector:ALL_INGRESS"
+      egress_connector_arn          = "arn:aws:lambda:ap-northeast-1:123456789012:network-connector:hako-egress"
+      journal_bucket_arn            = "arn:aws:s3:::hako-journal-bucket"
+      journal_prefix                = "v1/journal"
+      workload_artifact_bucket_name = "hako-artifact-bucket"
+      workload_artifact_bucket_arn  = "arn:aws:s3:::hako-artifact-bucket"
+      workload_artifact_prefix      = "workload-artifacts/v1"
+      recovery_lease_object_arn     = "arn:aws:s3:::hako-journal-bucket/v1/journal/recovery/../lease.json"
+      source_bucket_arn             = "arn:aws:s3:::hako-source-bucket"
+      source_prefix                 = "v1/source"
+      artifact_bucket_arn           = "arn:aws:s3:::hako-artifact-bucket"
+      artifact_prefix               = "v1/artifacts"
     }
   }
 
@@ -906,26 +909,29 @@ run "workspace_gateway_uses_private_tasks_exact_iam_and_tls_wss_only" {
     control_plane_dispatcher_role_arn      = "arn:aws:iam::123456789012:role/hako-cp-dispatcher"
     control_plane_result_consumer_role_arn = "arn:aws:iam::123456789012:role/hako-cp-result-consumer"
     workspace_gateway_deployment = {
-      image_uri                 = "123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/hako/gateway@sha256:${join("", [for _ in range(64) : "a"])}"
-      secret_loader_image_uri   = "public.ecr.aws/aws-cli/aws-cli@sha256:${join("", [for _ in range(64) : "b"])}"
-      ecs_cluster_arn           = "arn:aws:ecs:ap-northeast-1:123456789012:cluster/hako-rp"
-      ecs_cluster_name          = "hako-rp"
-      vpc_id                    = "vpc-0123456789abcdef0"
-      vpc_cidr_block            = "10.20.0.0/16"
-      public_subnet_ids         = ["subnet-11111111", "subnet-22222222"]
-      private_subnet_ids        = ["subnet-33333333", "subnet-44444444"]
-      ingress_cidr_blocks       = ["198.51.100.0/24"]
-      egress_cidr_blocks        = ["10.20.0.0/16", "0.0.0.0/0"]
-      acm_certificate_arn       = "arn:aws:acm:ap-northeast-1:123456789012:certificate/12345678-abcd-1234-abcd-123456789012"
-      microvm_image_arn         = "arn:aws:lambda:ap-northeast-1:123456789012:microvm-image:hako-standard"
-      journal_bucket_name       = "hako-journal-bucket"
-      journal_bucket_arn        = "arn:aws:s3:::hako-journal-bucket"
-      journal_prefix            = "v1/journal"
-      session_lookup_endpoint   = "https://api.hako.example"
-      connection_lease_endpoint = "https://api.hako.example"
-      public_origin             = "https://gateway.hako.example"
-      allowed_origins           = ["https://ide.hako.example"]
-      agent_ticket_key_id       = "agent-v1"
+      image_uri                     = "123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/hako/gateway@sha256:${join("", [for _ in range(64) : "a"])}"
+      secret_loader_image_uri       = "public.ecr.aws/aws-cli/aws-cli@sha256:${join("", [for _ in range(64) : "b"])}"
+      ecs_cluster_arn               = "arn:aws:ecs:ap-northeast-1:123456789012:cluster/hako-rp"
+      ecs_cluster_name              = "hako-rp"
+      vpc_id                        = "vpc-0123456789abcdef0"
+      vpc_cidr_block                = "10.20.0.0/16"
+      public_subnet_ids             = ["subnet-11111111", "subnet-22222222"]
+      private_subnet_ids            = ["subnet-33333333", "subnet-44444444"]
+      ingress_cidr_blocks           = ["198.51.100.0/24"]
+      egress_cidr_blocks            = ["10.20.0.0/16", "0.0.0.0/0"]
+      acm_certificate_arn           = "arn:aws:acm:ap-northeast-1:123456789012:certificate/12345678-abcd-1234-abcd-123456789012"
+      microvm_image_arn             = "arn:aws:lambda:ap-northeast-1:123456789012:microvm-image:hako-standard"
+      journal_bucket_name           = "hako-journal-bucket"
+      journal_bucket_arn            = "arn:aws:s3:::hako-journal-bucket"
+      journal_prefix                = "v1/journal"
+      workload_artifact_bucket_name = "hako-artifact-bucket"
+      workload_artifact_bucket_arn  = "arn:aws:s3:::hako-artifact-bucket"
+      workload_artifact_prefix      = "workload-artifacts/v1"
+      session_lookup_endpoint       = "https://api.hako.example"
+      connection_lease_endpoint     = "https://api.hako.example"
+      public_origin                 = "https://gateway.hako.example"
+      allowed_origins               = ["https://ide.hako.example"]
+      agent_ticket_key_id           = "agent-v1"
       secret_arns = {
         tls_certificate          = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/gateway-tls-cert-AbCdEf"
         tls_private_key          = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/gateway-tls-key-AbCdEf"
@@ -973,6 +979,14 @@ run "workspace_gateway_uses_private_tasks_exact_iam_and_tls_wss_only" {
       "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/agent-key-AbCdEf"
     )
     error_message = "Gateway task IAM must limit Secret reads to the six exact operator-provisioned ARNs."
+  }
+
+  assert {
+    condition = anytrue([for statement in jsondecode(aws_iam_role_policy.workspace_gateway_task[0].policy).Statement :
+      try(statement.Sid == "ReadOnlyConfiguredWorkloadArtifactPrefix" &&
+        statement.Action == ["s3:GetObject"] &&
+    statement.Resource == "arn:aws:s3:::hako-artifact-bucket/workload-artifacts/v1/*", false)])
+    error_message = "Gateway artifact reads must be limited to the exact configured artifact bucket prefix."
   }
 
   assert {

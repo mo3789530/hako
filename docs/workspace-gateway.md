@@ -184,3 +184,19 @@ fixed guest-loopback port and does not change its authentication policy.
 `/healthz` is an unauthenticated static liveness check,
 not proof of downstream AWS or Control Plane reachability. See Task 46 for
 remaining deployment and live-validation gates.
+
+### Workload artifact download
+
+The Gateway can optionally expose `GET /v1/workload-artifacts/{artifact_id}`
+when both `HAKO_WORKLOAD_ARTIFACT_BUCKET` and
+`HAKO_WORKLOAD_ARTIFACT_PREFIX` are configured. The route requires TLS and a
+two-minute HMAC ticket for the exact artifact and Resource Plane. It asks the
+Control Plane over the signed internal grant endpoint to revalidate the
+Tenant/Run authorization, then streams the bounded S3 object directly to the
+client. It rejects query strings and never accepts a caller-supplied storage
+URI. The Gateway task role receives `s3:GetObject` only for the configured
+prefix; leaving the optional bucket settings empty disables this route.
+`hako workload artifact download <tenant> <run> <artifact> --out <path>`
+verifies the size and SHA-256 before installing the local file. The route,
+authorization, and exact-prefix policy are covered by local tests; no AWS
+deployment or live S3 retrieval has been performed.

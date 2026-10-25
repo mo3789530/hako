@@ -30,6 +30,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/lambdamicrovms"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/workloadartifactaccess"
 	"github.com/mo3789530/hako/internal/workspaceagent"
 	"github.com/mo3789530/hako/internal/workspacegateway"
 	"github.com/mo3789530/hako/internal/workspacejournal"
@@ -55,6 +56,8 @@ type deploymentConfig struct {
 	PublicOrigin            string
 	JournalBucket           string
 	JournalPrefix           string
+	WorkloadArtifactBucket  string
+	WorkloadArtifactPrefix  string
 	Region                  string
 	AllowedOrigins          []string
 	MaxConnections          int
@@ -162,6 +165,22 @@ func buildGateway(awsCfg aws.Config, cfg deploymentConfig) (*workspacegateway.Ga
 		Tokens: workspaceagent.LambdaMicroVMAuthTokenProvider{API: microVMs}, Tickets: issuer,
 		Leases: leases, Region: cfg.Region, Origin: cfg.PublicOrigin,
 	}
+	var artifactAccess *workspacegateway.ArtifactAccessConfig
+	if cfg.WorkloadArtifactBucket != "" {
+		artifactResolver, err := workloadartifactaccess.NewResolver(workloadartifactaccess.ResolverConfig{
+			Endpoint: cfg.SessionLookupEndpoint, PlaneID: string(cfg.ResourcePlaneID), HMACKey: lookupKey,
+		})
+		if err != nil {
+			return nil, errors.New("configure Workload artifact authorization resolver")
+		}
+		artifactReader, err := workspacegateway.NewS3ArtifactReader(workspacegateway.S3ArtifactReaderConfig{
+			Client: s3.NewFromConfig(awsCfg), Bucket: cfg.WorkloadArtifactBucket, Prefix: cfg.WorkloadArtifactPrefix,
+		})
+		if err != nil {
+			return nil, errors.New("configure Workload artifact object reader")
+		}
+		artifactAccess = &workspacegateway.ArtifactAccessConfig{TicketKey: lookupKey, Resolver: artifactResolver, Reader: artifactReader}
+	}
 	return workspacegateway.New(workspacegateway.Config{
 		ResourcePlaneID: cfg.ResourcePlaneID,
 		Verifier:        &workspacesession.Verifier{KeyResolver: publicKeyResolver, Audience: workspacesession.AudienceGateway, Lookup: lookup},
@@ -169,7 +188,7 @@ func buildGateway(awsCfg aws.Config, cfg deploymentConfig) (*workspacegateway.Ga
 			workspacegateway.PreviewPortAuthorizer{}, portAuthorizer,
 		}, AllowedOrigins: cfg.AllowedOrigins,
 		MaxConnections: cfg.MaxConnections, MaxConnectionsPerWorkspace: cfg.MaxConnectionsPerWS,
-		SessionRecheckInterval: cfg.SessionRecheckInterval, MetricsWriter: os.Stdout,
+		SessionRecheckInterval: cfg.SessionRecheckInterval, MetricsWriter: os.Stdout, ArtifactAccess: artifactAccess,
 	})
 }
 
@@ -193,6 +212,8 @@ func loadDeploymentConfig(getenv func(string) string) (deploymentConfig, error) 
 		PublicOrigin:            get("HAKO_GATEWAY_PUBLIC_ORIGIN"),
 		JournalBucket:           get("HAKO_WORKSPACE_RUNTIME_JOURNAL_BUCKET"),
 		JournalPrefix:           get("HAKO_WORKSPACE_RUNTIME_JOURNAL_PREFIX"),
+		WorkloadArtifactBucket:  get("HAKO_WORKLOAD_ARTIFACT_BUCKET"),
+		WorkloadArtifactPrefix:  get("HAKO_WORKLOAD_ARTIFACT_PREFIX"),
 		Region:                  get("AWS_REGION"),
 	}
 	if cfg.ListenAddress == "" {
@@ -224,6 +245,9 @@ func loadDeploymentConfig(getenv func(string) string) (deploymentConfig, error) 
 		cfg.AgentTicketKeyID == "" || cfg.AgentTicketKeyFile == "" ||
 		cfg.PublicOrigin == "" || cfg.JournalBucket == "" || cfg.Region == "" || len(cfg.AllowedOrigins) == 0 {
 		return deploymentConfig{}, errors.New("Workspace Gateway requires Resource Plane, TLS, session keys, lookup endpoint/key, connection lease endpoint/key, Agent key, journal, region, and allowed-origin configuration")
+	}
+	if (cfg.WorkloadArtifactBucket == "") != (cfg.WorkloadArtifactPrefix == "") {
+		return deploymentConfig{}, errors.New("HAKO_WORKLOAD_ARTIFACT_BUCKET and HAKO_WORKLOAD_ARTIFACT_PREFIX must be configured together")
 	}
 	if !gatewayKeyIDPattern.MatchString(cfg.AgentTicketKeyID) {
 		return deploymentConfig{}, errors.New("HAKO_GATEWAY_AGENT_TICKET_KEY_ID is invalid")

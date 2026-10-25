@@ -4,13 +4,17 @@ package api
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +26,7 @@ import (
 	"github.com/mo3789530/hako/internal/store/transaction"
 	"github.com/mo3789530/hako/internal/store/workloads"
 	"github.com/mo3789530/hako/internal/testutil"
+	"github.com/mo3789530/hako/internal/workloadartifactaccess"
 )
 
 func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
@@ -74,6 +79,12 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 		strings.Repeat("a", 64), now.Add(time.Hour), now); err != nil {
 		t.Fatalf("seed Workload artifact: %v", err)
 	}
+	if _, err := pool.Exec(ctx, `INSERT INTO resource_planes(id,provider,region,capabilities_json) VALUES ('rp_runs_a','aws','ap-northeast-1','["microvm"]')`); err != nil {
+		t.Fatalf("seed Workload Resource Plane: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE workload_runs SET resource_plane_id='rp_runs_a' WHERE id='run_owned_member'`); err != nil {
+		t.Fatalf("pin Workload Run Resource Plane: %v", err)
+	}
 
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -93,7 +104,15 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := NewHandler(verifier, pool, WorkspaceCreateConfig{WorkloadRunsEnabled: true})
+	artifactKey := []byte(strings.Repeat("k", 32))
+	keyResolver := func(_ context.Context, planeID domain.ResourcePlaneID) ([]byte, error) {
+		if planeID != "rp_runs_a" {
+			return nil, fmt.Errorf("unknown plane")
+		}
+		return append([]byte(nil), artifactKey...), nil
+	}
+	handler := NewHandler(verifier, pool, WorkspaceCreateConfig{WorkloadRunsEnabled: true,
+		ResourcePlaneWorkspaceSessionKeyResolver: keyResolver})
 	request := func(subject, method, path string) *httptest.ResponseRecorder {
 		t.Helper()
 		token := signTenantAPIToken(t, privateKey, issuer, subject, "openid hako/api")
@@ -168,10 +187,12 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 	if quotaExceeded.Code != http.StatusConflict || json.Unmarshal(quotaExceeded.Body.Bytes(), &quotaError) != nil || quotaError.Error.Code != "workload_quota_exceeded" {
 		t.Fatalf("sixth concurrent Workload Run should return a stable quota conflict: HTTP %d %s", quotaExceeded.Code, quotaExceeded.Body.String())
 	}
+	enabledHandler := handler
 	handler = NewHandler(verifier, pool)
 	if disabled := createRequest("runs-member", "disabled-create-key", createBody); disabled.Code != http.StatusServiceUnavailable {
 		t.Fatalf("Workload Run creation should be disabled by default: HTTP %d %s", disabled.Code, disabled.Body.String())
 	}
+	handler = enabledHandler
 
 	list := request("runs-member", http.MethodGet, "/v1/tenants/tenant_runs_a/workload-runs")
 	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), "run_owned_member") || strings.Contains(list.Body.String(), "run_owned_owner") {
@@ -204,6 +225,36 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 		detail.Artifacts[0].SHA256 != strings.Repeat("a", 64) || strings.Contains(own.Body.String(), "private-artifacts") {
 		t.Fatalf("Run detail did not expose safe artifact metadata: detail=%+v body=%s err=%v", detail, own.Body.String(), err)
 	}
+	artifactTicketPath := "/v1/tenants/tenant_runs_a/workload-runs/run_owned_member/artifacts/artifact_run_detail/download-ticket"
+	ticketRecorder := request("runs-member", http.MethodPost, artifactTicketPath)
+	var artifactTicket workloadArtifactTicketResponse
+	if ticketRecorder.Code != http.StatusCreated || json.Unmarshal(ticketRecorder.Body.Bytes(), &artifactTicket) != nil || artifactTicket.Ticket == "" {
+		t.Fatalf("create artifact download ticket = HTTP %d %s", ticketRecorder.Code, ticketRecorder.Body.String())
+	}
+	ticketClaims, err := workloadartifactaccess.Verify(artifactTicket.Ticket, artifactKey, time.Now().UTC())
+	if err != nil || ticketClaims.UserID != "usr_runs_member" || ticketClaims.TenantID != "tenant_runs_a" ||
+		ticketClaims.WorkloadRunID != "run_owned_member" || ticketClaims.ArtifactID != "artifact_run_detail" || ticketClaims.ResourcePlane != "rp_runs_a" {
+		t.Fatalf("artifact ticket claims = %+v error=%v", ticketClaims, err)
+	}
+	wrongRequesterTicket := request("runs-member", http.MethodPost, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_owner/artifacts/artifact_run_detail/download-ticket")
+	if wrongRequesterTicket.Code != http.StatusNotFound {
+		t.Fatalf("member received another requester's artifact ticket: HTTP %d %s", wrongRequesterTicket.Code, wrongRequesterTicket.Body.String())
+	}
+	resolvePath := "/v1/internal/resource-planes/rp_runs_a/workload-artifacts/artifact_run_detail/access"
+	claimsJSON, _ := json.Marshal(workloadArtifactAccessGrant{Claims: ticketClaims})
+	resolveReq := httptest.NewRequest(http.MethodPost, resolvePath, strings.NewReader(string(claimsJSON)))
+	resolveReq.Header.Set("Content-Type", "application/json")
+	resolveReq.Header.Set("X-Hako-Timestamp", strconv.FormatInt(time.Now().UTC().Unix(), 10))
+	resolveReq.Header.Set("X-Hako-Request-ID", "req_11111111111111111111111111111111")
+	resolveReq.Header.Set("X-Hako-Signature", signArtifactAccessRequest(artifactKey, resolvePath,
+		resolveReq.Header.Get("X-Hako-Timestamp"), resolveReq.Header.Get("X-Hako-Request-ID"), claimsJSON))
+	resolveRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(resolveRecorder, resolveReq)
+	var grant workloadArtifactAccessResult
+	if resolveRecorder.Code != http.StatusOK || json.Unmarshal(resolveRecorder.Body.Bytes(), &grant) != nil ||
+		grant.StorageRef != "s3://private-artifacts/workloads/secret-key-path" || grant.SHA256 != strings.Repeat("a", 64) || grant.SizeBytes != 12 {
+		t.Fatalf("resolve artifact grant = HTTP %d grant=%+v body=%s", resolveRecorder.Code, grant, resolveRecorder.Body.String())
+	}
 
 	cancelled := request("runs-member", http.MethodPost, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_member/cancel")
 	if cancelled.Code != http.StatusAccepted || !strings.Contains(cancelled.Body.String(), `"desired_state":"cancelled"`) {
@@ -220,4 +271,22 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM audit_events WHERE tenant_id = $1 AND actor_user_id = $2 AND action = 'workload_run.cancel'`, "tenant_runs_a", "usr_runs_member").Scan(&cancelAudits); err != nil || cancelAudits != 1 {
 		t.Fatalf("cancellation audit count=%d error=%v", cancelAudits, err)
 	}
+	if _, err := pool.Exec(ctx, `DELETE FROM tenant_members WHERE tenant_id='tenant_runs_a' AND user_id='usr_runs_member'`); err != nil {
+		t.Fatalf("revoke artifact requester membership: %v", err)
+	}
+	revokedResolveReq := httptest.NewRequest(http.MethodPost, resolvePath, strings.NewReader(string(claimsJSON)))
+	revokedResolveReq.Header = resolveReq.Header.Clone()
+	revokedResolveRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(revokedResolveRecorder, revokedResolveReq)
+	if revokedResolveRecorder.Code != http.StatusNotFound {
+		t.Fatalf("revoked Tenant member retained artifact access: HTTP %d %s", revokedResolveRecorder.Code, revokedResolveRecorder.Body.String())
+	}
+}
+
+func signArtifactAccessRequest(key []byte, path, timestamp, requestID string, body []byte) string {
+	bodyHash := sha256.Sum256(body)
+	message := fmt.Sprintf("%s\n%s\n%s\n%s\n%s", http.MethodPost, path, timestamp, requestID, hex.EncodeToString(bodyHash[:]))
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte(message))
+	return hex.EncodeToString(mac.Sum(nil))
 }

@@ -320,6 +320,11 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Fprintf(os.Stdout, "Workload Run %s accepted (state=%s, request-key=%s)\n", run.ID, run.State, key)
+	case len(os.Args) >= 5 && os.Args[1] == "workload" && os.Args[2] == "artifact" && os.Args[3] == "download":
+		if err := downloadWorkloadArtifactCLI(os.Args[4:]); err != nil {
+			fmt.Fprintf(os.Stderr, "hako workload artifact download: %v\n", err)
+			os.Exit(1)
+		}
 	case len(os.Args) >= 4 && len(os.Args) <= 6 && os.Args[1] == "workload" && os.Args[2] == "list":
 		limit, offset, err := parseCLIPage(os.Args[4:])
 		if err != nil {

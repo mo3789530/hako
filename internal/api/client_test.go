@@ -9,7 +9,32 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestCreateWorkloadArtifactDownloadTicketUsesExactTenantRunAndArtifactRoute(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/tenants/tenant_123/workload-runs/run_123/artifacts/artifact_123/download-ticket" ||
+			r.Header.Get("Authorization") != "Bearer artifact-test-token" || r.ContentLength != 0 {
+			t.Errorf("unexpected artifact ticket request: %s %s content-length=%d auth=%q", r.Method, r.URL.Path, r.ContentLength, r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(WorkloadArtifactDownloadTicket{Ticket: "opaque-ticket", ExpiresAt: time.Now().Add(time.Minute),
+			SizeBytes: 12, SHA256: strings.Repeat("a", 64), Kind: "logs"})
+	}))
+	defer server.Close()
+	result, err := CreateWorkloadArtifactDownloadTicket(context.Background(), server.URL, "artifact-test-token",
+		"tenant_123", "run_123", "artifact_123", server.Client())
+	if err != nil || result.Ticket != "opaque-ticket" || result.SizeBytes != 12 || result.Kind != "logs" {
+		t.Fatalf("ticket = %+v, %v", result, err)
+	}
+	for _, ids := range [][3]string{{"../tenant", "run_123", "artifact_123"}, {"tenant_123", "../run", "artifact_123"}, {"tenant_123", "run_123", "../artifact"}} {
+		if _, err := CreateWorkloadArtifactDownloadTicket(context.Background(), server.URL, "artifact-test-token", ids[0], ids[1], ids[2], server.Client()); err == nil {
+			t.Errorf("unsafe artifact identity accepted: %v", ids)
+		}
+	}
+}
 
 func TestWorkspaceServiceClientListsAndAddsWithTenantScopedPaths(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

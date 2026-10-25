@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/idempotency"
 	"github.com/mo3789530/hako/internal/servicecatalog"
+	"github.com/mo3789530/hako/internal/workloadartifactaccess"
 	"github.com/mo3789530/hako/internal/workspacesession"
 )
 
@@ -156,6 +158,14 @@ type WorkloadRunListResult struct {
 	Total  int64                `json:"total"`
 	Limit  int                  `json:"limit"`
 	Offset int                  `json:"offset"`
+}
+
+type WorkloadArtifactDownloadTicket struct {
+	Ticket    string    `json:"ticket"`
+	ExpiresAt time.Time `json:"expires_at"`
+	SizeBytes int64     `json:"size_bytes"`
+	SHA256    string    `json:"sha256"`
+	Kind      string    `json:"kind"`
 }
 
 type WorkloadRunCreateRequest struct {
@@ -364,7 +374,9 @@ func PutTenantWorkspaceIdlePolicy(ctx context.Context, baseURL, accessToken stri
 	if response.StatusCode != http.StatusOK {
 		return result, readAPIError(response)
 	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil ||
+	decoder := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&result); err != nil || decoder.Decode(new(any)) != io.EOF ||
 		result.TenantID != policy.TenantID || result.GracePeriodSeconds < 300 || result.GracePeriodSeconds > 86400 || result.Revision < 1 {
 		return TenantWorkspaceIdlePolicy{}, errors.New("Hako API returned an invalid Tenant Workspace idle policy")
 	}
@@ -847,7 +859,9 @@ func CreateWorkspaceSession(ctx context.Context, baseURL, accessToken, tenantID,
 	if response.StatusCode != http.StatusCreated {
 		return result, readAPIError(response)
 	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil ||
+	decoder := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&result); err != nil || decoder.Decode(new(any)) != io.EOF ||
 		!validOpaqueID(string(result.SessionID)) || result.Ticket == "" || len(result.Ticket) > 8192 || result.ExpiresAt.IsZero() ||
 		workspacesession.ValidatePermissions(result.Permissions) != nil {
 		return WorkspaceSession{}, errors.New("Hako API returned an invalid Workspace Session response")
@@ -996,6 +1010,49 @@ func GetWorkloadRun(ctx context.Context, baseURL, accessToken, tenantID, runID s
 		return domain.WorkloadRun{}, errors.New("Hako API returned an invalid Workload Run response")
 	}
 	return result, nil
+}
+
+// CreateWorkloadArtifactDownloadTicket requests a short-lived download
+// capability after the API rechecks the caller's Run visibility.
+func CreateWorkloadArtifactDownloadTicket(ctx context.Context, baseURL, accessToken, tenantID, runID, artifactID string,
+	client *http.Client) (WorkloadArtifactDownloadTicket, error) {
+	var result WorkloadArtifactDownloadTicket
+	if !validTenantID(tenantID) || !validOpaqueID(runID) || !validOpaqueID(artifactID) {
+		return result, errors.New("Tenant, Workload Run, and artifact IDs must contain only letters, numbers, underscores, or hyphens")
+	}
+	endpoint, err := apiEndpoint(baseURL, "/v1/tenants/"+url.PathEscape(tenantID)+"/workload-runs/"+url.PathEscape(runID)+
+		"/artifacts/"+url.PathEscape(artifactID)+"/download-ticket")
+	if err != nil {
+		return result, err
+	}
+	response, err := doAPIRequestWithBody(ctx, http.MethodPost, endpoint, accessToken, nil, client)
+	if err != nil {
+		return result, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		return result, readAPIError(response)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil ||
+		strings.TrimSpace(result.Ticket) == "" || result.ExpiresAt.Before(time.Now().Add(-30*time.Second)) ||
+		result.ExpiresAt.After(time.Now().Add(workloadartifactaccess.TicketMaxTTL+30*time.Second)) ||
+		result.SizeBytes < 0 || result.SizeBytes > workloadartifactaccess.MaxArtifactSize || len(result.SHA256) != 64 ||
+		!validArtifactKind(result.Kind) {
+		return WorkloadArtifactDownloadTicket{}, errors.New("Hako API returned an invalid Workload artifact ticket")
+	}
+	if _, err := hex.DecodeString(result.SHA256); err != nil || strings.ToLower(result.SHA256) != result.SHA256 {
+		return WorkloadArtifactDownloadTicket{}, errors.New("Hako API returned an invalid Workload artifact digest")
+	}
+	return result, nil
+}
+
+func validArtifactKind(kind string) bool {
+	switch kind {
+	case "logs", "test_report", "coverage", "sbom", "binary", "container_image", "other":
+		return true
+	default:
+		return false
+	}
 }
 
 // CancelWorkloadRun requests idempotent asynchronous cancellation.

@@ -64,7 +64,8 @@ type Config struct {
 	Logger                     *slog.Logger
 	// MetricsWriter receives CloudWatch Embedded Metric Format JSON records.
 	// It must be an operational log sink (normally stdout), never a client stream.
-	MetricsWriter io.Writer
+	MetricsWriter  io.Writer
+	ArtifactAccess *ArtifactAccessConfig
 }
 
 type Gateway struct {
@@ -76,6 +77,7 @@ type Gateway struct {
 	byWS      map[domain.WorkspaceID]int
 	byTicket  map[string]struct{}
 	metricsMu sync.Mutex
+	artifacts *artifactAccess
 }
 
 func New(config Config) (*Gateway, error) {
@@ -99,6 +101,10 @@ func New(config Config) (*Gateway, error) {
 	if config.Logger == nil {
 		config.Logger = slog.Default()
 	}
+	artifacts, err := newArtifactAccess(config.ArtifactAccess)
+	if err != nil {
+		return nil, err
+	}
 	origins := make(map[string]struct{}, len(config.AllowedOrigins))
 	for _, raw := range config.AllowedOrigins {
 		parsed, err := url.Parse(raw)
@@ -107,7 +113,7 @@ func New(config Config) (*Gateway, error) {
 		}
 		origins[parsed.Scheme+"://"+strings.ToLower(parsed.Host)] = struct{}{}
 	}
-	return &Gateway{config: config, logger: config.Logger, origins: origins, byWS: make(map[domain.WorkspaceID]int), byTicket: make(map[string]struct{})}, nil
+	return &Gateway{config: config, logger: config.Logger, origins: origins, byWS: make(map[domain.WorkspaceID]int), byTicket: make(map[string]struct{}), artifacts: artifacts}, nil
 }
 
 func (g *Gateway) Handler() http.Handler {
@@ -117,6 +123,9 @@ func (g *Gateway) Handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, `{"status":"ok"}`)
 	})
+	if g.artifacts != nil {
+		mux.HandleFunc("GET /v1/workload-artifacts/{artifact_id}", g.serveArtifact)
+	}
 	mux.HandleFunc("GET /v1/workspaces/{workspace_id}/shell", g.serveShell)
 	mux.HandleFunc("GET /v1/workspaces/{workspace_id}/exec", g.serveExec)
 	mux.HandleFunc("GET /v1/workspaces/{workspace_id}/files", g.serveFiles)

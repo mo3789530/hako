@@ -29,26 +29,29 @@ variable "workspace_storage_runtime" {
 variable "workspace_gateway_deployment" {
   description = "Optional default-off private Fargate Workspace Gateway behind a public HTTPS/WSS ALB. Secret ARNs refer to operator-provisioned plain-text SecretString values; no Secret values enter Terraform."
   type = object({
-    image_uri                 = string
-    secret_loader_image_uri   = string
-    ecs_cluster_arn           = string
-    ecs_cluster_name          = string
-    vpc_id                    = string
-    vpc_cidr_block            = string
-    public_subnet_ids         = list(string)
-    private_subnet_ids        = list(string)
-    ingress_cidr_blocks       = list(string)
-    egress_cidr_blocks        = list(string)
-    acm_certificate_arn       = string
-    microvm_image_arn         = string
-    journal_bucket_name       = string
-    journal_bucket_arn        = string
-    journal_prefix            = string
-    session_lookup_endpoint   = string
-    connection_lease_endpoint = string
-    public_origin             = string
-    allowed_origins           = list(string)
-    agent_ticket_key_id       = string
+    image_uri                     = string
+    secret_loader_image_uri       = string
+    ecs_cluster_arn               = string
+    ecs_cluster_name              = string
+    vpc_id                        = string
+    vpc_cidr_block                = string
+    public_subnet_ids             = list(string)
+    private_subnet_ids            = list(string)
+    ingress_cidr_blocks           = list(string)
+    egress_cidr_blocks            = list(string)
+    acm_certificate_arn           = string
+    microvm_image_arn             = string
+    journal_bucket_name           = string
+    journal_bucket_arn            = string
+    journal_prefix                = string
+    workload_artifact_bucket_name = optional(string, "")
+    workload_artifact_bucket_arn  = optional(string, "")
+    workload_artifact_prefix      = optional(string, "")
+    session_lookup_endpoint       = string
+    connection_lease_endpoint     = string
+    public_origin                 = string
+    allowed_origins               = list(string)
+    agent_ticket_key_id           = string
     secret_arns = object({
       tls_certificate          = string
       tls_private_key          = string
@@ -93,6 +96,18 @@ variable "workspace_gateway_deployment" {
       can(regex("^arn:(aws|aws-us-gov|aws-cn):s3:::[a-z0-9.-]{3,63}$", var.workspace_gateway_deployment.journal_bucket_arn)) &&
       endswith(var.workspace_gateway_deployment.journal_bucket_arn, var.workspace_gateway_deployment.journal_bucket_name) &&
       !strcontains(var.workspace_gateway_deployment.journal_prefix, "..") &&
+      ((var.workspace_gateway_deployment.workload_artifact_bucket_name == "" &&
+        var.workspace_gateway_deployment.workload_artifact_bucket_arn == "" &&
+        var.workspace_gateway_deployment.workload_artifact_prefix == "") ||
+        (can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.workspace_gateway_deployment.workload_artifact_bucket_name)) &&
+          !strcontains(var.workspace_gateway_deployment.workload_artifact_bucket_name, "..") &&
+          can(regex("^arn:(aws|aws-us-gov|aws-cn):s3:::[a-z0-9.-]{3,63}$", var.workspace_gateway_deployment.workload_artifact_bucket_arn)) &&
+          endswith(var.workspace_gateway_deployment.workload_artifact_bucket_arn, var.workspace_gateway_deployment.workload_artifact_bucket_name) &&
+          var.workspace_gateway_deployment.workload_artifact_prefix != "" &&
+          !strcontains(var.workspace_gateway_deployment.workload_artifact_prefix, "..") &&
+          !strcontains(var.workspace_gateway_deployment.workload_artifact_prefix, "\\") &&
+          !startswith(var.workspace_gateway_deployment.workload_artifact_prefix, "/") &&
+      !endswith(var.workspace_gateway_deployment.workload_artifact_prefix, "/"))) &&
       can(regex("^https://[^/?#]+(?::[0-9]+)?$", var.workspace_gateway_deployment.session_lookup_endpoint)) &&
       can(regex("^https://[^/?#]+(?::[0-9]+)?$", var.workspace_gateway_deployment.connection_lease_endpoint)) &&
       can(regex("^https://[^/?#]+$", var.workspace_gateway_deployment.public_origin)) &&
