@@ -61,3 +61,35 @@ func TestAuthorizeWorkspaceDeletionYesSkipsPrompt(t *testing.T) {
 		t.Fatalf("--yes authorization = %t, %v; want confirmed without prompt", confirmed, err)
 	}
 }
+
+func TestAuthorizeWorkspaceServiceRemovalRequiresExactInstanceName(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		input     string
+		confirmed bool
+	}{
+		{name: "exact instance name", input: "postgres\n", confirmed: true},
+		{name: "generic yes is insufficient", input: "yes\n"},
+		{name: "wrong instance name", input: "redis\n"},
+		{name: "EOF cancels", input: ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output strings.Builder
+			confirmed, err := authorizeWorkspaceServiceRemoval(false, strings.NewReader(test.input), &output,
+				"tenant_a", "ws_123", "postgres")
+			if err != nil || confirmed != test.confirmed {
+				t.Fatalf("removal authorization = %t, %v; want %t", confirmed, err, test.confirmed)
+			}
+			if !strings.Contains(output.String(), "deletes its data") || !strings.Contains(output.String(), `Type "postgres"`) {
+				t.Fatalf("service removal prompt does not state the data impact and target: %q", output.String())
+			}
+		})
+	}
+}
+
+func TestAuthorizeWorkspaceServiceRemovalYesSkipsPrompt(t *testing.T) {
+	confirmed, err := authorizeWorkspaceServiceRemoval(true, nil, nil, "tenant_a", "ws_123", "postgres")
+	if err != nil || !confirmed {
+		t.Fatalf("--yes authorization = %t, %v; want confirmed without prompt", confirmed, err)
+	}
+}

@@ -161,7 +161,7 @@ hako services <tenant-id> <workspace-id>
 hako service usage <tenant-id> <workspace-id>
 hako service stop <tenant-id> <workspace-id> <instance-name>
 hako service start <tenant-id> <workspace-id> <instance-name>
-hako service remove <tenant-id> <workspace-id> <instance-name>
+hako service remove <tenant-id> <workspace-id> <instance-name> [--yes]
 hako service rotate-credentials <tenant-id> <workspace-id> <instance-name>
 ```
 
@@ -207,6 +207,11 @@ before reporting deletion, but deployed Lambda MicroVM/EFS behavior has not
 been verified. A deleted Service cannot be restarted or recreated under the
 same name. Each changed state is audit-recorded; repeated no-op requests do
 not create additional audit events.
+
+Because `remove` deletes the Service's data subtree, the CLI asks you to type
+the exact instance name before sending the request. EOF or a different value
+cancels without calling the API. Use `--yes` for automation; the option is
+accepted only for `hako service remove`.
 
 `hako service rotate-credentials` is available for a running catalog Service
 that declares generated credentials (currently PostgreSQL). It records a new

@@ -349,6 +349,31 @@ func TestParseWorkspaceActionOptions(t *testing.T) {
 	}
 }
 
+func TestParseWorkspaceServiceActionOptions(t *testing.T) {
+	tests := []struct {
+		name      string
+		action    string
+		args      []string
+		wantYes   bool
+		wantError bool
+	}{
+		{name: "remove interactive confirmation", action: "remove"},
+		{name: "remove automation confirmation", action: "remove", args: []string{"--yes"}, wantYes: true},
+		{name: "yes rejected for start", action: "start", args: []string{"--yes"}, wantError: true},
+		{name: "yes rejected for stop", action: "stop", args: []string{"--yes"}, wantError: true},
+		{name: "unknown option rejected", action: "remove", args: []string{"--force"}, wantError: true},
+		{name: "extra options rejected", action: "remove", args: []string{"--yes", "--yes"}, wantError: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := parseWorkspaceServiceActionOptions(test.action, test.args)
+			if (err != nil) != test.wantError || (err == nil && got.yes != test.wantYes) {
+				t.Fatalf("parseWorkspaceServiceActionOptions(%q, %q) = %+v, %v; want yes=%t error=%t", test.action, test.args, got, err, test.wantYes, test.wantError)
+			}
+		})
+	}
+}
+
 func TestCreateWorkloadCLIRequiresImmutableRepositoryInputs(t *testing.T) {
 	if _, _, err := createWorkloadCLI([]string{"--tenant", "tenant_1", "--installation", "1", "--repository", "2"}); err == nil {
 		t.Fatal("createWorkloadCLI accepted a request without an immutable commit")

@@ -22,6 +22,15 @@ only for `delete`. The request remains asynchronous and can be confirmed with
 retries. Unit tests cover parsing, exact confirmation, cancellation, bounded
 input, and the non-interactive bypass. See [Workspace CLI](../docs/workspace-cli.md).
 
+## Workspace Service removal confirmation (2026-10-25)
+
+`hako service remove` deletes the Service's scoped data subtree as well as
+changing desired state. The CLI now requires typing the exact instance name
+before it calls the API; EOF and mismatches cancel. `--yes` is available only
+for the `remove` action. Parser and confirmation tests cover both interactive
+and automation paths. This is a client-side guard; the authenticated API still
+enforces Workspace RBAC and records the lifecycle request.
+
 ## Goal
 
 Complete the basic interactive development flow and reproducible local-service templates.
