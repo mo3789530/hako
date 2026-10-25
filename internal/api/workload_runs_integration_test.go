@@ -33,12 +33,15 @@ import (
 type fakeAgentProposalPublicationSubmitter struct {
 	result    AgentProposalPublicationSubmission
 	attemptID string
+	calls     int
+	err       error
 }
 
 func (f *fakeAgentProposalPublicationSubmitter) Publish(_ context.Context, tenantID, runID, attemptID string) (AgentProposalPublicationSubmission, error) {
+	f.calls++
 	f.attemptID = attemptID
-	if f.result.TenantID != tenantID || f.result.WorkloadRunID != runID {
-		return AgentProposalPublicationSubmission{}, fmt.Errorf("unexpected Tenant/Run")
+	if f.err != nil {
+		return AgentProposalPublicationSubmission{}, f.err
 	}
 	return f.result, nil
 }
@@ -324,10 +327,39 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 		!strings.Contains(submitted.Body.String(), `"pull_request_number":23`) || publicationSubmitter.attemptID != "attempt_publish_api" {
 		t.Fatalf("Agent publication submit = HTTP %d body=%s attempt=%q", submitted.Code, submitted.Body.String(), publicationSubmitter.attemptID)
 	}
+	requestWithBody := func(subject, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		token := signTenantAPIToken(t, privateKey, issuer, subject, "openid hako/api")
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, req)
+		return recorder
+	}
+	publishPath := "/v1/tenants/tenant_runs_a/workload-runs/run_owned_member/agent-publication/publish"
+	if invalidBody := requestWithBody("runs-member", publishPath, `{}`); invalidBody.Code != http.StatusBadRequest || publicationSubmitter.calls != 1 {
+		t.Fatalf("publication request body HTTP %d or called broker: %s calls=%d", invalidBody.Code, invalidBody.Body.String(), publicationSubmitter.calls)
+	}
+	if invalidRun := request("runs-member", http.MethodPost, "/v1/tenants/tenant_runs_a/workload-runs/run!bad/agent-publication/publish"); invalidRun.Code != http.StatusBadRequest || publicationSubmitter.calls != 1 {
+		t.Fatalf("invalid Run identity HTTP %d or called broker: %s calls=%d", invalidRun.Code, invalidRun.Body.String(), publicationSubmitter.calls)
+	}
+	publicationSubmitter.err = fmt.Errorf("synthetic broker detail must not be returned")
+	brokerFailure := request("runs-member", http.MethodPost, publishPath)
+	if brokerFailure.Code != http.StatusBadGateway || strings.Contains(brokerFailure.Body.String(), "synthetic broker detail") || publicationSubmitter.calls != 2 {
+		t.Fatalf("Broker failure was not sanitized: HTTP %d calls=%d body=%s", brokerFailure.Code, publicationSubmitter.calls, brokerFailure.Body.String())
+	}
+	publicationSubmitter.err = nil
+	publicationSubmitter.result.TenantID = "tenant_foreign"
+	identityFailure := request("runs-member", http.MethodPost, publishPath)
+	if identityFailure.Code != http.StatusBadGateway || strings.Contains(identityFailure.Body.String(), "tenant_foreign") || publicationSubmitter.calls != 3 {
+		t.Fatalf("mismatched Broker response was not sanitized: HTTP %d calls=%d body=%s", identityFailure.Code, publicationSubmitter.calls, identityFailure.Body.String())
+	}
+	publicationSubmitter.result.TenantID = "tenant_runs_a"
 	var publicationAuditCount int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE tenant_id='tenant_runs_a' AND actor_user_id='usr_runs_member'
-		AND action='workload.agent_proposal.publish' AND target_id='run_owned_member'`).Scan(&publicationAuditCount); err != nil || publicationAuditCount != 1 {
-		t.Fatalf("publication submit audit count=%d error=%v", publicationAuditCount, err)
+		AND action='workload.agent_proposal.publish' AND target_id='run_owned_member'`).Scan(&publicationAuditCount); err != nil || publicationAuditCount != 3 {
+		t.Fatalf("publication submit success/failure audit count=%d error=%v", publicationAuditCount, err)
 	}
 	if hiddenSubmit := request("runs-member", http.MethodPost, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_owner/agent-publication/publish"); hiddenSubmit.Code != http.StatusNotFound {
 		t.Fatalf("member submitted another requester's Agent proposal: HTTP %d %s", hiddenSubmit.Code, hiddenSubmit.Body.String())

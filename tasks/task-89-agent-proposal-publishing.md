@@ -108,6 +108,13 @@ Repository. The proposal remains untrusted. Hako must never merge or deploy it.
 
 ## Local implementation progress (2026-10-25)
 
+The authenticated Control Plane publication API integration path also covers
+empty-body enforcement, malformed Run identity rejection before broker access,
+sanitized Broker errors, and mismatched Tenant identity in a Broker response.
+Successful, failed, and mismatched-identity submission attempts are audited;
+invalid requests do not invoke the Broker. This uses an isolated local
+PostgreSQL database and a fake submitter, with no GitHub or AWS calls.
+
 - `workloadsource.ApplyAgentProposalArchive` verifies the immutable base source
   archive, validates the untrusted ZIP against path/type/secret/size bounds,
   applies only regular files in a private temporary checkout, and emits a new

@@ -160,6 +160,11 @@ Task 47 CLI follow-up (2026-10-25): authenticated HTTP tests now cover Tenant
 membership and placement-policy GET/PUT, including Tenant identity in the
 request and fail-closed missing credential/API URL paths.
 
+Task 89 API follow-up (2026-10-25): the PostgreSQL publication integration
+test verifies request-body and malformed-identity rejection before Broker
+access, generic error redaction, and a mismatched Tenant response from the
+Broker. Successful and failed attempts are audited; invalid requests are not.
+
 Added `make verify-workload-microvm-artifact` so the Agent ZIP check is
 repeatable: it validates the public-key JSON, exact package contents, key-byte
 identity, and static ELF64/AArch64 architecture. Focused key validation tests
