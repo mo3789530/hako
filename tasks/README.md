@@ -194,6 +194,14 @@ validation/persistence, and fake GitHub Checks delivery. The existing
 `hako-dev-postgres` container remained running. This does not verify AWS
 deployment or live GitHub delivery.
 
+Task 42/53 focused runtime refresh (2026-10-25): `make
+test-software-factory-e2e` passed its required Podman webhook/Check E2E,
+Tenant-scoped Run API test, and composed Lambda Worker success/cancellation
+tests. `make test-job-services-podman` also passed with the PostgreSQL
+sidecar, generated credential authentication, cgroup checks, loopback access,
+and denied external TCP probe. PostgreSQL remained running. These are local
+host-Podman/fake-provider checks, not ARM64 nerdctl or Lambda MicroVM evidence.
+
 ## 着手ルール
 
 1. `P0`から順に、依存タスクが完了しているものを一件だけ選ぶ。
