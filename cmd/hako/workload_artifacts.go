@@ -26,6 +26,13 @@ import (
 )
 
 func downloadWorkloadArtifactCLI(args []string) error {
+	return downloadWorkloadArtifactCLIWithOutput(args, os.Stdout)
+}
+
+func downloadWorkloadArtifactCLIWithOutput(args []string, output io.Writer) error {
+	if output == nil {
+		return errors.New("artifact download output is unavailable")
+	}
 	outputPath, positional, err := parseArtifactDownloadArgs("hako workload artifact download", args, 3)
 	if err != nil {
 		return errors.New("usage: hako workload artifact download <tenant-id> <run-id> <artifact-id> --out <path>")
@@ -46,7 +53,7 @@ func downloadWorkloadArtifactCLI(args []string) error {
 		positional[0], positional[1], positional[2], outputPath, nil); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(os.Stdout, "Workload artifact %s saved to %s\n", positional[2], outputPath)
+	_, err = fmt.Fprintf(output, "Workload artifact %s saved to %s\n", positional[2], outputPath)
 	return err
 }
 
