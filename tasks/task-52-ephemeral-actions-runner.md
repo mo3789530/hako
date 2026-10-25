@@ -24,6 +24,17 @@ remains unperformed.
 
 Claude Code Action support is tracked separately in [Task 73](task-73-claude-code-action.md), including Tenant-scoped model credentials, untrusted PR denial, and action-specific E2E.
 
+## Workflow policy read API (2026-10-25)
+
+Added a Tenant-member GET endpoint and `hako github repository runner policy
+show` command for reading an enabled repository's configured workflow
+allowlist. The response contains policy data only. Cross-Tenant and disabled or
+unconfigured repositories return not found; configuration remains Owner/Admin
+only. The API/CLI contract tests and PostgreSQL integration test verify member
+read, foreign-Tenant hiding, policy persistence, and policy removal visibility
+after runner opt-out. This does not enable runner execution or alter its
+default-off state.
+
 ## Goal
 
 Offer Hako as an ephemeral self-hosted runner backend for existing GitHub Actions workflows without taking ownership of or rewriting user workflow YAML.

@@ -66,6 +66,14 @@ func TestRepositoryFactorySettingRequiresTenantOwnerAndActiveRegisteredRepositor
 		handler.ServeHTTP(response, request)
 		return response
 	}
+	callGet := func(route, subject, tenant string) *httptest.ResponseRecorder {
+		token := signTenantAPIToken(t, key, issuer, subject, "openid hako/api")
+		request := httptest.NewRequest(http.MethodGet, strings.Replace(route, "tenant_factory_api", tenant, 1), nil)
+		request.Header.Set("Authorization", "Bearer "+token)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
 	for _, test := range []struct {
 		subject, tenant, body string
 		want                  int
@@ -136,12 +144,31 @@ func TestRepositoryFactorySettingRequiresTenantOwnerAndActiveRegisteredRepositor
 			t.Fatalf("workflow policy for %s/%s returned HTTP %d, want %d: %s", test.subject, test.tenant, response.Code, test.want, response.Body.String())
 		}
 	}
+	for _, test := range []struct {
+		subject, tenant string
+		want            int
+	}{
+		{"factory-member", "tenant_factory_api", http.StatusOK},
+		{"factory-owner", "tenant_factory_api", http.StatusOK},
+		{"factory-owner", "tenant_factory_other", http.StatusNotFound},
+	} {
+		response := callGet(workflowPolicyPath, test.subject, test.tenant)
+		if response.Code != test.want {
+			t.Fatalf("workflow policy read for %s/%s returned HTTP %d, want %d: %s", test.subject, test.tenant, response.Code, test.want, response.Body.String())
+		}
+		if response.Code == http.StatusOK && !strings.Contains(response.Body.String(), `"workflow_path":".github/workflows/claude.yml"`) {
+			t.Fatalf("workflow policy read returned unexpected policy: %s", response.Body.String())
+		}
+	}
 	var workflowPath string
 	if err := pool.QueryRow(ctx, `SELECT actions_runner_workflow_policy->>'workflow_path' FROM tenant_github_repositories WHERE tenant_id='tenant_factory_api' AND installation_id=7001 AND github_repository_id=7002`).Scan(&workflowPath); err != nil || workflowPath != ".github/workflows/claude.yml" {
 		t.Fatalf("persisted workflow policy path = %q, error = %v", workflowPath, err)
 	}
 	if response := call(runnerPath, "factory-admin", "tenant_factory_api", `{"enabled":false}`); response.Code != http.StatusOK {
 		t.Fatalf("runner opt-out after workflow policy returned HTTP %d: %s", response.Code, response.Body.String())
+	}
+	if response := callGet(workflowPolicyPath, "factory-member", "tenant_factory_api"); response.Code != http.StatusNotFound {
+		t.Fatalf("workflow policy read after runner opt-out returned HTTP %d, want not found: %s", response.Code, response.Body.String())
 	}
 	var policyIsNull bool
 	if err := pool.QueryRow(ctx, `SELECT actions_runner_workflow_policy IS NULL FROM tenant_github_repositories WHERE tenant_id='tenant_factory_api' AND installation_id=7001 AND github_repository_id=7002`).Scan(&policyIsNull); err != nil || !policyIsNull {

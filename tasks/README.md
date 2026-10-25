@@ -8,6 +8,12 @@
 
 Task 84 host-network smoke is repeatable with `make test-workspace-podman-network` (pinned x86_64 Alpine, positive TCP egress control, and `--internal` denial). It validates Podman bridge behavior only; it does not replace nerdctl/CNI ARM64 image or Lambda MicroVM verification.
 
+Task 52 workflow policy read API was added on 2026-10-25. Tenant members can
+inspect the active repository allowlist through the authenticated API/CLI;
+configuration remains Owner/Admin-only. API/CLI and PostgreSQL integration
+tests cover authorization and disabled-repository hiding. Runner admission and
+execution remain default-off.
+
 ## 着手ルール
 
 1. `P0`から順に、依存タスクが完了しているものを一件だけ選ぶ。
