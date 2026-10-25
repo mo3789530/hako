@@ -111,3 +111,51 @@ func TestLoadSessionPublicKeysAndRejectSecretFileSymlink(t *testing.T) {
 		t.Fatal("expected secret key symlink to be rejected")
 	}
 }
+
+func TestSessionPublicKeyResolverReloadsRotatedOverlapSet(t *testing.T) {
+	oldPublic, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newPublic, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "session-keys.json")
+	writeKeys := func(keys map[string]ed25519.PublicKey) {
+		t.Helper()
+		encoded := make(map[string]string, len(keys))
+		for id, key := range keys {
+			encoded[id] = base64.RawStdEncoding.EncodeToString(key)
+		}
+		data, err := json.Marshal(encoded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resolver := sessionPublicKeyResolver(path)
+	writeKeys(map[string]ed25519.PublicKey{"session-old": oldPublic})
+	first, err := resolver()
+	if err != nil || len(first) != 1 {
+		t.Fatalf("initial key set = %v, %v", first, err)
+	}
+	writeKeys(map[string]ed25519.PublicKey{"session-old": oldPublic, "session-new": newPublic})
+	overlap, err := resolver()
+	if err != nil || len(overlap) != 2 || len(overlap["session-new"]) != ed25519.PublicKeySize {
+		t.Fatalf("overlap key set was not reloaded: %v, %v", overlap, err)
+	}
+	writeKeys(map[string]ed25519.PublicKey{"session-new": newPublic})
+	retired, err := resolver()
+	if err != nil || len(retired) != 1 || retired["session-old"] != nil {
+		t.Fatalf("retired key remains active: %v, %v", retired, err)
+	}
+	if err := os.WriteFile(path, []byte(`{"bad key":"not-a-key"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolver(); err == nil {
+		t.Fatal("invalid key rotation was accepted")
+	}
+}

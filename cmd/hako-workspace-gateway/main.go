@@ -112,10 +112,10 @@ func run() error {
 }
 
 func buildGateway(awsCfg aws.Config, cfg deploymentConfig) (*workspacegateway.Gateway, error) {
-	publicKeys, err := loadSessionPublicKeys(cfg.SessionPublicKeysFile)
-	if err != nil {
+	if _, err := loadSessionPublicKeys(cfg.SessionPublicKeysFile); err != nil {
 		return nil, err
 	}
+	publicKeyResolver := sessionPublicKeyResolver(cfg.SessionPublicKeysFile)
 	lookupKey, err := readBoundedFile(cfg.SessionLookupKeyFile, 4096, true)
 	if err != nil || len(lookupKey) < 32 || len(lookupKey) > 4096 {
 		return nil, errors.New("Workspace Session lookup HMAC key file is invalid")
@@ -164,7 +164,7 @@ func buildGateway(awsCfg aws.Config, cfg deploymentConfig) (*workspacegateway.Ga
 	}
 	return workspacegateway.New(workspacegateway.Config{
 		ResourcePlaneID: cfg.ResourcePlaneID,
-		Verifier:        &workspacesession.Verifier{Keys: publicKeys, Audience: workspacesession.AudienceGateway, Lookup: lookup},
+		Verifier:        &workspacesession.Verifier{KeyResolver: publicKeyResolver, Audience: workspacesession.AudienceGateway, Lookup: lookup},
 		Dialer:          directory, PortAuthorizer: workspacegateway.PortAuthorizerChain{
 			workspacegateway.PreviewPortAuthorizer{}, portAuthorizer,
 		}, AllowedOrigins: cfg.AllowedOrigins,
@@ -256,6 +256,12 @@ func loadSessionPublicKeys(path string) (map[string]ed25519.PublicKey, error) {
 		keys[id] = append(ed25519.PublicKey(nil), key...)
 	}
 	return keys, nil
+}
+
+func sessionPublicKeyResolver(path string) func() (map[string]ed25519.PublicKey, error) {
+	return func() (map[string]ed25519.PublicKey, error) {
+		return loadSessionPublicKeys(path)
+	}
 }
 
 func readBoundedFile(path string, limit int64, secret bool) ([]byte, error) {

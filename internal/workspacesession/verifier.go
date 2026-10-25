@@ -17,10 +17,11 @@ type ActiveSessionLookup interface {
 }
 
 type Verifier struct {
-	Keys     map[string]ed25519.PublicKey
-	Audience string
-	Lookup   ActiveSessionLookup
-	Now      func() time.Time
+	Keys        map[string]ed25519.PublicKey
+	KeyResolver func() (map[string]ed25519.PublicKey, error)
+	Audience    string
+	Lookup      ActiveSessionLookup
+	Now         func() time.Time
 }
 
 // Authorize verifies the bearer ticket and persisted revocation state before a
@@ -36,7 +37,15 @@ func (v *Verifier) Authorize(ctx context.Context, token string, permission Permi
 	if v.Now != nil {
 		now = v.Now
 	}
-	claims, err := Verify(token, v.Keys, v.Audience, now().UTC())
+	keys := v.Keys
+	if v.KeyResolver != nil {
+		resolved, err := v.KeyResolver()
+		if err != nil || len(resolved) == 0 {
+			return Claims{}, ErrSessionStateUnavailable
+		}
+		keys = resolved
+	}
+	claims, err := Verify(token, keys, v.Audience, now().UTC())
 	if err != nil || AuthorizeChannel(claims, permission) != nil {
 		return Claims{}, ErrTicket
 	}

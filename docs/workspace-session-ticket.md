@@ -40,10 +40,16 @@ matching Plane. The production Secrets, IAM grants, and Resource Plane client
 configuration/distribution are not yet provisioned. A Resource Plane Gateway
 must not connect directly to Aurora DSQL.
 The Gateway must route from signed Tenant/Workspace/Resource Plane claims;
-caller-supplied routing IDs must not override those claims. Key rotation should publish the new public key
-before switching the Control Plane signer, keep the previous public key until
-all tickets signed by it expire, then remove it. For incident response, disable
-the signing key and revoke affected session rows. The Gateway rechecks active
+caller-supplied routing IDs must not override those claims. The Gateway
+re-reads and validates the configured public-key file for each new connection,
+so a replacement key set is used without restarting the verifier. Rotation
+should publish the new public key before switching the Control Plane signer,
+keep both keys active until all tickets signed by the old key expire, then
+remove the old key. With the five-minute ticket TTL, allow at least five minutes
+after the signer switch before retiring the old key. For incident response,
+remove the compromised key from the active set and revoke affected session
+rows. A missing, empty, malformed, or unreadable key file fails closed before
+session lookup. The Gateway rechecks active
 Session state every 15 seconds on existing streams and closes both stream
 directions on revocation or lookup failure; production propagation remains to
 be verified.
