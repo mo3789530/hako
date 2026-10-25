@@ -53,3 +53,14 @@ Control Plane.
   PostgreSQL and Podman. Resource Plane and Control Plane OpenTofu tests passed.
 
 No AWS apply, real Secret retrieval, or live S3 access was performed.
+
+## Agent proposal CLI end-to-end coverage (2026-10-25)
+
+The `hako workload changes download` command now has an HTTP-backed CLI test
+that follows the complete Run lookup → Tenant/Run identity check → unique
+proposal selection → metadata-bound ticket → Gateway stream path. It verifies
+the saved bytes and user-facing untrusted-source label. Negative cases for a
+foreign Tenant, non-successful Run, or missing proposal stop before requesting
+an artifact ticket. `go test ./cmd/hako -count=1 -coverprofile=...` passes;
+the CLI package reports 65.4% statement coverage and the public command wrapper
+is 100% covered. This is local CLI/API/Gateway contract evidence only.

@@ -58,6 +58,13 @@ func downloadWorkloadArtifactCLIWithOutput(args []string, output io.Writer) erro
 }
 
 func downloadAgentChangesCLI(args []string) error {
+	return downloadAgentChangesCLIWithOutput(args, os.Stdout)
+}
+
+func downloadAgentChangesCLIWithOutput(args []string, output io.Writer) error {
+	if output == nil {
+		return errors.New("Agent change download output is unavailable")
+	}
 	outputPath, positional, err := parseArtifactDownloadArgs("hako workload changes download", args, 2)
 	if err != nil {
 		return errors.New("usage: hako workload changes download <tenant-id> <run-id> --out <path>")
@@ -89,7 +96,7 @@ func downloadAgentChangesCLI(args []string) error {
 		positional[0], positional[1], artifact.ID, outputPath, nil, &artifact); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(os.Stdout, "Agent change proposal %s saved to %s; review it as untrusted source before use\n", artifact.ID, outputPath)
+	_, err = fmt.Fprintf(output, "Agent change proposal %s saved to %s; review it as untrusted source before use\n", artifact.ID, outputPath)
 	return err
 }
 

@@ -15,7 +15,101 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mo3789530/hako/internal/domain"
 )
+
+func TestDownloadAgentChangesCLIUsesRunMetadataAndAuthorizedGateway(t *testing.T) {
+	content := []byte("synthetic Agent proposal archive")
+	digest := sha256.Sum256(content)
+	sha := hex.EncodeToString(digest[:])
+	artifact := domain.WorkloadArtifactSummary{ID: "artifact_changes", Kind: "agent_changes", SizeBytes: int64(len(content)), SHA256: sha}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/tenants/tenant_cli/workload-runs/run_changes":
+			if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer changes-access" {
+				t.Errorf("Run request method/auth = %s/%q", r.Method, r.Header.Get("Authorization"))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(domain.WorkloadRun{ID: "run_changes", TenantID: "tenant_cli", Kind: domain.WorkloadAgent,
+				State: domain.WorkloadSucceeded, Artifacts: []domain.WorkloadArtifactSummary{artifact}})
+		case "/v1/tenants/tenant_cli/workload-runs/run_changes/artifacts/artifact_changes/download-ticket":
+			if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer changes-access" {
+				t.Errorf("ticket request method/auth = %s/%q", r.Method, r.Header.Get("Authorization"))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"ticket": "short-lived-changes-ticket", "expires_at": time.Now().Add(time.Minute),
+				"size_bytes": artifact.SizeBytes, "sha256": artifact.SHA256, "kind": artifact.Kind})
+		case "/v1/workload-artifacts/artifact_changes":
+			if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer short-lived-changes-ticket" {
+				t.Errorf("Gateway request method/auth = %s/%q", r.Method, r.Header.Get("Authorization"))
+			}
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("X-Hako-Artifact-SHA256", sha)
+			_, _ = w.Write(content)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HAKO_API_URL", server.URL)
+	t.Setenv("HAKO_GATEWAY_URL", server.URL)
+	previous := cliCredentialGetter
+	cliCredentialGetter = workloadCLICredentials(fmt.Sprintf(`{"access_token":"changes-access","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+		time.Now().UTC().Format(time.RFC3339)))
+	t.Cleanup(func() { cliCredentialGetter = previous })
+
+	outputPath := filepath.Join(t.TempDir(), "proposal.zip")
+	var output bytes.Buffer
+	if err := downloadAgentChangesCLIWithOutput([]string{"tenant_cli", "run_changes", "--out", outputPath}, &output); err != nil {
+		t.Fatal(err)
+	}
+	actual, err := os.ReadFile(outputPath)
+	if err != nil || !bytes.Equal(actual, content) {
+		t.Fatalf("proposal bytes=%q error=%v", actual, err)
+	}
+	if !strings.Contains(output.String(), "artifact_changes saved to "+outputPath) || !strings.Contains(output.String(), "untrusted source") {
+		t.Fatalf("proposal CLI output = %q", output.String())
+	}
+}
+
+func TestDownloadAgentChangesCLIRejectsUnsuccessfulOrMismatchedRunsBeforeTicket(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		run  domain.WorkloadRun
+	}{
+		{name: "wrong tenant", run: domain.WorkloadRun{ID: "run_changes", TenantID: "tenant_other", Kind: domain.WorkloadAgent, State: domain.WorkloadSucceeded}},
+		{name: "not successful", run: domain.WorkloadRun{ID: "run_changes", TenantID: "tenant_cli", Kind: domain.WorkloadAgent, State: domain.WorkloadFailed}},
+		{name: "no proposal", run: domain.WorkloadRun{ID: "run_changes", TenantID: "tenant_cli", Kind: domain.WorkloadAgent, State: domain.WorkloadSucceeded}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ticketRequested := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/tenants/tenant_cli/workload-runs/run_changes" {
+					ticketRequested = true
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(test.run)
+			}))
+			defer server.Close()
+			t.Setenv("HAKO_API_URL", server.URL)
+			t.Setenv("HAKO_GATEWAY_URL", server.URL)
+			previous := cliCredentialGetter
+			cliCredentialGetter = workloadCLICredentials(fmt.Sprintf(`{"access_token":"changes-access","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+				time.Now().UTC().Format(time.RFC3339)))
+			t.Cleanup(func() { cliCredentialGetter = previous })
+			err := downloadAgentChangesCLIWithOutput([]string{"tenant_cli", "run_changes", "--out", filepath.Join(t.TempDir(), "proposal.zip")}, io.Discard)
+			if err == nil {
+				t.Fatal("invalid Agent Run was accepted")
+			}
+			if ticketRequested {
+				t.Fatal("invalid Agent Run requested an artifact ticket")
+			}
+		})
+	}
+}
 
 func TestDownloadWorkloadArtifactCLIUsesAuthorizedTicketAndGateway(t *testing.T) {
 	content := []byte("synthetic CLI artifact bytes")
