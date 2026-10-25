@@ -213,10 +213,12 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   successful test pass.
 - Scripted model tests cover write → fixed tests → successful completion,
   untested-write rejection, and path/secret/symlink protections. Tests use
-  synthetic credentials only. The executor is not selected by the production
-  `hako-agent` composition; Agent scheduling therefore remains disabled.
-  Branch/PR creation, target MicroVM egress/cgroup proof, and production image
-  wiring remain incomplete.
+  synthetic credentials only. This entry predates the Guest process composition
+  below: `hako-agent` now selects the executor only when the explicit
+  `HAKO_NATIVE_AGENT_ENABLED=true` gate and fixed model configuration are set.
+  Control Plane scheduling remains disabled until target MicroVM egress/cgroup
+  proof and reviewed image deployment are complete. Branch/PR creation also
+  remains incomplete.
 
 ## Agent proposal artifact progress (2026-10-25)
 
