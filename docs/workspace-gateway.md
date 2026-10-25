@@ -19,9 +19,16 @@ All stream routes negotiate `hako.workspace.v1`. Browser Origins must exactly
 match configured HTTPS/HTTP origins; native CLI connections may omit Origin.
 Port forwarding requires an injected `PortAuthorizer` to resolve the allowed
 port from trusted Workspace state. The client cannot supply a host or arbitrary
-destination. The Resource Plane `StreamDialer` receives verified claims and
-opens the private runtime connection; the Gateway itself does not proxy bytes
-through the Control Plane or query Aurora DSQL. `workspaceagent.GatewayDialer`
+destination. The production Gateway first permits the fixed Preview application
+port for a generation-specific Preview identity; ordinary Workspaces use a
+signed HTTPS/HMAC authorization request to the Control Plane. That endpoint
+checks the persisted Session claims, running Workspace state, current Lambda
+MicroVM allocation, and a healthy Service's catalog-declared TCP port. Missing,
+stale, unhealthy, or undeclared Services are denied. Only the authorization
+metadata reaches the Control Plane; the Resource Plane `StreamDialer` opens the
+private runtime connection and carries the data stream without proxying bytes
+through the Control Plane or querying Aurora DSQL from the Gateway.
+`workspaceagent.GatewayDialer`
 is a local adapter for one Workspace's fixed-shell PTY manager and private
 ports: it checks the signed Workspace ID, opens `/bin/sh` in that Workspace,
 and dials only `127.0.0.1:{port}` after Gateway `PortAuthorizer` approval. The
@@ -63,9 +70,13 @@ Lambda-required `lambda-microvms.authentication.*` and `lambda-microvms.port.808
 WebSocket subprotocols (which Lambda strips before forwarding). Neither
 credential is persisted or logged. The token provider/dialer and
 authorization binding are locally tested, and `cmd/hako-workspace-gateway`
-composes them with mounted keys and the journal-backed resolver; a real Lambda endpoint connection remains unverified. This adapter supports shell and the
-fixed VS Code bridge; Guest-side port-forward channels require an additional
-runtime endpoint. The Workspace image must start code-server on
+composes them with mounted keys and the journal-backed resolver; a real Lambda endpoint connection remains unverified. This adapter supports shell, the
+fixed VS Code bridge, and authorized TCP port-forward channels. Port-forward
+requests use a one-use Agent Ticket bound to the exact Workspace, MicroVM
+allocation, permission, and requested port; the Guest Agent dials only
+`127.0.0.1:{port}`. The Gateway policy limits ordinary Workspaces to ports
+declared by a healthy Service in the current runtime generation. Preview uses
+its fixed application port. The Workspace image must start code-server on
 `127.0.0.1:8081` and configure its own authentication. The directory reads the matching Workspace
 journal from the Resource Plane store and calls `GetMicrovm` for each new
 connection, requiring exact Tenant/Workspace/Plane identity, a non-tombstoned
@@ -148,7 +159,7 @@ The process requires these deployment inputs:
 | `HAKO_GATEWAY_SESSION_RECHECK_INTERVAL` | Active-session revocation/expiry check interval (`1s`–`1m`, default `15s`) |
 | `HAKO_GATEWAY_SESSION_PUBLIC_KEYS_FILE` | JSON map of signing key ID to raw-base64 Ed25519 public key; supports verification key overlap |
 | `HAKO_GATEWAY_SESSION_LOOKUP_ENDPOINT` | HTTPS Control Plane origin for active-session revalidation |
-| `HAKO_GATEWAY_SESSION_LOOKUP_KEY_FILE` | Raw per-Resource-Plane HMAC key bytes (at least 32 bytes), mounted as a secret |
+| `HAKO_GATEWAY_SESSION_LOOKUP_KEY_FILE` | Raw per-Resource-Plane HMAC key bytes (at least 32 bytes), mounted as a secret; also signs port authorization requests |
 | `HAKO_GATEWAY_CONNECTION_LEASE_ENDPOINT` | HTTPS Control Plane origin for signed Workspace connection lease renew/release |
 | `HAKO_GATEWAY_CONNECTION_LEASE_KEY_FILE` | Raw per-Resource-Plane HMAC key bytes (at least 32 bytes), mounted as a secret |
 | `HAKO_GATEWAY_AGENT_TICKET_KEY_ID`, `HAKO_GATEWAY_AGENT_TICKET_KEY_FILE` | Active signing key ID and mounted Ed25519 PKCS#8 PEM private key |

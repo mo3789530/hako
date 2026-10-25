@@ -41,6 +41,10 @@ Complete the basic interactive development flow and reproducible local-service t
 - Implemented `hako forward <tenant-id> <workspace-id> <remote-port> [local-port]`.
   The local listener is always `127.0.0.1`; each accepted TCP connection gets a
   separate RBAC-issued ticket and WSS stream, with a 16-connection local cap.
+  The Gateway now checks ordinary Workspace ports against a healthy,
+  current-generation Service Catalog entry through the signed Resource Plane
+  authorization API; Preview remains restricted to its fixed app port. See
+  [Task 86](task-86-workspace-service-port-authorization.md).
 - Implemented `hako ssh-proxy <tenant-id> <workspace-id>` as an OpenSSH
   ProxyCommand: it requests a dedicated short-lived `ssh-proxy` ticket, relays
   raw bytes over TLS/WSS, and attempts revocation on exit. The Gateway has a

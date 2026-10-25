@@ -127,6 +127,12 @@ func buildGateway(awsCfg aws.Config, cfg deploymentConfig) (*workspacegateway.Ga
 	if err != nil {
 		return nil, errors.New("configure authenticated Control Plane session lookup")
 	}
+	portAuthorizer, err := workspacesession.NewHTTPWorkspacePortAuthorizer(workspacesession.HTTPWorkspacePortAuthorizerConfig{
+		Endpoint: cfg.SessionLookupEndpoint, ResourcePlaneID: cfg.ResourcePlaneID, HMACKey: lookupKey,
+	})
+	if err != nil {
+		return nil, errors.New("configure authenticated Control Plane Workspace port authorization")
+	}
 	leaseKey, err := readBoundedFile(cfg.ConnectionLeaseKeyFile, 4096, true)
 	if err != nil || len(leaseKey) < 32 || len(leaseKey) > 4096 {
 		return nil, errors.New("Workspace connection lease HMAC key file is invalid")
@@ -159,7 +165,9 @@ func buildGateway(awsCfg aws.Config, cfg deploymentConfig) (*workspacegateway.Ga
 	return workspacegateway.New(workspacegateway.Config{
 		ResourcePlaneID: cfg.ResourcePlaneID,
 		Verifier:        &workspacesession.Verifier{Keys: publicKeys, Audience: workspacesession.AudienceGateway, Lookup: lookup},
-		Dialer:          directory, PortAuthorizer: workspacegateway.PreviewPortAuthorizer{}, AllowedOrigins: cfg.AllowedOrigins,
+		Dialer:          directory, PortAuthorizer: workspacegateway.PortAuthorizerChain{
+			workspacegateway.PreviewPortAuthorizer{}, portAuthorizer,
+		}, AllowedOrigins: cfg.AllowedOrigins,
 		MaxConnections: cfg.MaxConnections, MaxConnectionsPerWorkspace: cfg.MaxConnectionsPerWS,
 		SessionRecheckInterval: cfg.SessionRecheckInterval, MetricsWriter: os.Stdout,
 	})

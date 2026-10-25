@@ -30,3 +30,23 @@ func hasPortForwardPermission(permissions []workspacesession.Permission) bool {
 }
 
 var _ PortAuthorizer = PreviewPortAuthorizer{}
+
+// PortAuthorizerChain checks policies in order. A policy error is fail-closed;
+// a later policy is consulted only when earlier policies do not allow a port.
+type PortAuthorizerChain []PortAuthorizer
+
+func (chain PortAuthorizerChain) AllowPort(ctx context.Context, claims workspacesession.Claims, port uint16) (bool, error) {
+	for _, policy := range chain {
+		if policy == nil {
+			continue
+		}
+		allowed, err := policy.AllowPort(ctx, claims, port)
+		if err != nil {
+			return false, err
+		}
+		if allowed {
+			return true, nil
+		}
+	}
+	return false, nil
+}

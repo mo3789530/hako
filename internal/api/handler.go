@@ -211,6 +211,8 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 	if workspaceConfig.ResourcePlaneWorkspaceSessionKeyResolver != nil {
 		e.POST("/v1/internal/resource-planes/:resource_plane_id/workspace-sessions/active",
 			getActiveWorkspaceSession(pool, workspaceConfig.ResourcePlaneWorkspaceSessionKeyResolver))
+		e.POST("/v1/internal/resource-planes/:resource_plane_id/workspace-ports/authorize",
+			authorizeResourcePlaneWorkspacePort(pool, workspaceConfig.ResourcePlaneWorkspaceSessionKeyResolver))
 	}
 	if setupVerifier != nil || workspaceConfig.TenantGitHubSetupResolver != nil {
 		e.GET("/v1/integrations/github/setup/callback", completeGitHubInstallationSetup(pool, setupVerifier, workspaceConfig.TenantGitHubSetupResolver))

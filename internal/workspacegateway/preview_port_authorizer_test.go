@@ -35,6 +35,33 @@ func TestPreviewPortAuthorizerAllowsOnlyPreviewApplicationPort(t *testing.T) {
 	}
 }
 
+func TestPortAuthorizerChainFallsThroughButStopsOnError(t *testing.T) {
+	claims := workspacesession.Claims{WorkspaceID: "ws_123"}
+	policy := &testPortAuthorizer{allowed: true}
+	chain := PortAuthorizerChain{PreviewPortAuthorizer{}, policy}
+	allowed, err := chain.AllowPort(context.Background(), claims, 5432)
+	if err != nil || !allowed || policy.calls != 1 {
+		t.Fatalf("ordinary Workspace chain result = %v, %v, calls=%d; want true, nil, one call", allowed, err, policy.calls)
+	}
+	policy = &testPortAuthorizer{err: context.DeadlineExceeded}
+	chain = PortAuthorizerChain{PreviewPortAuthorizer{}, policy, &testPortAuthorizer{allowed: true}}
+	allowed, err = chain.AllowPort(context.Background(), claims, 5432)
+	if err == nil || allowed || policy.calls != 1 {
+		t.Fatalf("authorization error did not fail closed: result=%v error=%v calls=%d", allowed, err, policy.calls)
+	}
+}
+
+type testPortAuthorizer struct {
+	allowed bool
+	err     error
+	calls   int
+}
+
+func (p *testPortAuthorizer) AllowPort(context.Context, workspacesession.Claims, uint16) (bool, error) {
+	p.calls++
+	return p.allowed, p.err
+}
+
 func canceledPreviewContext() context.Context {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

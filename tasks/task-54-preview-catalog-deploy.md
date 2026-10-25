@@ -16,9 +16,10 @@ deployment requires a matching Workspace Gateway image, journal, origin, and
 Agent-ticket signing key. Guest Preview application startup, authenticated
 loopback forwarding, and a Preview-only production Gateway port policy are
 implemented locally. No AWS resources or DSQL grants have been applied.
-Schedule/queue deployment and real MicroVM E2E remain incomplete; ordinary
-Workspace service-port authorization, cleanup retry metadata, and
-attempt-fenced leases are tracked separately.
+Schedule/queue deployment and real MicroVM E2E remain incomplete; cleanup retry
+metadata and attempt-fenced leases are tracked separately. Ordinary Workspace
+Service port authorization is implemented locally under Task 86; production
+Gateway rollout remains unverified.
 The dormant approval verifier checks
 the live Actions run attempt against signed repository, owner, ref, SHA,
 workflow and event claims, checks pending deployments and approval history,

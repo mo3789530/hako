@@ -315,7 +315,7 @@ func List(ctx context.Context, tx pgx.Tx, workspaceID domain.WorkspaceID) ([]dom
 		return nil, errors.New("Workspace ID is required")
 	}
 	rows, err := tx.Query(ctx, `SELECT s.id, s.workspace_id, s.name, s.catalog_version, s.config_json, s.desired_state,
-		CASE WHEN s.desired_state = 'running' AND g.service_id IS NULL THEN 'pending' ELSE s.observed_state END,
+		CASE WHEN s.desired_state = 'running' AND (g.service_id IS NULL OR g.observed_state <> s.observed_state) THEN 'pending' ELSE s.observed_state END,
 		s.desired_revision, s.credential_generation, s.observed_revision, COALESCE(g.allocation_generation, 0), s.created_at, s.updated_at
 		FROM services s
 		LEFT JOIN placements p ON p.workspace_id = s.workspace_id
