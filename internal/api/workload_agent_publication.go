@@ -104,37 +104,72 @@ func publishWorkloadAgentProposal(pool transaction.Beginner, submitter AgentProp
 		if !workloadArtifactAccessID.MatchString(string(tenantID)) || !workloadArtifactAccessID.MatchString(string(runID)) {
 			return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_workload_run", Message: "Workload Run identity is invalid"}})
 		}
-		attemptID, err := transaction.Within(c.Request().Context(), pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (string, error) {
+		type publicationPreflight struct {
+			attemptID string
+			queued    bool
+		}
+		preflight, err := transaction.Within(c.Request().Context(), pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (publicationPreflight, error) {
 			membership, err := authz.RequireTenantMembership(ctx, tx, user.ID, tenantID)
 			if err != nil {
-				return "", err
+				return publicationPreflight{}, err
 			}
 			run, err := workloads.Get(ctx, tx, tenantID, runID)
 			if err != nil || run.Kind != domain.WorkloadAgent ||
 				(membership.Role != domain.TenantRoleOwner && membership.Role != domain.TenantRoleAdmin && run.RequestedBy != user.ID) {
-				return "", workloads.ErrNotFound
+				return publicationPreflight{}, workloads.ErrNotFound
 			}
 			var latest string
 			err = tx.QueryRow(ctx, `SELECT id FROM workload_run_attempts WHERE tenant_id=$1 AND workload_run_id=$2
 				ORDER BY generation DESC LIMIT 1`, tenantID, runID).Scan(&latest)
 			if err != nil || latest == "" {
-				return "", workloads.ErrNotFound
+				return publicationPreflight{}, workloads.ErrNotFound
+			}
+			queued := false
+			_, bindingErr := workloads.GetAgentProposalVerification(ctx, tx, tenantID, runID, latest)
+			if bindingErr == nil {
+				var publicationStarted bool
+				if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workload_agent_proposal_publications
+					WHERE tenant_id=$1 AND agent_run_id=$2 AND agent_attempt_id=$3)`, tenantID, runID, latest).Scan(&publicationStarted); err != nil {
+					return publicationPreflight{}, err
+				}
+				if !publicationStarted {
+					retry, retryErr := workloads.RetryFailedAgentProposalVerifier(ctx, tx, tenantID, runID, latest, time.Now().UTC())
+					if errors.Is(retryErr, workloads.ErrAgentProposalVerifierRetryLimit) || errors.Is(retryErr, workloads.ErrAgentProposalVerifierNotRetryable) {
+						return publicationPreflight{}, retryErr
+					}
+					if retryErr != nil {
+						return publicationPreflight{}, retryErr
+					}
+					queued = retry.Queued
+				}
+			} else if !errors.Is(bindingErr, workloads.ErrNotFound) {
+				return publicationPreflight{}, bindingErr
 			}
 			details, _ := json.Marshal(map[string]string{"attempt_id": latest})
 			if err := audit.Append(ctx, tx, audit.Event{TenantID: tenantID, ActorID: user.ID,
 				Action: "workload.agent_proposal.publish", TargetType: "workload_run", TargetID: string(runID),
 				Details: details, OccurredAt: time.Now().UTC()}); err != nil {
-				return "", err
+				return publicationPreflight{}, err
 			}
-			return latest, nil
+			return publicationPreflight{attemptID: latest, queued: queued}, nil
 		})
 		if errors.Is(err, authz.ErrTenantAccessDenied) || errors.Is(err, workloads.ErrNotFound) {
 			return c.JSON(http.StatusNotFound, errorResponse{Error: errorBody{Code: "not_found", Message: "Agent publication not found"}})
 		}
 		if err != nil {
+			if errors.Is(err, workloads.ErrAgentProposalVerifierRetryLimit) {
+				return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "verification_retry_limit", Message: "Agent proposal verification cannot be retried"}})
+			}
+			if errors.Is(err, workloads.ErrAgentProposalVerifierNotRetryable) {
+				return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "verification_not_ready", Message: "Agent proposal verification is not ready for publication"}})
+			}
 			return databaseUnavailable(c)
 		}
-		published, err := submitter.Publish(c.Request().Context(), string(tenantID), string(runID), attemptID)
+		if preflight.queued {
+			c.Response().Header().Set("Cache-Control", "no-store")
+			return c.JSON(http.StatusAccepted, AgentProposalPublicationSubmission{TenantID: string(tenantID), WorkloadRunID: string(runID), State: "verification_queued"})
+		}
+		published, err := submitter.Publish(c.Request().Context(), string(tenantID), string(runID), preflight.attemptID)
 		if err != nil || published.TenantID != string(tenantID) || published.WorkloadRunID != string(runID) ||
 			(published.State != "branch_created" && published.State != "pull_request_created") || published.BranchName == "" || published.BaseBranch == "" {
 			return c.JSON(http.StatusBadGateway, errorResponse{Error: errorBody{Code: "publication_unavailable", Message: "Agent proposal could not be published"}})

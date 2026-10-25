@@ -548,6 +548,23 @@ func TestSubmitWorkloadAgentPublicationUsesAuthenticatedIdempotentRoute(t *testi
 	}
 }
 
+func TestSubmitWorkloadAgentPublicationAcceptsQueuedVerification(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer test-access-token" {
+			t.Errorf("unexpected queued publication request %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"tenant_id":"tenant_123","workload_run_id":"run_agent","state":"verification_queued"}`))
+	}))
+	defer server.Close()
+	result, err := SubmitWorkloadAgentPublication(context.Background(), server.URL, "test-access-token", "tenant_123", "run_agent", server.Client())
+	if err != nil || result.State != "verification_queued" || result.BranchName != "" || result.BranchCommitSHA != "" || result.PullRequestNumber != 0 {
+		t.Fatalf("unexpected queued Agent publication result: %+v error=%v", result, err)
+	}
+}
+
 func TestCreateWorkloadRunSendsIdempotentRequest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/tenants/tenant_123/workload-runs" {

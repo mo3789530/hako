@@ -1088,14 +1088,16 @@ func SubmitWorkloadAgentPublication(ctx context.Context, baseURL, accessToken, t
 		return result, err
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK || response.Header.Get("Cache-Control") != "no-store" {
+	if (response.StatusCode != http.StatusOK && response.StatusCode != http.StatusAccepted) || response.Header.Get("Cache-Control") != "no-store" {
 		return result, readAPIError(response)
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil ||
-		result.TenantID != tenantID || result.WorkloadRunID != runID || result.BaseBranch == "" || result.BranchName == "" ||
-		(result.State != "branch_created" && result.State != "pull_request_created") ||
-		(result.State == "branch_created" && (!validCommitSHA(result.BranchCommitSHA) || result.PullRequestNumber != 0)) ||
-		(result.State == "pull_request_created" && (!validCommitSHA(result.BranchCommitSHA) || result.PullRequestNumber < 1)) {
+		result.TenantID != tenantID || result.WorkloadRunID != runID ||
+		(response.StatusCode == http.StatusAccepted && (result.State != "verification_queued" || result.BaseBranch != "" || result.BranchName != "" || result.BranchCommitSHA != "" || result.PullRequestNumber != 0)) ||
+		(response.StatusCode == http.StatusOK && (result.BaseBranch == "" || result.BranchName == "" ||
+			(result.State != "branch_created" && result.State != "pull_request_created") ||
+			(result.State == "branch_created" && (!validCommitSHA(result.BranchCommitSHA) || result.PullRequestNumber != 0)) ||
+			(result.State == "pull_request_created" && (!validCommitSHA(result.BranchCommitSHA) || result.PullRequestNumber < 1)))) {
 		return AgentProposalPublicationSubmission{}, errors.New("Hako API returned an invalid Agent publication result")
 	}
 	return result, nil

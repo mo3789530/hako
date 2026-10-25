@@ -4,9 +4,10 @@ Status: In Progress (proposal materialization, isolated verifier scheduling,
 digest-bound Check persistence, publication evidence resolution and durable
 idempotency state, safe status API/CLI, exact-scope Tenant App token minting,
 fake-tested GitHub publisher, and a Control Plane-only mTLS Broker publication
-route with Postgres resolver/recorder are implemented locally. Verifier retry,
-exact S3 read IAM/deployment, end-to-end Broker composition, and runtime
-activation remain open). Priority: P3.
+route with Postgres resolver/recorder, bounded post-cleanup verifier retry, and
+API/CLI queued response are implemented locally. Exact S3 read IAM/deployment,
+end-to-end Broker composition, and runtime activation remain open). Priority:
+P3.
 Depends on Tasks 39, 40, 53, 57, and 59.
 
 ## Goal
@@ -185,7 +186,18 @@ Repository. The proposal remains untrusted. Hako must never merge or deploy it.
   `hako workload publication submit <tenant-id> <agent-run-id>`; the focused
   PostgreSQL API E2E verifies latest-attempt forwarding, requester ownership,
   Owner/Admin-compatible access rules, and cross-Tenant/requester denial.
-- Still open: bounded verifier retry, exact S3 read IAM/deployed Broker
+- Failed verifier attempts can be retried at most twice after cleanup
+  confirmation. Retry reuses the same verifier Run and immutable Agent
+  proposal/base/App/Repository/Resource Plane pins, allocates a new attempt and
+  generation, and creates its dispatch Outbox in one PostgreSQL transaction.
+  The verification binding follows the new attempt; old digest-bound Check
+  rows remain generation-bound and cannot satisfy the retry. Duplicate submit
+  while verification is active is idempotent; cancelled, timed-out, or
+  uncleaned attempts are not retryable. API and CLI accept
+  `202 verification_queued` and do not call the Broker until verifier success.
+  PostgreSQL integration covers two retries, active retry idempotency, Outbox
+  uniqueness, immutable proposal binding, and exhaustion.
+- Still open: exact S3 read IAM/deployed Broker
   configuration, full PostgreSQL Broker composition integration, and Lambda
   MicroVM execution verification. No AWS apply or production activation has
   been performed.
