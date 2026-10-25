@@ -88,3 +88,17 @@ container contract; it does not run inside a Lambda MicroVM and therefore does
 not prove nested containerd/Podman availability, MicroVM namespaces/cgroups,
 Tenant isolation, or Lambda network behavior. The Lambda image and real
 MicroVM PoC remain open.
+
+## ARM64 Podman execution retry (2026-10-25)
+
+Retried host ARM64 container execution using the privileged `tonistiigi/binfmt`
+installer with the host `binfmt_misc` registration path mounted. The kernel
+denied opening `/proc/sys/fs/binfmt_misc/register` (`permission denied`), and
+Podman still reported only amd64/386 emulators; `podman run --platform
+linux/arm64 ... uname -m` failed with `Exec format error`. This environment
+cannot register the host emulator even with Podman's privileged container.
+The earlier direct `qemu-aarch64` ELF smoke check remains valid only for
+individual ARM64 binaries. Continue this acceptance on an ARM64 builder or a
+host where binfmt registration is available, then repeat it inside the actual
+Lambda MicroVM before treating Task 61 as complete. No AWS API/resource was
+used or changed.
