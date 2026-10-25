@@ -17,7 +17,9 @@ func validCheckRequest() CheckRunRequest {
 	return CheckRunRequest{
 		Name: "hako/test", ExternalID: "run_123", HeadSHA: strings.Repeat("a", 40),
 		Status: CheckInProgress, StartedAt: started,
-		Output: CheckOutput{Title: "Tests running", Summary: "Unit tests are in progress."},
+		Output: CheckOutput{Title: "Tests running", Summary: "Unit tests are in progress.", Annotations: []CheckAnnotation{{
+			Path: "internal/api/handler.go", StartLine: 42, EndLine: 42, AnnotationLevel: "warning", Message: "Review this API boundary.",
+		}}},
 	}
 }
 
@@ -61,6 +63,9 @@ func TestEnsureCheckRunCreatesThenUpdatesExactRun(t *testing.T) {
 		var body CheckRunRequest
 		if json.NewDecoder(r.Body).Decode(&body) != nil || body.ExternalID != request.ExternalID || body.HeadSHA != request.HeadSHA {
 			t.Error("request body did not retain Run identity")
+		}
+		if r.Method == http.MethodPost && (len(body.Output.Annotations) != 1 || body.Output.Annotations[0].Path != "internal/api/handler.go" || body.Output.Annotations[0].StartLine != 42) {
+			t.Error("create request did not retain validated Check annotation")
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == http.MethodPost {
