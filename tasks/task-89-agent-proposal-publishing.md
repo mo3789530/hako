@@ -1,8 +1,9 @@
 # Task 89: Brokered Native Agent Branch and Pull Request Publishing
 
-Status: In Progress (safe proposal-to-source materialization is implemented;
-isolated verifier Workload scheduling, digest-bound Check persistence, broker
-authorization, and GitHub publication are not yet implemented). Priority: P3.
+Status: In Progress (proposal materialization, isolated verifier scheduling,
+digest-bound Check persistence, publication evidence resolution, and durable
+publication idempotency state are implemented locally; broker authorization,
+GitHub publication, and API/CLI are still open). Priority: P3.
 Depends on Tasks 39, 40, 53, 57, and 59.
 
 ## Goal
@@ -123,10 +124,19 @@ Repository. The proposal remains untrusted. Hako must never merge or deploy it.
   writes are suppressed for verifier Runs, avoiding a false result on the base
   SHA. PostgreSQL integration verifies atomic verifier dispatch and digest-bound
   checks without a GitHub Check record.
-- Still open: enforce required-check policy against those rows at publish time,
-  verifier retry, durable publication idempotency, broker-only exact-scope
-  write credentials, branch/PR create/recovery, and API/CLI status. AWS IAM and
-  Lambda MicroVM execution remain unverified.
+- Migration `000185` adds a durable publication record keyed by Tenant/Agent
+  Run/attempt, with immutable proposal/verifier/App/Repository/default-branch/
+  policy pins and a deterministic branch name. The store re-resolves current
+  publication evidence in the reservation transaction, rejects changed pins,
+  and records only monotonic `requested` → `branch_created` →
+  `pull_request_created` transitions. Exact retries are idempotent; a changed
+  branch commit or PR number conflicts. It stores no token, archive bytes, or
+  artifact URI. PostgreSQL integration covers reservation retry, the branch
+  and PR transitions, and conflicting branch commit. Broker and GitHub writes
+  are not wired yet.
+- Still open: verifier retry, broker-only exact-scope write credentials,
+  branch/PR create and lost-response recovery, and API/CLI status/retry. AWS
+  IAM and Lambda MicroVM execution remain unverified.
 - Migration `000181` and `BindAgentProposalVerification` persist an immutable
   relation from the exact successful, cleanup-confirmed Agent attempt and
   `agent_changes` artifact digest/base commit to a separate untrusted Job Run

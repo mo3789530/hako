@@ -1,0 +1,31 @@
+CREATE TABLE workload_agent_proposal_publications (
+    tenant_id TEXT NOT NULL,
+    agent_run_id TEXT NOT NULL,
+    agent_attempt_id TEXT NOT NULL,
+    proposal_artifact_id TEXT NOT NULL,
+    proposal_sha256 TEXT NOT NULL CHECK (proposal_sha256 ~ '^[0-9a-f]{64}$'),
+    base_commit_sha TEXT NOT NULL CHECK (base_commit_sha ~ '^([0-9a-f]{40}|[0-9a-f]{64})$'),
+    verifier_run_id TEXT NOT NULL,
+    verifier_attempt_id TEXT NOT NULL,
+    verifier_generation BIGINT NOT NULL CHECK (verifier_generation > 0),
+    installation_id BIGINT NOT NULL CHECK (installation_id > 0),
+    repository_id BIGINT NOT NULL CHECK (repository_id > 0),
+    integration_id TEXT,
+    config_revision BIGINT NOT NULL CHECK (config_revision >= 0),
+    credential_generation BIGINT NOT NULL CHECK (credential_generation >= 0),
+    default_branch TEXT NOT NULL CHECK (length(default_branch) BETWEEN 1 AND 255),
+    policy_sha256 TEXT NOT NULL CHECK (policy_sha256 ~ '^[0-9a-f]{64}$'),
+    branch_name TEXT NOT NULL CHECK (length(branch_name) BETWEEN 1 AND 255),
+    state TEXT NOT NULL CHECK (state IN ('requested', 'branch_created', 'pull_request_created')),
+    branch_commit_sha TEXT CHECK (branch_commit_sha IS NULL OR branch_commit_sha ~ '^([0-9a-f]{40}|[0-9a-f]{64})$'),
+    pull_request_number BIGINT CHECK (pull_request_number IS NULL OR pull_request_number > 0),
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (tenant_id, agent_run_id, agent_attempt_id),
+    UNIQUE (tenant_id, installation_id, repository_id, branch_name),
+    FOREIGN KEY (tenant_id, agent_run_id) REFERENCES workload_runs(tenant_id, id),
+    FOREIGN KEY (tenant_id, verifier_run_id) REFERENCES workload_runs(tenant_id, id),
+    CHECK ((state = 'requested' AND branch_commit_sha IS NULL AND pull_request_number IS NULL)
+        OR (state = 'branch_created' AND branch_commit_sha IS NOT NULL AND pull_request_number IS NULL)
+        OR (state = 'pull_request_created' AND branch_commit_sha IS NOT NULL AND pull_request_number IS NOT NULL))
+);

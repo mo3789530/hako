@@ -384,9 +384,16 @@ resolver returns the current default branch and policy pins alongside the
 evidence, but does not issue credentials or perform GitHub writes. Callers must
 revalidate/fence these pins around external GitHub calls.
 
-Task 89 remains open: safe verifier retry, publication idempotency, brokered
-exact-scope write credentials, branch/PR create and recovery, and API/CLI
-status. Terraform IAM and AWS execution have not been verified.
+Migration `000185` now reserves one immutable publication record per Tenant,
+Agent Run, and attempt. It captures the proposal/verifier/App/Repository pins,
+current default branch, and a write-policy digest. The branch is deterministic
+under the first configured prefix. State advances monotonically from
+`requested` to `branch_created` to `pull_request_created`; exact repeats are
+idempotent and conflicting branch commits or PR numbers fail closed. This is
+durable state only: no GitHub write is performed yet. Task 89 remains open:
+safe verifier retry, brokered exact-scope write credentials, branch/PR create
+and lost-response recovery, and API/CLI status. Terraform IAM and AWS execution
+have not been verified.
 
 Treat `.hako/factory.yaml`, workflow files, action references, shell steps,
 container images, cache contents, and webhook payloads as untrusted inputs.

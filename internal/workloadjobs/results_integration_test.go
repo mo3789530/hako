@@ -266,6 +266,43 @@ func TestWorkloadResultFencesAttemptsAndPersistsTerminalMetadata(t *testing.T) {
 		WHERE tenant_id='tenant_result' AND verifier_run_id=$1 AND pipeline_name='test'`, verifierRunID); err != nil {
 		t.Fatal(err)
 	}
+	publicationRequest := workloads.AgentProposalPublication{TenantID: evidence.TenantID, AgentRunID: evidence.AgentRunID,
+		AgentAttemptID: evidence.AgentAttemptID, ProposalArtifactID: evidence.ProposalArtifactID,
+		ProposalSHA256: evidence.ProposalSHA256, BaseCommitSHA: evidence.BaseCommitSHA,
+		VerifierRunID: evidence.VerifierRunID, VerifierAttemptID: evidence.VerifierAttemptID,
+		InstallationID: evidence.GitHubInstallationID, RepositoryID: evidence.GitHubRepositoryID,
+		IntegrationID: evidence.GitHubIntegrationID, ConfigRevision: evidence.GitHubConfigRevision,
+		CredentialGeneration: evidence.GitHubCredentialGen}
+	publication, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (workloads.AgentProposalPublication, error) {
+		return workloads.CreateOrGetAgentProposalPublication(ctx, tx, publicationRequest, now.Add(2*time.Minute))
+	})
+	if err != nil || publication.State != workloads.AgentProposalPublicationRequested || publication.PolicySHA256 == "" ||
+		!strings.HasPrefix(publication.BranchName, "hako/agent/proposal-") {
+		t.Fatalf("publication reservation = %+v err=%v", publication, err)
+	}
+	publication, err = transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (workloads.AgentProposalPublication, error) {
+		return workloads.CreateOrGetAgentProposalPublication(ctx, tx, publicationRequest, now.Add(3*time.Minute))
+	})
+	if err != nil || !publication.CreatedAt.Equal(now.Add(2*time.Minute)) {
+		t.Fatalf("exact publication retry changed reservation: %+v err=%v", publication, err)
+	}
+	publication, err = transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (workloads.AgentProposalPublication, error) {
+		return workloads.RecordAgentProposalPublicationBranch(ctx, tx, evidence.TenantID, evidence.AgentRunID, evidence.AgentAttemptID, strings.Repeat("d", 40), now.Add(4*time.Minute))
+	})
+	if err != nil || publication.State != workloads.AgentProposalPublicationBranchCreated {
+		t.Fatalf("publication branch transition = %+v err=%v", publication, err)
+	}
+	if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (workloads.AgentProposalPublication, error) {
+		return workloads.RecordAgentProposalPublicationBranch(ctx, tx, evidence.TenantID, evidence.AgentRunID, evidence.AgentAttemptID, strings.Repeat("e", 40), now.Add(5*time.Minute))
+	}); !errors.Is(err, workloads.ErrAgentProposalPublicationConflict) {
+		t.Fatalf("publication accepted a different branch commit: %v", err)
+	}
+	publication, err = transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (workloads.AgentProposalPublication, error) {
+		return workloads.RecordAgentProposalPublicationPullRequest(ctx, tx, evidence.TenantID, evidence.AgentRunID, evidence.AgentAttemptID, 123, now.Add(6*time.Minute))
+	})
+	if err != nil || publication.State != workloads.AgentProposalPublicationPullRequestCreated || publication.PullRequestNumber != 123 {
+		t.Fatalf("publication pull request transition = %+v err=%v", publication, err)
+	}
 	cancelledAgentResult := WorkloadResult{SchemaVersion: 1, TenantID: "tenant_result", WorkloadRunID: "run_result_agent_cancel",
 		AttemptID: "attempt_result_agent_cancel", Generation: 1, ResourcePlaneID: "rp_result", CommitSHA: commit,
 		Status: domain.WorkloadSucceeded, CompletedAt: now.Add(30 * time.Second),
