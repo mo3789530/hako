@@ -151,6 +151,11 @@ App-ID conflict rejection, all-or-nothing behavior, and audit verification.
 The focused isolated-PostgreSQL integration test passes; no real credentials
 or external cutover are involved.
 
+Task 70 CLI follow-up (2026-10-25): migration commands now reject duplicate,
+non-positive, malformed, and over-100 Installation ID lists before network
+access. HTTP-backed tests verify dry-run and explicit `--apply` backfill
+payloads. `go test ./cmd/hako ./internal/api -count=1` passes.
+
 Added `make verify-workload-microvm-artifact` so the Agent ZIP check is
 repeatable: it validates the public-key JSON, exact package contents, key-byte
 identity, and static ELF64/AArch64 architecture. Focused key validation tests

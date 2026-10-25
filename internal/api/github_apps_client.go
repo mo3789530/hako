@@ -29,6 +29,8 @@ type GitHubAppMetadataRequest struct {
 	Limit, Offset      int
 }
 
+const MaxGitHubAppMigrationInstallations = 100
+
 type GitHubAppSetupResult struct {
 	SetupURL  string    `json:"setup_url"`
 	ExpiresAt time.Time `json:"expires_at"`
@@ -111,7 +113,7 @@ func ManageGitHubApp(ctx context.Context, baseURL, accessToken string, input Git
 		body, _ = json.Marshal(request)
 		method = http.MethodPost
 	case "migration-plan", "migration-backfill":
-		if !validOpaqueID(input.IntegrationID) || input.ExpectedRevision < 1 || input.ExpectedGeneration < 1 || len(input.InstallationIDs) == 0 || len(input.InstallationIDs) > 100 {
+		if !validOpaqueID(input.IntegrationID) || input.ExpectedRevision < 1 || input.ExpectedGeneration < 1 || len(input.InstallationIDs) == 0 || len(input.InstallationIDs) > MaxGitHubAppMigrationInstallations {
 			return result, errors.New("integration, expected revision/generation, and explicit Installation IDs are required")
 		}
 		seen := make(map[int64]struct{}, len(input.InstallationIDs))

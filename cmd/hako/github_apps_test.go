@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mo3789530/hako/internal/api"
 )
 
 func TestParseGitHubAppCLIAllowsReferencesNotSecretInputs(t *testing.T) {
@@ -45,6 +47,18 @@ func TestParseGitHubAppCLIAllowsReferencesNotSecretInputs(t *testing.T) {
 	input, err = parseGitHubAppCLI([]string{"migration-backfill", "--tenant", "tenant_one", "--integration", "gint_one", "--revision", "4", "--generation", "8", "--installations", "12", "--apply"})
 	if err != nil || !input.Confirm || input.Action != "migration-backfill" {
 		t.Fatal("explicitly confirmed migration backfill parsing failed")
+	}
+	for _, installations := range []string{"12,12", "12,nope", ",", "0"} {
+		if _, err := parseGitHubAppCLI([]string{"migration-plan", "--tenant", "tenant_one", "--integration", "gint_one", "--revision", "4", "--generation", "8", "--installations", installations}); err == nil {
+			t.Fatalf("invalid Installation list %q was accepted", installations)
+		}
+	}
+	tooManyInstallations := make([]string, api.MaxGitHubAppMigrationInstallations+1)
+	for index := range tooManyInstallations {
+		tooManyInstallations[index] = fmt.Sprint(index + 1)
+	}
+	if _, err := parseGitHubAppCLI([]string{"migration-plan", "--tenant", "tenant_one", "--integration", "gint_one", "--revision", "4", "--generation", "8", "--installations", strings.Join(tooManyInstallations, ",")}); err == nil {
+		t.Fatal("Installation list over the API limit was accepted")
 	}
 	input, err = parseGitHubAppCLI([]string{"select-default", "--tenant", "tenant_one", "--integration", "gint_one", "--revision", "4", "--generation", "8"})
 	if err != nil || input.ExpectedGeneration != 8 {
@@ -101,6 +115,27 @@ func TestManageGitHubAppCLIUsesTenantScopedMetadataAPI(t *testing.T) {
 				t.Errorf("Delivery pagination = %s", r.URL.RawQuery)
 			}
 			_, _ = fmt.Fprint(w, `{"deliveries":[],"total":0,"limit":5,"offset":7}`)
+		case r.Method == http.MethodPost && r.URL.Path == prefix+"/gint_app_cli/migration":
+			var body struct {
+				Action             string  `json:"action"`
+				ExpectedRevision   int64   `json:"expected_revision"`
+				ExpectedGeneration int64   `json:"expected_generation"`
+				InstallationIDs    []int64 `json:"installation_ids"`
+				Confirm            bool    `json:"confirm"`
+			}
+			if json.NewDecoder(r.Body).Decode(&body) != nil || body.ExpectedRevision != 4 || body.ExpectedGeneration != 9 || len(body.InstallationIDs) != 2 || body.InstallationIDs[0] != 12 || body.InstallationIDs[1] != 13 {
+				t.Errorf("migration request body = %+v", body)
+			}
+			if body.Action == "plan" && body.Confirm {
+				t.Error("migration dry-run unexpectedly requested confirmation")
+			}
+			if body.Action == "backfill" && !body.Confirm {
+				t.Error("migration backfill omitted confirmation")
+			}
+			if body.Action != "plan" && body.Action != "backfill" {
+				t.Errorf("unexpected migration action %q", body.Action)
+			}
+			_, _ = fmt.Fprint(w, `{"migration":{"tenant_id":"tenant_app_cli","integration_id":"gint_app_cli","can_backfill":true}}`)
 		default:
 			t.Errorf("unexpected Tenant GitHub App API request: %s %s", r.Method, r.URL.String())
 			http.NotFound(w, r)
@@ -136,7 +171,16 @@ func TestManageGitHubAppCLIUsesTenantScopedMetadataAPI(t *testing.T) {
 	if _, _, err := manageGitHubAppCLI([]string{"deliveries", "--tenant", "tenant_app_cli", "--integration", "gint_app_cli", "--limit", "5", "--offset", "7"}); err != nil {
 		t.Fatalf("Tenant App deliveries = %v", err)
 	}
-	if calls != 6 {
-		t.Fatalf("Tenant App CLI made %d requests, want 6", calls)
+	for _, action := range []string{"migration-plan", "migration-backfill"} {
+		args := []string{action, "--tenant", "tenant_app_cli", "--integration", "gint_app_cli", "--revision", "4", "--generation", "9", "--installations", "12,13"}
+		if action == "migration-backfill" {
+			args = append(args, "--apply")
+		}
+		if _, _, err := manageGitHubAppCLI(args); err != nil {
+			t.Fatalf("Tenant App %s = %v", action, err)
+		}
+	}
+	if calls != 8 {
+		t.Fatalf("Tenant App CLI made %d requests, want 8", calls)
 	}
 }

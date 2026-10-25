@@ -67,11 +67,20 @@ func parseGitHubAppCLI(args []string) (api.GitHubAppMetadataRequest, error) {
 		if input.IntegrationID == "" || input.ExpectedRevision < 1 || input.ExpectedGeneration < 1 || strings.TrimSpace(installations) == "" {
 			return input, errors.New("--integration, positive --revision/--generation, and explicit --installations are required")
 		}
-		for _, raw := range strings.Split(installations, ",") {
+		rawInstallations := strings.Split(installations, ",")
+		if len(rawInstallations) > api.MaxGitHubAppMigrationInstallations {
+			return input, errors.New("--installations cannot contain more than 100 IDs")
+		}
+		seen := make(map[int64]struct{}, len(rawInstallations))
+		for _, raw := range rawInstallations {
 			id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
 			if err != nil || id <= 0 {
 				return input, errors.New("--installations must contain positive comma-separated IDs")
 			}
+			if _, exists := seen[id]; exists {
+				return input, errors.New("--installations cannot contain duplicate IDs")
+			}
+			seen[id] = struct{}{}
 			input.InstallationIDs = append(input.InstallationIDs, id)
 		}
 		if input.Action == "migration-backfill" {
