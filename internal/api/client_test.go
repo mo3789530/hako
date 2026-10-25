@@ -527,6 +527,45 @@ func TestGetWorkloadAgentPublicationValidatesSafeStatus(t *testing.T) {
 	}
 }
 
+func TestGetWorkloadAgentPublicationAcceptsOnlyConsistentStateTransitions(t *testing.T) {
+	const responsePrefix = `{"tenant_id":"tenant_123","workload_run_id":"run_agent","base_branch":"main","branch_name":"hako/agent/proposal-123","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:01:00Z"`
+	tests := []struct {
+		name      string
+		response  string
+		wantError bool
+	}{
+		{name: "requested", response: responsePrefix + `,"state":"requested"}`},
+		{name: "branch created", response: responsePrefix + `,"state":"branch_created","branch_commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`},
+		{name: "pull request created", response: responsePrefix + `,"state":"pull_request_created","branch_commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","pull_request_number":42}`},
+		{name: "unknown state", response: responsePrefix + `,"state":"merged","branch_commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","pull_request_number":42}`, wantError: true},
+		{name: "wrong tenant", response: strings.Replace(responsePrefix, `"tenant_123"`, `"tenant_other"`, 1) + `,"state":"requested"}`, wantError: true},
+		{name: "requested with branch commit", response: responsePrefix + `,"state":"requested","branch_commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`, wantError: true},
+		{name: "branch created without commit", response: responsePrefix + `,"state":"branch_created"}`, wantError: true},
+		{name: "branch created with pull request", response: responsePrefix + `,"state":"branch_created","branch_commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","pull_request_number":42}`, wantError: true},
+		{name: "pull request without commit", response: responsePrefix + `,"state":"pull_request_created","pull_request_number":42}`, wantError: true},
+		{name: "pull request without number", response: responsePrefix + `,"state":"pull_request_created","branch_commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`, wantError: true},
+		{name: "missing timestamps", response: `{"tenant_id":"tenant_123","workload_run_id":"run_agent","state":"requested","base_branch":"main","branch_name":"hako/agent/proposal-123"}`, wantError: true},
+		{name: "malformed json", response: `{`, wantError: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/v1/tenants/tenant_123/workload-runs/run_agent/agent-publication" {
+					t.Errorf("unexpected publication request: %s %s", r.Method, r.URL.Path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, test.response)
+			}))
+			defer server.Close()
+
+			_, err := GetWorkloadAgentPublication(context.Background(), server.URL, "test-access-token", "tenant_123", "run_agent", server.Client())
+			if (err != nil) != test.wantError {
+				t.Fatalf("GetWorkloadAgentPublication error = %v, wantError %t", err, test.wantError)
+			}
+		})
+	}
+}
+
 func TestSubmitWorkloadAgentPublicationUsesAuthenticatedIdempotentRoute(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/tenants/tenant_123/workload-runs/run_agent/agent-publication/publish" ||

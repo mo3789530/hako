@@ -129,6 +129,12 @@ Successful, failed, and mismatched-identity submission attempts are audited;
 invalid requests do not invoke the Broker. This uses an isolated local
 PostgreSQL database and a fake submitter, with no GitHub or AWS calls.
 
+The API client also validates each safe publication-state transition: `requested`
+must not contain branch evidence, `branch_created` requires a commit but no PR,
+and `pull_request_created` requires both. Regression cases reject unknown
+states, mismatched Tenant identity, missing timestamps, and inconsistent branch
+or PR metadata before the CLI can display it.
+
 - `workloadsource.ApplyAgentProposalArchive` verifies the immutable base source
   archive, validates the untrusted ZIP against path/type/secret/size bounds,
   applies only regular files in a private temporary checkout, and emits a new
