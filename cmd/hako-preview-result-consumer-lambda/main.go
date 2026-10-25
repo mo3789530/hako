@@ -43,23 +43,42 @@ func newHandler(handler previewResultHandler) func(context.Context, events.SQSEv
 }
 
 func openDatabase(ctx context.Context) (*pgxpool.Pool, error) {
-	postgresURL := strings.TrimSpace(os.Getenv("HAKO_DATABASE_URL"))
-	dsqlHost := strings.TrimSpace(os.Getenv("HAKO_DSQL_HOST"))
+	config, err := databaseConnectionConfig(os.Getenv)
+	if err != nil {
+		return nil, err
+	}
+	if config.postgresURL != "" {
+		return dsql.OpenPostgres(ctx, config.postgresURL)
+	}
+	return dsql.Open(ctx, config.dsql)
+}
+
+type databaseConfig struct {
+	postgresURL string
+	dsql        dsql.Config
+}
+
+func databaseConnectionConfig(getenv func(string) string) (databaseConfig, error) {
+	if getenv == nil {
+		return databaseConfig{}, errors.New("database environment reader is required")
+	}
+	postgresURL := strings.TrimSpace(getenv("HAKO_DATABASE_URL"))
+	dsqlHost := strings.TrimSpace(getenv("HAKO_DSQL_HOST"))
 	if postgresURL != "" && dsqlHost != "" {
-		return nil, errors.New("set either HAKO_DATABASE_URL or HAKO_DSQL_HOST, not both")
+		return databaseConfig{}, errors.New("set either HAKO_DATABASE_URL or HAKO_DSQL_HOST, not both")
 	}
 	if postgresURL != "" {
-		return dsql.OpenPostgres(ctx, postgresURL)
+		return databaseConfig{postgresURL: postgresURL}, nil
 	}
 	if dsqlHost == "" {
-		return nil, errors.New("HAKO_DSQL_HOST is required")
+		return databaseConfig{}, errors.New("HAKO_DSQL_HOST is required")
 	}
-	config := dsql.Config{Host: dsqlHost, Region: strings.TrimSpace(os.Getenv("AWS_REGION")),
-		User: strings.TrimSpace(os.Getenv("HAKO_DSQL_USER")), Database: strings.TrimSpace(os.Getenv("HAKO_DSQL_DATABASE"))}
+	config := dsql.Config{Host: dsqlHost, Region: strings.TrimSpace(getenv("AWS_REGION")),
+		User: strings.TrimSpace(getenv("HAKO_DSQL_USER")), Database: strings.TrimSpace(getenv("HAKO_DSQL_DATABASE"))}
 	if config.User == "" {
 		config.User = "hako_preview_result_consumer"
 	}
-	return dsql.Open(ctx, config)
+	return databaseConfig{dsql: config}, nil
 }
 
 var _ previewResultHandler = (*previewresult.LambdaHandler)(nil)

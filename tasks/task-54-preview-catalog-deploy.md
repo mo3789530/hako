@@ -518,6 +518,12 @@ Preview producer/dispatcher/result E2E also passes. Valid results still rely
 on the database-backed generation/claim fencing exercised by that integration
 path; this does not verify a deployed SQS/Lambda consumer.
 
+The Preview Result Consumer Lambda command now has a pure backend-selection
+config parser. Unit tests cover trimmed local PostgreSQL URLs, DSQL host/region/
+user/database defaults and overrides, missing/conflicting backends, and
+malformed PostgreSQL URLs without echoing embedded credentials. The command
+package coverage is 66.7%; no AWS DSQL connection was attempted.
+
 ## Preview source authorization coverage (2026-10-25)
 
 Added tests for the exact immutable Run credential pin (Tenant, Installation,
