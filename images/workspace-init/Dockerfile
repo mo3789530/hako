@@ -42,15 +42,19 @@ COPY slirp4netns-aarch64 /tmp/slirp4netns-aarch64
 # Pin the helper RPM version at image build time. The build fails closed if a
 # version is omitted, so the produced image can be reproduced and audited.
 ARG EFS_UTILS_RPM_VERSION
+ARG OPENSSH_RPM_VERSION
 RUN test -n "${EFS_UTILS_RPM_VERSION}" \
+    && test -n "${OPENSSH_RPM_VERSION}" \
     && case "${HAKO_WORKSPACE_SERVICES_ENABLED}" in true|false) ;; *) exit 1 ;; esac \
     && case "${SLIRP4NETNS_VERSION}" in ''|*[!0-9.]* ) exit 1 ;; esac \
     && echo "${SLIRP4NETNS_SHA256}" | grep -Eq '^[[:xdigit:]]{64}$' \
     && echo "${SLIRP4NETNS_SHA256}  /tmp/slirp4netns-aarch64" | sha256sum --check \
-    && dnf install -y --setopt=install_weak_deps=False "amazon-efs-utils-${EFS_UTILS_RPM_VERSION}" shadow-utils \
+    && dnf install -y --setopt=install_weak_deps=False "amazon-efs-utils-${EFS_UTILS_RPM_VERSION}" "openssh-server-${OPENSSH_RPM_VERSION}" "openssh-clients-${OPENSSH_RPM_VERSION}" shadow-utils \
     && install -m 0755 /tmp/slirp4netns-aarch64 /usr/local/bin/slirp4netns \
     && dnf clean all \
     && test -x /sbin/mount.efs \
+    && test -x /usr/sbin/sshd \
+    && test -x /usr/bin/ssh-keygen \
     && mkdir -p /run/hako /workspace \
     && chmod 0700 /run/hako \
     && chmod 0755 /workspace \
@@ -77,6 +81,7 @@ RUN ln -s /opt/hako-code-server/bin/code-server /usr/local/bin/code-server \
 EXPOSE 8080
 ENV HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE=/etc/hako/workspace-agent-public-keys.json
 ENV HAKO_WORKSPACE_SERVICES_ENABLED=${HAKO_WORKSPACE_SERVICES_ENABLED}
+ENV HAKO_WORKSPACE_SSH_ENABLED=true
 ENV HAKO_SLIRP4NETNS_VERSION=${SLIRP4NETNS_VERSION}
 USER 0:0
 ENTRYPOINT ["/usr/local/bin/hako-workspace-init"]

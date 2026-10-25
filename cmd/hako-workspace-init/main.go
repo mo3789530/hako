@@ -31,10 +31,15 @@ func run() error {
 	if err != nil {
 		return errors.New("configure Workspace Service runtime")
 	}
+	sshEnabled, err := workspaceSSHEnabled(os.Getenv(workspaceagent.WorkspaceSSHEnabledEnvironment))
+	if err != nil {
+		return errors.New("configure Workspace SSH runtime")
+	}
 	supervisor, err := workspaceagent.NewLinuxWorkspaceAgentSupervisor(workspaceagent.WorkspaceAgentSupervisorConfig{
 		TrustedKeysFile: os.Getenv(workspaceagent.WorkspaceAgentTrustedKeysFileEnvironment),
 		GatewayOrigin:   os.Getenv(workspaceagent.WorkspaceGatewayOriginEnvironment),
 		EnableServices:  servicesEnabled,
+		EnableSSH:       sshEnabled,
 	})
 	if err != nil {
 		return errors.New("configure unprivileged Workspace Agent")
@@ -94,5 +99,16 @@ func workspaceServicesEnabled(value string) (bool, error) {
 		return true, nil
 	default:
 		return false, errors.New("Workspace Service runtime setting must be true or false")
+	}
+}
+
+func workspaceSSHEnabled(value string) (bool, error) {
+	switch value {
+	case "", "false":
+		return false, nil
+	case "true":
+		return true, nil
+	default:
+		return false, errors.New("Workspace SSH setting must be true or false")
 	}
 }

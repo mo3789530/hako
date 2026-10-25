@@ -259,7 +259,7 @@ func ensureWorkspaceRootlessIdentityAt(root string, uid, gid uint32) error {
 	if uid < 100000 || gid != uid || !filepath.IsAbs(root) {
 		return errors.New("rootless account identity is invalid")
 	}
-	userLine := fmt.Sprintf("hako-workspace:%s:%d:%d:Hako Workspace:/workspace:/sbin/nologin", "x", uid, gid)
+	userLine := fmt.Sprintf("hako-workspace:%s:%d:%d:Hako Workspace:/workspace:/bin/bash", "x", uid, gid)
 	groupLine := fmt.Sprintf("hako-workspace:x:%d:", gid)
 	subIDLine := fmt.Sprintf("hako-workspace:%d:%d", rootlessSubIDStart, rootlessSubIDCount)
 	if err := ensureIdentityLine(filepath.Join(root, "passwd"), userLine, 0, 2); err != nil {

@@ -97,7 +97,7 @@ Configure OpenSSH or VS Code Remote SSH to use Hako as a ProxyCommand:
 ```sshconfig
 Host hako-ws-api-dev
     HostName hako-workspace
-    User hako
+    User hako-workspace
     ProxyCommand hako ssh-proxy <tenant-id> <workspace-id>
 ```
 
@@ -105,13 +105,25 @@ Host hako-ws-api-dev
 permission and relays raw SSH bytes over TLS/WSS. The Gateway routes this
 permission only to the fixed Workspace-local `127.0.0.1:22`; the client cannot
 choose a host or port. TCP/22 remains private and is never exposed publicly.
-The SSH daemon must be present and configured inside the Workspace image. The
-ProxyCommand emits no protocol text on stdout; diagnostics go to stderr. It
-attempts session revocation when the stream closes or the process is cancelled.
-The Lambda MicroVM adapter and unprivileged Guest Agent now implement the
-dedicated `/ssh` WSS bridge and fixed `127.0.0.1:22` dial, with one-use
-MicroVM-bound authorization. This does not install the SSH daemon or provide a
-host key; those remain image/runtime provisioning gates.
+The Workspace image starts OpenSSH on `127.0.0.1:22` with public-key
+authentication only, disables password/root login, and allows forwarding only
+to Workspace loopback ports. Put your client public key at
+`/workspace/.ssh/authorized_keys` (mode `0600`). The per-Workspace Ed25519 host
+key is persisted under `/workspace/.hako/ssh`; fetch its public half and add a
+known-hosts entry before connecting:
+
+```sh
+hako cp --from acme ws_api /workspace/.hako/ssh/ssh_host_ed25519_key.pub ./hako-ws-api-dev.pub
+printf 'hako-workspace %s\n' "$(cat ./hako-ws-api-dev.pub)" >> ~/.ssh/known_hosts
+```
+
+The private host key is copied to root-only `/run/hako` tmpfs for sshd and
+removed when the server stops. The ProxyCommand emits no protocol text on
+stdout; diagnostics go to stderr. It attempts session revocation when the
+stream closes or the process is cancelled. The Lambda MicroVM adapter and
+Guest Agent route use a dedicated `/ssh` WSS bridge and fixed
+`127.0.0.1:22` dial, with one-use MicroVM-bound authorization. A live Lambda
+MicroVM connection and deployed image build remain unverified.
 
 Copy files through the private Gateway-to-Agent stream:
 

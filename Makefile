@@ -194,6 +194,7 @@ build-workload-microvm-services-image: check-arm64-podman-build build-workload-m
 build-workspace-microvm-image: check-arm64-podman-build
 	@test "$(HAKO_WORKSPACE_SERVICES_ENABLED)" = true -o "$(HAKO_WORKSPACE_SERVICES_ENABLED)" = false || (echo "set HAKO_WORKSPACE_SERVICES_ENABLED to true or false" >&2; exit 1)
 	@test -n "$(HAKO_EFS_UTILS_RPM_VERSION)" || (echo "set HAKO_EFS_UTILS_RPM_VERSION to the pinned amazon-efs-utils RPM version" >&2; exit 1)
+	@test -n "$(HAKO_OPENSSH_RPM_VERSION)" || (echo "set HAKO_OPENSSH_RPM_VERSION to the pinned OpenSSH RPM version" >&2; exit 1)
 	@test -n "$(HAKO_NERDCTL_FULL_ARCHIVE)" || (echo "set HAKO_NERDCTL_FULL_ARCHIVE to a reviewed nerdctl-full Linux ARM64 archive" >&2; exit 1)
 	@test -n "$(HAKO_NERDCTL_FULL_VERSION)" || (echo "set HAKO_NERDCTL_FULL_VERSION to the exact nerdctl release" >&2; exit 1)
 	@test -n "$(HAKO_NERDCTL_FULL_SHA256)" || (echo "set HAKO_NERDCTL_FULL_SHA256 to the reviewed archive digest" >&2; exit 1)
@@ -218,7 +219,7 @@ build-workspace-microvm-image: check-arm64-podman-build
 	install -m 0644 "$(HAKO_NERDCTL_FULL_ARCHIVE)" build/workspace-init/nerdctl-full-linux-arm64.tar.gz
 	install -m 0644 "$(HAKO_SLIRP4NETNS_BINARY)" build/workspace-init/slirp4netns-aarch64
 	install -m 0644 images/workspace-init/Dockerfile build/workspace-init/Dockerfile
-	podman build --arch arm64 --build-arg EFS_UTILS_RPM_VERSION="$(HAKO_EFS_UTILS_RPM_VERSION)" --build-arg NERDCTL_FULL_VERSION="$(HAKO_NERDCTL_FULL_VERSION)" --build-arg NERDCTL_FULL_SHA256="$(HAKO_NERDCTL_FULL_SHA256)" --build-arg SLIRP4NETNS_VERSION="$(HAKO_SLIRP4NETNS_VERSION)" --build-arg SLIRP4NETNS_SHA256="$(HAKO_SLIRP4NETNS_SHA256)" --build-arg CODE_SERVER_VERSION="$(HAKO_CODE_SERVER_VERSION)" --build-arg CODE_SERVER_SHA256="$(HAKO_CODE_SERVER_SHA256)" --build-arg HAKO_WORKSPACE_SERVICES_ENABLED="$(HAKO_WORKSPACE_SERVICES_ENABLED)" --tag hako-workspace-init:local -f build/workspace-init/Dockerfile build/workspace-init
+	podman build --arch arm64 --build-arg EFS_UTILS_RPM_VERSION="$(HAKO_EFS_UTILS_RPM_VERSION)" --build-arg OPENSSH_RPM_VERSION="$(HAKO_OPENSSH_RPM_VERSION)" --build-arg NERDCTL_FULL_VERSION="$(HAKO_NERDCTL_FULL_VERSION)" --build-arg NERDCTL_FULL_SHA256="$(HAKO_NERDCTL_FULL_SHA256)" --build-arg SLIRP4NETNS_VERSION="$(HAKO_SLIRP4NETNS_VERSION)" --build-arg SLIRP4NETNS_SHA256="$(HAKO_SLIRP4NETNS_SHA256)" --build-arg CODE_SERVER_VERSION="$(HAKO_CODE_SERVER_VERSION)" --build-arg CODE_SERVER_SHA256="$(HAKO_CODE_SERVER_SHA256)" --build-arg HAKO_WORKSPACE_SERVICES_ENABLED="$(HAKO_WORKSPACE_SERVICES_ENABLED)" --tag hako-workspace-init:local -f build/workspace-init/Dockerfile build/workspace-init
 
 # Builds an ARM64 ECS/Fargate image locally; publishing to ECR is a separate authorized step.
 build-github-checks-consumer-image: check-arm64-podman-build

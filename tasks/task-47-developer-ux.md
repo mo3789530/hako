@@ -74,9 +74,12 @@ Complete the basic interactive development flow and reproducible local-service t
   one-use capability to Guest port 8080 and the unprivileged Guest Agent then
   dials only `127.0.0.1:22`; arbitrary port values and `port-forward`-only
   tickets are rejected. Local WSS tests cover byte relay, ticket identity,
-  and replay rejection. The image still has no configured `sshd`, and trusted
-  per-Workspace SSH host-key provisioning remains open; file transfer does not
-  depend on this SSH endpoint.
+  and replay rejection. Workspace init now starts image-installed `sshd` on
+  loopback with public-key-only authentication and an EFS-backed per-Workspace
+  host key; the private key is copied to root-only `/run` for sshd. The
+  authenticated `hako cp --from` command can retrieve the public host key.
+  ARM64 image build and live MicroVM connection remain unverified; file
+  transfer does not depend on this SSH endpoint.
 - Added `hako cp` upload and `hako cp --from` download as a dedicated
   `file-transfer` Session and signed, one-use Agent Ticket over TLS/WSS. The
   binary control frame is bounded and validates absolute `/workspace` paths;

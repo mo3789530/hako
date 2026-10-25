@@ -27,7 +27,7 @@ func TestEnsureWorkspaceRootlessIdentityWritesStableAccountAndDisjointSubIDs(t *
 		t.Fatalf("repeat rootless account setup: %v", err)
 	}
 	for name, want := range map[string]string{
-		"passwd": "hako-workspace:x:145678:145678:Hako Workspace:/workspace:/sbin/nologin",
+		"passwd": "hako-workspace:x:145678:145678:Hako Workspace:/workspace:/bin/bash",
 		"group":  "hako-workspace:x:145678:",
 		"subuid": "hako-workspace:20000000:65536",
 		"subgid": "hako-workspace:20000000:65536",
@@ -59,7 +59,7 @@ func TestEnsureWorkspaceRootlessIdentityRejectsConflictingAccountsAndSubIDRanges
 	}
 	root := t.TempDir()
 	for filename, contents := range map[string]string{
-		"passwd": "root:x:0:0:root:/root:/bin/bash\nhako-workspace:x:145678:145678:Hako Workspace:/workspace:/sbin/nologin\n",
+		"passwd": "root:x:0:0:root:/root:/bin/bash\nhako-workspace:x:145678:145678:Hako Workspace:/workspace:/bin/bash\n",
 		"group":  "root:x:0:\nforeign:x:145678:\n",
 	} {
 		if err := os.WriteFile(filepath.Join(root, filename), []byte(contents), 0644); err != nil {

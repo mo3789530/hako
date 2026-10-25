@@ -89,6 +89,23 @@ type supervisorTestContainerd struct {
 	stopped bool
 }
 
+type supervisorTestSSHServer struct{ stopped bool }
+
+func (s *supervisorTestSSHServer) Stop(context.Context) error { s.stopped = true; return nil }
+
+type supervisorTestSSHStarter struct {
+	started int
+	server  *supervisorTestSSHServer
+}
+
+func (s *supervisorTestSSHStarter) Start(_ context.Context, spec WorkspaceMountSpec) (WorkspaceSSHServerProcess, error) {
+	s.started++
+	if !validWorkspaceMountSpec(spec) {
+		return nil, errors.New("invalid test mount")
+	}
+	return s.server, nil
+}
+
 func (p *supervisorTestContainerd) SocketPath() string { return p.socket }
 func (p *supervisorTestContainerd) Stop(context.Context) error {
 	p.stopped = true
@@ -104,6 +121,8 @@ func (p *supervisorTestProcess) Stop(ctx context.Context) error {
 func TestWorkspaceAgentSupervisorStartsBoundChildAndProxiesOnlyWorkspaceRoutes(t *testing.T) {
 	launcher := &supervisorTestLauncher{}
 	containerd := &supervisorTestContainerd{socket: "/run/user/100123/containerd/containerd.sock"}
+	sshServer := &supervisorTestSSHServer{}
+	sshStarter := &supervisorTestSSHStarter{server: sshServer}
 	containerdStarts := 0
 	root := t.TempDir()
 	socket := filepath.Join(root, "agent.sock")
@@ -123,6 +142,7 @@ func TestWorkspaceAgentSupervisorStartsBoundChildAndProxiesOnlyWorkspaceRoutes(t
 		SocketPath: socket, BinaryPath: "/image/hako-workspace-agent", TrustedKeysFile: trustedKeysPath,
 		ServiceFenceDirectory: filepath.Join(root, "service-fences"),
 		GatewayOrigin:         "https://gateway.hako.test", Launcher: launcher, isRoot: func() bool { return true }, EnableServices: true,
+		EnableSSH: true, StartSSHServer: sshStarter,
 		HeartbeatInterval: 10 * time.Millisecond, HeartbeatLease: 50 * time.Millisecond,
 		PrepareRuntimeDirectory: func(uid, gid uint32) error {
 			if uid != testMountSpec().UID || gid != testMountSpec().GID {
@@ -256,8 +276,8 @@ childStopped:
 	if err := supervisor.Stop(ctx); err != nil {
 		t.Fatalf("stop child: %v", err)
 	}
-	if !containerd.stopped {
-		t.Fatal("rootless containerd was not stopped with the Workspace Agent supervisor")
+	if !containerd.stopped || !sshServer.stopped || sshStarter.started != 1 {
+		t.Fatalf("runtime children not stopped: containerd=%t ssh=%t ssh starts=%d", containerd.stopped, sshServer.stopped, sshStarter.started)
 	}
 	if _, err := os.Lstat(socket); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("socket remains after shutdown: %v", err)

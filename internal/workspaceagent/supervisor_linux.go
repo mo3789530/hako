@@ -84,11 +84,13 @@ type WorkspaceAgentSupervisorConfig struct {
 	GatewayOrigin           string
 	ServiceFenceDirectory   string
 	EnableServices          bool
+	EnableSSH               bool
 	HeartbeatInterval       time.Duration
 	HeartbeatLease          time.Duration
 	PrepareRuntimeDirectory func(uint32, uint32) error
 	PrepareRootlessIdentity func(uint32, uint32) error
 	StartRootlessContainerd RootlessContainerdStarter
+	StartSSHServer          WorkspaceSSHServerStarter
 	Launcher                WorkspaceAgentLauncher
 	isRoot                  func() bool
 }
@@ -102,6 +104,7 @@ type WorkspaceAgentSupervisor struct {
 	config        WorkspaceAgentSupervisorConfig
 	process       WorkspaceAgentProcess
 	containerd    RootlessContainerdRuntime
+	sshServer     WorkspaceSSHServerProcess
 	bound         AgentTicket
 	launch        WorkspaceAgentLaunch
 	proxy         http.Handler
@@ -150,6 +153,9 @@ func NewLinuxWorkspaceAgentSupervisor(config WorkspaceAgentSupervisorConfig) (*W
 		config.StartRootlessContainerd = func(ctx context.Context, config RootlessContainerdConfig) (RootlessContainerdRuntime, error) {
 			return StartLinuxRootlessContainerd(ctx, config)
 		}
+	}
+	if config.EnableSSH && config.StartSSHServer == nil {
+		config.StartSSHServer = newLinuxWorkspaceSSHServerStarter()
 	}
 	if !filepath.IsAbs(config.SocketPath) || !filepath.IsAbs(config.BinaryPath) || !filepath.IsAbs(config.TrustedKeysFile) ||
 		config.HeartbeatInterval < 10*time.Millisecond || config.HeartbeatInterval > time.Minute ||
@@ -263,9 +269,9 @@ func (s *WorkspaceAgentSupervisor) BindWorkspaceRuntime(microVMID string, spec W
 	if err := s.config.PrepareRuntimeDirectory(spec.UID, spec.GID); err != nil {
 		return errors.New("prepare private Workspace runtime tmpfs")
 	}
-	if s.config.EnableServices {
+	if s.config.EnableServices || s.config.EnableSSH {
 		if err := s.config.PrepareRootlessIdentity(spec.UID, spec.GID); err != nil {
-			return errors.New("prepare rootless Workspace Service account")
+			return errors.New("prepare Workspace runtime account")
 		}
 	}
 	keyFile, err := os.Open(s.config.TrustedKeysFile)
@@ -304,7 +310,27 @@ func (s *WorkspaceAgentSupervisor) BindWorkspaceRuntime(microVMID string, spec W
 		s.containerd = containerd
 		startedContainerd = true
 	}
+	startedSSH := false
+	if s.config.EnableSSH && s.sshServer == nil {
+		sshServer, err := s.config.StartSSHServer.Start(context.Background(), spec)
+		if err != nil || sshServer == nil {
+			if sshServer != nil {
+				stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				_ = sshServer.Stop(stopCtx)
+				cancel()
+			}
+			if startedContainerd {
+				s.stopRootlessContainerd()
+			}
+			return errors.New("start Workspace SSH server")
+		}
+		s.sshServer = sshServer
+		startedSSH = true
+	}
 	if err := os.Remove(s.config.SocketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if startedSSH {
+			s.stopSSHServer()
+		}
 		if startedContainerd {
 			s.stopRootlessContainerd()
 		}
@@ -312,6 +338,9 @@ func (s *WorkspaceAgentSupervisor) BindWorkspaceRuntime(microVMID string, spec W
 	}
 	listener, err := net.Listen("unix", s.config.SocketPath)
 	if err != nil {
+		if startedSSH {
+			s.stopSSHServer()
+		}
 		if startedContainerd {
 			s.stopRootlessContainerd()
 		}
@@ -323,6 +352,9 @@ func (s *WorkspaceAgentSupervisor) BindWorkspaceRuntime(microVMID string, spec W
 	if err := os.Chmod(s.config.SocketPath, 0600); err != nil {
 		_ = listener.Close()
 		_ = os.Remove(s.config.SocketPath)
+		if startedSSH {
+			s.stopSSHServer()
+		}
 		if startedContainerd {
 			s.stopRootlessContainerd()
 		}
@@ -340,6 +372,9 @@ func (s *WorkspaceAgentSupervisor) BindWorkspaceRuntime(microVMID string, spec W
 		if startedContainerd {
 			s.stopRootlessContainerd()
 		}
+		if startedSSH {
+			s.stopSSHServer()
+		}
 		return errors.New("start unprivileged Workspace Agent")
 	}
 	if err := s.waitReady(process, launch); err != nil {
@@ -349,6 +384,9 @@ func (s *WorkspaceAgentSupervisor) BindWorkspaceRuntime(microVMID string, spec W
 		_ = os.Remove(s.config.SocketPath)
 		if startedContainerd {
 			s.stopRootlessContainerd()
+		}
+		if startedSSH {
+			s.stopSSHServer()
 		}
 		return err
 	}
@@ -494,18 +532,27 @@ func (s *WorkspaceAgentSupervisor) Stop(ctx context.Context) error {
 	s.mu.Lock()
 	process := s.process
 	containerd := s.containerd
+	sshServer := s.sshServer
 	s.process = nil
 	s.containerd = nil
+	s.sshServer = nil
 	s.serviceGuard = nil
 	s.mu.Unlock()
 	s.heartbeatMu.Lock()
 	s.lastHeartbeat = time.Time{}
 	s.heartbeatMu.Unlock()
+	var sshErr error
+	if sshServer != nil {
+		sshErr = sshServer.Stop(ctx)
+	}
 	if process == nil {
 		if containerd == nil {
-			return nil
+			return sshErr
 		}
-		return containerd.Stop(ctx)
+		if err := containerd.Stop(ctx); err != nil && sshErr == nil {
+			return err
+		}
+		return sshErr
 	}
 	err := process.Stop(ctx)
 	if removeErr := os.Remove(s.config.SocketPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) && err == nil {
@@ -516,7 +563,20 @@ func (s *WorkspaceAgentSupervisor) Stop(ctx context.Context) error {
 			err = containerdErr
 		}
 	}
+	if sshErr != nil && err == nil {
+		err = sshErr
+	}
 	return err
+}
+
+func (s *WorkspaceAgentSupervisor) stopSSHServer() {
+	if s.sshServer == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_ = s.sshServer.Stop(ctx)
+	cancel()
+	s.sshServer = nil
 }
 
 func (s *WorkspaceAgentSupervisor) stopRootlessContainerd() {

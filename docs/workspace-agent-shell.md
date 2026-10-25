@@ -146,9 +146,14 @@ each new shell stream, removing the need for process-local lifecycle
 registration. The same adapter now routes the dedicated `ssh-proxy` permission
 to the fixed Guest `/ssh` WebSocket route, where the unprivileged Agent dials
 only `127.0.0.1:22`; the caller cannot supply a destination. Local tests cover
-the ticket-bound raw-byte bridge and reject arbitrary ports/replay. The image
-does not yet install/configure `sshd`; SSH host-key provisioning is not needed
-for `hako cp`, which uses a separate signed Agent file-transfer route. The
+the ticket-bound raw-byte bridge and reject arbitrary ports/replay. Workspace
+init starts image-installed `sshd` on loopback with public-key-only
+authentication and no root/password login. An EFS-backed per-Workspace host
+key is copied to root-only `/run` for sshd and removed at shutdown; retrieve
+its public half with authenticated `hako cp --from` and add it to
+`known_hosts`. This does not verify an ARM64 image build or live MicroVM route.
+SSH host-key provisioning is not needed for `hako cp`, which uses a separate
+signed Agent file-transfer route. The
 route requires a one-use `file-transfer` Agent Ticket, confines paths beneath
 the pinned `/workspace` directory with `openat`/`O_NOFOLLOW`, rejects symlinks
 and non-regular files, caps transfers at 1 GiB, and commits uploads by fsync
@@ -164,7 +169,7 @@ Production key rotation/distribution is unresolved. Keep Workspace runtime
 exposure disabled until deployment gates are complete.
 
 Build the dedicated image with
-`make build-workspace-microvm-image HAKO_EFS_UTILS_RPM_VERSION=<pinned-version> HAKO_NERDCTL_FULL_ARCHIVE=<reviewed-linux-arm64-tar.gz> HAKO_NERDCTL_FULL_VERSION=<pinned-version> HAKO_NERDCTL_FULL_SHA256=<reviewed-sha256> HAKO_CODE_SERVER_VERSION=4.141.0 HAKO_CODE_SERVER_SHA256=e5cc78da1d631c6cf6162f9b18eeaa8ee9d3239e1a88bb99d0602cdc5fa1852d HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE=<public-keys.json> HAKO_PREVIEW_TICKET_KEY_ID=<matching-key-id>`.
+`make build-workspace-microvm-image HAKO_EFS_UTILS_RPM_VERSION=<pinned-version> HAKO_OPENSSH_RPM_VERSION=<pinned-version> HAKO_NERDCTL_FULL_ARCHIVE=<reviewed-linux-arm64-tar.gz> HAKO_NERDCTL_FULL_VERSION=<pinned-version> HAKO_NERDCTL_FULL_SHA256=<reviewed-sha256> HAKO_CODE_SERVER_VERSION=4.141.0 HAKO_CODE_SERVER_SHA256=e5cc78da1d631c6cf6162f9b18eeaa8ee9d3239e1a88bb99d0602cdc5fa1852d HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE=<public-keys.json> HAKO_PREVIEW_TICKET_KEY_ID=<matching-key-id>`.
 The code-server archive is fetched from the upstream GitHub release and
 verified against the supplied ARM64 SHA-256 before it is copied into the
 runtime image. Keep both version and digest pinned together when updating it.
