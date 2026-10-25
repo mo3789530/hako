@@ -7,6 +7,12 @@ Concurrent Workload admission reserves one of five Tenant-wide slots in the
 creation transaction, returns a stable 409 on exhaustion, preserves idempotent
 replay, releases the slot on terminal transition, and backfills active runs
 during migration. PostgreSQL concurrency tests cover the exact cap and reuse.
+Tenant configuration also has a queued Workload backlog cap (default/platform
+ceiling 5, constrained to the concurrent Run limit). `pending`/`queued` runs
+reserve the queue budget in the same OCC-guarded creation transaction;
+dispatch to `provisioning` releases that queue capacity while keeping the
+concurrent Run reservation. Owner/Admin API and CLI configuration and usage
+reporting are included, with queue-exhaustion and release integration tests.
 Workspace-local Service admission now enforces aggregate 2 GiB/1500 millicore
 catalog-request limits with a durable reservation table and per-Workspace OCC
 guard row (Aurora DSQL-compatible; no row locks), retains reservations during
@@ -63,6 +69,11 @@ rejection, and fail-closed EOF behavior have CLI unit coverage. Measured live
 resource usage remains future work; the CLI continues to label these values
 as reservations/configured limits and does not imply billing.
 Priority: P3.
+
+The queued-Workload budget portion is implemented and locally verified. Task 55
+remains in progress: Tenant-specific compute-class ceilings/capacity budgets
+have not been modeled or enforced, and quotas are reservations rather than
+measured runtime usage.
 
 ## Goal
 

@@ -16,6 +16,8 @@ const (
 	MaxWorkspaces                      int16 = 10
 	DefaultConcurrentWorkloadRuns      int16 = 5
 	MaxConcurrentWorkloadRuns          int16 = 5
+	DefaultQueuedWorkloadRuns          int16 = 5
+	MaxQueuedWorkloadRuns              int16 = 5
 	DefaultPreviewRuns                 int16 = 2
 	MaxPreviewRuns                     int16 = 5
 	DefaultPreviewLifetimeSeconds      int64 = 24 * 60 * 60
@@ -33,11 +35,13 @@ var ErrBelowCurrentUsage = errors.New("Tenant quota cannot be lower than current
 var ErrInvalidLimits = errors.New("Tenant quota limits are invalid")
 var ErrArtifactQuotaExceeded = errors.New("Tenant artifact storage quota exceeded")
 var ErrPreviewQuotaExceeded = errors.New("Tenant Preview quota exceeded")
+var ErrWorkloadQueueQuotaExceeded = errors.New("Tenant queued Workload quota exceeded")
 
 type Limits struct {
 	TenantID                    domain.TenantID `json:"tenant_id"`
 	Workspaces                  int16           `json:"workspaces_limit"`
 	ConcurrentWorkloadRuns      int16           `json:"workload_runs_limit"`
+	QueuedWorkloadRuns          int16           `json:"queued_workload_runs_limit"`
 	PreviewRuns                 int16           `json:"preview_runs_limit"`
 	PreviewLifetimeSeconds      int64           `json:"preview_lifetime_seconds_limit"`
 	ArtifactBytes               int64           `json:"artifact_bytes_limit"`
@@ -54,14 +58,14 @@ func Read(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID) (Limits, err
 	if tx == nil || tenantID == "" {
 		return Limits{}, errors.New("transaction and Tenant ID are required")
 	}
-	limits := Limits{TenantID: tenantID, Workspaces: DefaultWorkspaces, ConcurrentWorkloadRuns: DefaultConcurrentWorkloadRuns,
+	limits := Limits{TenantID: tenantID, Workspaces: DefaultWorkspaces, ConcurrentWorkloadRuns: DefaultConcurrentWorkloadRuns, QueuedWorkloadRuns: DefaultQueuedWorkloadRuns,
 		PreviewRuns: DefaultPreviewRuns, PreviewLifetimeSeconds: DefaultPreviewLifetimeSeconds,
 		ArtifactBytes: DefaultArtifactBytes, WorkspaceServiceMemoryBytes: DefaultWorkspaceServiceMemoryBytes,
 		WorkspaceServiceMilliCPU: DefaultWorkspaceServiceMilliCPU}
-	err := tx.QueryRow(ctx, `SELECT workspace_limit, concurrent_workload_run_limit, preview_run_limit, preview_lifetime_seconds, artifact_bytes_limit,
+	err := tx.QueryRow(ctx, `SELECT workspace_limit, concurrent_workload_run_limit, queued_workload_run_limit, preview_run_limit, preview_lifetime_seconds, artifact_bytes_limit,
 		workspace_service_memory_bytes_limit, workspace_service_milli_cpu_limit, revision, COALESCE(updated_by, ''), updated_at
 		FROM tenant_quota_limits WHERE tenant_id = $1`, tenantID).Scan(
-		&limits.Workspaces, &limits.ConcurrentWorkloadRuns, &limits.PreviewRuns, &limits.PreviewLifetimeSeconds, &limits.ArtifactBytes,
+		&limits.Workspaces, &limits.ConcurrentWorkloadRuns, &limits.QueuedWorkloadRuns, &limits.PreviewRuns, &limits.PreviewLifetimeSeconds, &limits.ArtifactBytes,
 		&limits.WorkspaceServiceMemoryBytes, &limits.WorkspaceServiceMilliCPU,
 		&limits.Revision, &limits.UpdatedBy, &limits.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -85,10 +89,10 @@ func AdvanceAdmissionGuard(ctx context.Context, tx pgx.Tx, tenantID domain.Tenan
 	err := tx.QueryRow(ctx, `INSERT INTO tenant_quota_limits (tenant_id, revision, updated_at)
 		VALUES ($1, 1, $2)
 		ON CONFLICT (tenant_id) DO UPDATE SET revision = tenant_quota_limits.revision + 1
-		RETURNING workspace_limit, concurrent_workload_run_limit, preview_run_limit, preview_lifetime_seconds, artifact_bytes_limit,
+		RETURNING workspace_limit, concurrent_workload_run_limit, queued_workload_run_limit, preview_run_limit, preview_lifetime_seconds, artifact_bytes_limit,
 		workspace_service_memory_bytes_limit, workspace_service_milli_cpu_limit, revision, COALESCE(updated_by, ''), updated_at`,
 		tenantID, now.UTC()).Scan(
-		&limits.Workspaces, &limits.ConcurrentWorkloadRuns, &limits.PreviewRuns, &limits.PreviewLifetimeSeconds, &limits.ArtifactBytes,
+		&limits.Workspaces, &limits.ConcurrentWorkloadRuns, &limits.QueuedWorkloadRuns, &limits.PreviewRuns, &limits.PreviewLifetimeSeconds, &limits.ArtifactBytes,
 		&limits.WorkspaceServiceMemoryBytes, &limits.WorkspaceServiceMilliCPU,
 		&limits.Revision, &limits.UpdatedBy, &limits.UpdatedAt)
 	if err != nil {
@@ -112,10 +116,26 @@ func Set(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, actorID domai
 // SetWithPreview updates Tenant limits, including a dedicated Preview admission
 // budget and maximum Preview lifetime, only when active reservations fit.
 func SetWithPreview(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, actorID domain.UserID, workspaces, workloadRuns, previewRuns int16, previewLifetimeSeconds, artifactBytes, serviceMemoryBytes, serviceMilliCPU int64, now time.Time) (Limits, error) {
+	current, err := Read(ctx, tx, tenantID)
+	if err != nil {
+		return Limits{}, err
+	}
+	queuedWorkloadRuns := current.QueuedWorkloadRuns
+	if queuedWorkloadRuns > workloadRuns {
+		queuedWorkloadRuns = workloadRuns
+	}
+	return SetWithQueueAndPreview(ctx, tx, tenantID, actorID, workspaces, workloadRuns, queuedWorkloadRuns,
+		previewRuns, previewLifetimeSeconds, artifactBytes, serviceMemoryBytes, serviceMilliCPU, now)
+}
+
+// SetWithQueueAndPreview updates Tenant limits after checking active Run
+// reservations and the subset still waiting in the scheduler queue.
+func SetWithQueueAndPreview(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, actorID domain.UserID, workspaces, workloadRuns, queuedWorkloadRuns, previewRuns int16, previewLifetimeSeconds, artifactBytes, serviceMemoryBytes, serviceMilliCPU int64, now time.Time) (Limits, error) {
 	if tx == nil || tenantID == "" || actorID == "" || now.IsZero() {
 		return Limits{}, errors.New("transaction, Tenant, actor, and time are required")
 	}
 	if workspaces < 1 || workspaces > MaxWorkspaces || workloadRuns < 1 || workloadRuns > MaxConcurrentWorkloadRuns ||
+		queuedWorkloadRuns < 1 || queuedWorkloadRuns > MaxQueuedWorkloadRuns || queuedWorkloadRuns > workloadRuns ||
 		previewRuns < 1 || previewRuns > MaxPreviewRuns || previewLifetimeSeconds < 300 || previewLifetimeSeconds > MaxPreviewLifetimeSeconds ||
 		artifactBytes < 1 || artifactBytes > MaxArtifactBytes || serviceMemoryBytes < 1 || serviceMemoryBytes > MaxWorkspaceServiceMemoryBytes ||
 		serviceMilliCPU < 1 || serviceMilliCPU > MaxWorkspaceServiceMilliCPU {
@@ -124,12 +144,13 @@ func SetWithPreview(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, ac
 	var limits Limits
 	limits.TenantID = tenantID
 	err := tx.QueryRow(ctx, `INSERT INTO tenant_quota_limits
-		(tenant_id, workspace_limit, concurrent_workload_run_limit, preview_run_limit, preview_lifetime_seconds, artifact_bytes_limit,
+		(tenant_id, workspace_limit, concurrent_workload_run_limit, queued_workload_run_limit, preview_run_limit, preview_lifetime_seconds, artifact_bytes_limit,
 		 workspace_service_memory_bytes_limit, workspace_service_milli_cpu_limit, revision, updated_by, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, $9, $10)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1, $10, $11)
 		ON CONFLICT (tenant_id) DO UPDATE SET
 		workspace_limit = EXCLUDED.workspace_limit,
 		concurrent_workload_run_limit = EXCLUDED.concurrent_workload_run_limit,
+		queued_workload_run_limit = EXCLUDED.queued_workload_run_limit,
 		preview_run_limit = EXCLUDED.preview_run_limit,
 		preview_lifetime_seconds = EXCLUDED.preview_lifetime_seconds,
 		artifact_bytes_limit = EXCLUDED.artifact_bytes_limit,
@@ -138,17 +159,17 @@ func SetWithPreview(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, ac
 		revision = tenant_quota_limits.revision + 1,
 		updated_by = EXCLUDED.updated_by,
 		updated_at = EXCLUDED.updated_at
-		RETURNING workspace_limit, concurrent_workload_run_limit, preview_run_limit, preview_lifetime_seconds, artifact_bytes_limit,
+		RETURNING workspace_limit, concurrent_workload_run_limit, queued_workload_run_limit, preview_run_limit, preview_lifetime_seconds, artifact_bytes_limit,
 		workspace_service_memory_bytes_limit, workspace_service_milli_cpu_limit, revision, COALESCE(updated_by, ''), updated_at`,
-		tenantID, workspaces, workloadRuns, previewRuns, previewLifetimeSeconds, artifactBytes, serviceMemoryBytes, serviceMilliCPU, actorID, now.UTC()).Scan(
-		&limits.Workspaces, &limits.ConcurrentWorkloadRuns, &limits.PreviewRuns, &limits.PreviewLifetimeSeconds, &limits.ArtifactBytes,
+		tenantID, workspaces, workloadRuns, queuedWorkloadRuns, previewRuns, previewLifetimeSeconds, artifactBytes, serviceMemoryBytes, serviceMilliCPU, actorID, now.UTC()).Scan(
+		&limits.Workspaces, &limits.ConcurrentWorkloadRuns, &limits.QueuedWorkloadRuns, &limits.PreviewRuns, &limits.PreviewLifetimeSeconds, &limits.ArtifactBytes,
 		&limits.WorkspaceServiceMemoryBytes, &limits.WorkspaceServiceMilliCPU,
 		&limits.Revision, &limits.UpdatedBy, &limits.UpdatedAt)
 	if err != nil {
 		return Limits{}, fmt.Errorf("update Tenant quota limits: %w", err)
 	}
 	limits.TenantID = tenantID
-	var activeWorkspaces, activeWorkloadRuns, activePreviewRuns int64
+	var activeWorkspaces, activeWorkloadRuns, queuedWorkloadRunCount, activePreviewRuns int64
 	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM workspaces w LEFT JOIN workspace_status s ON s.workspace_id = w.id
 		WHERE w.tenant_id = $1 AND COALESCE(s.observed_state, 'pending') <> 'deleted'`, tenantID).Scan(&activeWorkspaces); err != nil {
 		return Limits{}, fmt.Errorf("count Tenant Workspace reservations: %w", err)
@@ -156,6 +177,9 @@ func SetWithPreview(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, ac
 	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM workload_runs WHERE tenant_id = $1
 		AND state NOT IN ('succeeded','failed','cancelled','timed_out')`, tenantID).Scan(&activeWorkloadRuns); err != nil {
 		return Limits{}, fmt.Errorf("count Tenant Workload reservations: %w", err)
+	}
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM workload_runs WHERE tenant_id = $1 AND state IN ('pending','queued')`, tenantID).Scan(&queuedWorkloadRunCount); err != nil {
+		return Limits{}, fmt.Errorf("count queued Tenant Workload Runs: %w", err)
 	}
 	if err := tx.QueryRow(ctx, `SELECT
 		(SELECT COUNT(*) FROM workload_runs WHERE tenant_id=$1 AND kind='preview' AND state NOT IN ('succeeded','failed','cancelled','timed_out')) +
@@ -184,7 +208,7 @@ func SetWithPreview(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, ac
 		HAVING SUM(r.memory_bytes) > $2 OR SUM(r.milli_cpu) > $3)`, tenantID, serviceMemoryBytes, serviceMilliCPU).Scan(&overServiceLimit); err != nil {
 		return Limits{}, fmt.Errorf("check Tenant Workspace Service reservations: %w", err)
 	}
-	if activeWorkspaces > int64(workspaces) || activeWorkloadRuns > int64(workloadRuns) || activePreviewRuns > int64(previewRuns) ||
+	if activeWorkspaces > int64(workspaces) || activeWorkloadRuns > int64(workloadRuns) || queuedWorkloadRunCount > int64(queuedWorkloadRuns) || activePreviewRuns > int64(previewRuns) ||
 		previewLifetimeExceeded || artifactBytesCommitted > artifactBytes || overServiceLimit {
 		return Limits{}, ErrBelowCurrentUsage
 	}

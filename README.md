@@ -1569,7 +1569,7 @@ Hakoは最初は **Lambda MicroVMを使ったRemote Development Environment** �
 - [x] Workspace一覧APIのlimit/offsetページネーション、`hako list`/`hako get` CLIを追加する。
 - [x] Tenant membershipで保護したusage APIと`hako usage <tenant-id>`を追加する。Workspace 10枠、concurrent Workload 5枠、Tenant-configurable Preview concurrency/lifetimeを表示し、terminal確定まで予約を保持する。値は設定quotaで、実測resource usageや請求額ではない。
 - [x] Workspace Member visibility付きService usage APIと`hako service usage <tenant-id> <workspace-id>`を追加し、Serviceのcatalog-request reservationとadmission limitを表示する。値は実測MicroVM使用量ではない。
-- [x] Tenant Owner/Admin向けQuota read/update APIと`hako tenant quota get|set`を追加。Workspace 10、Workload 5、Preview 5のplatform ceiling以下で設定し、現在usageを下回る変更を拒否する。admissionとのOCC直列化は[Tenant quotas](docs/tenant-quotas.md)を参照。
+- [ ] Tenant Owner/Admin向けQuota read/update APIと`hako tenant quota get|set`を追加。Workspace 10、Workload 5、pending/queued Workload 5、Preview 5のplatform ceiling以下で設定し、現在reservationを下回る変更を拒否する。Admissionとquota変更はTenant OCC guardを共有し、`hako usage`はqueue backlogを別表示する。Tenant compute-class別budgetは未実装。値はconfigured reservationであり実測usageではない。[Tenant quotas](docs/tenant-quotas.md)
 - [x] Workspaceの停止・再開・削除API/CLIを追加し、Desired State・Operation・イベント・Outbox commandを原子的に記録する。非同期動作、冪等性、Quota解放条件は[Workspace lifecycle API](docs/workspace-lifecycle-api.md)を参照。
 - [x] API入力検証、エラー形式、ページネーション、監査イベントを標準化する。JSON body制約、共通error envelope、offset paginationとactor-oriented mutation auditを実装し、監査の運用前提・未対応範囲を[Control Plane API Contract](docs/api-contract.md)に記載。
 

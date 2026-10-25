@@ -7,14 +7,17 @@ GET /v1/tenants/{tenant_id}/quotas
 PUT /v1/tenants/{tenant_id}/quotas
 Content-Type: application/json
 
-{"workspaces_limit": 6, "workload_runs_limit": 3, "preview_runs_limit": 2, "preview_lifetime_seconds_limit": 86400, "artifact_bytes_limit": 2147483648, "service_memory_bytes_limit": 1073741824, "service_milli_cpu_limit": 750}
+{"workspaces_limit": 6, "workload_runs_limit": 3, "queued_workload_runs_limit": 2, "preview_runs_limit": 2, "preview_lifetime_seconds_limit": 86400, "artifact_bytes_limit": 2147483648, "service_memory_bytes_limit": 1073741824, "service_milli_cpu_limit": 750}
 ```
 
 Defaults and platform ceilings are 10 active Workspaces, 5 concurrent
-Workload Runs, 2 concurrent Preview Runs (maximum 5), a Preview lifetime of
+Workload Runs, at most 5 pending/queued Workload Runs, 2 concurrent Preview Runs (maximum 5), a Preview lifetime of
 24 hours, and 10 GiB / 100 GiB of retained Artifact bytes. Tenant
 configuration may lower these values but cannot raise them above the platform
-ceiling. Per-Workspace aggregate Service request limits default to 2 GiB and
+ceiling. The queued Workload limit cannot exceed the concurrent Run limit and
+counts Runs in `pending` or `queued`; dispatch to `provisioning` releases a
+queue slot while retaining the concurrent Run reservation. Per-Workspace
+aggregate Service request limits default to 2 GiB and
 1500 millicores and can be lowered per Tenant; the fixed platform ceilings
 remain 2 GiB/1500 millicores until Runtime Class enforcement is verified.
 Artifact and Service limits are specified in bytes/millicores in the API. A
@@ -23,7 +26,7 @@ change below current reserved usage returns HTTP 409
 `invalid_quota`. Updates are audited as `tenant.quota.update`.
 
 `hako tenant quota get <tenant-id>` reads the limits, and
-`hako tenant quota set <tenant-id> <workspaces 1-10> <workload-runs 1-5> [artifact-storage-GiB 1-100 [service-memory-GiB 1-2 service-millicpu 1-1500 [preview-runs 1-5 preview-lifetime-hours 1-24]]] [--yes]`
+`hako tenant quota set <tenant-id> <workspaces 1-10> <workload-runs 1-5> [artifact-storage-GiB 1-100 [service-memory-GiB 1-2 service-millicpu 1-1500 [preview-runs 1-5 preview-lifetime-hours 1-24]]] [--queued-workload-runs 1-5] [--yes]`
 updates them. Before mutation, the CLI reads the current limits and aggregate
 usage and displays both the current reservations and requested limits. It
 applies the change only after `y` or `yes`; `--yes` skips the prompt for
@@ -33,6 +36,13 @@ unconfigured Tenant uses 10 GiB Artifact, 2 GiB Service memory, and 1500mCPU
 defaults. Preview lifetime may be lowered to 5 minutes. Tenant members can read aggregate usage through
 `GET /v1/tenants/{tenant_id}/usage` / `hako usage`, but only Owners/Admins may
 read or change quota configuration.
+
+Workload creation reserves both a concurrent Run slot and, for `pending` and
+`queued` states, a bounded queue slot transactionally under the same Tenant
+quota OCC row. Queue admission failure rolls back the Run, artifact reservation,
+audit, and scheduling Outbox together. Terminal transition releases both
+reservations; moving into `provisioning` releases only the queue slot. Queue
+usage is visible in the Tenant usage response and `hako usage`.
 
 Workspace, Workload, and Preview admission advance the same per-Tenant quota revision
 row before checking usage. Quota updates also write that row in the same

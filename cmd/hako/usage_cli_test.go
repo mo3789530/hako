@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const tenantQuotaJSON = `{"tenant_id":"tenant_quota","workspaces_limit":10,"workload_runs_limit":5,"preview_runs_limit":2,"preview_lifetime_seconds_limit":86400,"artifact_bytes_limit":10737418240,"service_memory_bytes_limit":2147483648,"service_milli_cpu_limit":1500,"revision":3}`
+const tenantQuotaJSON = `{"tenant_id":"tenant_quota","workspaces_limit":10,"workload_runs_limit":5,"queued_workload_runs_limit":5,"preview_runs_limit":2,"preview_lifetime_seconds_limit":86400,"artifact_bytes_limit":10737418240,"service_memory_bytes_limit":2147483648,"service_milli_cpu_limit":1500,"revision":3}`
 
 func TestTenantUsageAndQuotaCLIUseAuthenticatedTenantScopedAPI(t *testing.T) {
 	previousGetter := cliCredentialGetter
@@ -27,7 +27,7 @@ func TestTenantUsageAndQuotaCLIUseAuthenticatedTenantScopedAPI(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/tenants/tenant_quota/usage":
 			usageReads++
-			_, _ = fmt.Fprint(w, `{"workspaces_used":3,"workspaces_limit":10,"workload_runs_used":2,"workload_runs_limit":5,"preview_runs_used":1,"preview_runs_limit":2,"preview_lifetime_seconds_limit":86400,"artifact_bytes_used":100,"artifact_bytes_reserved":200,"artifact_bytes_limit":10737418240}`)
+			_, _ = fmt.Fprint(w, `{"workspaces_used":3,"workspaces_limit":10,"workload_runs_used":2,"workload_runs_limit":5,"queued_workload_runs_used":1,"queued_workload_runs_limit":5,"preview_runs_used":1,"preview_runs_limit":2,"preview_lifetime_seconds_limit":86400,"artifact_bytes_used":100,"artifact_bytes_reserved":200,"artifact_bytes_limit":10737418240}`)
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/tenants/tenant_quota/quotas":
 			quotaReads++
 			_, _ = fmt.Fprint(w, tenantQuotaJSON)
@@ -39,13 +39,13 @@ func TestTenantUsageAndQuotaCLIUseAuthenticatedTenantScopedAPI(t *testing.T) {
 				http.Error(w, "invalid JSON", http.StatusBadRequest)
 				return
 			}
-			if body["workspaces_limit"] != float64(8) || body["workload_runs_limit"] != float64(4) ||
+			if body["workspaces_limit"] != float64(8) || body["workload_runs_limit"] != float64(4) || body["queued_workload_runs_limit"] != float64(4) ||
 				body["artifact_bytes_limit"] != float64(10737418240) || body["preview_runs_limit"] != float64(2) {
 				t.Errorf("quota payload did not retain omitted limits: %#v", body)
 				http.Error(w, "unexpected limits", http.StatusBadRequest)
 				return
 			}
-			_, _ = fmt.Fprint(w, `{"tenant_id":"tenant_quota","workspaces_limit":8,"workload_runs_limit":4,"preview_runs_limit":2,"preview_lifetime_seconds_limit":86400,"artifact_bytes_limit":10737418240,"service_memory_bytes_limit":2147483648,"service_milli_cpu_limit":1500,"revision":4}`)
+			_, _ = fmt.Fprint(w, `{"tenant_id":"tenant_quota","workspaces_limit":8,"workload_runs_limit":4,"queued_workload_runs_limit":4,"preview_runs_limit":2,"preview_lifetime_seconds_limit":86400,"artifact_bytes_limit":10737418240,"service_memory_bytes_limit":2147483648,"service_milli_cpu_limit":1500,"revision":4}`)
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/tenants/tenant_quota/workspaces/ws_quota/services/usage":
 			_, _ = fmt.Fprint(w, `{"memory_bytes_used":1073741824,"memory_bytes_limit":2147483648,"milli_cpu_used":750,"milli_cpu_limit":1500}`)
 		default:
@@ -64,7 +64,7 @@ func TestTenantUsageAndQuotaCLIUseAuthenticatedTenantScopedAPI(t *testing.T) {
 	if err != nil || limits.Revision != 3 || limits.WorkspacesLimit != 10 {
 		t.Fatalf("tenant quota limits = %+v, error = %v", limits, err)
 	}
-	updated, err := setTenantQuotaLimits("tenant_quota", 8, 4, 0, 0, 0, 0, 0)
+	updated, err := setTenantQuotaLimits("tenant_quota", 8, 4, 0, 0, 0, 0, 0, 0)
 	if err != nil || updated.Revision != 4 || updated.WorkspacesLimit != 8 || updated.ArtifactBytesLimit != limits.ArtifactBytesLimit {
 		t.Fatalf("updated tenant quotas = %+v, error = %v", updated, err)
 	}

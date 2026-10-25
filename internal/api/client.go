@@ -85,22 +85,25 @@ type WorkspaceListResult struct {
 }
 
 type TenantUsage struct {
-	WorkspacesUsed        int64 `json:"workspaces_used"`
-	WorkspacesLimit       int64 `json:"workspaces_limit"`
-	WorkloadRunsUsed      int64 `json:"workload_runs_used"`
-	WorkloadRunsLimit     int64 `json:"workload_runs_limit"`
-	PreviewRunsUsed       int64 `json:"preview_runs_used"`
-	PreviewRunsLimit      int64 `json:"preview_runs_limit"`
-	PreviewLifetimeLimit  int64 `json:"preview_lifetime_seconds_limit"`
-	ArtifactBytesUsed     int64 `json:"artifact_bytes_used"`
-	ArtifactBytesReserved int64 `json:"artifact_bytes_reserved"`
-	ArtifactBytesLimit    int64 `json:"artifact_bytes_limit"`
+	WorkspacesUsed          int64 `json:"workspaces_used"`
+	WorkspacesLimit         int64 `json:"workspaces_limit"`
+	WorkloadRunsUsed        int64 `json:"workload_runs_used"`
+	WorkloadRunsLimit       int64 `json:"workload_runs_limit"`
+	QueuedWorkloadRunsUsed  int64 `json:"queued_workload_runs_used"`
+	QueuedWorkloadRunsLimit int64 `json:"queued_workload_runs_limit"`
+	PreviewRunsUsed         int64 `json:"preview_runs_used"`
+	PreviewRunsLimit        int64 `json:"preview_runs_limit"`
+	PreviewLifetimeLimit    int64 `json:"preview_lifetime_seconds_limit"`
+	ArtifactBytesUsed       int64 `json:"artifact_bytes_used"`
+	ArtifactBytesReserved   int64 `json:"artifact_bytes_reserved"`
+	ArtifactBytesLimit      int64 `json:"artifact_bytes_limit"`
 }
 
 type TenantQuotaLimits struct {
 	TenantID                         string `json:"tenant_id"`
 	WorkspacesLimit                  int16  `json:"workspaces_limit"`
 	WorkloadRunsLimit                int16  `json:"workload_runs_limit"`
+	QueuedWorkloadRunsLimit          int16  `json:"queued_workload_runs_limit"`
 	PreviewRunsLimit                 int16  `json:"preview_runs_limit"`
 	PreviewLifetimeSecondsLimit      int64  `json:"preview_lifetime_seconds_limit"`
 	ArtifactBytesLimit               int64  `json:"artifact_bytes_limit"`
@@ -510,7 +513,9 @@ func GetTenantUsage(ctx context.Context, baseURL, accessToken, tenantID string, 
 	if response.StatusCode != http.StatusOK {
 		return result, readAPIError(response)
 	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil || result.WorkspacesUsed < 0 || result.WorkspacesLimit < 1 || result.WorkloadRunsUsed < 0 || result.WorkloadRunsLimit < 1 || result.PreviewRunsUsed < 0 || result.PreviewRunsLimit < 1 || result.PreviewLifetimeLimit < 300 || result.PreviewLifetimeLimit > 86400 || result.ArtifactBytesUsed < 0 || result.ArtifactBytesReserved < 0 || result.ArtifactBytesLimit < 1 {
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil || result.WorkspacesUsed < 0 || result.WorkspacesLimit < 1 || result.WorkloadRunsUsed < 0 || result.WorkloadRunsLimit < 1 ||
+		result.QueuedWorkloadRunsUsed < 0 || result.QueuedWorkloadRunsLimit < 1 ||
+		result.QueuedWorkloadRunsLimit > result.WorkloadRunsLimit || result.PreviewRunsUsed < 0 || result.PreviewRunsLimit < 1 || result.PreviewLifetimeLimit < 300 || result.PreviewLifetimeLimit > 86400 || result.ArtifactBytesUsed < 0 || result.ArtifactBytesReserved < 0 || result.ArtifactBytesLimit < 1 {
 		return TenantUsage{}, errors.New("Hako API returned invalid Tenant quota usage")
 	}
 	return result, nil
@@ -535,6 +540,7 @@ func GetTenantQuotaLimits(ctx context.Context, baseURL, accessToken, tenantID st
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil ||
 		result.WorkspacesLimit < 1 || result.WorkspacesLimit > 10 || result.WorkloadRunsLimit < 1 || result.WorkloadRunsLimit > 5 ||
+		result.QueuedWorkloadRunsLimit < 1 || result.QueuedWorkloadRunsLimit > result.WorkloadRunsLimit ||
 		result.PreviewRunsLimit < 1 || result.PreviewRunsLimit > 5 || result.PreviewLifetimeSecondsLimit < 300 || result.PreviewLifetimeSecondsLimit > 86400 ||
 		result.ArtifactBytesLimit < 1 || result.ArtifactBytesLimit > 100<<30 || result.WorkspaceServiceMemoryBytesLimit < 1 ||
 		result.WorkspaceServiceMemoryBytesLimit > 2<<30 || result.WorkspaceServiceMilliCPULimit < 1 || result.WorkspaceServiceMilliCPULimit > 1500 {
@@ -546,6 +552,7 @@ func GetTenantQuotaLimits(ctx context.Context, baseURL, accessToken, tenantID st
 func SetTenantQuotaLimits(ctx context.Context, baseURL, accessToken, tenantID string, limits TenantQuotaLimits, client *http.Client) (TenantQuotaLimits, error) {
 	var result TenantQuotaLimits
 	if !validTenantID(tenantID) || limits.WorkspacesLimit < 1 || limits.WorkspacesLimit > 10 || limits.WorkloadRunsLimit < 1 || limits.WorkloadRunsLimit > 5 ||
+		limits.QueuedWorkloadRunsLimit < 1 || limits.QueuedWorkloadRunsLimit > limits.WorkloadRunsLimit ||
 		limits.PreviewRunsLimit < 1 || limits.PreviewRunsLimit > 5 || limits.PreviewLifetimeSecondsLimit < 300 || limits.PreviewLifetimeSecondsLimit > 86400 ||
 		limits.ArtifactBytesLimit < 1 || limits.ArtifactBytesLimit > 100<<30 || limits.WorkspaceServiceMemoryBytesLimit < 1 ||
 		limits.WorkspaceServiceMemoryBytesLimit > 2<<30 || limits.WorkspaceServiceMilliCPULimit < 1 || limits.WorkspaceServiceMilliCPULimit > 1500 {
@@ -556,7 +563,8 @@ func SetTenantQuotaLimits(ctx context.Context, baseURL, accessToken, tenantID st
 		return result, err
 	}
 	body, err := json.Marshal(map[string]any{"workspaces_limit": limits.WorkspacesLimit, "workload_runs_limit": limits.WorkloadRunsLimit,
-		"preview_runs_limit": limits.PreviewRunsLimit, "preview_lifetime_seconds_limit": limits.PreviewLifetimeSecondsLimit,
+		"queued_workload_runs_limit": limits.QueuedWorkloadRunsLimit,
+		"preview_runs_limit":         limits.PreviewRunsLimit, "preview_lifetime_seconds_limit": limits.PreviewLifetimeSecondsLimit,
 		"artifact_bytes_limit": limits.ArtifactBytesLimit, "service_memory_bytes_limit": limits.WorkspaceServiceMemoryBytesLimit,
 		"service_milli_cpu_limit": limits.WorkspaceServiceMilliCPULimit})
 	if err != nil {
@@ -572,6 +580,7 @@ func SetTenantQuotaLimits(ctx context.Context, baseURL, accessToken, tenantID st
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil ||
 		result.WorkspacesLimit < 1 || result.WorkspacesLimit > 10 || result.WorkloadRunsLimit < 1 || result.WorkloadRunsLimit > 5 ||
+		result.QueuedWorkloadRunsLimit < 1 || result.QueuedWorkloadRunsLimit > result.WorkloadRunsLimit ||
 		result.PreviewRunsLimit < 1 || result.PreviewRunsLimit > 5 || result.PreviewLifetimeSecondsLimit < 300 || result.PreviewLifetimeSecondsLimit > 86400 ||
 		result.ArtifactBytesLimit < 1 || result.ArtifactBytesLimit > 100<<30 || result.WorkspaceServiceMemoryBytesLimit < 1 ||
 		result.WorkspaceServiceMemoryBytesLimit > 2<<30 || result.WorkspaceServiceMilliCPULimit < 1 || result.WorkspaceServiceMilliCPULimit > 1500 {

@@ -296,17 +296,17 @@ func TestGetTenantUsageUsesScopedPathAndValidatesResponse(t *testing.T) {
 			t.Errorf("unexpected request: %s %s auth=%q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"workspaces_used":3,"workspaces_limit":10,"workload_runs_used":2,"workload_runs_limit":5,"preview_runs_used":1,"preview_runs_limit":2,"preview_lifetime_seconds_limit":86400,"artifact_bytes_used":1234,"artifact_bytes_reserved":104857600,"artifact_bytes_limit":10737418240}`))
+		_, _ = w.Write([]byte(`{"workspaces_used":3,"workspaces_limit":10,"workload_runs_used":2,"workload_runs_limit":5,"queued_workload_runs_used":1,"queued_workload_runs_limit":5,"preview_runs_used":1,"preview_runs_limit":2,"preview_lifetime_seconds_limit":86400,"artifact_bytes_used":1234,"artifact_bytes_reserved":104857600,"artifact_bytes_limit":10737418240}`))
 	}))
 	defer server.Close()
 
 	usage, err := GetTenantUsage(context.Background(), server.URL, "test-access-token", "tenant_123", server.Client())
-	if err != nil || usage.WorkspacesUsed != 3 || usage.WorkspacesLimit != 10 || usage.WorkloadRunsUsed != 2 || usage.WorkloadRunsLimit != 5 || usage.PreviewRunsUsed != 1 || usage.PreviewRunsLimit != 2 || usage.PreviewLifetimeLimit != 86400 || usage.ArtifactBytesUsed != 1234 || usage.ArtifactBytesReserved != 104857600 || usage.ArtifactBytesLimit != 10737418240 {
+	if err != nil || usage.WorkspacesUsed != 3 || usage.WorkspacesLimit != 10 || usage.WorkloadRunsUsed != 2 || usage.WorkloadRunsLimit != 5 || usage.QueuedWorkloadRunsUsed != 1 || usage.QueuedWorkloadRunsLimit != 5 || usage.PreviewRunsUsed != 1 || usage.PreviewRunsLimit != 2 || usage.PreviewLifetimeLimit != 86400 || usage.ArtifactBytesUsed != 1234 || usage.ArtifactBytesReserved != 104857600 || usage.ArtifactBytesLimit != 10737418240 {
 		t.Fatalf("unexpected Tenant usage response: %+v error=%v", usage, err)
 	}
 
 	legacyOverQuota := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"workspaces_used":11,"workspaces_limit":10,"workload_runs_used":6,"workload_runs_limit":5,"preview_runs_used":3,"preview_runs_limit":2,"preview_lifetime_seconds_limit":86400,"artifact_bytes_used":0,"artifact_bytes_limit":10737418240}`))
+		_, _ = w.Write([]byte(`{"workspaces_used":11,"workspaces_limit":10,"workload_runs_used":6,"workload_runs_limit":5,"queued_workload_runs_used":6,"queued_workload_runs_limit":5,"preview_runs_used":3,"preview_runs_limit":2,"preview_lifetime_seconds_limit":86400,"artifact_bytes_used":0,"artifact_bytes_limit":10737418240}`))
 	}))
 	defer legacyOverQuota.Close()
 	if overage, err := GetTenantUsage(context.Background(), legacyOverQuota.URL, "test-access-token", "tenant_123", legacyOverQuota.Client()); err != nil || overage.WorkspacesUsed != 11 || overage.WorkloadRunsUsed != 6 || overage.PreviewRunsUsed != 3 {
@@ -325,23 +325,23 @@ func TestTenantQuotaClientUsesScopedOwnerRoutes(t *testing.T) {
 				t.Errorf("quota update Content-Type = %q", r.Header.Get("Content-Type"))
 			}
 			var body map[string]int64
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["workspaces_limit"] != 4 || body["workload_runs_limit"] != 2 || body["preview_runs_limit"] != 3 || body["preview_lifetime_seconds_limit"] != 43200 || body["artifact_bytes_limit"] != 2147483648 || body["service_memory_bytes_limit"] != 1073741824 || body["service_milli_cpu_limit"] != 750 {
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["workspaces_limit"] != 4 || body["workload_runs_limit"] != 2 || body["queued_workload_runs_limit"] != 1 || body["preview_runs_limit"] != 3 || body["preview_lifetime_seconds_limit"] != 43200 || body["artifact_bytes_limit"] != 2147483648 || body["service_memory_bytes_limit"] != 1073741824 || body["service_milli_cpu_limit"] != 750 {
 				t.Errorf("quota update body = %+v err=%v", body, err)
 			}
 		} else if r.Method != http.MethodGet {
 			t.Errorf("unexpected quota method: %s", r.Method)
 		}
-		_, _ = w.Write([]byte(`{"tenant_id":"tenant_123","workspaces_limit":4,"workload_runs_limit":2,"preview_runs_limit":3,"preview_lifetime_seconds_limit":43200,"artifact_bytes_limit":2147483648,"service_memory_bytes_limit":1073741824,"service_milli_cpu_limit":750,"revision":3}`))
+		_, _ = w.Write([]byte(`{"tenant_id":"tenant_123","workspaces_limit":4,"workload_runs_limit":2,"queued_workload_runs_limit":1,"preview_runs_limit":3,"preview_lifetime_seconds_limit":43200,"artifact_bytes_limit":2147483648,"service_memory_bytes_limit":1073741824,"service_milli_cpu_limit":750,"revision":3}`))
 	}))
 	defer server.Close()
 
 	limits, err := GetTenantQuotaLimits(context.Background(), server.URL, "test-access-token", "tenant_123", server.Client())
-	if err != nil || limits.WorkspacesLimit != 4 || limits.WorkloadRunsLimit != 2 || limits.PreviewRunsLimit != 3 || limits.PreviewLifetimeSecondsLimit != 43200 || limits.ArtifactBytesLimit != 2147483648 || limits.WorkspaceServiceMemoryBytesLimit != 1073741824 || limits.WorkspaceServiceMilliCPULimit != 750 || limits.Revision != 3 {
+	if err != nil || limits.WorkspacesLimit != 4 || limits.WorkloadRunsLimit != 2 || limits.QueuedWorkloadRunsLimit != 1 || limits.PreviewRunsLimit != 3 || limits.PreviewLifetimeSecondsLimit != 43200 || limits.ArtifactBytesLimit != 2147483648 || limits.WorkspaceServiceMemoryBytesLimit != 1073741824 || limits.WorkspaceServiceMilliCPULimit != 750 || limits.Revision != 3 {
 		t.Fatalf("GET quota limits = %+v err=%v", limits, err)
 	}
 	limits, err = SetTenantQuotaLimits(context.Background(), server.URL, "test-access-token", "tenant_123",
-		TenantQuotaLimits{WorkspacesLimit: 4, WorkloadRunsLimit: 2, PreviewRunsLimit: 3, PreviewLifetimeSecondsLimit: 43200, ArtifactBytesLimit: 2147483648, WorkspaceServiceMemoryBytesLimit: 1073741824, WorkspaceServiceMilliCPULimit: 750}, server.Client())
-	if err != nil || limits.WorkspacesLimit != 4 || limits.WorkloadRunsLimit != 2 || limits.PreviewRunsLimit != 3 || limits.PreviewLifetimeSecondsLimit != 43200 || limits.ArtifactBytesLimit != 2147483648 || limits.WorkspaceServiceMemoryBytesLimit != 1073741824 || limits.WorkspaceServiceMilliCPULimit != 750 {
+		TenantQuotaLimits{WorkspacesLimit: 4, WorkloadRunsLimit: 2, QueuedWorkloadRunsLimit: 1, PreviewRunsLimit: 3, PreviewLifetimeSecondsLimit: 43200, ArtifactBytesLimit: 2147483648, WorkspaceServiceMemoryBytesLimit: 1073741824, WorkspaceServiceMilliCPULimit: 750}, server.Client())
+	if err != nil || limits.WorkspacesLimit != 4 || limits.WorkloadRunsLimit != 2 || limits.QueuedWorkloadRunsLimit != 1 || limits.PreviewRunsLimit != 3 || limits.PreviewLifetimeSecondsLimit != 43200 || limits.ArtifactBytesLimit != 2147483648 || limits.WorkspaceServiceMemoryBytesLimit != 1073741824 || limits.WorkspaceServiceMilliCPULimit != 750 {
 		t.Fatalf("PUT quota limits = %+v err=%v", limits, err)
 	}
 	if _, err := SetTenantQuotaLimits(context.Background(), server.URL, "test-access-token", "tenant_123",

@@ -164,7 +164,7 @@ GRANT UPDATE (status, suspended_at, updated_at) ON TABLE tenant_github_installat
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE tenant_github_repositories TO hako_webhook_processor;
 -- Admission writes only the shared OCC revision guard. It may not change
 -- configured limits; the API remains the only Tenant quota writer.
-GRANT SELECT (tenant_id, workspace_limit, concurrent_workload_run_limit, preview_run_limit, preview_lifetime_seconds,
+GRANT SELECT (tenant_id, workspace_limit, concurrent_workload_run_limit, queued_workload_run_limit, preview_run_limit, preview_lifetime_seconds,
     artifact_bytes_limit, workspace_service_memory_bytes_limit, workspace_service_milli_cpu_limit, revision, updated_by, updated_at)
     ON TABLE tenant_quota_limits TO hako_webhook_processor;
 GRANT INSERT (tenant_id, revision, updated_at) ON TABLE tenant_quota_limits TO hako_webhook_processor;

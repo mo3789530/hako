@@ -260,6 +260,13 @@ func reserveConcurrentRunSlot(ctx context.Context, tx pgx.Tx, run domain.Workloa
 		AND state NOT IN ('succeeded','failed','cancelled','timed_out')`, run.TenantID).Scan(&active); err != nil {
 		return fmt.Errorf("count active Tenant Workload Runs: %w", err)
 	}
+	var queued int64
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM workload_runs WHERE tenant_id = $1 AND state IN ('pending','queued')`, run.TenantID).Scan(&queued); err != nil {
+		return fmt.Errorf("count queued Tenant Workload Runs: %w", err)
+	}
+	if queued > int64(limits.QueuedWorkloadRuns) {
+		return quotas.ErrWorkloadQueueQuotaExceeded
+	}
 	if active > int64(limits.ConcurrentWorkloadRuns) {
 		return ErrQuotaExceeded
 	}

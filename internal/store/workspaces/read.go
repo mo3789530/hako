@@ -27,16 +27,18 @@ type ListResult struct {
 // QuotaUsage reports the Tenant-wide active Workspace count used by admission.
 // A pending deletion remains active until the Resource Plane confirms cleanup.
 type QuotaUsage struct {
-	WorkspacesUsed        int64 `json:"workspaces_used"`
-	WorkspacesLimit       int64 `json:"workspaces_limit"`
-	WorkloadRunsUsed      int64 `json:"workload_runs_used"`
-	WorkloadRunsLimit     int64 `json:"workload_runs_limit"`
-	PreviewRunsUsed       int64 `json:"preview_runs_used"`
-	PreviewRunsLimit      int64 `json:"preview_runs_limit"`
-	PreviewLifetimeLimit  int64 `json:"preview_lifetime_seconds_limit"`
-	ArtifactBytesUsed     int64 `json:"artifact_bytes_used"`
-	ArtifactBytesReserved int64 `json:"artifact_bytes_reserved"`
-	ArtifactBytesLimit    int64 `json:"artifact_bytes_limit"`
+	WorkspacesUsed          int64 `json:"workspaces_used"`
+	WorkspacesLimit         int64 `json:"workspaces_limit"`
+	WorkloadRunsUsed        int64 `json:"workload_runs_used"`
+	WorkloadRunsLimit       int64 `json:"workload_runs_limit"`
+	QueuedWorkloadRunsUsed  int64 `json:"queued_workload_runs_used"`
+	QueuedWorkloadRunsLimit int64 `json:"queued_workload_runs_limit"`
+	PreviewRunsUsed         int64 `json:"preview_runs_used"`
+	PreviewRunsLimit        int64 `json:"preview_runs_limit"`
+	PreviewLifetimeLimit    int64 `json:"preview_lifetime_seconds_limit"`
+	ArtifactBytesUsed       int64 `json:"artifact_bytes_used"`
+	ArtifactBytesReserved   int64 `json:"artifact_bytes_reserved"`
+	ArtifactBytesLimit      int64 `json:"artifact_bytes_limit"`
 }
 
 func ReadQuotaUsage(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID) (QuotaUsage, error) {
@@ -58,6 +60,10 @@ func ReadQuotaUsage(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID) (Q
 		return QuotaUsage{}, fmt.Errorf("read Tenant concurrent Workload usage: %w", err)
 	}
 	usage.WorkloadRunsLimit = int64(limits.ConcurrentWorkloadRuns)
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM workload_runs WHERE tenant_id = $1 AND state IN ('pending','queued')`, tenantID).Scan(&usage.QueuedWorkloadRunsUsed); err != nil {
+		return QuotaUsage{}, fmt.Errorf("read queued Tenant Workload usage: %w", err)
+	}
+	usage.QueuedWorkloadRunsLimit = int64(limits.QueuedWorkloadRuns)
 	if err := tx.QueryRow(ctx, `SELECT
 		(SELECT COUNT(*) FROM workload_runs WHERE tenant_id=$1 AND kind='preview' AND state NOT IN ('succeeded','failed','cancelled','timed_out')) +
 		(SELECT COUNT(*) FROM repository_previews WHERE tenant_id=$1 AND state IN ('awaiting_runtime','running','cleanup_pending'))`, tenantID).Scan(&usage.PreviewRunsUsed); err != nil {

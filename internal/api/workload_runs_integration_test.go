@@ -23,6 +23,7 @@ import (
 	"github.com/mo3789530/hako/internal/auth"
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/store/dsql"
+	"github.com/mo3789530/hako/internal/store/quotas"
 	"github.com/mo3789530/hako/internal/store/transaction"
 	"github.com/mo3789530/hako/internal/store/workloads"
 	"github.com/mo3789530/hako/internal/testutil"
@@ -72,6 +73,25 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 	}
 	createRun("run_owned_member", "usr_runs_member")
 	createRun("run_owned_owner", "usr_runs_owner")
+	for _, runID := range []domain.WorkloadRunID{"run_owned_member", "run_owned_owner"} {
+		if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (domain.WorkloadRun, error) {
+			current, err := workloads.Get(ctx, tx, "tenant_runs_a", runID)
+			if err != nil {
+				return domain.WorkloadRun{}, err
+			}
+			return workloads.Transition(ctx, tx, workloads.TransitionInput{TenantID: current.TenantID, RunID: current.ID,
+				ExpectedRevision: current.Revision, NextState: domain.WorkloadProvisioning, OccurredAt: now.Add(time.Second)})
+		}); err != nil {
+			t.Fatalf("move seeded Run out of queue: %v", err)
+		}
+	}
+	if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (quotas.Limits, error) {
+		return quotas.SetWithQueueAndPreview(ctx, tx, "tenant_runs_a", "usr_runs_owner", quotas.DefaultWorkspaces,
+			quotas.DefaultConcurrentWorkloadRuns, 3, quotas.DefaultPreviewRuns, quotas.DefaultPreviewLifetimeSeconds,
+			quotas.DefaultArtifactBytes, quotas.DefaultWorkspaceServiceMemoryBytes, quotas.DefaultWorkspaceServiceMilliCPU, now.Add(2*time.Second))
+	}); err != nil {
+		t.Fatalf("configure Tenant queue backlog quota: %v", err)
+	}
 	if _, err := pool.Exec(ctx, `INSERT INTO workload_artifacts
 		(id, tenant_id, workload_run_id, kind, storage_ref, size_bytes, sha256, redacted, expires_at, created_at)
 		VALUES ('artifact_run_detail', 'tenant_runs_a', 'run_owned_member', 'logs',
@@ -149,6 +169,7 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 		createdRun.CorrelationID != requestCorrelationID {
 		t.Fatalf("Workload Run correlation ID=%q response header=%q", createdRun.CorrelationID, requestCorrelationID)
 	}
+	pendingRuns := []domain.WorkloadRun{createdRun}
 	replayedCreate := createRequest("runs-member", "create-run-key", createBody)
 	if replayedCreate.Code != http.StatusAccepted || !strings.Contains(replayedCreate.Body.String(), `"id":"`+string(createdRun.ID)+`"`) ||
 		!strings.Contains(replayedCreate.Body.String(), `"correlation_id":"`+requestCorrelationID+`"`) {
@@ -178,12 +199,34 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 		t.Fatalf("create audit count=%d error=%v", createAudits, err)
 	}
 	for index := 1; index <= 2; index++ {
-		if response := createRequest("runs-member", fmt.Sprintf("additional-run-key-%d", index), createBody); response.Code != http.StatusAccepted {
+		response := createRequest("runs-member", fmt.Sprintf("additional-run-key-%d", index), createBody)
+		if response.Code != http.StatusAccepted {
 			t.Fatalf("Workload Run %d below quota returned HTTP %d %s", index, response.Code, response.Body.String())
 		}
+		var run domain.WorkloadRun
+		if err := json.Unmarshal(response.Body.Bytes(), &run); err != nil {
+			t.Fatalf("decode additional Workload Run: %v", err)
+		}
+		pendingRuns = append(pendingRuns, run)
 	}
-	quotaExceeded := createRequest("runs-member", "over-quota-run-key", createBody)
+	queueQuotaExceeded := createRequest("runs-member", "over-queue-quota-run-key", createBody)
 	var quotaError errorResponse
+	if queueQuotaExceeded.Code != http.StatusConflict || json.Unmarshal(queueQuotaExceeded.Body.Bytes(), &quotaError) != nil || quotaError.Error.Code != "workload_queue_quota_exceeded" {
+		t.Fatalf("queue backlog limit should return a stable quota conflict: HTTP %d %s", queueQuotaExceeded.Code, queueQuotaExceeded.Body.String())
+	}
+	for _, run := range pendingRuns {
+		if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (domain.WorkloadRun, error) {
+			current, err := workloads.Get(ctx, tx, run.TenantID, run.ID)
+			if err != nil {
+				return domain.WorkloadRun{}, err
+			}
+			return workloads.Transition(ctx, tx, workloads.TransitionInput{TenantID: current.TenantID, RunID: current.ID,
+				ExpectedRevision: current.Revision, NextState: domain.WorkloadProvisioning, OccurredAt: time.Now().UTC()})
+		}); err != nil {
+			t.Fatalf("dispatch pending Run from queue: %v", err)
+		}
+	}
+	quotaExceeded := createRequest("runs-member", "over-concurrent-quota-run-key", createBody)
 	if quotaExceeded.Code != http.StatusConflict || json.Unmarshal(quotaExceeded.Body.Bytes(), &quotaError) != nil || quotaError.Error.Code != "workload_quota_exceeded" {
 		t.Fatalf("sixth concurrent Workload Run should return a stable quota conflict: HTTP %d %s", quotaExceeded.Code, quotaExceeded.Body.String())
 	}
@@ -203,7 +246,8 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 		t.Fatalf("Tenant owner should see all tenant runs with pagination: HTTP %d %s", ownerList.Code, ownerList.Body.String())
 	}
 	usage := request("runs-member", http.MethodGet, "/v1/tenants/tenant_runs_a/usage")
-	if usage.Code != http.StatusOK || !strings.Contains(usage.Body.String(), `"workload_runs_used":5`) || !strings.Contains(usage.Body.String(), `"workload_runs_limit":5`) {
+	if usage.Code != http.StatusOK || !strings.Contains(usage.Body.String(), `"workload_runs_used":5`) || !strings.Contains(usage.Body.String(), `"workload_runs_limit":5`) ||
+		!strings.Contains(usage.Body.String(), `"queued_workload_runs_used":0`) || !strings.Contains(usage.Body.String(), `"queued_workload_runs_limit":3`) {
 		t.Fatalf("Tenant usage should include five active Workload reservations: HTTP %d %s", usage.Code, usage.Body.String())
 	}
 	if badPage := request("runs-owner", http.MethodGet, "/v1/tenants/tenant_runs_a/workload-runs?limit=101"); badPage.Code != http.StatusBadRequest {

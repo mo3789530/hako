@@ -20,6 +20,7 @@ import (
 type tenantQuotaRequest struct {
 	Workspaces             int16 `json:"workspaces_limit"`
 	ConcurrentWorkloadRuns int16 `json:"workload_runs_limit"`
+	QueuedWorkloadRuns     int16 `json:"queued_workload_runs_limit"`
 	PreviewRuns            int16 `json:"preview_runs_limit"`
 	PreviewLifetimeSeconds int64 `json:"preview_lifetime_seconds_limit"`
 	ArtifactBytes          int64 `json:"artifact_bytes_limit"`
@@ -79,13 +80,19 @@ func putTenantQuotas(pool transaction.Beginner) echo.HandlerFunc {
 			if request.PreviewLifetimeSeconds == 0 {
 				request.PreviewLifetimeSeconds = current.PreviewLifetimeSeconds
 			}
-			updated, err := quotas.SetWithPreview(ctx, tx, tenantID, user.ID, request.Workspaces, request.ConcurrentWorkloadRuns,
+			if request.QueuedWorkloadRuns == 0 {
+				request.QueuedWorkloadRuns = current.QueuedWorkloadRuns
+				if request.QueuedWorkloadRuns > request.ConcurrentWorkloadRuns {
+					request.QueuedWorkloadRuns = request.ConcurrentWorkloadRuns
+				}
+			}
+			updated, err := quotas.SetWithQueueAndPreview(ctx, tx, tenantID, user.ID, request.Workspaces, request.ConcurrentWorkloadRuns, request.QueuedWorkloadRuns,
 				request.PreviewRuns, request.PreviewLifetimeSeconds, request.ArtifactBytes, request.ServiceMemoryBytes, request.ServiceMilliCPU, now)
 			if err != nil {
 				return quotas.Limits{}, err
 			}
 			details, err := json.Marshal(map[string]any{"workspaces_limit": updated.Workspaces, "workload_runs_limit": updated.ConcurrentWorkloadRuns,
-				"preview_runs_limit": updated.PreviewRuns, "preview_lifetime_seconds_limit": updated.PreviewLifetimeSeconds,
+				"queued_workload_runs_limit": updated.QueuedWorkloadRuns, "preview_runs_limit": updated.PreviewRuns, "preview_lifetime_seconds_limit": updated.PreviewLifetimeSeconds,
 				"artifact_bytes_limit": updated.ArtifactBytes, "service_memory_bytes_limit": updated.WorkspaceServiceMemoryBytes,
 				"service_milli_cpu_limit": updated.WorkspaceServiceMilliCPU})
 			if err != nil {
@@ -114,5 +121,5 @@ func putTenantQuotas(pool transaction.Beginner) echo.HandlerFunc {
 }
 
 func invalidTenantQuotaRequest(c *echo.Context) error {
-	return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_quota", Message: "Workspace limit 1-10, Workload Run limit 1-5, Preview limit 1-5, Preview lifetime 300-86400 seconds, artifact bytes 1-107374182400, Service memory bytes 1-2147483648, and Service millicores 1-1500 are required"}})
+	return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_quota", Message: "Workspace limit 1-10, Workload Run and queued Workload limits 1-5 (queued cannot exceed Workload), Preview limit 1-5, Preview lifetime 300-86400 seconds, artifact bytes 1-107374182400, Service memory bytes 1-2147483648, and Service millicores 1-1500 are required"}})
 }

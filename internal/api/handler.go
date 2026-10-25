@@ -466,6 +466,9 @@ func createWorkloadRun(pool transaction.Beginner, config WorkspaceCreateConfig) 
 		if errors.Is(err, workloads.ErrQuotaExceeded) {
 			return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "workload_quota_exceeded", Message: "Tenant concurrent Workload Run limit reached (5)"}})
 		}
+		if errors.Is(err, quotas.ErrWorkloadQueueQuotaExceeded) {
+			return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "workload_queue_quota_exceeded", Message: "Tenant queued Workload Run limit reached"}})
+		}
 		if errors.Is(err, workloads.ErrPreviewQuotaExceeded) {
 			return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "preview_quota_exceeded", Message: "Tenant Preview count or lifetime limit exceeded"}})
 		}

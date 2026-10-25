@@ -73,7 +73,7 @@ func TestConcurrentWorkloadQuotaReservationAndTerminalRelease(t *testing.T) {
 	accepted := make([]domain.WorkloadRun, 0, testRunLimit)
 	quotaErrors := 0
 	for result := range results {
-		if errors.Is(result.err, ErrQuotaExceeded) {
+		if errors.Is(result.err, ErrQuotaExceeded) || errors.Is(result.err, quotas.ErrWorkloadQueueQuotaExceeded) {
 			quotaErrors++
 			continue
 		}
@@ -155,6 +155,84 @@ func TestConcurrentWorkloadQuotaReservationAndTerminalRelease(t *testing.T) {
 	}
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM workload_artifact_quota_reservations WHERE tenant_id='tenant_workload_quota'`).Scan(&reserved); err != nil || reserved != testRunLimit {
 		t.Fatalf("artifact reservation should be reused with Workload capacity: reservations=%d err=%v", reserved, err)
+	}
+}
+
+func TestQueuedWorkloadBacklogQuotaReleasesWhenRunsLeaveQueue(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO tenants (id,name,created_at) VALUES ('tenant_queue_limit','Queue limit',now())`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO users (id,cognito_subject,email,created_at) VALUES ('usr_queue_limit','queue-limit-owner','',now())`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (quotas.Limits, error) {
+		return quotas.SetWithQueueAndPreview(ctx, tx, "tenant_queue_limit", "usr_queue_limit", quotas.DefaultWorkspaces,
+			5, 2, quotas.DefaultPreviewRuns, quotas.DefaultPreviewLifetimeSeconds, quotas.DefaultArtifactBytes,
+			quotas.DefaultWorkspaceServiceMemoryBytes, quotas.DefaultWorkspaceServiceMilliCPU, time.Now().UTC())
+	}); err != nil {
+		t.Fatalf("configure queued Workload limit: %v", err)
+	}
+	create := func(id string, now time.Time) (domain.WorkloadRun, error) {
+		run := domain.WorkloadRun{ID: domain.WorkloadRunID(id), TenantID: "tenant_queue_limit", Kind: domain.WorkloadJob,
+			RuntimeClass: "standard", TrustLevel: domain.WorkloadUntrusted, IdempotencyKey: id,
+			TimeoutSeconds: 600, TimeoutAt: now.Add(10 * time.Minute), CreatedAt: now}
+		return transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (domain.WorkloadRun, error) {
+			stored, _, err := CreateOrGet(ctx, tx, run)
+			return stored, err
+		})
+	}
+	now := time.Now().UTC()
+	first, err := create("run_queue_limit_1", now)
+	if err != nil || first.State != domain.WorkloadPending {
+		t.Fatalf("first queued Workload = %+v, %v", first, err)
+	}
+	second, err := create("run_queue_limit_2", now.Add(time.Second))
+	if err != nil || second.State != domain.WorkloadPending {
+		t.Fatalf("second queued Workload = %+v, %v", second, err)
+	}
+	if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (quotas.Limits, error) {
+		return quotas.SetWithQueueAndPreview(ctx, tx, "tenant_queue_limit", "usr_queue_limit", quotas.DefaultWorkspaces,
+			5, 1, quotas.DefaultPreviewRuns, quotas.DefaultPreviewLifetimeSeconds, quotas.DefaultArtifactBytes,
+			quotas.DefaultWorkspaceServiceMemoryBytes, quotas.DefaultWorkspaceServiceMilliCPU, now.Add(2*time.Second))
+	}); !errors.Is(err, quotas.ErrBelowCurrentUsage) {
+		t.Fatalf("lower queue cap below pending usage = %v, want ErrBelowCurrentUsage", err)
+	}
+	var runs int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM workload_runs WHERE tenant_id='tenant_queue_limit'`).Scan(&runs); err != nil || runs != 2 {
+		t.Fatalf("Workload Run count=%d error=%v, want two", runs, err)
+	}
+	first, err = transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (domain.WorkloadRun, error) {
+		return Transition(ctx, tx, TransitionInput{TenantID: first.TenantID, RunID: first.ID,
+			ExpectedRevision: first.Revision, NextState: domain.WorkloadProvisioning, OccurredAt: now.Add(3 * time.Second)})
+	})
+	if err != nil || first.State != domain.WorkloadProvisioning {
+		t.Fatalf("start first Workload = %+v, %v", first, err)
+	}
+	if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (quotas.Limits, error) {
+		return quotas.SetWithQueueAndPreview(ctx, tx, "tenant_queue_limit", "usr_queue_limit", quotas.DefaultWorkspaces,
+			5, 1, quotas.DefaultPreviewRuns, quotas.DefaultPreviewLifetimeSeconds, quotas.DefaultArtifactBytes,
+			quotas.DefaultWorkspaceServiceMemoryBytes, quotas.DefaultWorkspaceServiceMilliCPU, now.Add(4*time.Second))
+	}); err != nil {
+		t.Fatalf("queue cap should be lowered after dispatch: %v", err)
+	}
+	if _, err := create("run_queue_limit_3", now.Add(5*time.Second)); !errors.Is(err, quotas.ErrWorkloadQueueQuotaExceeded) {
+		t.Fatalf("third queued Workload = %v, want queue quota exhaustion", err)
+	}
+	second, err = transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (domain.WorkloadRun, error) {
+		return Transition(ctx, tx, TransitionInput{TenantID: second.TenantID, RunID: second.ID,
+			ExpectedRevision: second.Revision, NextState: domain.WorkloadProvisioning, OccurredAt: now.Add(6 * time.Second)})
+	})
+	if err != nil || second.State != domain.WorkloadProvisioning {
+		t.Fatalf("start second Workload = %+v, %v", second, err)
+	}
+	if _, err := create("run_queue_limit_3", now.Add(7*time.Second)); err != nil {
+		t.Fatalf("queue capacity was not released after dispatch: %v", err)
 	}
 }
 
