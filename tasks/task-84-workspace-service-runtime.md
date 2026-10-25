@@ -157,6 +157,18 @@ Running a container on this host was not possible: the cached Alpine image is
 ARM64 and this x86_64 Podman host returned `Exec format error`. This is
 CLI/network metadata evidence only, not a container egress test.
 
+## Podman egress smoke test (2026-10-25)
+
+Pulled the x86_64 Alpine 3.22 image to match the local Podman host. A container
+on the regular `podman` bridge fetched `http://1.1.1.1` successfully (including
+the HTTPS redirect). The same image and command on a temporary
+`podman network create --internal` bridge failed with `Network unreachable`;
+`podman network inspect` reported `internal=true`, and the temporary network
+was removed. The positive control shows this host permits container egress,
+so the internal-network failure is meaningful Podman evidence. This directly
+tests Podman's bridge behavior only; it does not execute `NerdctlServiceEngine`,
+nerdctl's bundled CNI firewall plugin, the ARM64 image, or a Lambda MicroVM.
+
 ## Goal
 
 Make `hako add`, `hako service start|stop|remove`, and `hako services` reflect
