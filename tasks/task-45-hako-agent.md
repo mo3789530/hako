@@ -27,8 +27,10 @@ file transfer, Workspace Service control, Guest heartbeat, and pinned
 code-server startup. Local tests do not establish the ARM64 image or a live
 Lambda MicroVM. Remaining Task 45 gates are a successful ARM64 image build,
 real `/dev/pts` and `/run` behavior, production signing-key distribution and
-rotation, SSH daemon/host-key provisioning, and deployed Gateway-to-MicroVM
-connectivity. No AWS apply or live Secret retrieval has been performed.
+rotation, and deployed Gateway-to-MicroVM connectivity. OpenSSH startup and
+per-Workspace host-key handling are implemented locally; they still need
+validation in the built ARM64 image and a live MicroVM. No AWS apply or live
+Secret retrieval has been performed.
 Priority: P1.
 
 ## Goal

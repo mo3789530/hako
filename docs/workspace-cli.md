@@ -107,10 +107,16 @@ permission only to the fixed Workspace-local `127.0.0.1:22`; the client cannot
 choose a host or port. TCP/22 remains private and is never exposed publicly.
 The Workspace image starts OpenSSH on `127.0.0.1:22` with public-key
 authentication only, disables password/root login, and allows forwarding only
-to Workspace loopback ports. Put your client public key at
-`/workspace/.ssh/authorized_keys` (mode `0600`). The per-Workspace Ed25519 host
-key is persisted under `/workspace/.hako/ssh`; fetch its public half and add a
-known-hosts entry before connecting:
+to Workspace loopback ports. Create the authorized-keys directory, then upload
+your client public key (uploads use mode `0600`):
+
+```sh
+hako exec acme ws_api -- mkdir -p -m 700 /workspace/.ssh
+hako cp acme ws_api ~/.ssh/id_ed25519.pub /workspace/.ssh/authorized_keys
+```
+
+The per-Workspace Ed25519 host key is persisted under `/workspace/.hako/ssh`;
+fetch its public half and add a known-hosts entry before connecting:
 
 ```sh
 hako cp --from acme ws_api /workspace/.hako/ssh/ssh_host_ed25519_key.pub ./hako-ws-api-dev.pub
