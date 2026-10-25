@@ -137,6 +137,18 @@ affected command packages pass. A source scan found no remaining `log.Fatal(err)
 `log.Fatalf(...%v...)`, or `log.Printf(...%v...)` patterns under `cmd/`.
 This does not verify deployed CloudWatch retention or alert operations.
 
+## 2026-10-25 Go standard-library security update
+
+The pinned `govulncheck@v1.8.0` run found reachable GO-2026-6809 in Go
+1.27.2 `crypto/x509` (`Certificate.Verify`). The repository toolchain was
+updated to Go 1.27.3, including the Dev Container, Lambda build images, pinned
+ARM64 Guest build image digest, CI Podman image, and local test fixtures.
+`govulncheck@v1.8.0 ./...` now reports no reachable vulnerabilities;
+`go test -p=1 ./... -count=1`, the Podman/PostgreSQL Software Factory E2E,
+and `go vet ./...` pass under Go 1.27.3. Five dependency advisories remain
+unreachable according to govulncheck. The updated images have not been
+deployed.
+
 The migration command now logs only the fixed `failure_class=migration` on
 startup/DDL failure; it does not include the underlying database error, SQL,
 or connection details. A regression test supplies a sentinel error and verifies

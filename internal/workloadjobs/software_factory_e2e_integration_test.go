@@ -49,7 +49,7 @@ const factoryE2EWebhookSecret = "synthetic-webhook-secret-for-local-e2e"
 func TestSoftwareFactoryPodmanPostgresAndGitHubCheck(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	const image = "docker.io/library/golang:1.27.2-alpine"
+	const image = "docker.io/library/golang:1.27.3-alpine"
 	if err := exec.CommandContext(ctx, "podman", "image", "exists", image).Run(); err != nil {
 		if os.Getenv("HAKO_E2E_REQUIRE_PODMAN") == "1" {
 			t.Fatalf("required Podman image %s is unavailable", image)

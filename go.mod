@@ -1,6 +1,6 @@
 module github.com/mo3789530/hako
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/aws/aws-lambda-go v1.54.0

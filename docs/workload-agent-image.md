@@ -51,10 +51,10 @@ pin before accepting protocol requests and rejects tickets whose VM, attempt,
 or signed execution binding differs. No repository code or secret is executed
 by the hook.
 
-The Dockerfile pins both the ARM64 Go 1.27.2 toolchain image and the ARM64
+The Dockerfile pins both the ARM64 Go 1.27.3 toolchain image and the ARM64
 Lambda AL2023 MicroVM base by child-manifest digest. The base digest currently
 resolves from `public.ecr.aws/lambda/microvms:al2023-minimal`; the toolchain
-digest resolves from `docker.io/library/golang:1.27.2`. It copies in the
+digest resolves from `docker.io/library/golang:1.27.3`. It copies in the
 static ARM64 agent and Go toolchain, installs Git, and starts the listener on
 the only exposed application port as UID/GID 65532, not root. Per-VM identity
 is established after the snapshot by `/run`; do not bake Tenant identity, run

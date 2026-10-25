@@ -6,7 +6,7 @@
 
 | 項目 | 検出と対応 | 状態 |
 |---|---|---|
-| Go依存関係 | 初回govulncheckで呼出経路のある11件を検出。Go 1.27.1の9件、pgx 5.8.0のGO-2026-5004、x/text 0.40.0のGO-2026-6629。Go 1.27.2、pgx 5.9.2、x/text 0.41.0へ更新 | 再検査で `No vulnerabilities found.`。到達経路の検出は全件がHakoで実際に悪用可能という証明ではない |
+| Go依存関係 | 初回検査で呼出経路のある依存脆弱性を修正し、pgx 5.9.2/x/text 0.41.0へ更新済み。2026-10-25の再検査でGO-2026-6809 (`crypto/x509`、CVE-2026-111943)を検出し、Go 1.27.3へtoolchain/build imageを更新。更新後の`govulncheck@v1.8.0 ./...`は`No vulnerabilities found`を返した | Go公式は1.27.3をx509 security fixと記録。govulncheckは依存モジュールに未到達5件を報告するが、呼出経路は見つけていない |
 | OAuth credential redirect | OAuth endpointから307/308を返されると標準HTTP clientがclient secret/codeのPOST bodyを転送可能。exchangeとuser-token requestでredirect拒否、caller clientをcopyしtimeoutを制限 | 回帰テストを追加 |
 | Tenant OAuth identity | integration/App/revision/generationをstateに固定し、callbackのApp一致と設定失効を再検証。shared verifierへのfallbackとowned Installationの再assignmentを拒否 | adapter/local検証。production OAuth broker未配備 |
 | Webhook identity/retry | optional App ID照合、generation/Installation再検証。DB障害を失効として隔離せず再試行 | 前回実装・検証済み |

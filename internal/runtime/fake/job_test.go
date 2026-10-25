@@ -41,7 +41,7 @@ func newTestJobRuntime(t *testing.T, runner CommandRunner, maxLogBytes int) *Job
 	t.Helper()
 	runtime, err := NewJobRuntime(JobRuntimeConfig{
 		PodmanPath:    "/usr/bin/podman",
-		GoImage:       "docker.io/library/golang:1.27-alpine",
+		GoImage:       "docker.io/library/golang:1.27.3-alpine",
 		MaxLogBytes:   maxLogBytes,
 		CommandRunner: runner,
 	})

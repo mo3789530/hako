@@ -265,7 +265,7 @@ func TestComposedLambdaWorkerResultAndCleanupProjectIntoPostgres(t *testing.T) {
 	}
 
 	checkout := t.TempDir()
-	if err := os.WriteFile(filepath.Join(checkout, "go.mod"), []byte("module example.invalid/hako-worker-integration\n\ngo 1.27.2\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(checkout, "go.mod"), []byte("module example.invalid/hako-worker-integration\n\ngo 1.27.3\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	archive, err := workloadsource.CreateArchive(ctx, checkout, 0)
@@ -462,7 +462,7 @@ func TestComposedLambdaWorkerCancellationOutboxTerminatesAndProjectsIntoPostgres
 
 	controller, runtime, api, _, now := setupLambda(t)
 	checkout := t.TempDir()
-	if err := os.WriteFile(filepath.Join(checkout, "go.mod"), []byte("module example.invalid/hako-cancel-integration\n\ngo 1.27.2\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(checkout, "go.mod"), []byte("module example.invalid/hako-cancel-integration\n\ngo 1.27.3\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	archive, err := workloadsource.CreateArchive(ctx, checkout, 0)

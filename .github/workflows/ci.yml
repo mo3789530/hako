@@ -54,7 +54,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes podman
-          podman pull docker.io/library/golang:1.27.2-alpine
+          podman pull docker.io/library/golang:1.27.3-alpine
       - name: PostgreSQL integration tests and coverage
         env:
           HAKO_TEST_DATABASE_URL: postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable

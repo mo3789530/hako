@@ -197,7 +197,7 @@ func TestLambdaWorkloadHandlerDispatchRunsAuthenticatedAgentWithVerifiedSource(t
 	id := workloadjournal.Command{TenantID: "tenant_1", WorkloadRunID: "run_1", AttemptID: "attempt_1", Generation: 1,
 		ResourcePlaneID: "rp_1", IdempotencyToken: "token_1"}
 	checkout := t.TempDir()
-	if err := os.WriteFile(filepath.Join(checkout, "go.mod"), []byte("module example.invalid/hako-agent-e2e\n\ngo 1.27.2\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(checkout, "go.mod"), []byte("module example.invalid/hako-agent-e2e\n\ngo 1.27.3\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	archive, err := workloadsource.CreateArchive(context.Background(), checkout, 0)

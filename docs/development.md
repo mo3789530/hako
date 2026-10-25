@@ -2,7 +2,7 @@
 
 ## 前提
 
-- Go 1.27.2以降（既知脆弱性修正版。go.modのtoolchain選択、Dev Container、API build imageで揃える）
+- Go 1.27.3以降（GO-2026-6809の修正版。go.mod、Dev Container、Lambda build imageで揃える）
 - Terraform 1.12.1
 - Make
 - Dev Containerを使う場合はDocker対応のDev Container環境

@@ -1,4 +1,4 @@
-FROM --platform=linux/arm64 docker.io/library/golang:1.27.2@sha256:a83e961ad968e2e7abc2a59554e356f00c2a270a15fbb39f2c84a4caf13be9c3 AS go-toolchain
+FROM --platform=linux/arm64 docker.io/library/golang:1.27.3@sha256:288557fbc328e4ef9a78bae2eb44f24447029ff08667be883d79eeaa9029cf0c AS go-toolchain
 
 FROM --platform=linux/arm64 public.ecr.aws/lambda/microvms:al2023-minimal@sha256:b6a34591182b4a1969f57eb24c812582d0c52dc2e40b75b73c0df371bb7aef82
 
