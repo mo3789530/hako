@@ -20,3 +20,15 @@ Reproducibly validate the real Workspace lifecycle in a dedicated AWS environmen
 - Cleanup covers timeout, failed test, partial create, and manual cancellation; no broad account/resource wildcard deletion.
 - Document AWS prerequisites, estimated cost/TTL, rollback, and evidence artifacts.
 - This task requires a separate explicit approval for apply/cutover; code completion alone does not authorize deployment.
+
+## Local OCI image smoke
+
+`make test-api-lambda-image-smoke` builds the API OCI image for the local
+amd64 host with Podman and runs it in HTTP mode against the existing disposable
+PostgreSQL database. It verifies public liveness (`/healthz` is 200) and that
+the application health endpoint stays authenticated (`/v1/health` is 401
+without a token), then removes its uniquely named smoke container. This is a
+local image/process and API-auth boundary check. It does not exercise Lambda
+Web Adapter's Runtime API event conversion, API Gateway, DSQL IAM, candidate
+Lambda invocation, cutover, or rollback; those AWS checks remain gated on an
+explicit deployment approval.

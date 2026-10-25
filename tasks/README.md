@@ -101,6 +101,12 @@ task context and creates a proposal only after the fixed test tool passes.
 This remains local/fake evidence; Resource Plane Worker-to-MicroVM execution
 and production Agent admission are not enabled.
 
+Task 49 API image follow-up: `make test-api-lambda-image-smoke` builds the
+amd64 API OCI image with Podman and checks `/healthz` (200) plus unauthenticated
+`/v1/health` (401) against the local PostgreSQL service, cleaning up its own
+container. Lambda Web Adapter event conversion still requires the candidate
+Lambda/API Gateway v2 event check in the designated AWS test account.
+
 Task 61's published contract/cost documentation now reflects the explicit
 1–28,800 second `RunMicrovm` API range and separates Dockerfile snapshot builds
 from nested guest containers. Hako pricing meters and a Tokyo-safe estimate

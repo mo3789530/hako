@@ -72,6 +72,15 @@ the integration/permission to the previously tested candidate. Local direct
 HTTP smoke and the existing adapter unit/integration tests complement, but do
 not replace, this AWS event-conversion check.
 
+The local Podman HTTP smoke is repeatable with `make test-api-lambda-image-smoke`.
+It builds an amd64 image for the host, connects it to the already-running local
+PostgreSQL, checks public `/healthz` returns 200 and unauthenticated `/v1/health`
+returns 401, then removes only its own test container. Set `HAKO_DATABASE_URL`
+and optionally `HAKO_API_SMOKE_PORT` to use another disposable database/port.
+This runs the image in ordinary HTTP mode; Lambda Web Adapter event conversion
+still requires invoking the candidate Lambda with API Gateway v2 events in the
+approved AWS test account.
+
 Terraform creates a private same-Region ECR repository with immutable tags,
 scan-on-push, AES-256 encryption, Lambda-scoped image retrieval permission,
 and lifecycle cleanup for untagged artifacts after seven days. Tagged releases
