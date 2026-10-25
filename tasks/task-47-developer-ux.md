@@ -199,6 +199,15 @@ removal tests prove an incorrect confirmation makes no API request and that
 reports 68.1% statement coverage and the focused race run passes. The command
 still reports desired state acceptance; it does not imply MicroVM execution.
 
+## Workspace create/list/get CLI API boundary (2026-10-25)
+
+Added authenticated HTTP-backed tests for the basic Workspace CLI client paths.
+They verify create request JSON and idempotency key, Tenant-scoped pagination
+parameters, Workspace detail routing, Bearer authorization, missing login/API
+URL fail-closed behavior, and propagation of a Tenant authorization failure.
+These tests complement the lifecycle PostgreSQL E2E by pinning the CLI-to-API
+request contract; they do not establish production Gateway or MicroVM behavior.
+
 ## Local terminal mode and resize coverage (2026-10-25)
 
 Added Linux PTY tests for `hako shell` local terminal handling. They verify

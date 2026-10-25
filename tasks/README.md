@@ -49,6 +49,13 @@ restricted to `remove`. The latest integration-tagged CLI coverage is 68.1%;
 focused CLI race tests pass. This is desired-state/API evidence, not proof of
 the deployed MicroVM Service executor.
 
+Task 47 basic Workspace CLI follow-up (2026-10-25): authenticated HTTP-backed
+tests now cover `createWorkspace`, `listWorkspaces`, and `getWorkspace`,
+including the create idempotency key/body, Tenant-scoped pagination, detail
+route, missing login/API URL, and forbidden Tenant response. Focused
+`TestWorkspaceBasicCLI` tests pass. This pins the client contract; deployed
+MicroVM/Gateway behavior remains an external runtime gate.
+
 Task 52 workflow policy read API was added on 2026-10-25. Tenant members can
 inspect the active repository allowlist through the authenticated API/CLI;
 configuration remains Owner/Admin-only. API/CLI and PostgreSQL integration
