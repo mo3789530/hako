@@ -114,3 +114,16 @@ checks immutable SHA binding, remote Check ID persistence, duplicate cancel,
 terminal result mapping, and rejection of a stale state transition. This is
 local database/outbox evidence; the dedicated consumer deployment and live
 GitHub delivery remain approval-gated.
+
+## Workload pipeline annotation delivery (2026-10-25)
+
+Native Workload pipeline results can now carry bounded repository diagnostics.
+The signed Resource Plane result path rejects unsafe/traversal paths, invalid
+line ranges, more than 50 annotations, and annotation JSON above 48 KiB before
+database writes. Migration 000189 stores annotations as a JSON array on the
+pipeline Check row. The Check consumer reloads that exact row and sends the
+annotations with the immutable commit SHA; the PostgreSQL Outbox/Consumer test
+verifies the path and line reach a fake GitHub Checks endpoint through retry
+and Check ID recovery. Actions Runner Checks remain summary-only because their
+diagnostics do not identify repository source lines. No live GitHub request or
+AWS deployment was performed.
