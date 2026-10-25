@@ -506,3 +506,14 @@ coverage (previously 18.2%); `RuntimeWorker.RunOnce` is covered at 27.4% for
 the local validation paths. The focused PostgreSQL cleanup E2E still passes
 for lease recovery, retry, generation fencing, and quota release. This does
 not replace the real Resource Plane/Lambda MicroVM cleanup verification.
+
+## Preview result consumer coverage (2026-10-25)
+
+Added unit coverage for invalid consumer configuration, malformed result JSON,
+SQS claim/action/Plane attribute mismatches, future completion timestamps,
+Lambda batch retry responses, and payload-free failure logging. The
+`internal/previewresult` package now has 84.6% unit statement coverage;
+`go test -race ./internal/previewresult` passes. The existing PostgreSQL
+Preview producer/dispatcher/result E2E also passes. Valid results still rely
+on the database-backed generation/claim fencing exercised by that integration
+path; this does not verify a deployed SQS/Lambda consumer.
