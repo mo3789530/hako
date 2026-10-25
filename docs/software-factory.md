@@ -348,6 +348,14 @@ prints only the archive digest and sorted path/size metadata. The proposal
 remains untrusted; inspection is a validation aid and does not replace code
 review or enable branch/PR writes.
 
+The Resource Plane source library also provides
+`ApplyAgentProposalArchive`: it verifies the pinned base source archive,
+applies a validated proposal in a private temporary checkout, and emits a new
+deterministic source archive with both base-source and proposal digests. This
+is input preparation for the separate verifier Workload. It does not execute
+repository code, create a Run, or establish passing Checks; the verifier
+Workload and digest-bound Check persistence remain unimplemented.
+
 Treat `.hako/factory.yaml`, workflow files, action references, shell steps,
 container images, cache contents, and webhook payloads as untrusted inputs.
 The Native pipeline schema needs a version, strict parser, allowlisted step

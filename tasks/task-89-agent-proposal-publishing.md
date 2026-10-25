@@ -1,6 +1,9 @@
 # Task 89: Brokered Native Agent Branch and Pull Request Publishing
 
-Status: Not started. Priority: P3. Depends on Tasks 39, 40, 53, 57, and 59.
+Status: In Progress (safe proposal-to-source materialization is implemented;
+isolated verifier Workload scheduling, digest-bound Check persistence, broker
+authorization, and GitHub publication are not yet implemented). Priority: P3.
+Depends on Tasks 39, 40, 53, 57, and 59.
 
 ## Goal
 
@@ -91,3 +94,16 @@ Repository. The proposal remains untrusted. Hako must never merge or deploy it.
 - Reuse GitHub Actions or Claude Code Action credentials.
 - Enable Agent scheduling before Task 40/53 MicroVM image, egress, and resource
   enforcement gates pass.
+
+## Local implementation progress (2026-10-25)
+
+- `workloadsource.ApplyAgentProposalArchive` verifies the immutable base source
+  archive, validates the untrusted ZIP against path/type/secret/size bounds,
+  applies only regular files in a private temporary checkout, and emits a new
+  deterministic source archive. It returns both the proposal ZIP digest and
+  base source digest so a future verifier Workload can bind its source identity
+  to the exact proposal. The shared inspector uses the same validator. Unit
+  tests cover deterministic output, changed/new files, wrong base digest,
+  traversal, protected paths, secret content, symlinks, duplicate entries, and
+  size limits. This is only a source materialization primitive: it does not run
+  tests, create a verifier Run, or authorize a GitHub write.
