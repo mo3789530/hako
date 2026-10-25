@@ -124,6 +124,26 @@ func TestValidExecutionMetadataRequiresImmutableRunInterval(t *testing.T) {
 	if !validExecutionMetadata(agent, now) {
 		t.Fatal("valid Issue Agent metadata was rejected")
 	}
+	verifier := valid
+	verifier.SchemaVersion, verifier.Kind, verifier.TriggerEvent, verifier.TriggerBranch = workloadSpecSchemaV4, domain.WorkloadJob, "pull_request", "main"
+	verifier.ProposalVerification = &ProposalVerificationMetadata{AgentRunID: "run_agent", AgentAttemptID: "attempt_agent",
+		ProposalArtifactID: "artifact_proposal", ProposalSHA256: strings.Repeat("d", 64), BaseCommitSHA: verifier.CommitSHA}
+	if !validExecutionMetadata(verifier, now) {
+		t.Fatal("valid proposal-verifier metadata was rejected")
+	}
+	for _, mutate := range []func(*ControlPlaneExecutionMetadata){
+		func(m *ControlPlaneExecutionMetadata) { m.ProposalVerification.BaseCommitSHA = strings.Repeat("e", 40) },
+		func(m *ControlPlaneExecutionMetadata) { m.ProposalVerification.ProposalSHA256 = "invalid" },
+		func(m *ControlPlaneExecutionMetadata) { m.Kind = domain.WorkloadAgent },
+	} {
+		candidate := verifier
+		proposal := *verifier.ProposalVerification
+		candidate.ProposalVerification = &proposal
+		mutate(&candidate)
+		if validExecutionMetadata(candidate, now) {
+			t.Fatalf("invalid proposal-verifier metadata was accepted: %+v", candidate)
+		}
+	}
 	for _, mutate := range []func(*ControlPlaneExecutionMetadata){
 		func(m *ControlPlaneExecutionMetadata) { m.TriggerEvent = "push" },
 		func(m *ControlPlaneExecutionMetadata) { m.Kind = domain.WorkloadPreview },

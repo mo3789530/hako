@@ -353,15 +353,29 @@ The Resource Plane source library also provides
 applies a validated proposal in a private temporary checkout, and emits a new
 deterministic source archive with both base-source and proposal digests. This
 is input preparation for the separate verifier Workload. Migration `000181`
-and the `workload_agent_proposal_verifications` store now bind an
-`agent_changes` artifact digest and immutable base commit to one separate
-untrusted Job Run and attempt. Binding is accepted only after the Agent Run
-succeeded, its latest attempt is `cleanup_confirmed`, and the verifier Run pins
-the same Tenant, Repository, App generation, and base commit. Exact retries are
-idempotent and a changed digest or verifier identity conflicts. This is
-persistence groundwork: it does not yet create/schedule the verifier Run,
-provide proposal bytes to its source materializer, run checks, or persist
-digest-bound Check results.
+and the `workload_agent_proposal_verifications` store bind an `agent_changes`
+artifact digest and immutable base commit to one separate untrusted Job Run
+and attempt. Binding requires a successful Agent Run, confirmed cleanup, and
+the same Tenant, Repository, App generation, Resource Plane, and base commit.
+Exact retries are idempotent; changed digests or verifier identities conflict.
+
+After a trusted Resource Plane result confirms MicroVM cleanup, a
+Factory-enabled Repository now creates the untrusted verifier Job, attempt,
+dispatch Outbox, and proposal binding in one transaction. The Job uses the
+current default branch's `pull_request` pipeline selection. Schema v4 execution
+metadata carries only the source Run/attempt, artifact ID, digest, and base
+commit, never its storage URL. Resource Plane reads only the content-addressed
+S3 key derived from those pins, verifies object metadata and SHA-256, overlays
+the bounded proposal onto the immutable base checkout, and stages a
+deterministic source archive. Migration `000184` stores pipeline results with
+the proposal digest and base commit. The initial queued base-SHA Check and
+verifier Check delivery are suppressed so GitHub cannot be shown a pass on the
+unmodified commit.
+
+Task 89 remains open: matching the digest-bound evidence against required
+Repository Check policy, safe verifier retry, publication idempotency, brokered
+exact-scope write credentials, branch/PR create/recovery, and API/CLI status.
+Terraform IAM and AWS execution have not been verified.
 
 Treat `.hako/factory.yaml`, workflow files, action references, shell steps,
 container images, cache contents, and webhook payloads as untrusted inputs.

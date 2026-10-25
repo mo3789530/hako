@@ -193,3 +193,54 @@ func TestS3SourceArchiveReaderRejectsMetadataMismatchAndOversizedObjects(t *test
 		})
 	}
 }
+
+func TestS3AgentProposalArchiveReaderUsesOnlyBoundedAttemptDigestKey(t *testing.T) {
+	data := []byte("proposal bytes")
+	digestValue := sha256.Sum256(data)
+	digest := hex.EncodeToString(digestValue[:])
+	body := &closeTrackingReader{Reader: bytes.NewReader(data)}
+	client := &captureSourceArchiveGet{output: &s3.GetObjectOutput{Body: body, ContentLength: aws.Int64(int64(len(data))), ContentType: aws.String("application/zip"),
+		Metadata: map[string]string{"hako-tenant-id": "tenant_1", "hako-workload-run-id": "run_agent", "hako-attempt-id": "attempt_agent",
+			"hako-sha256": digest, "hako-artifact-kind": "agent-changes"}}}
+	reader, err := NewS3AgentProposalArchiveReader(client, "hako-source-example", "hako/workloads")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := reader.ReadAgentProposalArchive(context.Background(), AgentProposalArchiveIdentity{
+		TenantID: "tenant_1", WorkloadRunID: "run_agent", AttemptID: "attempt_agent", SHA256: digest})
+	wantKey := "hako/workloads/tenant_1/run_agent/attempt_agent/agent-changes/" + digest + ".zip"
+	if err != nil || !bytes.Equal(archive, data) || aws.ToString(client.input.Key) != wantKey || !body.closed {
+		t.Fatalf("proposal read identity/key/bytes invalid: key=%q bytes=%q err=%v closed=%v", aws.ToString(client.input.Key), archive, err, body.closed)
+	}
+	if _, err := reader.ReadAgentProposalArchive(context.Background(), AgentProposalArchiveIdentity{
+		TenantID: "tenant_1", WorkloadRunID: "run_agent", AttemptID: "attempt_agent", SHA256: "bad"}); err == nil || client.calls != 1 {
+		t.Fatal("invalid proposal identity reached S3")
+	}
+}
+
+func TestS3AgentProposalArchiveReaderRejectsWrongObjectMetadataAndOversize(t *testing.T) {
+	data := []byte("proposal bytes")
+	digestValue := sha256.Sum256(data)
+	digest := hex.EncodeToString(digestValue[:])
+	for _, test := range []struct {
+		name     string
+		length   int64
+		metadata map[string]string
+	}{
+		{name: "foreign attempt", length: int64(len(data)), metadata: map[string]string{"hako-tenant-id": "tenant_1", "hako-workload-run-id": "run_agent", "hako-attempt-id": "other", "hako-sha256": digest, "hako-artifact-kind": "agent-changes"}},
+		{name: "oversized", length: MaxAgentProposalArchiveBytes + 1, metadata: map[string]string{"hako-tenant-id": "tenant_1", "hako-workload-run-id": "run_agent", "hako-attempt-id": "attempt_agent", "hako-sha256": digest, "hako-artifact-kind": "agent-changes"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body := &closeTrackingReader{Reader: bytes.NewReader(data)}
+			client := &captureSourceArchiveGet{output: &s3.GetObjectOutput{Body: body, ContentLength: aws.Int64(test.length), ContentType: aws.String("application/zip"), Metadata: test.metadata}}
+			reader, err := NewS3AgentProposalArchiveReader(client, "hako-source-example", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result, err := reader.ReadAgentProposalArchive(context.Background(), AgentProposalArchiveIdentity{
+				TenantID: "tenant_1", WorkloadRunID: "run_agent", AttemptID: "attempt_agent", SHA256: digest}); err == nil || result != nil || !body.closed {
+				t.Fatalf("invalid proposal object accepted: bytes=%q err=%v closed=%v", result, err, body.closed)
+			}
+		})
+	}
+}

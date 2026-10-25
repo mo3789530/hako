@@ -33,32 +33,42 @@ const (
 	workloadSpecSchemaV1   = 1
 	workloadSpecSchemaV2   = 2
 	workloadSpecSchemaV3   = 3
+	workloadSpecSchemaV4   = 4
 )
 
 type ControlPlaneExecutionMetadata struct {
-	SchemaVersion        int                       `json:"schema_version"`
-	Kind                 domain.WorkloadKind       `json:"kind,omitempty"`
-	TenantID             domain.TenantID           `json:"tenant_id"`
-	WorkloadRunID        domain.WorkloadRunID      `json:"workload_run_id"`
-	AttemptID            string                    `json:"attempt_id"`
-	Generation           int64                     `json:"generation"`
-	ResourcePlaneID      domain.ResourcePlaneID    `json:"resource_plane_id"`
-	CorrelationID        string                    `json:"correlation_id,omitempty"`
-	GitHubInstallationID int64                     `json:"github_installation_id"`
-	GitHubRepositoryID   int64                     `json:"github_repository_id"`
-	GitHubOwner          string                    `json:"github_owner"`
-	GitHubRepository     string                    `json:"github_repository"`
-	GitHubIntegrationID  string                    `json:"github_integration_id,omitempty"`
-	GitHubConfigRevision int64                     `json:"github_config_revision,omitempty"`
-	GitHubCredentialGen  int64                     `json:"github_credential_generation,omitempty"`
-	CommitSHA            string                    `json:"commit_sha"`
-	Ref                  string                    `json:"ref"`
-	TriggerEvent         string                    `json:"trigger_event,omitempty"`
-	TriggerBranch        string                    `json:"trigger_branch,omitempty"`
-	RuntimeClass         string                    `json:"runtime_class"`
-	TrustLevel           domain.WorkloadTrustLevel `json:"trust_level"`
-	RequestedAt          time.Time                 `json:"requested_at"`
-	Deadline             time.Time                 `json:"deadline"`
+	SchemaVersion        int                           `json:"schema_version"`
+	Kind                 domain.WorkloadKind           `json:"kind,omitempty"`
+	TenantID             domain.TenantID               `json:"tenant_id"`
+	WorkloadRunID        domain.WorkloadRunID          `json:"workload_run_id"`
+	AttemptID            string                        `json:"attempt_id"`
+	Generation           int64                         `json:"generation"`
+	ResourcePlaneID      domain.ResourcePlaneID        `json:"resource_plane_id"`
+	CorrelationID        string                        `json:"correlation_id,omitempty"`
+	GitHubInstallationID int64                         `json:"github_installation_id"`
+	GitHubRepositoryID   int64                         `json:"github_repository_id"`
+	GitHubOwner          string                        `json:"github_owner"`
+	GitHubRepository     string                        `json:"github_repository"`
+	GitHubIntegrationID  string                        `json:"github_integration_id,omitempty"`
+	GitHubConfigRevision int64                         `json:"github_config_revision,omitempty"`
+	GitHubCredentialGen  int64                         `json:"github_credential_generation,omitempty"`
+	CommitSHA            string                        `json:"commit_sha"`
+	Ref                  string                        `json:"ref"`
+	TriggerEvent         string                        `json:"trigger_event,omitempty"`
+	TriggerBranch        string                        `json:"trigger_branch,omitempty"`
+	RuntimeClass         string                        `json:"runtime_class"`
+	TrustLevel           domain.WorkloadTrustLevel     `json:"trust_level"`
+	RequestedAt          time.Time                     `json:"requested_at"`
+	Deadline             time.Time                     `json:"deadline"`
+	ProposalVerification *ProposalVerificationMetadata `json:"proposal_verification,omitempty"`
+}
+
+type ProposalVerificationMetadata struct {
+	AgentRunID         domain.WorkloadRunID `json:"agent_run_id"`
+	AgentAttemptID     string               `json:"agent_attempt_id"`
+	ProposalArtifactID string               `json:"proposal_artifact_id"`
+	ProposalSHA256     string               `json:"proposal_sha256"`
+	BaseCommitSHA      string               `json:"base_commit_sha"`
 }
 
 type ControlPlaneMetadataConfig struct {
@@ -155,7 +165,7 @@ func (c *ControlPlaneMetadataClient) Resolve(ctx context.Context, id workloadjou
 }
 
 func (m ControlPlaneExecutionMetadata) matches(id workloadjournal.Command) bool {
-	return (m.SchemaVersion == workloadSpecSchemaV1 || m.SchemaVersion == workloadSpecSchemaV2 || m.SchemaVersion == workloadSpecSchemaV3) && m.TenantID == domain.TenantID(id.TenantID) && m.WorkloadRunID == domain.WorkloadRunID(id.WorkloadRunID) &&
+	return (m.SchemaVersion == workloadSpecSchemaV1 || m.SchemaVersion == workloadSpecSchemaV2 || m.SchemaVersion == workloadSpecSchemaV3 || m.SchemaVersion == workloadSpecSchemaV4) && m.TenantID == domain.TenantID(id.TenantID) && m.WorkloadRunID == domain.WorkloadRunID(id.WorkloadRunID) &&
 		m.AttemptID == id.AttemptID && m.Generation == id.Generation && m.ResourcePlaneID == domain.ResourcePlaneID(id.ResourcePlaneID)
 }
 
@@ -180,7 +190,7 @@ func validExecutionMetadata(m ControlPlaneExecutionMetadata, now time.Time) bool
 	}
 	if m.SchemaVersion == workloadSpecSchemaV1 && m.TriggerEvent != "" ||
 		m.SchemaVersion < workloadSpecSchemaV3 && m.Kind != "" ||
-		m.SchemaVersion == workloadSpecSchemaV3 && m.Kind != domain.WorkloadJob && m.Kind != domain.WorkloadAgent {
+		(m.SchemaVersion == workloadSpecSchemaV3 || m.SchemaVersion == workloadSpecSchemaV4) && m.Kind != domain.WorkloadJob && m.Kind != domain.WorkloadAgent {
 		return false
 	}
 	if (m.TriggerEvent == "") != (m.TriggerBranch == "") ||
@@ -189,6 +199,15 @@ func validExecutionMetadata(m ControlPlaneExecutionMetadata, now time.Time) bool
 		len(m.TriggerBranch) > 255 || strings.Contains(m.TriggerBranch, "..") ||
 		strings.Contains(m.TriggerBranch, "//") || strings.HasSuffix(m.TriggerBranch, "/") || strings.HasSuffix(m.TriggerBranch, ".") || strings.Contains(m.TriggerBranch, "@{") {
 		return false
+	}
+	if m.ProposalVerification != nil {
+		proposal := m.ProposalVerification
+		if m.SchemaVersion < workloadSpecSchemaV4 || kind != domain.WorkloadJob || proposal.AgentRunID == "" ||
+			!metadataIDPattern.MatchString(string(proposal.AgentRunID)) || !metadataIDPattern.MatchString(proposal.AgentAttemptID) ||
+			!metadataIDPattern.MatchString(proposal.ProposalArtifactID) || !digestPattern.MatchString(proposal.ProposalSHA256) ||
+			!commitPattern.MatchString(proposal.BaseCommitSHA) || proposal.BaseCommitSHA != m.CommitSHA {
+			return false
+		}
 	}
 	for _, char := range m.TriggerBranch {
 		if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || strings.ContainsRune("._/-", char)) {

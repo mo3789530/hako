@@ -55,7 +55,7 @@ func BindAgentProposalVerification(ctx context.Context, tx pgx.Tx, binding Agent
 		JOIN workload_run_attempts verifier_attempt
 		  ON verifier_attempt.tenant_id=verifier.tenant_id AND verifier_attempt.workload_run_id=verifier.id
 		WHERE agent.tenant_id=$1 AND agent.id=$2 AND agent.kind='agent' AND agent.state='succeeded'
-		  AND agent_attempt.id=$3 AND agent_attempt.state='cleanup_confirmed'
+		  AND agent_attempt.id=$3 AND agent_attempt.cleanup_confirmed_at IS NOT NULL AND agent_attempt.cleanup_confirmed_at<=$9
 		  AND NOT EXISTS (SELECT 1 FROM workload_run_attempts newer WHERE newer.tenant_id=agent.tenant_id
 		      AND newer.workload_run_id=agent.id AND newer.generation>agent_attempt.generation)
 		  AND artifact.id=$4 AND artifact.kind='agent_changes' AND artifact.sha256=$5
@@ -67,7 +67,10 @@ func BindAgentProposalVerification(ctx context.Context, tx pgx.Tx, binding Agent
 		  AND verifier.github_integration_id IS NOT DISTINCT FROM agent.github_integration_id
 		  AND verifier.github_config_revision IS NOT DISTINCT FROM agent.github_config_revision
 		  AND verifier.github_credential_generation IS NOT DISTINCT FROM agent.github_credential_generation
-		  AND verifier.trust_level='untrusted'
+		  AND verifier.resource_plane_id=agent.resource_plane_id AND verifier.trust_level='untrusted'
+		  AND EXISTS (SELECT 1 FROM tenant_github_repositories repo
+		      WHERE repo.tenant_id=agent.tenant_id AND repo.installation_id=agent.github_installation_id
+		        AND repo.github_repository_id=agent.github_repository_id AND repo.factory_enabled=true)
 		  AND verifier.desired_state='running' AND verifier.state IN ('pending','queued','provisioning','running')
 		  AND verifier_attempt.id=$8 AND verifier_attempt.resource_plane_id=verifier.resource_plane_id
 		  AND verifier_attempt.state IN ('dispatch_pending','accepted','running')
@@ -131,4 +134,58 @@ func GetAgentProposalVerification(ctx context.Context, tx pgx.Tx, tenantID domai
 		return AgentProposalVerification{}, fmt.Errorf("read Agent proposal verification binding: %w", err)
 	}
 	return binding, nil
+}
+
+func GetAgentProposalVerificationForVerifier(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID,
+	verifierRunID domain.WorkloadRunID) (AgentProposalVerification, error) {
+	if tx == nil || ctx == nil || tenantID == "" || verifierRunID == "" {
+		return AgentProposalVerification{}, ErrAgentProposalVerificationConflict
+	}
+	var binding AgentProposalVerification
+	err := tx.QueryRow(ctx, `SELECT tenant_id,agent_run_id,agent_attempt_id,proposal_artifact_id,proposal_sha256,
+		base_commit_sha,verifier_run_id,verifier_attempt_id,created_at FROM workload_agent_proposal_verifications
+		WHERE tenant_id=$1 AND verifier_run_id=$2`, tenantID, verifierRunID).
+		Scan(&binding.TenantID, &binding.AgentRunID, &binding.AgentAttemptID, &binding.ProposalArtifactID,
+			&binding.ProposalSHA256, &binding.BaseCommitSHA, &binding.VerifierRunID, &binding.VerifierAttemptID, &binding.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AgentProposalVerification{}, ErrNotFound
+	}
+	if err != nil {
+		return AgentProposalVerification{}, fmt.Errorf("read Agent proposal verifier binding: %w", err)
+	}
+	return binding, nil
+}
+
+func RecordAgentProposalVerificationCheck(ctx context.Context, tx pgx.Tx, binding AgentProposalVerification,
+	generation int64, pipeline domain.WorkloadPipelineResult, completedAt time.Time) error {
+	if tx == nil || ctx == nil || binding.TenantID == "" || binding.VerifierRunID == "" || binding.VerifierAttemptID == "" ||
+		!proposalSHA256Pattern.MatchString(binding.ProposalSHA256) || !commitSHAPattern.MatchString(binding.BaseCommitSHA) ||
+		generation < 1 || !githubPipelineNamePattern.MatchString(pipeline.Name) || completedAt.IsZero() {
+		return ErrAgentProposalVerificationConflict
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO workload_agent_proposal_verification_checks
+		(tenant_id,verifier_run_id,verifier_attempt_id,generation,pipeline_name,proposal_sha256,base_commit_sha,status,exit_code,error_code,completed_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULLIF($10,''),$11) ON CONFLICT DO NOTHING`, binding.TenantID,
+		binding.VerifierRunID, binding.VerifierAttemptID, generation, pipeline.Name, binding.ProposalSHA256,
+		binding.BaseCommitSHA, pipeline.Status, pipeline.ExitCode, pipeline.ErrorCode, completedAt.UTC()); err != nil {
+		return fmt.Errorf("record digest-bound Agent proposal Check: %w", err)
+	}
+	var status, errorCode string
+	var exitCode int
+	var storedDigest, storedBase, storedAttempt string
+	var storedCompletedAt time.Time
+	err := tx.QueryRow(ctx, `SELECT status,exit_code,COALESCE(error_code,''),proposal_sha256,base_commit_sha,verifier_attempt_id,completed_at
+		FROM workload_agent_proposal_verification_checks
+		WHERE tenant_id=$1 AND verifier_run_id=$2 AND generation=$3 AND pipeline_name=$4`,
+		binding.TenantID, binding.VerifierRunID, generation, pipeline.Name).
+		Scan(&status, &exitCode, &errorCode, &storedDigest, &storedBase, &storedAttempt, &storedCompletedAt)
+	if err != nil {
+		return fmt.Errorf("read digest-bound Agent proposal Check: %w", err)
+	}
+	if status != pipeline.Status || exitCode != pipeline.ExitCode || errorCode != pipeline.ErrorCode ||
+		storedDigest != binding.ProposalSHA256 || storedBase != binding.BaseCommitSHA || storedAttempt != binding.VerifierAttemptID ||
+		!storedCompletedAt.Equal(completedAt.UTC()) {
+		return ErrAgentProposalVerificationConflict
+	}
+	return nil
 }

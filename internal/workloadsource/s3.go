@@ -2,9 +2,12 @@ package workloadsource
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 
@@ -130,6 +133,71 @@ type S3SourceArchiveReader struct {
 	bucket   string
 	prefix   string
 	maxBytes int64
+}
+
+const MaxAgentProposalArchiveBytes = 8 << 20
+
+type AgentProposalArchiveIdentity struct {
+	TenantID      string
+	WorkloadRunID string
+	AttemptID     string
+	SHA256        string
+}
+
+// AgentProposalArchiveReader is deliberately identity-based; callers cannot
+// supply an arbitrary S3 bucket, key, or storage reference.
+type AgentProposalArchiveReader interface {
+	ReadAgentProposalArchive(context.Context, AgentProposalArchiveIdentity) ([]byte, error)
+}
+
+type S3AgentProposalArchiveReader struct {
+	client S3SourceArchiveGetAPI
+	bucket string
+	prefix string
+}
+
+func NewS3AgentProposalArchiveReader(client S3SourceArchiveGetAPI, bucket, prefix string) (*S3AgentProposalArchiveReader, error) {
+	bucket = strings.TrimSpace(bucket)
+	prefix = strings.Trim(strings.TrimSpace(prefix), "/")
+	if client == nil || !sourceBucketPattern.MatchString(bucket) || strings.Contains(bucket, "..") || strings.Contains(bucket, ".-") || strings.Contains(bucket, "-.") ||
+		(prefix != "" && (!sourcePrefixPattern.MatchString(prefix) || strings.Contains(prefix, "..") || strings.Contains(prefix, "//"))) {
+		return nil, errors.New("S3 Agent proposal reader configuration is invalid")
+	}
+	return &S3AgentProposalArchiveReader{client: client, bucket: bucket, prefix: prefix}, nil
+}
+
+func (r *S3AgentProposalArchiveReader) ReadAgentProposalArchive(ctx context.Context, identity AgentProposalArchiveIdentity) ([]byte, error) {
+	if r == nil || r.client == nil || ctx == nil || !sourceIdentityPattern.MatchString(identity.TenantID) ||
+		!sourceIdentityPattern.MatchString(identity.WorkloadRunID) || !sourceIdentityPattern.MatchString(identity.AttemptID) ||
+		!sourceDigestPattern.MatchString(identity.SHA256) {
+		return nil, ErrArchive
+	}
+	key := fmt.Sprintf("%s/%s/%s/agent-changes/%s.zip", identity.TenantID, identity.WorkloadRunID, identity.AttemptID, identity.SHA256)
+	if r.prefix != "" {
+		key = r.prefix + "/" + key
+	}
+	output, err := r.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(r.bucket), Key: aws.String(key)})
+	if err != nil || output == nil || output.Body == nil {
+		return nil, errors.New("Agent proposal archive unavailable")
+	}
+	defer output.Body.Close()
+	if output.ContentLength == nil || aws.ToInt64(output.ContentLength) < 1 || aws.ToInt64(output.ContentLength) > MaxAgentProposalArchiveBytes ||
+		aws.ToString(output.ContentType) != "application/zip" || output.Metadata["hako-tenant-id"] != identity.TenantID ||
+		output.Metadata["hako-workload-run-id"] != identity.WorkloadRunID || output.Metadata["hako-attempt-id"] != identity.AttemptID ||
+		output.Metadata["hako-sha256"] != identity.SHA256 || output.Metadata["hako-artifact-kind"] != "agent-changes" {
+		return nil, ErrArchive
+	}
+	data, err := io.ReadAll(io.LimitReader(output.Body, MaxAgentProposalArchiveBytes+1))
+	if err != nil || int64(len(data)) != aws.ToInt64(output.ContentLength) || len(data) > MaxAgentProposalArchiveBytes {
+		clear(data)
+		return nil, ErrArchive
+	}
+	digest := sha256.Sum256(data)
+	if hex.EncodeToString(digest[:]) != identity.SHA256 {
+		clear(data)
+		return nil, ErrArchive
+	}
+	return data, nil
 }
 
 func NewS3SourceArchiveReader(client S3SourceArchiveGetAPI, bucket, prefix string, maxBytes int64) (*S3SourceArchiveReader, error) {

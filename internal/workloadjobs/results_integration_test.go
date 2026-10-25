@@ -210,6 +210,10 @@ func TestWorkloadResultFencesAttemptsAndPersistsTerminalMetadata(t *testing.T) {
 		Status: domain.WorkloadSucceeded, CompletedAt: now.Add(30 * time.Second),
 		ChangeBundle: &WorkloadChangeArtifact{StorageRef: "s3://hako-results/run_result_agent/agent-changes/change.zip",
 			SizeBytes: 128, SHA256: strings.Repeat("c", 64)}}
+	if _, err := pool.Exec(ctx, `UPDATE tenant_github_repositories SET factory_enabled=true,factory_enabled_at=$1
+		WHERE tenant_id='tenant_result' AND installation_id=901 AND github_repository_id=902`, now); err != nil {
+		t.Fatal(err)
+	}
 	if outcome, err := handler.Handle(ctx, agentResult); err != nil || outcome != ResultApplied {
 		t.Fatalf("Agent change result = %q, %v", outcome, err)
 	}
@@ -219,6 +223,26 @@ func TestWorkloadResultFencesAttemptsAndPersistsTerminalMetadata(t *testing.T) {
 	if err != nil || len(agentArtifacts) != 1 || agentArtifacts[0].Kind != "agent_changes" || agentArtifacts[0].Redacted ||
 		agentArtifacts[0].SHA256 != strings.Repeat("c", 64) {
 		t.Fatalf("persisted Agent proposal artifact = %+v, %v", agentArtifacts, err)
+	}
+	var verifierRunID, verifierAttemptID string
+	if err := pool.QueryRow(ctx, `SELECT verifier.verifier_run_id,verifier.verifier_attempt_id
+		FROM workload_agent_proposal_verifications verifier WHERE verifier.tenant_id='tenant_result' AND verifier.agent_run_id='run_result_agent'`).
+		Scan(&verifierRunID, &verifierAttemptID); err != nil || verifierRunID == "" || verifierAttemptID == "" {
+		t.Fatalf("Agent proposal verifier was not dispatched atomically: run=%q attempt=%q err=%v", verifierRunID, verifierAttemptID, err)
+	}
+	verifierResult := WorkloadResult{SchemaVersion: 1, TenantID: "tenant_result", WorkloadRunID: domain.WorkloadRunID(verifierRunID),
+		AttemptID: verifierAttemptID, Generation: 1, ResourcePlaneID: "rp_result", CommitSHA: commit,
+		Status: domain.WorkloadSucceeded, CompletedAt: now.Add(40 * time.Second),
+		PipelineResults: []WorkloadPipelineResult{{Name: "lint", Status: "succeeded"}, {Name: "test", Status: "succeeded"}}}
+	if outcome, err := handler.Handle(ctx, verifierResult); err != nil || outcome != ResultApplied {
+		t.Fatalf("proposal verifier result = %q, %v", outcome, err)
+	}
+	var verificationChecks, externalChecks int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM workload_agent_proposal_verification_checks WHERE tenant_id='tenant_result' AND verifier_run_id=$1`, verifierRunID).Scan(&verificationChecks); err != nil || verificationChecks != 2 {
+		t.Fatalf("digest-bound verifier check evidence=%d err=%v", verificationChecks, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM workload_github_checks WHERE tenant_id='tenant_result' AND workload_run_id=$1`, verifierRunID).Scan(&externalChecks); err != nil || externalChecks != 0 {
+		t.Fatalf("base-only GitHub Checks were emitted for verifier: count=%d err=%v", externalChecks, err)
 	}
 	cancelledAgentResult := WorkloadResult{SchemaVersion: 1, TenantID: "tenant_result", WorkloadRunID: "run_result_agent_cancel",
 		AttemptID: "attempt_result_agent_cancel", Generation: 1, ResourcePlaneID: "rp_result", CommitSHA: commit,

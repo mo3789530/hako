@@ -2,11 +2,14 @@ package workloadjobs
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -21,6 +24,8 @@ var (
 	ErrWorkloadResultInvalid   = errors.New("Workload result is invalid")
 	resultErrorCodePattern     = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 	resultCorrelationIDPattern = regexp.MustCompile(`^req_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	resultCommitSHAPattern     = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
+	resultSHA256Pattern        = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	pipelineNamePattern        = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,39}$`)
 )
 
@@ -153,6 +158,18 @@ func (h *ResultHandler) Handle(ctx context.Context, result WorkloadResult) (Resu
 			result.ChangeBundle != nil && run.Kind != domain.WorkloadAgent {
 			return "", ErrWorkloadResultMismatch
 		}
+		var proposalVerification *workloads.AgentProposalVerification
+		if run.Kind == domain.WorkloadJob {
+			binding, bindingErr := workloads.GetAgentProposalVerificationForVerifier(ctx, tx, run.TenantID, run.ID)
+			if bindingErr == nil {
+				if binding.VerifierAttemptID != result.AttemptID || binding.BaseCommitSHA != run.CommitSHA || result.ChangeBundle != nil {
+					return "", ErrWorkloadResultMismatch
+				}
+				proposalVerification = &binding
+			} else if !errors.Is(bindingErr, workloads.ErrNotFound) {
+				return "", bindingErr
+			}
+		}
 		if result.CorrelationID != run.CorrelationID {
 			return "", ErrWorkloadResultMismatch
 		}
@@ -216,17 +233,28 @@ func (h *ResultHandler) Handle(ctx context.Context, result WorkloadResult) (Resu
 			return "", err
 		}
 		for _, pipeline := range result.PipelineResults {
-			if err := workloads.SyncGitHubPipelineCheck(ctx, tx, run, domain.WorkloadPipelineResult{
-				Name: pipeline.Name, Status: pipeline.Status, ExitCode: pipeline.ExitCode, ErrorCode: pipeline.ErrorCode,
-			}, completedAt); err != nil {
+			resultMetadata := domain.WorkloadPipelineResult{Name: pipeline.Name, Status: pipeline.Status, ExitCode: pipeline.ExitCode, ErrorCode: pipeline.ErrorCode}
+			if proposalVerification != nil {
+				if err := workloads.RecordAgentProposalVerificationCheck(ctx, tx, *proposalVerification, result.Generation, resultMetadata, completedAt); err != nil {
+					return "", err
+				}
+				continue // Never report a verifier result on the unmodified base commit.
+			}
+			if err := workloads.SyncGitHubPipelineCheck(ctx, tx, run, resultMetadata, completedAt); err != nil {
 				return "", err
 			}
 		}
 		if _, err := tx.Exec(ctx, `UPDATE workload_run_attempts SET state = $1, updated_at = $2
+			, cleanup_confirmed_at = $2
 			WHERE id = $3 AND tenant_id = $4 AND workload_run_id = $5 AND generation = $6
 			AND state IN ('dispatch_pending','accepted','running')`, string(next), completedAt,
 			result.AttemptID, result.TenantID, result.WorkloadRunID, result.Generation); err != nil {
 			return "", fmt.Errorf("finish Workload attempt: %w", err)
+		}
+		if next == domain.WorkloadSucceeded && result.ChangeBundle != nil && run.Kind == domain.WorkloadAgent {
+			if err := enqueueAgentProposalVerifier(ctx, tx, run, result.AttemptID, changeArtifactID, result.ChangeBundle.SHA256, completedAt); err != nil {
+				return "", err
+			}
 		}
 		return ResultApplied, nil
 	})
@@ -236,6 +264,95 @@ func (h *ResultHandler) Handle(ctx context.Context, result WorkloadResult) (Resu
 			"attempt_id", result.AttemptID, "generation", result.Generation, "status", result.Status)
 	}
 	return outcome, err
+}
+
+func enqueueAgentProposalVerifier(ctx context.Context, tx pgx.Tx, agent domain.WorkloadRun, agentAttemptID, artifactID, proposalSHA256 string, now time.Time) error {
+	if ctx == nil || tx == nil || agent.Kind != domain.WorkloadAgent || agent.State != domain.WorkloadSucceeded ||
+		agent.ResourcePlaneID == "" || agent.GitHubInstallation <= 0 || agent.GitHubRepository <= 0 ||
+		!resultCommitSHAPattern.MatchString(agent.CommitSHA) || !resultSHA256Pattern.MatchString(proposalSHA256) ||
+		agentAttemptID == "" || artifactID == "" || now.IsZero() {
+		return ErrWorkloadResultMismatch
+	}
+	var defaultBranch string
+	err := tx.QueryRow(ctx, `SELECT default_branch FROM tenant_github_repositories
+		WHERE tenant_id=$1 AND installation_id=$2 AND github_repository_id=$3 AND factory_enabled=true`,
+		agent.TenantID, agent.GitHubInstallation, agent.GitHubRepository).Scan(&defaultBranch)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil // Factory opt-in is a deliberate default-off scheduling gate.
+	}
+	if err != nil {
+		return fmt.Errorf("resolve Agent proposal verifier policy: %w", err)
+	}
+	if defaultBranch == "" || len(defaultBranch) > 255 || strings.ContainsAny(defaultBranch, "\r\n\x00") {
+		return ErrWorkloadResultMismatch
+	}
+	keyDigest := sha256.Sum256([]byte(string(agent.TenantID) + "\x00" + string(agent.ID) + "\x00" + agentAttemptID + "\x00" + proposalSHA256))
+	verifierKey := "agent-proposal-verify-" + hex.EncodeToString(keyDigest[:])
+	runID, err := idgen.New("run_")
+	if err != nil {
+		return fmt.Errorf("generate Agent proposal verifier Run ID: %w", err)
+	}
+	verifier := domain.WorkloadRun{ID: domain.WorkloadRunID(runID), TenantID: agent.TenantID, Kind: domain.WorkloadJob,
+		RequestedBy: agent.RequestedBy, GitHubInstallation: agent.GitHubInstallation, GitHubRepository: agent.GitHubRepository,
+		GitHubIntegrationID: agent.GitHubIntegrationID, GitHubConfigRevision: agent.GitHubConfigRevision,
+		GitHubCredentialGeneration: agent.GitHubCredentialGeneration, CorrelationID: agent.CorrelationID,
+		CommitSHA: agent.CommitSHA, Ref: "refs/heads/" + defaultBranch, TriggerEvent: "pull_request", TriggerBranch: defaultBranch,
+		RuntimeClass: "standard", TrustLevel: domain.WorkloadUntrusted, ResourcePlaneID: agent.ResourcePlaneID,
+		TimeoutSeconds: int64((30 * time.Minute) / time.Second), IdempotencyKey: verifierKey, CreatedAt: now.UTC()}
+	stored, created, err := workloads.CreateOrGet(ctx, tx, verifier)
+	if err != nil {
+		return fmt.Errorf("create Agent proposal verifier Run: %w", err)
+	}
+	if !created || stored.ID != verifier.ID || stored.Kind != domain.WorkloadJob || stored.CommitSHA != agent.CommitSHA ||
+		stored.ResourcePlaneID != agent.ResourcePlaneID || stored.GitHubInstallation != agent.GitHubInstallation ||
+		stored.GitHubRepository != agent.GitHubRepository || stored.TriggerEvent != "pull_request" || stored.TriggerBranch != defaultBranch {
+		return ErrWorkloadResultMismatch
+	}
+	attemptID, err := idgen.New("attempt_")
+	if err != nil {
+		return fmt.Errorf("generate Agent proposal verifier attempt ID: %w", err)
+	}
+	token, err := idgen.New("token_")
+	if err != nil {
+		return fmt.Errorf("generate Agent proposal verifier idempotency token: %w", err)
+	}
+	dispatchEventID, err := idgen.New("evt_")
+	if err != nil {
+		return fmt.Errorf("generate Agent proposal verifier dispatch event ID: %w", err)
+	}
+	stored, err = workloads.Transition(ctx, tx, workloads.TransitionInput{TenantID: stored.TenantID, RunID: stored.ID,
+		ExpectedRevision: stored.Revision, NextState: domain.WorkloadProvisioning, ResourcePlaneID: agent.ResourcePlaneID, OccurredAt: now})
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO workload_run_attempts
+		(id,tenant_id,workload_run_id,generation,attempt_number,resource_plane_id,idempotency_token,state,created_at,updated_at)
+		VALUES ($1,$2,$3,1,1,$4,$5,'dispatch_pending',$6,$6)`, attemptID, stored.TenantID, stored.ID, agent.ResourcePlaneID, token, now.UTC()); err != nil {
+		return fmt.Errorf("persist Agent proposal verifier attempt: %w", err)
+	}
+	command := DispatchCommand{SchemaVersion: 1, TenantID: stored.TenantID, WorkloadRunID: stored.ID,
+		AttemptID: attemptID, Generation: 1, ResourcePlane: agent.ResourcePlaneID, IdempotencyToken: token,
+		CorrelationID: stored.CorrelationID}
+	payload, err := json.Marshal(command)
+	if err != nil {
+		return fmt.Errorf("encode Agent proposal verifier dispatch: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO outbox_events
+		(id,aggregate_type,aggregate_id,event_type,payload_json,created_at,published_at,attempt)
+		VALUES ($1,'workload_attempt',$2,'workload_attempt.dispatch',$3,$4,NULL,0)`,
+		dispatchEventID, attemptID, string(payload), now.UTC()); err != nil {
+		return fmt.Errorf("enqueue Agent proposal verifier dispatch: %w", err)
+	}
+	if err := workloads.BindAgentProposalVerification(ctx, tx, workloads.AgentProposalVerification{
+		TenantID: agent.TenantID, AgentRunID: agent.ID, AgentAttemptID: agentAttemptID, ProposalArtifactID: artifactID,
+		ProposalSHA256: proposalSHA256, BaseCommitSHA: agent.CommitSHA, VerifierRunID: stored.ID, VerifierAttemptID: attemptID, CreatedAt: now.UTC(),
+	}); err != nil {
+		return fmt.Errorf("bind Agent proposal to verifier Run: %w", err)
+	}
+	if err := workloads.SuppressGitHubChecksForRun(ctx, tx, stored.TenantID, stored.ID); err != nil {
+		return err
+	}
+	return nil
 }
 
 // ValidateResult checks metadata before a trusted RP publisher persists/sends it.

@@ -107,6 +107,26 @@ Repository. The proposal remains untrusted. Hako must never merge or deploy it.
   traversal, protected paths, secret content, symlinks, duplicate entries, and
   size limits. This is only a source materialization primitive: it does not run
   tests, create a verifier Run, or authorize a GitHub write.
+- Migration `000183` records trusted Resource Plane cleanup confirmation. On a
+  successful Agent result with a proposal and enabled Repository Factory, the
+  Control Plane now creates a same-Resource-Plane untrusted Job, attempt,
+  dispatch Outbox, and immutable proposal binding atomically. Its event is
+  `pull_request` for the current default branch. Resource Plane execution
+  metadata (schema v4) exposes only pinned Agent Run/attempt, artifact ID,
+  proposal digest, and base commit; it does not expose storage references.
+- The Lambda Resource Plane composition now includes an identity-derived S3
+  proposal reader. It verifies the exact attempt/digest object key, object
+  metadata, bounded archive size, and content SHA-256 before overlaying the
+  proposal on the verified base checkout and staging the deterministic source.
+  Migration `000184` stores each verifier pipeline result with proposal digest,
+  base commit, and attempt. Initial queued and terminal/pipeline GitHub Check
+  writes are suppressed for verifier Runs, avoiding a false result on the base
+  SHA. PostgreSQL integration verifies atomic verifier dispatch and digest-bound
+  checks without a GitHub Check record.
+- Still open: enforce required-check policy against those rows at publish time,
+  verifier retry, durable publication idempotency, broker-only exact-scope
+  write credentials, branch/PR create/recovery, and API/CLI status. AWS IAM and
+  Lambda MicroVM execution remain unverified.
 - Migration `000181` and `BindAgentProposalVerification` persist an immutable
   relation from the exact successful, cleanup-confirmed Agent attempt and
   `agent_changes` artifact digest/base commit to a separate untrusted Job Run

@@ -1,8 +1,14 @@
 package workloadcontroller
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +16,7 @@ import (
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/repositorycheckout"
 	"github.com/mo3789530/hako/internal/workloadjournal"
+	"github.com/mo3789530/hako/internal/workloadsource"
 )
 
 type repositoryCheckoutFunc func(context.Context, domain.WorkloadRun) (repositorycheckout.CheckedOutRepository, error)
@@ -28,6 +35,36 @@ type runCredentialProviderFunc func(context.Context, domain.WorkloadRun) (string
 
 func (f runCredentialProviderFunc) CheckoutRunToken(ctx context.Context, run domain.WorkloadRun) (string, error) {
 	return f(ctx, run)
+}
+
+type proposalArchiveReaderFunc func(context.Context, workloadsource.AgentProposalArchiveIdentity) ([]byte, error)
+
+func (f proposalArchiveReaderFunc) ReadAgentProposalArchive(ctx context.Context, identity workloadsource.AgentProposalArchiveIdentity) ([]byte, error) {
+	return f(ctx, identity)
+}
+
+func proposalZip(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var buffer bytes.Buffer
+	writer := zip.NewWriter(&buffer)
+	for name, contents := range files {
+		entry, err := writer.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := entry.Write([]byte(contents)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buffer.Bytes()
+}
+
+func sha256Hex(data []byte) string {
+	digest := sha256.Sum256(data)
+	return hex.EncodeToString(digest[:])
 }
 
 func TestRepositorySourceMaterializerUsesOnlyTrustedImmutableRunFields(t *testing.T) {
@@ -150,6 +187,47 @@ func TestTenantBrokeredMaterializerRejectsMissingTenantPinAndForeignRepository(t
 				t.Fatalf("foreign repository identity was accepted: %v", err)
 			}
 		})
+	}
+}
+
+func TestRepositorySourceMaterializerOverlaysDigestBoundAgentProposal(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	baseRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(baseRoot, "main.go"), []byte("package main\nconst value = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	base, err := workloadsource.CreateArchive(context.Background(), baseRoot, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer base.Close()
+	proposal := proposalZip(t, map[string]string{"main.go": "package main\nconst value = 2\n"})
+	proposalDigest := sha256Hex(proposal)
+	metadata := materializerMetadataFixture(now)
+	metadata.SchemaVersion, metadata.Kind, metadata.TriggerEvent, metadata.TriggerBranch = workloadSpecSchemaV4, domain.WorkloadJob, "pull_request", "main"
+	metadata.ProposalVerification = &ProposalVerificationMetadata{AgentRunID: "run_agent", AgentAttemptID: "attempt_agent",
+		ProposalArtifactID: "artifact_proposal", ProposalSHA256: proposalDigest, BaseCommitSHA: metadata.CommitSHA}
+	var gotProposalIdentity workloadsource.AgentProposalArchiveIdentity
+	var staged []byte
+	materialized, err := materializeRepositorySourceWithProposal(context.Background(), metadata, repositoryCheckoutFunc(func(_ context.Context, run domain.WorkloadRun) (repositorycheckout.CheckedOutRepository, error) {
+		if run.CommitSHA != metadata.ProposalVerification.BaseCommitSHA {
+			return repositorycheckout.CheckedOutRepository{}, errors.New("base commit changed")
+		}
+		return repositorycheckout.CheckedOutRepository{Path: baseRoot}, nil
+	}), sourceArchiveStagerFunc(func(_ context.Context, id workloadjournal.Command, checkoutPath string) (MaterializedSource, error) {
+		staged, err = os.ReadFile(filepath.Join(checkoutPath, "main.go"))
+		return MaterializedSource{Digest: sha256Hex([]byte("verified source")), ArtifactPrefix: "s3://hako-artifacts/tenant_1/run_1/attempt_1/"}, err
+	}), proposalArchiveReaderFunc(func(_ context.Context, identity workloadsource.AgentProposalArchiveIdentity) ([]byte, error) {
+		gotProposalIdentity = identity
+		return append([]byte(nil), proposal...), nil
+	}), func() time.Time { return now })
+	if err != nil {
+		t.Fatalf("materialize verifier proposal source: %v", err)
+	}
+	if string(staged) != "package main\nconst value = 2\n" || gotProposalIdentity.TenantID != string(metadata.TenantID) ||
+		gotProposalIdentity.WorkloadRunID != "run_agent" || gotProposalIdentity.AttemptID != "attempt_agent" || gotProposalIdentity.SHA256 != proposalDigest ||
+		materialized.Digest != sha256Hex([]byte("verified source")) {
+		t.Fatalf("proposal overlay/source identity mismatch: staged=%q proposal=%+v source=%+v", staged, gotProposalIdentity, materialized)
 	}
 }
 

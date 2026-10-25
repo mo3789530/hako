@@ -17,7 +17,7 @@ import (
 )
 
 const workloadSpecRequestIDHeader = "X-Hako-Request-ID"
-const resourcePlaneWorkloadSpecSchemaVersion = 3
+const resourcePlaneWorkloadSpecSchemaVersion = 4
 
 var workloadSpecRequestIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
 
@@ -27,29 +27,38 @@ var workloadSpecRequestIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
 type ResourcePlaneWorkloadSpecKeyResolver func(context.Context, domain.ResourcePlaneID) ([]byte, error)
 
 type resourcePlaneWorkloadSpecResponse struct {
-	SchemaVersion        int                       `json:"schema_version"`
-	Kind                 domain.WorkloadKind       `json:"kind"`
-	TenantID             domain.TenantID           `json:"tenant_id"`
-	WorkloadRunID        domain.WorkloadRunID      `json:"workload_run_id"`
-	AttemptID            string                    `json:"attempt_id"`
-	Generation           int64                     `json:"generation"`
-	ResourcePlaneID      domain.ResourcePlaneID    `json:"resource_plane_id"`
-	CorrelationID        string                    `json:"correlation_id,omitempty"`
-	GitHubInstallationID int64                     `json:"github_installation_id"`
-	GitHubRepositoryID   int64                     `json:"github_repository_id"`
-	GitHubOwner          string                    `json:"github_owner"`
-	GitHubRepository     string                    `json:"github_repository"`
-	GitHubIntegrationID  string                    `json:"github_integration_id,omitempty"`
-	GitHubConfigRevision int64                     `json:"github_config_revision,omitempty"`
-	GitHubCredentialGen  int64                     `json:"github_credential_generation,omitempty"`
-	CommitSHA            string                    `json:"commit_sha"`
-	Ref                  string                    `json:"ref"`
-	TriggerEvent         string                    `json:"trigger_event,omitempty"`
-	TriggerBranch        string                    `json:"trigger_branch,omitempty"`
-	RuntimeClass         string                    `json:"runtime_class"`
-	TrustLevel           domain.WorkloadTrustLevel `json:"trust_level"`
-	RequestedAt          time.Time                 `json:"requested_at"`
-	Deadline             time.Time                 `json:"deadline"`
+	SchemaVersion        int                                `json:"schema_version"`
+	Kind                 domain.WorkloadKind                `json:"kind"`
+	TenantID             domain.TenantID                    `json:"tenant_id"`
+	WorkloadRunID        domain.WorkloadRunID               `json:"workload_run_id"`
+	AttemptID            string                             `json:"attempt_id"`
+	Generation           int64                              `json:"generation"`
+	ResourcePlaneID      domain.ResourcePlaneID             `json:"resource_plane_id"`
+	CorrelationID        string                             `json:"correlation_id,omitempty"`
+	GitHubInstallationID int64                              `json:"github_installation_id"`
+	GitHubRepositoryID   int64                              `json:"github_repository_id"`
+	GitHubOwner          string                             `json:"github_owner"`
+	GitHubRepository     string                             `json:"github_repository"`
+	GitHubIntegrationID  string                             `json:"github_integration_id,omitempty"`
+	GitHubConfigRevision int64                              `json:"github_config_revision,omitempty"`
+	GitHubCredentialGen  int64                              `json:"github_credential_generation,omitempty"`
+	CommitSHA            string                             `json:"commit_sha"`
+	Ref                  string                             `json:"ref"`
+	TriggerEvent         string                             `json:"trigger_event,omitempty"`
+	TriggerBranch        string                             `json:"trigger_branch,omitempty"`
+	RuntimeClass         string                             `json:"runtime_class"`
+	TrustLevel           domain.WorkloadTrustLevel          `json:"trust_level"`
+	RequestedAt          time.Time                          `json:"requested_at"`
+	Deadline             time.Time                          `json:"deadline"`
+	ProposalVerification *resourcePlaneProposalVerification `json:"proposal_verification,omitempty"`
+}
+
+type resourcePlaneProposalVerification struct {
+	AgentRunID         domain.WorkloadRunID `json:"agent_run_id"`
+	AgentAttemptID     string               `json:"agent_attempt_id"`
+	ProposalArtifactID string               `json:"proposal_artifact_id"`
+	ProposalSHA256     string               `json:"proposal_sha256"`
+	BaseCommitSHA      string               `json:"base_commit_sha"`
 }
 
 func getResourcePlaneWorkloadSpecification(pool transaction.Beginner, resolveKey ResourcePlaneWorkloadSpecKeyResolver) echo.HandlerFunc {
@@ -99,6 +108,12 @@ func getResourcePlaneWorkloadSpecification(pool transaction.Beginner, resolveKey
 		if err != nil {
 			return fmt.Errorf("resolve Resource Plane Workload specification: %w", err)
 		}
+		var proposal *resourcePlaneProposalVerification
+		if metadata.ProposalVerification != nil {
+			proposal = &resourcePlaneProposalVerification{AgentRunID: metadata.ProposalVerification.AgentRunID,
+				AgentAttemptID: metadata.ProposalVerification.AgentAttemptID, ProposalArtifactID: metadata.ProposalVerification.ProposalArtifactID,
+				ProposalSHA256: metadata.ProposalVerification.ProposalSHA256, BaseCommitSHA: metadata.ProposalVerification.BaseCommitSHA}
+		}
 		return c.JSON(http.StatusOK, resourcePlaneWorkloadSpecResponse{
 			SchemaVersion: resourcePlaneWorkloadSpecSchemaVersion, Kind: metadata.Kind, TenantID: metadata.TenantID, WorkloadRunID: metadata.WorkloadRunID,
 			AttemptID: metadata.AttemptID, Generation: metadata.Generation, ResourcePlaneID: metadata.ResourcePlaneID,
@@ -109,7 +124,7 @@ func getResourcePlaneWorkloadSpecification(pool transaction.Beginner, resolveKey
 			GitHubCredentialGen: metadata.GitHubCredentialGen, CommitSHA: metadata.CommitSHA,
 			Ref: metadata.Ref, TriggerEvent: metadata.TriggerEvent, TriggerBranch: metadata.TriggerBranch,
 			RuntimeClass: metadata.RuntimeClass, TrustLevel: metadata.TrustLevel,
-			RequestedAt: metadata.RequestedAt.UTC(), Deadline: metadata.Deadline.UTC(),
+			RequestedAt: metadata.RequestedAt.UTC(), Deadline: metadata.Deadline.UTC(), ProposalVerification: proposal,
 		})
 	}
 }

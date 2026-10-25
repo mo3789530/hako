@@ -199,7 +199,11 @@ func compose(ctx context.Context, awsCfg aws.Config, config deploymentConfig) (w
 	if err != nil {
 		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("configure source archive stager")
 	}
-	sources, err := workloadcontroller.NewTenantBrokeredRepositorySourceMaterializer(checkoutCredentials, sourceStager, nil)
+	proposalReader, err := workloadsource.NewS3AgentProposalArchiveReader(awsS3, config.ArtifactBucket, config.ArtifactPrefix)
+	if err != nil {
+		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("configure Agent proposal archive reader")
+	}
+	sources, err := workloadcontroller.NewTenantBrokeredRepositorySourceMaterializerWithProposalReader(checkoutCredentials, sourceStager, proposalReader, nil)
 	if err != nil {
 		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("configure Tenant-pinned source materializer")
 	}

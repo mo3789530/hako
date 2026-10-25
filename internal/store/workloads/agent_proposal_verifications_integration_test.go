@@ -38,7 +38,7 @@ func TestBindAgentProposalVerificationRequiresCleanedSuccessfulAttemptAndIsImmut
 		{`INSERT INTO workload_runs(id,tenant_id,kind,github_installation_id,github_repository_id,commit_sha,ref,trigger_event,trigger_branch,runtime_class,trust_level,desired_state,state,resource_plane_id,idempotency_key,request_hash,timeout_seconds,timeout_at,revision,created_at,updated_at)
 		 VALUES ('run_agent_proof','tenant_proof','agent',71,81,$1,'main','issue_comment','main','standard','untrusted','running','succeeded','rp_proof','key_agent_proof','hash_agent_proof',600,$2,2,$3,$3)`, []any{baseSHA, now.Add(10 * time.Minute), now}},
 		{`INSERT INTO workload_runs(id,tenant_id,kind,github_installation_id,github_repository_id,commit_sha,ref,trigger_event,trigger_branch,runtime_class,trust_level,desired_state,state,resource_plane_id,idempotency_key,request_hash,timeout_seconds,timeout_at,revision,created_at,updated_at)
-		 VALUES ('run_verifier_proof','tenant_proof','job',71,81,$1,'main','','','standard','untrusted','running','pending','rp_proof','key_verifier_proof','hash_verifier_proof',600,$2,1,$3,$3)`, []any{baseSHA, now.Add(10 * time.Minute), now}},
+		 VALUES ('run_verifier_proof','tenant_proof','job',71,81,$1,'main','pull_request','main','standard','untrusted','running','pending','rp_proof','key_verifier_proof','hash_verifier_proof',600,$2,1,$3,$3)`, []any{baseSHA, now.Add(10 * time.Minute), now}},
 		{`INSERT INTO workload_run_attempts(id,tenant_id,workload_run_id,generation,attempt_number,resource_plane_id,idempotency_token,state,created_at,updated_at)
 		 VALUES ('attempt_agent_proof','tenant_proof','run_agent_proof',1,1,'rp_proof','token_agent_proof','cleanup_pending',$1,$1)`, []any{now}},
 		{`INSERT INTO workload_run_attempts(id,tenant_id,workload_run_id,generation,attempt_number,resource_plane_id,idempotency_token,state,created_at,updated_at)
@@ -50,13 +50,17 @@ func TestBindAgentProposalVerificationRequiresCleanedSuccessfulAttemptAndIsImmut
 			t.Fatalf("seed proposal verification: %v", err)
 		}
 	}
+	if _, err := pool.Exec(ctx, `UPDATE tenant_github_repositories SET factory_enabled=true,factory_enabled_at=$1
+		WHERE tenant_id='tenant_proof' AND installation_id=71 AND github_repository_id=81`, now); err != nil {
+		t.Fatal(err)
+	}
 	binding := AgentProposalVerification{TenantID: "tenant_proof", AgentRunID: "run_agent_proof", AgentAttemptID: "attempt_agent_proof",
 		ProposalArtifactID: "artifact_proof", ProposalSHA256: proposalSHA, BaseCommitSHA: baseSHA,
 		VerifierRunID: "run_verifier_proof", VerifierAttemptID: "attempt_verifier_proof", CreatedAt: now}
 	if err := withTx(ctx, pool, func(tx pgx.Tx) error { return BindAgentProposalVerification(ctx, tx, binding) }); !errors.Is(err, ErrAgentProposalVerificationConflict) {
 		t.Fatalf("cleanup-pending Agent attempt binding error = %v", err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE workload_run_attempts SET state='cleanup_confirmed' WHERE id='attempt_agent_proof'`); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE workload_run_attempts SET state='succeeded',cleanup_confirmed_at=$1 WHERE id='attempt_agent_proof'`, now); err != nil {
 		t.Fatal(err)
 	}
 	if err := withTx(ctx, pool, func(tx pgx.Tx) error { return BindAgentProposalVerification(ctx, tx, binding) }); err != nil {
@@ -76,6 +80,23 @@ func TestBindAgentProposalVerificationRequiresCleanedSuccessfulAttemptAndIsImmut
 		return nil
 	}); err != nil {
 		t.Fatalf("read verification binding: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE workload_runs SET state='provisioning' WHERE id='run_verifier_proof'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := withTx(ctx, pool, func(tx pgx.Tx) error {
+		metadata, err := ResolveExecutionMetadata(ctx, tx, "rp_proof", "tenant_proof", "run_verifier_proof", "attempt_verifier_proof", 1, now)
+		if err != nil {
+			return err
+		}
+		if metadata.ProposalVerification == nil || metadata.ProposalVerification.AgentRunID != binding.AgentRunID ||
+			metadata.ProposalVerification.AgentAttemptID != binding.AgentAttemptID || metadata.ProposalVerification.ProposalArtifactID != binding.ProposalArtifactID ||
+			metadata.ProposalVerification.ProposalSHA256 != proposalSHA || metadata.ProposalVerification.BaseCommitSHA != baseSHA {
+			t.Fatalf("verifier execution metadata = %+v", metadata)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("resolve verifier execution metadata: %v", err)
 	}
 	changed := binding
 	changed.ProposalSHA256 = strings.Repeat("c", 64)

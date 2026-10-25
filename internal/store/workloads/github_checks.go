@@ -111,7 +111,18 @@ func SaveGitHubPipelineCheckRunID(ctx context.Context, tx pgx.Tx, tenantID domai
 // SyncGitHubPipelineCheck persists a completed Check for one selected native
 // pipeline and enqueues its delivery atomically with the Workload result.
 func SyncGitHubPipelineCheck(ctx context.Context, tx pgx.Tx, run domain.WorkloadRun, pipeline domain.WorkloadPipelineResult, occurredAt time.Time) error {
+	if tx == nil || ctx == nil {
+		return errors.New("transaction and context are required")
+	}
 	if run.GitHubInstallation <= 0 && run.GitHubRepository <= 0 {
+		return nil
+	}
+	var isProposalVerifier bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workload_agent_proposal_verifications
+		WHERE tenant_id=$1 AND verifier_run_id=$2)`, run.TenantID, run.ID).Scan(&isProposalVerifier); err != nil {
+		return fmt.Errorf("check Agent proposal verifier Check policy: %w", err)
+	}
+	if isProposalVerifier {
 		return nil
 	}
 	if tx == nil || run.TenantID == "" || run.ID == "" || run.GitHubInstallation <= 0 || run.GitHubRepository <= 0 ||
@@ -176,6 +187,24 @@ func SyncGitHubPipelineCheck(ctx context.Context, tx pgx.Tx, run domain.Workload
 	return nil
 }
 
+// SuppressGitHubChecksForRun is used only while atomically constructing a
+// proposal verifier. Its initial queued Check targets the immutable base SHA,
+// which must never be presented as verification of the changed source tree.
+func SuppressGitHubChecksForRun(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, runID domain.WorkloadRunID) error {
+	if tx == nil || ctx == nil || tenantID == "" || runID == "" {
+		return errors.New("transaction, Tenant ID, and Workload Run ID are required")
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM outbox_events WHERE aggregate_type='workload_run' AND aggregate_id=$1
+		AND event_type='workload_run.github_check_requested' AND published_at IS NULL`, runID); err != nil {
+		return fmt.Errorf("suppress base-only verifier Check delivery: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM workload_github_checks WHERE tenant_id=$1 AND workload_run_id=$2
+		AND check_run_id IS NULL`, tenantID, runID); err != nil {
+		return fmt.Errorf("suppress base-only verifier Check state: %w", err)
+	}
+	return nil
+}
+
 // syncGitHubCheck updates only durable desired Check metadata and emits an
 // Outbox event in the same transaction as the Run transition. Network delivery
 // is always performed later by a trusted result worker.
@@ -186,6 +215,14 @@ func syncGitHubCheck(ctx context.Context, tx pgx.Tx, run domain.WorkloadRun, occ
 	if tx == nil || run.TenantID == "" || run.ID == "" || run.GitHubInstallation <= 0 || run.GitHubRepository <= 0 ||
 		len(run.ID) > 255 || strings.ContainsAny(string(run.ID), "\r\n\x00") || !commitSHAPattern.MatchString(run.CommitSHA) || occurredAt.IsZero() {
 		return errors.New("GitHub Check requires a complete immutable Workload Run identity")
+	}
+	var isProposalVerifier bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workload_agent_proposal_verifications
+		WHERE tenant_id=$1 AND verifier_run_id=$2)`, run.TenantID, run.ID).Scan(&isProposalVerifier); err != nil {
+		return fmt.Errorf("check Agent proposal verifier Check policy: %w", err)
+	}
+	if isProposalVerifier {
+		return nil
 	}
 	state, err := githubCheckStateForRun(run)
 	if err != nil {
