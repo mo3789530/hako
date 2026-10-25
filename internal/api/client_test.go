@@ -527,6 +527,27 @@ func TestGetWorkloadAgentPublicationValidatesSafeStatus(t *testing.T) {
 	}
 }
 
+func TestSubmitWorkloadAgentPublicationUsesAuthenticatedIdempotentRoute(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/tenants/tenant_123/workload-runs/run_agent/agent-publication/publish" ||
+			r.Header.Get("Authorization") != "Bearer test-access-token" {
+			t.Errorf("unexpected publication submit request %s %s auth=%q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
+		}
+		body, _ := io.ReadAll(r.Body)
+		if len(body) != 0 {
+			t.Errorf("publication submit unexpectedly sent a body: %s", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write([]byte(`{"tenant_id":"tenant_123","workload_run_id":"run_agent","state":"pull_request_created","base_branch":"main","branch_name":"hako/proposal-123","branch_commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","pull_request_number":42}`))
+	}))
+	defer server.Close()
+	result, err := SubmitWorkloadAgentPublication(context.Background(), server.URL, "test-access-token", "tenant_123", "run_agent", server.Client())
+	if err != nil || result.State != "pull_request_created" || result.PullRequestNumber != 42 {
+		t.Fatalf("unexpected publication submit result: %+v error=%v", result, err)
+	}
+}
+
 func TestCreateWorkloadRunSendsIdempotentRequest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/tenants/tenant_123/workload-runs" {

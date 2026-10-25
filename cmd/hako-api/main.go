@@ -102,6 +102,11 @@ func main() {
 		log.Fatal("configure GitHub Environment approval verifier failed (failure_class=broker_configuration)")
 	}
 	createConfig.GitHubEnvironmentApprovalVerifier = environmentApprovalVerifier
+	agentProposalSubmitter, err := tenantAgentProposalBrokerFromEnv()
+	if err != nil {
+		log.Fatal("configure Agent proposal publication Broker failed (failure_class=broker_configuration)")
+	}
+	createConfig.AgentProposalPublicationSubmitter = agentProposalSubmitter
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("HAKO_TENANT_GITHUB_WEBHOOK_ENABLED")), "true") {
 		webhookRateLimit, err := tenantWebhookRateLimitFromEnv()
 		if err != nil {

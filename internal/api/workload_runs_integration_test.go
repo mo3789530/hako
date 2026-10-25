@@ -30,6 +30,19 @@ import (
 	"github.com/mo3789530/hako/internal/workloadartifactaccess"
 )
 
+type fakeAgentProposalPublicationSubmitter struct {
+	result    AgentProposalPublicationSubmission
+	attemptID string
+}
+
+func (f *fakeAgentProposalPublicationSubmitter) Publish(_ context.Context, tenantID, runID, attemptID string) (AgentProposalPublicationSubmission, error) {
+	f.attemptID = attemptID
+	if f.result.TenantID != tenantID || f.result.WorkloadRunID != runID {
+		return AgentProposalPublicationSubmission{}, fmt.Errorf("unexpected Tenant/Run")
+	}
+	return f.result, nil
+}
+
 func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -296,6 +309,26 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 	}
 	if crossTenantPublication := request("runs-other", http.MethodGet, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_member/agent-publication"); crossTenantPublication.Code != http.StatusNotFound {
 		t.Fatalf("cross-Tenant member could see Agent publication: HTTP %d %s", crossTenantPublication.Code, crossTenantPublication.Body.String())
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO workload_run_attempts(id,tenant_id,workload_run_id,generation,attempt_number,resource_plane_id,idempotency_token,state,created_at,updated_at)
+		VALUES('attempt_publish_api','tenant_runs_a','run_owned_member',1,1,'rp_runs_a','publish-api-token','succeeded',$1,$1)`, now); err != nil {
+		t.Fatalf("seed latest Agent attempt for publication submit: %v", err)
+	}
+	publicationSubmitter := &fakeAgentProposalPublicationSubmitter{result: AgentProposalPublicationSubmission{TenantID: "tenant_runs_a",
+		WorkloadRunID: "run_owned_member", State: "pull_request_created", BaseBranch: "main", BranchName: "hako/proposal-api",
+		BranchCommitSHA: strings.Repeat("d", 40), PullRequestNumber: 23}}
+	handler = NewHandler(verifier, pool, WorkspaceCreateConfig{WorkloadRunsEnabled: true,
+		ResourcePlaneWorkspaceSessionKeyResolver: keyResolver, AgentProposalPublicationSubmitter: publicationSubmitter})
+	submitted := request("runs-member", http.MethodPost, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_member/agent-publication/publish")
+	if submitted.Code != http.StatusOK || submitted.Header().Get("Cache-Control") != "no-store" ||
+		!strings.Contains(submitted.Body.String(), `"pull_request_number":23`) || publicationSubmitter.attemptID != "attempt_publish_api" {
+		t.Fatalf("Agent publication submit = HTTP %d body=%s attempt=%q", submitted.Code, submitted.Body.String(), publicationSubmitter.attemptID)
+	}
+	if hiddenSubmit := request("runs-member", http.MethodPost, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_owner/agent-publication/publish"); hiddenSubmit.Code != http.StatusNotFound {
+		t.Fatalf("member submitted another requester's Agent proposal: HTTP %d %s", hiddenSubmit.Code, hiddenSubmit.Body.String())
+	}
+	if crossTenantSubmit := request("runs-other", http.MethodPost, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_member/agent-publication/publish"); crossTenantSubmit.Code != http.StatusNotFound {
+		t.Fatalf("cross-Tenant member submitted Agent proposal: HTTP %d %s", crossTenantSubmit.Code, crossTenantSubmit.Body.String())
 	}
 	artifactTicketPath := "/v1/tenants/tenant_runs_a/workload-runs/run_owned_member/artifacts/artifact_run_detail/download-ticket"
 	ticketRecorder := request("runs-member", http.MethodPost, artifactTicketPath)

@@ -251,3 +251,18 @@ values into event details.
 The compatibility rules for `/v1` and versioned asynchronous messages are in
 [ADR 0003](adr/0003-api-compatibility.md). API Gateway's JWT scope and Lambda
 integration boundary is described in [API Gateway and Lambda](api-gateway-lambda.md).
+
+## Native Agent proposal publication
+
+`GET /v1/tenants/{tenant_id}/workload-runs/{run_id}/agent-publication` returns
+safe publication state only. When the API's Control Plane mTLS Broker client is
+configured, `POST /v1/tenants/{tenant_id}/workload-runs/{run_id}/agent-publication/publish`
+submits or retries the newest Agent attempt. The body must be empty. The caller
+must be the Run requester or a Tenant Owner/Admin; other Tenant members and
+cross-Tenant callers receive 404. The API chooses the latest attempt in its
+database transaction, and the Broker independently revalidates the exact
+attempt and all proposal/App/Repository/Check pins before a GitHub write.
+Repeating the request is idempotent. Responses use `Cache-Control: no-store`
+and contain only branch/PR metadata. The route is omitted unless the Broker
+client is configured. The matching CLI is
+`hako workload publication show|submit <tenant-id> <agent-run-id>`.

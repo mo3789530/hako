@@ -59,6 +59,10 @@ type GitHubEnvironmentApprovalVerifier interface {
 	Verify(context.Context, domain.TenantID, string, int64, int64, deploypolicy.Claims) error
 }
 
+type AgentProposalPublicationSubmitter interface {
+	Publish(context.Context, string, string, string) (AgentProposalPublicationSubmission, error)
+}
+
 type WorkspaceCreateConfig struct {
 	Region                                   string
 	RequiredCapabilities                     []string
@@ -80,6 +84,7 @@ type WorkspaceCreateConfig struct {
 		Verify(context.Context, string, deploypolicy.Policy, string, int64) (deploypolicy.Claims, error)
 	}
 	GitHubEnvironmentApprovalVerifier GitHubEnvironmentApprovalVerifier
+	AgentProposalPublicationSubmitter AgentProposalPublicationSubmitter
 }
 
 type workspaceCreateRequest struct {
@@ -368,6 +373,11 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
 	protected.GET("/v1/tenants/:tenant_id/workload-runs/:run_id/agent-publication", getWorkloadAgentPublication(pool),
 		RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+	if workspaceConfig.AgentProposalPublicationSubmitter != nil {
+		protected.POST("/v1/tenants/:tenant_id/workload-runs/:run_id/agent-publication/publish",
+			publishWorkloadAgentProposal(pool, workspaceConfig.AgentProposalPublicationSubmitter),
+			RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+	}
 	if workspaceConfig.ResourcePlaneWorkspaceSessionKeyResolver != nil {
 		protected.POST("/v1/tenants/:tenant_id/workload-runs/:run_id/artifacts/:artifact_id/download-ticket",
 			createWorkloadArtifactAccessTicket(pool, workspaceConfig.ResourcePlaneWorkspaceSessionKeyResolver),

@@ -416,6 +416,14 @@ authenticated
 `GET .../agent-publication` endpoint and `hako workload publication show`
 display only safe state, branch, confirmed commit, PR number, and timestamps;
 they omit artifact references, digests, tokens, and verifier internals.
+When the optional Control Plane mTLS Broker client is configured, an authorized
+requester or Tenant Owner/Admin can call
+`POST /v1/tenants/{tenant}/workload-runs/{run}/agent-publication/publish` or run
+`hako workload publication submit <tenant> <run>`. The API selects the latest
+attempt from PostgreSQL and the Broker independently confirms that it remains
+the current eligible attempt. Repeating the command retries the same immutable
+publication identity; the response is `no-store` and contains branch/PR status
+only. The route is omitted when the Broker client is not configured.
 Terraform IAM and AWS execution have not been verified.
 
 Treat `.hako/factory.yaml`, workflow files, action references, shell steps,

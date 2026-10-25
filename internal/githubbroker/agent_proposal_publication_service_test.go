@@ -225,3 +225,28 @@ func TestAgentProposalPublicationHTTPRouteRequiresControlPlaneAndRejectsUnknownF
 		t.Fatalf("success status=%d headers=%v body=%s", goodResponse.Code, goodResponse.Header(), goodResponse.Body.String())
 	}
 }
+
+func TestHTTPAgentProposalPublicationClientRequiresSafeNoStoreResponse(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != agentProposalPublishRoute || r.Header.Get("Content-Type") != "application/json" {
+			t.Errorf("unexpected internal publication request: %s %s", r.Method, r.URL.Path)
+		}
+		var request AgentProposalPublicationRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.TenantID != "tenant_publish" || request.AgentAttemptID != "attempt_publish" {
+			t.Errorf("unexpected internal publication body: %+v error=%v", request, err)
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"tenant_id":"tenant_publish","workload_run_id":"run_publish","state":"branch_created","default_branch":"main","branch_name":"hako/proposal-abc","branch_commit_sha":"dddddddddddddddddddddddddddddddddddddddd"}`))
+	}))
+	defer server.Close()
+	client, err := NewHTTPAgentProposalPublicationClient(server.URL, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, request := proposalPublicationFixture()
+	result, err := client.Publish(context.Background(), request)
+	if err != nil || result.State != workloads.AgentProposalPublicationBranchCreated || result.BranchCommitSHA == "" {
+		t.Fatalf("publication client result=%+v error=%v", result, err)
+	}
+}

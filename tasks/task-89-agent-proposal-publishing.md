@@ -5,8 +5,8 @@ digest-bound Check persistence, publication evidence resolution and durable
 idempotency state, safe status API/CLI, exact-scope Tenant App token minting,
 fake-tested GitHub publisher, and a Control Plane-only mTLS Broker publication
 route with Postgres resolver/recorder are implemented locally. Verifier retry,
-submission API/CLI, exact S3 read IAM/deployment, and runtime activation remain
-open). Priority: P3.
+exact S3 read IAM/deployment, end-to-end Broker composition, and runtime
+activation remain open). Priority: P3.
 Depends on Tasks 39, 40, 53, 57, and 59.
 
 ## Goal
@@ -177,7 +177,15 @@ Repository. The proposal remains untrusted. Hako must never merge or deploy it.
   opt-in through `HAKO_GITHUB_BROKER_AGENT_PROPOSAL_BUCKET` and optional
   `HAKO_GITHUB_BROKER_AGENT_PROPOSAL_PREFIX`; no secret or GitHub request is
   made during startup.
-- Still open: bounded verifier retry, API/CLI submit/retry UX, exact S3 read
-  IAM and deployed Broker configuration, full Postgres Broker composition
-  integration, and Lambda MicroVM execution verification. No AWS apply or
-  production activation has been performed.
+- The Control Plane now offers requester/Owner/Admin-authorized
+  `POST /v1/tenants/{tenant}/workload-runs/{run}/agent-publication/publish`.
+  It selects the latest attempt from PostgreSQL, calls the Broker over TLS 1.3
+  mTLS, and returns only safe branch/PR metadata with `no-store`. Repeating the
+  same call retries the idempotent identity. The CLI command is
+  `hako workload publication submit <tenant-id> <agent-run-id>`; the focused
+  PostgreSQL API E2E verifies latest-attempt forwarding, requester ownership,
+  Owner/Admin-compatible access rules, and cross-Tenant/requester denial.
+- Still open: bounded verifier retry, exact S3 read IAM/deployed Broker
+  configuration, full PostgreSQL Broker composition integration, and Lambda
+  MicroVM execution verification. No AWS apply or production activation has
+  been performed.

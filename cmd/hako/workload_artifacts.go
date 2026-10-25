@@ -143,6 +143,31 @@ func showAgentPublicationCLI(args []string, output io.Writer) error {
 	return nil
 }
 
+func submitAgentPublicationCLI(args []string, output io.Writer) error {
+	if len(args) != 2 || strings.TrimSpace(args[0]) == "" || strings.TrimSpace(args[1]) == "" || output == nil {
+		return errors.New("usage: hako workload publication submit <tenant-id> <agent-run-id>")
+	}
+	accessToken, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
+	if err != nil {
+		return err
+	}
+	apiURL := strings.TrimSpace(os.Getenv("HAKO_API_URL"))
+	if apiURL == "" {
+		return errors.New("HAKO_API_URL is required")
+	}
+	result, err := api.SubmitWorkloadAgentPublication(context.Background(), apiURL, accessToken, args[0], args[1], nil)
+	if err != nil {
+		return err
+	}
+	if result.TenantID != args[0] || result.WorkloadRunID != args[1] {
+		return errors.New("Hako API returned an Agent publication with a mismatched identity")
+	}
+	if err := json.NewEncoder(output).Encode(result); err != nil {
+		return errors.New("write Agent publication result")
+	}
+	return nil
+}
+
 func parseArtifactDownloadArgs(name string, args []string, positionalCount int) (string, []string, error) {
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	outputPath := flags.String("out", "", "destination file path")

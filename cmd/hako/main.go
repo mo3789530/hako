@@ -350,6 +350,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "hako workload publication show: %v\n", err)
 			os.Exit(1)
 		}
+	case len(os.Args) >= 4 && os.Args[1] == "workload" && os.Args[2] == "publication" && os.Args[3] == "submit":
+		if err := submitAgentPublicationCLI(os.Args[4:], os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "hako workload publication submit: %v\n", err)
+			os.Exit(1)
+		}
 	case len(os.Args) >= 4 && len(os.Args) <= 6 && os.Args[1] == "workload" && os.Args[2] == "list":
 		limit, offset, err := parseCLIPage(os.Args[4:])
 		if err != nil {
@@ -581,6 +586,7 @@ Workloads:
   hako workload list <tenant-id> [limit] [offset]
   hako workload show|cancel <tenant-id> <run-id>
   hako workload publication show <tenant-id> <agent-run-id>
+  hako workload publication submit <tenant-id> <agent-run-id>
 `)
 	return err
 }

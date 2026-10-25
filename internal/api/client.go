@@ -1069,6 +1069,38 @@ func GetWorkloadAgentPublication(ctx context.Context, baseURL, accessToken, tena
 	return result, nil
 }
 
+// SubmitWorkloadAgentPublication submits or retries the latest Agent proposal
+// through the authenticated Control Plane. Repeating this request is safe.
+func SubmitWorkloadAgentPublication(ctx context.Context, baseURL, accessToken, tenantID, runID string,
+	client *http.Client) (AgentProposalPublicationSubmission, error) {
+	var result AgentProposalPublicationSubmission
+	if !validTenantID(tenantID) || !validOpaqueID(runID) {
+		return result, errors.New("Tenant and Workload Run IDs must contain only letters, numbers, underscores, or hyphens")
+	}
+	endpoint, err := apiEndpoint(baseURL, "/v1/tenants/"+url.PathEscape(tenantID)+"/workload-runs/"+url.PathEscape(runID)+"/agent-publication/publish")
+	if err != nil {
+		return result, err
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	response, err := doAPIRequestWithBody(requestCtx, http.MethodPost, endpoint, accessToken, nil, client)
+	if err != nil {
+		return result, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK || response.Header.Get("Cache-Control") != "no-store" {
+		return result, readAPIError(response)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil ||
+		result.TenantID != tenantID || result.WorkloadRunID != runID || result.BaseBranch == "" || result.BranchName == "" ||
+		(result.State != "branch_created" && result.State != "pull_request_created") ||
+		(result.State == "branch_created" && (!validCommitSHA(result.BranchCommitSHA) || result.PullRequestNumber != 0)) ||
+		(result.State == "pull_request_created" && (!validCommitSHA(result.BranchCommitSHA) || result.PullRequestNumber < 1)) {
+		return AgentProposalPublicationSubmission{}, errors.New("Hako API returned an invalid Agent publication result")
+	}
+	return result, nil
+}
+
 // CreateWorkloadArtifactDownloadTicket requests a short-lived download
 // capability after the API rechecks the caller's Run visibility.
 func CreateWorkloadArtifactDownloadTicket(ctx context.Context, baseURL, accessToken, tenantID, runID, artifactID string,
