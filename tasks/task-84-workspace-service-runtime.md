@@ -151,6 +151,11 @@ revision transitions, signed Resource Plane reports, stale-report rejection,
 and credential rotation. The always-on `hako-dev-postgres` container remained
 running. `make test-job-services-podman` also passes, but exercises the distinct
 Workload Job adapter; it does not close the Workspace MicroVM runtime gate.
+Podman 5.8.7 accepted `podman network create --internal` and reported
+`internal=true` for the temporary network, which was removed after the check.
+Running a container on this host was not possible: the cached Alpine image is
+ARM64 and this x86_64 Podman host returned `Exec format error`. This is
+CLI/network metadata evidence only, not a container egress test.
 
 ## Goal
 

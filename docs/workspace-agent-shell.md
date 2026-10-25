@@ -170,7 +170,7 @@ Production key rotation/distribution is unresolved. Keep Workspace runtime
 exposure disabled until deployment gates are complete.
 
 Build the dedicated image with
-`make build-workspace-microvm-image HAKO_EFS_UTILS_RPM_VERSION=<pinned-version> HAKO_OPENSSH_RPM_VERSION=<pinned-version> HAKO_NERDCTL_FULL_ARCHIVE=<reviewed-linux-arm64-tar.gz> HAKO_NERDCTL_FULL_VERSION=<pinned-version> HAKO_NERDCTL_FULL_SHA256=<reviewed-sha256> HAKO_CODE_SERVER_VERSION=4.141.0 HAKO_CODE_SERVER_SHA256=e5cc78da1d631c6cf6162f9b18eeaa8ee9d3239e1a88bb99d0602cdc5fa1852d HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE=<public-keys.json> HAKO_PREVIEW_TICKET_KEY_ID=<matching-key-id>`.
+`make build-workspace-microvm-image HAKO_EFS_UTILS_RPM_VERSION=<pinned-version> HAKO_OPENSSH_RPM_VERSION=<pinned-version> HAKO_NERDCTL_FULL_ARCHIVE=<reviewed-linux-arm64-tar.gz> HAKO_NERDCTL_FULL_VERSION=<pinned-version> HAKO_NERDCTL_FULL_SHA256=<reviewed-sha256> HAKO_CNI_PLUGINS_VERSION=v1.9.1 HAKO_CODE_SERVER_VERSION=4.141.0 HAKO_CODE_SERVER_SHA256=e5cc78da1d631c6cf6162f9b18eeaa8ee9d3239e1a88bb99d0602cdc5fa1852d HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE=<public-keys.json> HAKO_PREVIEW_TICKET_KEY_ID=<matching-key-id>`.
 The code-server archive is fetched from the upstream GitHub release and
 verified against the supplied ARM64 SHA-256 before it is copied into the
 runtime image. Keep both version and digest pinned together when updating it.
@@ -186,10 +186,12 @@ to the exact HTTPS origin; the guest rejects tickets presented with another
 Origin. The root init does not start when this setting or the image-owned key
 file path is missing. Do not place the Agent signing private key in this image.
 The `nerdctl-full` archive is supplied by the caller and checked against its
-required SHA-256 and embedded version before its binaries are copied into the
-image. `slirp4netns` is a separate static ARM64 release binary because
-`nerdctl-full` does not bundle it; the build requires its version and
-SHA-256-pinned input independently. The build does not fetch a moving release.
+required SHA-256 and embedded nerdctl/CNI versions before its binaries are
+copied into the image. The build requires CNI plugins 1.1.0 or later and the
+`firewall` plugin file used by nerdctl's bridge isolation support.
+`slirp4netns` is a separate static ARM64 release binary because `nerdctl-full`
+does not bundle it; the build requires its version and SHA-256-pinned input
+independently. The build does not fetch a moving release.
 The image packages setuid `newuidmap`/`newgidmap` helpers. Service execution is
 opt-in with `HAKO_WORKSPACE_SERVICES_ENABLED=true` at image build time; the
 default is `false`. When enabled, root init prepares a per-MicroVM account and

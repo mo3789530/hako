@@ -19,11 +19,17 @@ RUN test -n "${CODE_SERVER_VERSION}" \
 FROM --platform=linux/arm64 public.ecr.aws/lambda/microvms:al2023-minimal@sha256:b6a34591182b4a1969f57eb24c812582d0c52dc2e40b75b73c0df371bb7aef82 AS nerdctl
 ARG NERDCTL_FULL_VERSION
 ARG NERDCTL_FULL_SHA256
+ARG CNI_PLUGINS_VERSION
 RUN dnf install -y tar gzip && dnf clean all
 COPY nerdctl-full-linux-arm64.tar.gz /tmp/nerdctl-full-linux-arm64.tar.gz
 RUN case "${NERDCTL_FULL_VERSION}" in ''|*[!0-9.]* ) exit 1 ;; esac \
+    && echo "${CNI_PLUGINS_VERSION}" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+$' \
+    && cni_version="${CNI_PLUGINS_VERSION#v}" \
+    && test "$(printf '1.1.0\n%s\n' "${cni_version}" | sort -V | head -n 1)" = "1.1.0" \
     && echo "${NERDCTL_FULL_SHA256}" | grep -Eq '^[[:xdigit:]]{64}$' \
     && echo "${NERDCTL_FULL_SHA256}  /tmp/nerdctl-full-linux-arm64.tar.gz" | sha256sum --check \
+    && tar -tzf /tmp/nerdctl-full-linux-arm64.tar.gz | grep -Fxq libexec/cni/firewall \
+    && tar -xOf /tmp/nerdctl-full-linux-arm64.tar.gz share/doc/nerdctl-full/README.md | grep -Fx -- "- CNI plugins: ${CNI_PLUGINS_VERSION}" \
     && mkdir -p /opt/hako-nerdctl \
     && tar -xzf /tmp/nerdctl-full-linux-arm64.tar.gz --no-same-owner --no-same-permissions -C /opt/hako-nerdctl \
     && test -x /opt/hako-nerdctl/bin/nerdctl \

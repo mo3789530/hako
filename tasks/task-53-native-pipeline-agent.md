@@ -262,6 +262,12 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   the same limitation. Do not treat artifact digest review or Go cross
   compilation as image/runtime validation; repeat the build on ARM64 or a
   configured emulation host, then separately validate inside Lambda MicroVM.
+- Follow-up: both Workspace and Workload service image targets now require an
+  explicit `HAKO_CNI_PLUGINS_VERSION`, verify that it matches the embedded
+  nerdctl-full manifest and is at least 1.1.0, and require the bundled CNI
+  `firewall` plugin before building. This guards the `--internal` network
+  contract at image construction time; ARM64 image execution and MicroVM
+  egress behavior remain unverified.
 - Sources: [nerdctl v2.4.1 release](https://github.com/containerd/nerdctl/releases/tag/v2.4.1)
   and [slirp4netns v1.3.6 release](https://github.com/rootless-containers/slirp4netns/releases/tag/v1.3.6).
 
