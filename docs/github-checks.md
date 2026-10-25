@@ -98,6 +98,16 @@ returned in errors. Rate limiting and temporary upstream failures are
 classified as retryable with a bounded `Retry-After` hint; the consumer applies
 that hint to the SQS message's visibility while leaving it unacknowledged.
 
+For Native Workload pipelines, only failed fixed-Catalog `go-vet` and
+`golangci-lint` steps produce source annotations. Their output capture is
+limited to 128 KiB; truncated output is discarded for annotation purposes.
+Diagnostics must identify a Go source path and line inside the checked-out
+Repository, and messages are bounded and redacted with the Job Service secrets
+known to the Worker. The producer enforces both the 50-annotation and 48 KiB
+encoded-result bounds. `go-test`, other commands, and arbitrary output do not
+produce annotations. GitHub still validates each annotation before persistence
+and delivery.
+
 ## Rollout and rollback
 
 1. Durable Check metadata/outbox delivery, result mapping, fake-GitHub retry

@@ -3,12 +3,15 @@ package workloadagent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -16,6 +19,7 @@ import (
 
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/factoryconfig"
+	"github.com/mo3789530/hako/internal/githubapp"
 	"github.com/mo3789530/hako/internal/runtime/fake"
 	"github.com/mo3789530/hako/internal/servicecatalog"
 	"github.com/mo3789530/hako/internal/workloadjobs"
@@ -23,7 +27,12 @@ import (
 	"github.com/mo3789530/hako/internal/workloadsource"
 )
 
-const defaultAgentOutputLimit = 1 << 20
+const (
+	defaultAgentOutputLimit = 1 << 20
+	maxLintDiagnosticOutput = 128 << 10
+	maxLintDiagnosticBytes  = 1000
+	maxLintAnnotationJSON   = 48 << 10
+)
 
 var (
 	ErrExecutionPlan                = errors.New("trusted Workload execution plan is invalid")
@@ -31,6 +40,7 @@ var (
 	ErrAgentExecutorUnavailable     = errors.New("native Agent executor is not configured")
 	ErrProcessExit                  = errors.New("Workload process exited unsuccessfully")
 	ErrJobResourceLimitsUnavailable = errors.New("Job process resource limits are unavailable")
+	lintDiagnosticPattern           = regexp.MustCompile(`^(.+\.go):([0-9]+)(?::([0-9]+))?:\s*(\S.*)$`)
 )
 
 type ExecutionPlan struct {
@@ -675,6 +685,7 @@ func (f GoTestProcessFactory) startFactoryPipelines(ctx context.Context, plan Ex
 			}
 			var serviceSession JobServiceSession
 			serviceEnvironment := []string(nil)
+			var pipelineSecrets []string
 			if result.err == nil && len(pipeline.Services) != 0 {
 				var err error
 				serviceSession, err = f.JobServices.Start(pipelineCtx, plan.Identity, pipeline)
@@ -688,7 +699,8 @@ func (f GoTestProcessFactory) startFactoryPipelines(ctx context.Context, plan Ex
 					}
 				} else {
 					serviceEnvironment = serviceSession.Environment()
-					process.addSecrets(serviceSession.SecretValues())
+					pipelineSecrets = serviceSession.SecretValues()
+					process.addSecrets(pipelineSecrets)
 				}
 			}
 			for _, command := range pipeline.Commands {
@@ -740,7 +752,13 @@ func (f GoTestProcessFactory) startFactoryPipelines(ctx context.Context, plan Ex
 					}
 					break
 				}
-				if err := runCatalogCommand(pipelineCtx, plan.RepositoryPath, executable, command.Args, env, output, f.CommandUID, f.CommandGID, resourceScope); err != nil {
+				var diagnosticOutput *boundedOutput
+				commandOutput := output
+				if command.Step == "go-vet" || command.Step == "golangci-lint" {
+					diagnosticOutput = &boundedOutput{limit: maxLintDiagnosticOutput}
+					commandOutput = io.MultiWriter(output, diagnosticOutput)
+				}
+				if err := runCatalogCommand(pipelineCtx, plan.RepositoryPath, executable, command.Args, env, commandOutput, f.CommandUID, f.CommandGID, resourceScope); err != nil {
 					if termination, pipelineOutcome, terminated := pipelineContextExit(pipeline.Pipeline, pipelineCtx.Err()); terminated {
 						result, pipelineResult = termination, pipelineOutcome
 					} else if termination, pipelineOutcome, terminated := pipelineContextExit(pipeline.Pipeline, ctx.Err()); terminated {
@@ -749,11 +767,24 @@ func (f GoTestProcessFactory) startFactoryPipelines(ctx context.Context, plan Ex
 						code := catalogExitCode(err)
 						result = processExit{code: code, err: err}
 						pipelineResult = workloadjobs.WorkloadPipelineResult{Name: pipeline.Pipeline, Status: "failed", ExitCode: code, ErrorCode: "step_failed"}
+						if diagnosticOutput != nil {
+							captured, truncated := diagnosticOutput.snapshot()
+							if !truncated {
+								pipelineResult.Annotations = extractLintAnnotations(plan.RepositoryPath, captured, pipelineSecrets)
+							}
+							clear(captured)
+						}
 					}
 					for i := range env {
 						env[i] = ""
 					}
+					if diagnosticOutput != nil {
+						diagnosticOutput.clear()
+					}
 					break
+				}
+				if diagnosticOutput != nil {
+					diagnosticOutput.clear()
 				}
 				for i := range env {
 					env[i] = ""
@@ -761,6 +792,9 @@ func (f GoTestProcessFactory) startFactoryPipelines(ctx context.Context, plan Ex
 			}
 			for i := range serviceEnvironment {
 				serviceEnvironment[i] = ""
+			}
+			for i := range pipelineSecrets {
+				pipelineSecrets[i] = ""
 			}
 			cancel()
 			if serviceSession != nil {
@@ -833,14 +867,132 @@ type factoryPipelineProcess struct {
 
 func (p *factoryPipelineProcess) setResults(results []workloadjobs.WorkloadPipelineResult) {
 	p.mu.Lock()
-	p.results = append([]workloadjobs.WorkloadPipelineResult(nil), results...)
+	p.results = clonePipelineResults(results)
 	p.mu.Unlock()
 }
 
 func (p *factoryPipelineProcess) PipelineResults() []workloadjobs.WorkloadPipelineResult {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return append([]workloadjobs.WorkloadPipelineResult(nil), p.results...)
+	return clonePipelineResults(p.results)
+}
+
+func clonePipelineResults(results []workloadjobs.WorkloadPipelineResult) []workloadjobs.WorkloadPipelineResult {
+	cloned := append([]workloadjobs.WorkloadPipelineResult(nil), results...)
+	for i := range cloned {
+		cloned[i].Annotations = append([]domain.WorkloadCheckAnnotation(nil), results[i].Annotations...)
+	}
+	return cloned
+}
+
+func extractLintAnnotations(repository string, output []byte, secrets []string) []domain.WorkloadCheckAnnotation {
+	if repository == "" || len(output) == 0 || len(output) > maxLintDiagnosticOutput {
+		return nil
+	}
+	redacted := fake.RedactJobLogs(output, secrets)
+	defer clear(redacted)
+	root, err := filepath.EvalSymlinks(repository)
+	if err != nil {
+		return nil
+	}
+	root, err = filepath.Abs(root)
+	if err != nil {
+		return nil
+	}
+	lines := strings.Split(string(redacted), "\n")
+	capacity := len(lines)
+	if capacity > githubapp.MaxCheckAnnotations {
+		capacity = githubapp.MaxCheckAnnotations
+	}
+	annotations := make([]domain.WorkloadCheckAnnotation, 0, capacity)
+	for _, line := range lines {
+		if len(annotations) == githubapp.MaxCheckAnnotations {
+			break
+		}
+		matches := lintDiagnosticPattern.FindStringSubmatch(strings.TrimSpace(line))
+		if matches == nil {
+			continue
+		}
+		path, ok := repositoryDiagnosticPath(root, matches[1])
+		if !ok {
+			continue
+		}
+		lineNumber, err := strconv.Atoi(matches[2])
+		if err != nil || lineNumber < 1 {
+			continue
+		}
+		column := 0
+		if matches[3] != "" {
+			column, err = strconv.Atoi(matches[3])
+			if err != nil || column < 1 || column > 65535 {
+				continue
+			}
+		}
+		message := truncateDiagnostic(matches[4], maxLintDiagnosticBytes)
+		if message == "" || message == "[REDACTED]" {
+			continue
+		}
+		annotation := domain.WorkloadCheckAnnotation{Path: path, StartLine: lineNumber, EndLine: lineNumber,
+			StartColumn: column, EndColumn: column, AnnotationLevel: "failure", Message: message, Title: "Static analysis"}
+		if githubapp.ValidateCheckAnnotation(githubapp.CheckAnnotation{Path: annotation.Path, StartLine: annotation.StartLine,
+			EndLine: annotation.EndLine, StartColumn: annotation.StartColumn, EndColumn: annotation.EndColumn,
+			AnnotationLevel: annotation.AnnotationLevel, Message: annotation.Message, Title: annotation.Title}) != nil {
+			continue
+		}
+		candidate := append(append([]domain.WorkloadCheckAnnotation(nil), annotations...), annotation)
+		encoded, err := json.Marshal(candidate)
+		if err != nil || len(encoded) > maxLintAnnotationJSON {
+			continue
+		}
+		annotations = candidate
+	}
+	if len(annotations) == 0 {
+		return nil
+	}
+	return annotations
+}
+
+func repositoryDiagnosticPath(root, path string) (string, bool) {
+	if filepath.IsAbs(path) {
+		absolute, err := filepath.Abs(filepath.Clean(path))
+		if err != nil {
+			return "", false
+		}
+		relative, err := filepath.Rel(root, absolute)
+		if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return "", false
+		}
+		path = relative
+	}
+	path = filepath.ToSlash(path)
+	for _, segment := range strings.Split(path, "/") {
+		if segment == ".." || segment == "" {
+			return "", false
+		}
+	}
+	path = strings.TrimPrefix(path, "./")
+	path = filepath.ToSlash(filepath.Clean(path))
+	if strings.HasPrefix(path, "../") || path == ".." || strings.HasPrefix(path, "/") || !strings.HasSuffix(path, ".go") {
+		return "", false
+	}
+	return path, true
+}
+
+func truncateDiagnostic(message string, limit int) string {
+	message = strings.TrimSpace(strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == 0 || r < 0x20 && r != '\t' {
+			return ' '
+		}
+		return r
+	}, message))
+	if len(message) <= limit {
+		return message
+	}
+	runes := []rune(message)
+	for len(runes) > 0 && len(string(runes)) > limit {
+		runes = runes[:len(runes)-1]
+	}
+	return strings.TrimSpace(string(runes))
 }
 
 func (p *factoryPipelineProcess) addSecrets(values []string) {

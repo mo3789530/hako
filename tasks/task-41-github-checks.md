@@ -118,6 +118,14 @@ GitHub delivery remain approval-gated.
 ## Workload pipeline annotation delivery (2026-10-25)
 
 Native Workload pipeline results can now carry bounded repository diagnostics.
+The Worker creates annotations only from failed fixed-Catalog `go-vet` and
+`golangci-lint` commands; arbitrary command output and test output are never
+promoted to annotations. It captures at most 128 KiB, drops diagnostics if the
+capture is truncated, maps only repository-relative Go paths, caps output at 50
+annotations and 48 KiB of encoded JSON, and redacts known Job Service secrets
+before extracting messages.
+Messages are bounded and contain no raw output bundle. Deep copies prevent
+callers from mutating the stored result annotations.
 The signed Resource Plane result path rejects unsafe/traversal paths, invalid
 line ranges, more than 50 annotations, and annotation JSON above 48 KiB before
 database writes. Migration 000189 stores annotations as a JSON array on the

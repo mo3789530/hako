@@ -179,6 +179,14 @@ identity, and static ELF64/AArch64 architecture. Focused key validation tests
 and the target pass with the synthetic fixture; no image execution or AWS
 operation is implied.
 
+Task 41 annotation producer follow-up (2026-10-25): failed fixed-Catalog
+Native `go-vet` and `golangci-lint` commands now produce at most 50
+repository-relative Go annotations and 48 KiB of encoded JSON from a bounded
+128 KiB capture. Known Job Service secrets are redacted before extraction;
+truncated output and all non-lint command output produce no annotations.
+Focused Worker tests cover parsing, redaction, bounds, truncation, and
+result-copy isolation. Actions Runner diagnostics remain summary-only.
+
 ## 着手ルール
 
 1. `P0`から順に、依存タスクが完了しているものを一件だけ選ぶ。
