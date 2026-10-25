@@ -56,7 +56,7 @@ type AgentProposalGitHubPublishResult struct {
 	Recovered         bool
 }
 
-type agentProposalWriteToken interface {
+type AgentProposalWriteToken interface {
 	Value() string
 	ExpiresAt() time.Time
 }
@@ -89,8 +89,17 @@ func NewAgentProposalGitHubWriter(apiURL string, client *http.Client) (*AgentPro
 	return &AgentProposalGitHubWriter{baseURL: base, client: client, now: time.Now}, nil
 }
 
-func (p *AgentProposalGitHubWriter) Publish(ctx context.Context, token agentProposalWriteToken,
+func (p *AgentProposalGitHubWriter) Publish(ctx context.Context, token AgentProposalWriteToken,
 	request AgentProposalGitHubPublishRequest) (AgentProposalGitHubPublishResult, error) {
+	return p.PublishFenced(ctx, token, request, nil)
+}
+
+// PublishFenced invokes the supplied authorization fence immediately before
+// and after creating a branch ref or pull request. Unreachable Git objects may
+// be prepared before a fence, but no branch/PR ref is created after a stale
+// Tenant/App/Repository/policy pin is observed.
+func (p *AgentProposalGitHubWriter) PublishFenced(ctx context.Context, token AgentProposalWriteToken,
+	request AgentProposalGitHubPublishRequest, fence func(context.Context) error) (AgentProposalGitHubPublishResult, error) {
 	if p == nil || ctx == nil || token.Value() == "" || !token.ExpiresAt().After(p.now().Add(time.Minute)) ||
 		!validLogin(request.Repository.Owner) || !validCredentialRepository(request.Repository.Name) ||
 		!validBrokerBranch(request.DefaultBranch) || request.BaseBranch != request.DefaultBranch ||
@@ -133,6 +142,9 @@ func (p *AgentProposalGitHubWriter) Publish(ctx context.Context, token agentProp
 		if err != nil {
 			return AgentProposalGitHubPublishResult{}, ErrAgentProposalGitHubDenied
 		}
+		if err := runAgentProposalFence(ctx, fence); err != nil {
+			return AgentProposalGitHubPublishResult{}, ErrAgentProposalGitHubDenied
+		}
 		if err := p.createRef(ctx, token.Value(), basePath, request.BranchName, branchCommit); err != nil {
 			// A lost response or a concurrent retry may have created this exact
 			// branch. Re-read and accept only our marker and immutable parent.
@@ -142,27 +154,35 @@ func (p *AgentProposalGitHubWriter) Publish(ctx context.Context, token agentProp
 			}
 			recovered = true
 		}
+		if err := runAgentProposalFence(ctx, fence); err != nil {
+			return AgentProposalGitHubPublishResult{BranchName: request.BranchName, BranchCommitSHA: branchCommit, Recovered: recovered}, ErrAgentProposalGitHubDenied
+		}
 	}
+	result := AgentProposalGitHubPublishResult{BranchName: request.BranchName, BranchCommitSHA: branchCommit, Recovered: recovered}
 	currentBase, baseErr := p.getRef(ctx, token.Value(), basePath, request.DefaultBranch)
 	currentBranch, _, branchErr := p.findProposalBranch(ctx, token.Value(), basePath, request, treeSHA)
 	if baseErr != nil || branchErr != nil || currentBase != request.BaseCommitSHA || currentBranch != branchCommit {
-		return AgentProposalGitHubPublishResult{}, ErrAgentProposalGitHubDenied
+		return result, ErrAgentProposalGitHubDenied
 	}
-	result := AgentProposalGitHubPublishResult{BranchName: request.BranchName, BranchCommitSHA: branchCommit, Recovered: recovered}
 	if !request.OpenPullRequest {
 		return result, nil
 	}
 	pr, exists, err := p.findProposalPullRequest(ctx, token.Value(), basePath, request)
 	if err != nil {
-		return AgentProposalGitHubPublishResult{}, ErrAgentProposalGitHubDenied
+		return result, ErrAgentProposalGitHubDenied
 	}
+	prWriteAttempted := false
 	if !exists {
+		if err := runAgentProposalFence(ctx, fence); err != nil {
+			return result, ErrAgentProposalGitHubDenied
+		}
+		prWriteAttempted = true
 		pr, err = p.createProposalPullRequest(ctx, token.Value(), basePath, request)
 		if err != nil {
 			// GitHub may have created the PR before the response was lost.
 			pr, exists, err = p.findProposalPullRequest(ctx, token.Value(), basePath, request)
 			if err != nil || !exists {
-				return AgentProposalGitHubPublishResult{}, ErrAgentProposalGitHubDenied
+				return result, ErrAgentProposalGitHubDenied
 			}
 			result.Recovered = true
 		}
@@ -170,7 +190,22 @@ func (p *AgentProposalGitHubWriter) Publish(ctx context.Context, token agentProp
 		result.Recovered = true
 	}
 	result.PullRequestNumber = pr.Number
+	if prWriteAttempted {
+		if err := runAgentProposalFence(ctx, fence); err != nil {
+			return result, ErrAgentProposalGitHubDenied
+		}
+	}
 	return result, nil
+}
+
+func runAgentProposalFence(ctx context.Context, fence func(context.Context) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if fence == nil {
+		return nil
+	}
+	return fence(ctx)
 }
 
 func (p *AgentProposalGitHubWriter) getRef(ctx context.Context, token, basePath, branch string) (string, error) {

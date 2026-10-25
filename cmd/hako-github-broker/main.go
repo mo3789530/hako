@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/mo3789530/hako/internal/domain"
@@ -24,6 +25,7 @@ import (
 	"github.com/mo3789530/hako/internal/store/dsql"
 	"github.com/mo3789530/hako/internal/store/githubregistry"
 	"github.com/mo3789530/hako/internal/store/transaction"
+	"github.com/mo3789530/hako/internal/workloadsource"
 )
 
 const defaultListenAddr = ":8443"
@@ -246,6 +248,37 @@ func run() error {
 	handler = githubbroker.WithPreviewCheckout(handler, previewCheckout)
 	handler = githubbroker.WithEnvironmentApproval(handler, environmentApproval)
 	handler = githubbroker.WithAgentIssueContext(handler, agentIssueContext)
+	proposalBucket := strings.TrimSpace(os.Getenv("HAKO_GITHUB_BROKER_AGENT_PROPOSAL_BUCKET"))
+	if proposalBucket != "" {
+		proposalReader, readerErr := workloadsource.NewS3AgentProposalArchiveReader(s3.NewFromConfig(awsConfig), proposalBucket,
+			strings.TrimSpace(os.Getenv("HAKO_GITHUB_BROKER_AGENT_PROPOSAL_PREFIX")))
+		if readerErr != nil {
+			return errors.New("configure Agent proposal archive reader")
+		}
+		proposalWriter, writerErr := githubbroker.NewAgentProposalGitHubWriter("https://api.github.com", nil)
+		if writerErr != nil {
+			return errors.New("configure Agent proposal GitHub writer")
+		}
+		mintProposalToken := func(ctx context.Context, identity githubbroker.AgentProposalPublicationIdentity) (githubbroker.AgentProposalWriteToken, githubapp.RepositoryAccess, error) {
+			client, clientErr := githubapp.NewTenantAppTokenClientFromConfig(identity.AppAccess, awsConfig,
+				githubregistry.CredentialAuthorizer{Pool: pool, Policy: policy}, nil)
+			if clientErr != nil {
+				return nil, githubapp.RepositoryAccess{}, githubbroker.ErrUnavailable
+			}
+			token, repository, tokenErr := client.AgentProposalPublishToken(ctx, identity.Run)
+			if tokenErr != nil {
+				return nil, githubapp.RepositoryAccess{}, githubbroker.ErrUnavailable
+			}
+			return token, repository, nil
+		}
+		proposalService, serviceErr := githubbroker.NewAgentProposalPublicationService(
+			githubbroker.NewPostgresAgentProposalPublicationResolver(pool, policy),
+			githubbroker.NewPostgresAgentProposalPublicationRecorder(pool, policy), proposalReader, mintProposalToken, proposalWriter)
+		if serviceErr != nil {
+			return errors.New("configure Agent proposal publication service")
+		}
+		handler = githubbroker.WithAgentProposalPublication(handler, proposalService)
+	}
 	if len(agentTaskCallers) > 0 {
 		planeIDs := make([]string, 0, len(agentTaskCallers))
 		for _, caller := range agentTaskCallers {

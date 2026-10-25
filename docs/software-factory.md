@@ -396,16 +396,26 @@ tree/commit on the deterministic branch, and opens a policy-approved same-repo
 PR. It recovers lost ref/PR responses only after confirming the branch's exact
 tree, base parent, proposal marker, and PR head/base. Fake GitHub HTTP tests
 cover duplicate publication, response loss, stale base, and unrelated branch
-rejection. Task 89 remains open: safe verifier retry, mTLS Broker resolver and
-route composition, wiring the scoped Tenant App token mint to the writer, and
-API/CLI submit/retry UX. The authenticated
+rejection. The Broker now exposes a Control Plane-only
+`POST /v1/agent-proposals/publish` mTLS route. Its body accepts only Tenant,
+Agent Run, and attempt IDs. Each resolver call re-reads the cleaned successful
+Agent/verifier evidence, digest-bound required Checks, active Tenant-owned App
+generation, current Repository policy/default branch, and deterministic
+publication row. The Broker reads the proposal through an identity-derived S3
+key, mints the exact-Repository write token inside the process, fences branch
+and PR creation against refreshed pins, and records confirmed partial GitHub
+results for safe retry. Unit/HTTP tests cover caller rejection, strict request
+decoding, stale-pin fencing, partial-result persistence, response redaction,
+and `no-store`. The executable composes this route only when
+`HAKO_GITHUB_BROKER_AGENT_PROPOSAL_BUCKET` is configured; optional
+`HAKO_GITHUB_BROKER_AGENT_PROPOSAL_PREFIX` must match the Resource Plane
+artifact prefix. No Secret retrieval or GitHub call occurs at startup. Task 89
+remains open: bounded verifier retry, API/CLI submit/retry UX, exact S3 read
+IAM/deployment wiring, and end-to-end PostgreSQL Broker composition. The
+authenticated
 `GET .../agent-publication` endpoint and `hako workload publication show`
 display only safe state, branch, confirmed commit, PR number, and timestamps;
 they omit artifact references, digests, tokens, and verifier internals.
-The Tenant App token client also has a synthetic-test-covered minting primitive
-for a single-Repository `contents:write` + `pull_requests:write` grant, keyed
-separately from other scopes. It is not yet exposed by the Broker or connected
-to the publisher.
 Terraform IAM and AWS execution have not been verified.
 
 Treat `.hako/factory.yaml`, workflow files, action references, shell steps,

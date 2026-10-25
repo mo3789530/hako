@@ -1,11 +1,12 @@
 # Task 89: Brokered Native Agent Branch and Pull Request Publishing
 
 Status: In Progress (proposal materialization, isolated verifier scheduling,
-digest-bound Check persistence, publication evidence resolution, and durable
-publication idempotency state, safe publication status API/CLI, exact-scope
-Tenant App token minting, and a fake-tested GitHub publisher are implemented
-locally; Broker composition, submission API/CLI, and runtime activation are
-still open). Priority: P3.
+digest-bound Check persistence, publication evidence resolution and durable
+idempotency state, safe status API/CLI, exact-scope Tenant App token minting,
+fake-tested GitHub publisher, and a Control Plane-only mTLS Broker publication
+route with Postgres resolver/recorder are implemented locally. Verifier retry,
+submission API/CLI, exact S3 read IAM/deployment, and runtime activation remain
+open). Priority: P3.
 Depends on Tasks 39, 40, 53, 57, and 59.
 
 ## Goal
@@ -150,8 +151,8 @@ Repository. The proposal remains untrusted. Hako must never merge or deploy it.
   Repository with only `contents:write` and `pull_requests:write`; GitHub's
   returned repository and permission set are checked, and its cache key is
   distinct from read-only and Checks grants. Synthetic-key unit tests verify
-  the scope and reject cross-Tenant/non-Agent requests. The token is not
-  exposed through an HTTP endpoint and is not yet connected to a publisher.
+  the scope and reject cross-Tenant/non-Agent requests. The token is exposed
+  only to the trusted Broker service and is never serialized in the response.
 - `AgentProposalGitHubWriter` validates the proposal archive again, verifies
   that the current default branch still points at the pinned base commit,
   creates blobs/tree/commit under the deterministic branch, and opens a
@@ -162,8 +163,21 @@ Repository. The proposal remains untrusted. Hako must never merge or deploy it.
   recovered by reading those deterministic identities; unrelated branches,
   forks, stale base refs, and malformed archives fail closed. Fake GitHub HTTP
   tests cover normal create, retry, lost responses, stale base, and unrelated
-  branch rejection. The writer is not yet composed into the mTLS Broker, and
-  no live GitHub or real Secret request was made.
-- Still open: verifier retry, mTLS Broker resolver/route composition, wiring
-  the exact-scope credential mint to the writer, and API/CLI submit/retry UX.
-  AWS IAM and Lambda MicroVM execution remain unverified.
+  branch rejection. No live GitHub or real Secret request was made.
+- `POST /v1/agent-proposals/publish` is now an mTLS Control Plane-only route.
+  The Postgres resolver re-reads the latest successful Agent attempt, cleanup
+  confirmation, digest-bound verifier Checks, active Tenant-owned App pins,
+  Repository policy/default branch, and idempotency record. It resolves only
+  exact-SHA S3 identity and the immutable private-key version. The service
+  mints the one-Repository write token inside the Broker, fences ref creation
+  against re-resolved pins, and records confirmed branch/PR progress even when
+  a later provider response fails. Unit and HTTP tests cover non-Control-Plane
+  rejection, unknown request fields, no-store/safe responses, stale-pin
+  rejection, and partial provider result recording. Broker composition is
+  opt-in through `HAKO_GITHUB_BROKER_AGENT_PROPOSAL_BUCKET` and optional
+  `HAKO_GITHUB_BROKER_AGENT_PROPOSAL_PREFIX`; no secret or GitHub request is
+  made during startup.
+- Still open: bounded verifier retry, API/CLI submit/retry UX, exact S3 read
+  IAM and deployed Broker configuration, full Postgres Broker composition
+  integration, and Lambda MicroVM execution verification. No AWS apply or
+  production activation has been performed.
