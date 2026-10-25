@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -55,6 +56,15 @@ func run() error {
 	if jobCgroupRoot == "" {
 		jobCgroupRoot = "/sys/fs/cgroup"
 	}
+	nativeAgentEnabled, err := parseNativeAgentEnabled(os.Getenv("HAKO_NATIVE_AGENT_ENABLED"))
+	if err != nil {
+		return errors.New("configure Native Agent execution")
+	}
+	processFactory, err := configureProcessFactory(nativeAgentEnabled, strings.TrimSpace(os.Getenv("HAKO_NATIVE_AGENT_MODEL")),
+		jobServices, jobCgroupRoot, nil)
+	if err != nil {
+		return errors.New("configure workload process factory")
+	}
 	if jobContainerd != nil {
 		defer func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -69,16 +79,7 @@ func run() error {
 		TrustedKeys:           keys,
 		RequireRuntimeBinding: true,
 		AllowJobServices:      jobServices != nil,
-		ProcessFactory: workloadagent.GoTestProcessFactory{
-			GoBinary:       "/usr/local/go/bin/go",
-			GoCache:        "/tmp/hako-go-cache",
-			ModuleCache:    strings.TrimSpace(os.Getenv("HAKO_GO_MODULE_CACHE")),
-			JobServices:    jobServices,
-			EgressPolicy:   workloadagent.LinuxJobEgressPolicy{},
-			ResourceLimits: workloadagent.LinuxJobCgroupManager{Root: jobCgroupRoot},
-			CommandUID:     65532,
-			CommandGID:     65532,
-		},
+		ProcessFactory:        processFactory,
 	})
 	if err != nil {
 		return errors.New("configure Hako Agent")
@@ -162,3 +163,57 @@ func parseJobServicesEnabled(value string) (bool, error) {
 		return false, errors.New("HAKO_JOB_SERVICES_ENABLED must be true or false")
 	}
 }
+
+func parseNativeAgentEnabled(value string) (bool, error) {
+	switch strings.TrimSpace(value) {
+	case "", "false":
+		return false, nil
+	case "true":
+		return true, nil
+	default:
+		return false, errors.New("HAKO_NATIVE_AGENT_ENABLED must be true or false")
+	}
+}
+
+func configureProcessFactory(nativeAgentEnabled bool, modelName string, jobServices workloadagent.JobServiceProvisioner,
+	cgroupRoot string, modelDoer workloadagent.AnthropicMessagesDoer) (workloadagent.ProcessFactory, error) {
+	resourceLimits := workloadagent.LinuxJobCgroupManager{Root: cgroupRoot}
+	jobs := workloadagent.GoTestProcessFactory{
+		GoBinary: "/usr/local/go/bin/go", GoCache: "/tmp/hako-go-cache",
+		ModuleCache: strings.TrimSpace(os.Getenv("HAKO_GO_MODULE_CACHE")), JobServices: jobServices,
+		EgressPolicy: workloadagent.LinuxJobEgressPolicy{}, ResourceLimits: resourceLimits,
+		CommandUID: 65532, CommandGID: 65532,
+	}
+	if !nativeAgentEnabled {
+		return jobs, nil
+	}
+	if modelName == "" {
+		return nil, errors.New("HAKO_NATIVE_AGENT_MODEL is required when Native Agent execution is enabled")
+	}
+	model, err := workloadagent.NewAnthropicMessagesClient(modelName, modelDoer)
+	if err != nil {
+		return nil, errors.New("configure fixed Native Agent model endpoint")
+	}
+	agent := workloadagent.NativeAgentProcessFactory{Model: model, Tests: workloadagent.GoTestNativeAgentVerifier{
+		GoBinary: "/usr/local/go/bin/go", GoCache: "/tmp/hako-agent-go-cache",
+		ModuleCache: strings.TrimSpace(os.Getenv("HAKO_GO_MODULE_CACHE")), CommandUID: 65532, CommandGID: 65532,
+		MemoryMB: 2048, CPUMillis: 1000, ResourceLimits: resourceLimits,
+	}}
+	return workloadProcessFactory{jobs: jobs, agent: agent}, nil
+}
+
+type workloadProcessFactory struct {
+	jobs  workloadagent.GoTestProcessFactory
+	agent workloadagent.NativeAgentProcessFactory
+}
+
+func (f workloadProcessFactory) Start(ctx context.Context, plan workloadagent.ExecutionPlan, output io.Writer) (workloadagent.ManagedProcess, error) {
+	if plan.Kind == "agent" {
+		return f.agent.Start(ctx, plan, output)
+	}
+	return f.jobs.Start(ctx, plan, output)
+}
+
+func (f workloadProcessFactory) SupportsJobServices() bool { return f.jobs.SupportsJobServices() }
+
+func (workloadProcessFactory) SupportsNativeAgentCredential() bool { return true }

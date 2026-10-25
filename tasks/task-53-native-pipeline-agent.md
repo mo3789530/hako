@@ -216,6 +216,23 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   the local database on 2026-10-25. Production IAM/deployment, MicroVM behavior,
   branch/PR creation, and human-review workflow remain incomplete.
 
+## Guest process composition (2026-10-25)
+
+- `cmd/hako-agent` now composes the bounded Native Agent model loop and fixed
+  offline Go test verifier only when the image/operator explicitly sets
+  `HAKO_NATIVE_AGENT_ENABLED=true` and a supported fixed
+  `HAKO_NATIVE_AGENT_MODEL`. The default remains disabled and the normal
+  process factory does not accept Agent model credentials. The model endpoint
+  remains the built-in Anthropic HTTPS endpoint; no endpoint override or proxy
+  is accepted. The verifier runs as UID/GID 65532 with a required cgroup
+  resource limiter.
+- Unit tests verify default-off behavior, invalid configuration rejection,
+  required model selection, and composition with the fixed test runner. This
+  does not enable Control Plane scheduling or prove Lambda MicroVM cgroup,
+  network egress, target ARM64 image, or model API connectivity. Keep Agent
+  scheduling disabled until those target-runtime gates and a reviewed image
+  deployment pass.
+
 ## Local verification refresh (2026-10-24)
 
 - Added a Job/attempt-scoped `CatalogJobServiceManager` contract and connected
