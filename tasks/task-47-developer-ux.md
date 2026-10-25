@@ -31,6 +31,15 @@ for the `remove` action. Parser and confirmation tests cover both interactive
 and automation paths. This is a client-side guard; the authenticated API still
 enforces Workspace RBAC and records the lifecycle request.
 
+## `hako exec` CLI error-path coverage (2026-10-25)
+
+Added tests for the command's exit-error formatting, nil/invalid request
+rejection before Gateway use, missing credential and endpoint configuration,
+and bounded failure when the Control Plane refuses an Exec Session. The
+`cmd/hako` package now reports 65.7% statement coverage (up from 65.4% in the
+previous local report). This validates CLI boundaries; actual Lambda MicroVM
+execution remains an external runtime gate.
+
 ## Goal
 
 Complete the basic interactive development flow and reproducible local-service templates.

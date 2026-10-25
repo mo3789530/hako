@@ -62,5 +62,5 @@ proposal selection → metadata-bound ticket → Gateway stream path. It verifie
 the saved bytes and user-facing untrusted-source label. Negative cases for a
 foreign Tenant, non-successful Run, or missing proposal stop before requesting
 an artifact ticket. `go test ./cmd/hako -count=1 -coverprofile=...` passes;
-the CLI package reports 65.4% statement coverage and the public command wrapper
+the CLI package reports 65.7% statement coverage and the public command wrapper
 is 100% covered. This is local CLI/API/Gateway contract evidence only.
