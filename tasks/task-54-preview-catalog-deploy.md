@@ -580,6 +580,12 @@ for Preview listing and Session creation; the revoke path's request/response
 contract is additionally covered by the existing successful lifecycle test.
 No live GitHub, AWS, or Resource Plane endpoint is contacted.
 
+The Software Catalog CLI now also has failure-path tests for invalid action or
+Tenant input, nil output, missing login/API origin, Tenant API denial, and an
+output Writer failure. Invalid metadata remains rejected before API access.
+`parseSoftwareCatalogCLI` is 100% and `runSoftwareCatalogCLI` is 89.7% statement
+covered; focused tests pass against local HTTP only.
+
 Preview log streaming now also has failure-path coverage for an inactive
 Gateway Session: after the CLI creates a Preview-only log Session, a Gateway
 authorization failure causes the CLI to revoke that Session. Nil context,

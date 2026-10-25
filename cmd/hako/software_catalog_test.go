@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -123,6 +125,72 @@ func TestSoftwareCatalogCLIRejectsUnknownOrInvalidMetadataBeforeAPI(t *testing.T
 			}
 		})
 	}
+}
+
+func TestSoftwareCatalogCLIFailsClosedOnOperationalErrors(t *testing.T) {
+	validCredentials := fmt.Sprintf(`{"access_token":"catalog-access","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+		time.Now().UTC().Format(time.RFC3339))
+	previousGetter := cliCredentialGetter
+	t.Cleanup(func() { cliCredentialGetter = previousGetter })
+	listArgs := []string{"list", "--tenant", "tenant_catalog"}
+	for _, test := range []struct {
+		name        string
+		args        []string
+		credentials string
+		apiURL      string
+		output      io.Writer
+		want        string
+	}{
+		{name: "invalid action", args: []string{"unknown", "--tenant", "tenant_catalog"}, credentials: validCredentials, apiURL: "http://127.0.0.1:1", output: io.Discard, want: "list or set"},
+		{name: "missing tenant", args: []string{"list"}, credentials: validCredentials, apiURL: "http://127.0.0.1:1", output: io.Discard, want: "--tenant is required"},
+		{name: "nil output", args: listArgs, credentials: validCredentials, apiURL: "http://127.0.0.1:1", want: "output writer is required"},
+		{name: "missing login", args: listArgs, apiURL: "http://127.0.0.1:1", output: io.Discard, want: "saved Hako login is invalid"},
+		{name: "missing API URL", args: listArgs, credentials: validCredentials, output: io.Discard, want: "invalid Hako API URL"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HAKO_API_URL", test.apiURL)
+			cliCredentialGetter = workspaceShellCredentials(test.credentials)
+			if err := runSoftwareCatalogCLI(test.args, test.output); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("runSoftwareCatalogCLI error = %v, want %q", err, test.want)
+			}
+		})
+	}
+
+	var calls int
+	denied := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/tenants/tenant_catalog/software-catalog" {
+			t.Errorf("unexpected Catalog API request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = fmt.Fprint(w, `{"error":{"code":"tenant_forbidden","message":"Tenant membership required"}}`)
+	}))
+	t.Setenv("HAKO_API_URL", denied.URL)
+	cliCredentialGetter = workspaceShellCredentials(validCredentials)
+	if err := runSoftwareCatalogCLI(listArgs, io.Discard); err == nil || !strings.Contains(err.Error(), "HTTP 403") {
+		t.Fatalf("Catalog Tenant denial = %v, want authorization error", err)
+	}
+	denied.Close()
+	if calls != 1 {
+		t.Fatalf("denied Catalog API calls = %d, want 1", calls)
+	}
+
+	allowed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"items":[]}`)
+	}))
+	defer allowed.Close()
+	t.Setenv("HAKO_API_URL", allowed.URL)
+	if err := runSoftwareCatalogCLI(listArgs, softwareCatalogFailingWriter{}); err == nil || !strings.Contains(err.Error(), "synthetic output failure") {
+		t.Fatalf("Catalog output failure = %v, want writer error", err)
+	}
+}
+
+type softwareCatalogFailingWriter struct{}
+
+func (softwareCatalogFailingWriter) Write([]byte) (int, error) {
+	return 0, errors.New("synthetic output failure")
 }
 
 func TestSoftwareCatalogDeployPolicyCLIKeepsExecutionDormant(t *testing.T) {
