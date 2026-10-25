@@ -35,6 +35,7 @@ const (
 )
 
 var ErrWorkspaceServiceDelivery = errors.New("Workspace Service delivery failed")
+var workspaceServiceCorrelationIDPattern = regexp.MustCompile(`^req_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 var workspaceServiceRegionPattern = regexp.MustCompile(`^[a-z]{2}(-gov)?-[a-z0-9-]+-[0-9]$`)
 
@@ -138,7 +139,7 @@ func (c *WorkspaceServiceCommandConsumer) Handle(ctx context.Context, payload []
 		return ErrWorkspaceServiceDelivery
 	}
 	current, err := c.resolver.Resolve(ctx, command)
-	if err != nil || !validWorkspaceServiceCommand(current) || current.ResourcePlaneID != c.planeID ||
+	if err != nil || !validWorkspaceServiceCommand(current) || current.ResourcePlaneID != c.planeID || current.CorrelationID != command.CorrelationID ||
 		current.TenantID != command.TenantID || current.WorkspaceID != command.WorkspaceID || current.ServiceID != command.ServiceID ||
 		current.Revision < command.Revision {
 		return ErrWorkspaceServiceDelivery
@@ -200,7 +201,7 @@ func (c *WorkspaceServiceCommandConsumer) Handle(ctx context.Context, payload []
 	// authoritative revision. This narrows the race to the Guest side effect and
 	// prevents a stale success report from hiding an unprocessed stop/remove.
 	latest, err := c.resolver.Resolve(ctx, command)
-	if err != nil || !validWorkspaceServiceCommand(latest) || latest.ResourcePlaneID != c.planeID ||
+	if err != nil || !validWorkspaceServiceCommand(latest) || latest.ResourcePlaneID != c.planeID || latest.CorrelationID != command.CorrelationID ||
 		latest.TenantID != command.TenantID || latest.WorkspaceID != command.WorkspaceID || latest.ServiceID != command.ServiceID ||
 		latest.Revision < command.Revision {
 		return ErrWorkspaceServiceDelivery
@@ -247,7 +248,7 @@ func (c *WorkspaceServiceCommandConsumer) Handle(ctx context.Context, payload []
 
 func sameWorkspaceServiceDesiredState(left, right domain.WorkspaceServiceCommand) bool {
 	return left.SchemaVersion == right.SchemaVersion && left.TenantID == right.TenantID && left.WorkspaceID == right.WorkspaceID &&
-		left.ResourcePlaneID == right.ResourcePlaneID && left.ServiceID == right.ServiceID && left.Revision == right.Revision &&
+		left.ResourcePlaneID == right.ResourcePlaneID && left.ServiceID == right.ServiceID && left.CorrelationID == right.CorrelationID && left.Revision == right.Revision &&
 		workspaceServiceCredentialGeneration(left) == workspaceServiceCredentialGeneration(right) &&
 		left.DesiredState == right.DesiredState && left.CatalogVersion == right.CatalogVersion && bytes.Equal(left.Config, right.Config)
 }
@@ -262,6 +263,7 @@ func workspaceServiceCredentialGeneration(command domain.WorkspaceServiceCommand
 func validWorkspaceServiceCommand(command domain.WorkspaceServiceCommand) bool {
 	if command.SchemaVersion != 1 || command.TenantID == "" || command.WorkspaceID == "" || command.ResourcePlaneID == "" ||
 		command.ServiceID == "" || command.Revision < 1 || command.CredentialGeneration < 0 || command.CatalogVersion == "" || len(command.Config) == 0 ||
+		(command.CorrelationID != "" && !workspaceServiceCorrelationIDPattern.MatchString(command.CorrelationID)) ||
 		(command.DesiredState != "running" && command.DesiredState != "stopped" && command.DesiredState != "deleted") {
 		return false
 	}
@@ -470,11 +472,31 @@ func (h *WorkspaceServiceLambdaHandler) Handle(ctx context.Context, event events
 	response := events.SQSEventResponse{BatchItemFailures: make([]events.SQSBatchItemFailure, 0)}
 	for _, record := range event.Records {
 		if err := h.consumer.Handle(ctx, []byte(record.Body)); err != nil {
-			h.logger.ErrorContext(ctx, "Workspace Service command failed", "failure_class", "command_delivery", "sqs_message_id", record.MessageId)
+			attrs := []any{"failure_class", "command_delivery", "sqs_message_id", record.MessageId}
+			attrs = append(attrs, workspaceServiceFailureLogAttributes([]byte(record.Body))...)
+			h.logger.ErrorContext(ctx, "Workspace Service command failed", attrs...)
 			response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: record.MessageId})
 		}
 	}
 	return response, nil
+}
+
+func workspaceServiceFailureLogAttributes(payload []byte) []any {
+	if len(payload) == 0 || len(payload) > 64<<10 {
+		return nil
+	}
+	var command domain.WorkspaceServiceCommand
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&command) != nil || decoder.Decode(new(any)) != io.EOF || !validWorkspaceServiceCommand(command) {
+		return nil
+	}
+	attrs := []any{"tenant_id", command.TenantID, "workspace_id", command.WorkspaceID,
+		"resource_plane_id", command.ResourcePlaneID, "service_id", command.ServiceID, "revision", command.Revision}
+	if command.CorrelationID != "" {
+		attrs = append(attrs, "correlation_id", command.CorrelationID)
+	}
+	return attrs
 }
 
 func noRedirectClient(client *http.Client) *http.Client {

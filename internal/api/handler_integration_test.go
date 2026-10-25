@@ -238,6 +238,10 @@ func TestTenantMembershipRouteResolvesUserAndRejectsNonMembers(t *testing.T) {
 	if addedService.Code != http.StatusAccepted || json.Unmarshal(addedService.Body.Bytes(), &postgresService) != nil || postgresService.Name != "postgres" || postgresService.DesiredState != "running" || postgresService.ObservedState != "pending" || postgresService.DesiredRevision != 1 || postgresService.ObservedRevision != 0 {
 		t.Fatalf("Workspace Service add = HTTP %d %s", addedService.Code, addedService.Body.String())
 	}
+	serviceRequestID := addedService.Header().Get(requestIDHeader)
+	if !workspaceServiceCorrelationIDPattern.MatchString(serviceRequestID) {
+		t.Fatalf("Workspace Service add has invalid server request ID %q", serviceRequestID)
+	}
 	configuredServiceUsageResponse := requestWorkspaceServiceUsage(t, handler, createToken, "tenant_member", string(createResult.Workspace.ID))
 	var configuredServiceUsage storeservices.ResourceUsage
 	if configuredServiceUsageResponse.Code != http.StatusOK || json.Unmarshal(configuredServiceUsageResponse.Body.Bytes(), &configuredServiceUsage) != nil ||
@@ -278,11 +282,12 @@ func TestTenantMembershipRouteResolvesUserAndRejectsNonMembers(t *testing.T) {
 	}
 	if serviceCommand.SchemaVersion != 1 || serviceCommand.TenantID != "tenant_member" || serviceCommand.WorkspaceID != createResult.Workspace.ID ||
 		serviceCommand.ResourcePlaneID != placementPlaneID || serviceCommand.ServiceID != postgresService.ID || serviceCommand.Revision != 1 || serviceCommand.CredentialGeneration != 1 ||
-		serviceCommand.DesiredState != "running" || serviceCommand.CatalogVersion != "postgres/1.0.0" || !json.Valid(serviceCommand.Config) {
+		serviceCommand.CorrelationID != serviceRequestID || serviceCommand.DesiredState != "running" || serviceCommand.CatalogVersion != "postgres/1.0.0" || !json.Valid(serviceCommand.Config) {
 		t.Fatalf("unexpected Service reconciliation command: %+v", serviceCommand)
 	}
 	serviceDesiredLookup := func(tenantID domain.TenantID, requestID string, signatureOverride string) *httptest.ResponseRecorder {
-		body, err := json.Marshal(workspaceServiceDesiredStateRequest{TenantID: tenantID, WorkspaceID: createResult.Workspace.ID})
+		body, err := json.Marshal(workspaceServiceDesiredStateRequest{TenantID: tenantID, WorkspaceID: createResult.Workspace.ID,
+			CorrelationID: serviceCommand.CorrelationID})
 		if err != nil {
 			t.Fatalf("encode Service desired-state lookup: %v", err)
 		}
@@ -308,7 +313,8 @@ func TestTenantMembershipRouteResolvesUserAndRejectsNonMembers(t *testing.T) {
 	currentServiceState := serviceDesiredLookup("tenant_member", strings.Repeat("d", 48), "")
 	var currentServiceCommand domain.WorkspaceServiceCommand
 	if currentServiceState.Code != http.StatusOK || json.Unmarshal(currentServiceState.Body.Bytes(), &currentServiceCommand) != nil ||
-		currentServiceCommand.Revision != 1 || currentServiceCommand.CredentialGeneration != 1 || currentServiceCommand.DesiredState != "running" || currentServiceCommand.ServiceID != postgresService.ID {
+		currentServiceCommand.Revision != 1 || currentServiceCommand.CredentialGeneration != 1 || currentServiceCommand.DesiredState != "running" ||
+		currentServiceCommand.ServiceID != postgresService.ID || currentServiceCommand.CorrelationID != serviceCommand.CorrelationID {
 		t.Fatalf("Resource Plane current Service desired-state lookup = HTTP %d %s", currentServiceState.Code, currentServiceState.Body.String())
 	}
 	foreignServiceState := serviceDesiredLookup("tenant_foreign", strings.Repeat("e", 48), "")

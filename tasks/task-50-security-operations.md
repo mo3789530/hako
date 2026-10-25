@@ -171,6 +171,20 @@ and [usage metering/billing](../docs/adr/0013-usage-metering-and-billing.md).
 Each names an accountable owner role, scope, requirements, non-goals, and
 revisit conditions. They defer implementation and do not approve AWS changes.
 
+## Workspace Service request correlation (2026-10-25)
+
+Workspace Service add/action requests now carry the server-generated API
+request ID in their transactional Resource Plane Outbox command. The signed
+current-desired-state lookup includes and echoes that exact ID; the Resource
+Plane rejects a changed ID. Its SQS failure log records the validated
+correlation and bounded Tenant/Workspace/Plane/Service/revision identifiers,
+while malformed commands produce no payload-derived fields and raw provider
+errors/configuration never enter the log. The PostgreSQL API integration test
+checks the request ID against the Outbox payload and signed resolver response;
+runtime unit coverage checks changed-ID rejection and redacted failure logging.
+This closes the Workspace Service command path only; broader worker/API log
+correlation and deployed log retention remain open.
+
 Full local integration refresh (2026-10-25): `make test-integration-local`
 passed every package with the `integration` build tag against isolated schemas
 in the already-running PostgreSQL database. This covers the local PostgreSQL

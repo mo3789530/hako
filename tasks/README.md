@@ -73,6 +73,12 @@ cover authenticated action bodies/idempotency, exact Workspace ID confirmation
 before delete, `resume --wait` reporting, and fail-before-request behavior for
 cancelled or invalid actions.
 
+Task 50 correlation follow-up (2026-10-25): Workspace Service API request IDs
+now pass through the transactional Outbox, signed Resource Plane desired-state
+lookup, and validated failure logs. PostgreSQL API E2E and Service runtime
+integration cover the path; other per-worker/API correlation gaps and deployed
+log operations remain open.
+
 Task 52 workflow policy read API was added on 2026-10-25. Tenant members can
 inspect the active repository allowlist through the authenticated API/CLI;
 configuration remains Owner/Admin-only. API/CLI and PostgreSQL integration

@@ -55,9 +55,10 @@ func (r *SignedWorkspaceServiceCommandResolver) Resolve(ctx context.Context, tri
 		return domain.WorkspaceServiceCommand{}, ErrWorkspaceServiceDelivery
 	}
 	lookup := struct {
-		TenantID    domain.TenantID    `json:"tenant_id"`
-		WorkspaceID domain.WorkspaceID `json:"workspace_id"`
-	}{TenantID: trigger.TenantID, WorkspaceID: trigger.WorkspaceID}
+		TenantID      domain.TenantID    `json:"tenant_id"`
+		WorkspaceID   domain.WorkspaceID `json:"workspace_id"`
+		CorrelationID string             `json:"correlation_id,omitempty"`
+	}{TenantID: trigger.TenantID, WorkspaceID: trigger.WorkspaceID, CorrelationID: trigger.CorrelationID}
 	body, err := json.Marshal(lookup)
 	if err != nil || len(body) > 2<<10 {
 		return domain.WorkspaceServiceCommand{}, ErrWorkspaceServiceDelivery
@@ -100,6 +101,7 @@ func (r *SignedWorkspaceServiceCommandResolver) Resolve(ctx context.Context, tri
 	if decoder.Decode(&current) != nil || decoder.Decode(new(any)) != io.EOF || !validWorkspaceServiceCommand(current) ||
 		current.TenantID != trigger.TenantID || current.WorkspaceID != trigger.WorkspaceID ||
 		current.ResourcePlaneID != trigger.ResourcePlaneID || current.ServiceID != trigger.ServiceID ||
+		current.CorrelationID != trigger.CorrelationID ||
 		current.Revision < trigger.Revision || current.CatalogVersion != trigger.CatalogVersion || !bytes.Equal(current.Config, trigger.Config) ||
 		(current.Revision == trigger.Revision && current.DesiredState != trigger.DesiredState) {
 		return domain.WorkspaceServiceCommand{}, ErrWorkspaceServiceDelivery

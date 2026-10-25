@@ -153,7 +153,7 @@ func addWorkspaceService(pool transaction.Beginner) echo.HandlerFunc {
 			if err != nil {
 				return domain.Service{}, err
 			}
-			if err := enqueueWorkspaceService(ctx, tx, tenantID, resourcePlaneID, stored, now); err != nil {
+			if err := enqueueWorkspaceService(ctx, tx, tenantID, resourcePlaneID, stored, RequestIDFromContext(c.Request().Context()), now); err != nil {
 				return domain.Service{}, err
 			}
 			details, err := json.Marshal(map[string]string{"catalog_name": template.Name, "catalog_version": template.Version, "service_name": name})
@@ -247,7 +247,7 @@ func requestWorkspaceServiceAction(pool transaction.Beginner) echo.HandlerFunc {
 			if err != nil {
 				return domain.Service{}, err
 			}
-			if err := enqueueWorkspaceService(ctx, tx, tenantID, resourcePlaneID, service, now); err != nil {
+			if err := enqueueWorkspaceService(ctx, tx, tenantID, resourcePlaneID, service, RequestIDFromContext(c.Request().Context()), now); err != nil {
 				return domain.Service{}, err
 			}
 			auditAction := "workspace.service." + request.Action
@@ -300,7 +300,8 @@ func workspaceServiceResourcePlane(ctx context.Context, tx pgx.Tx, workspaceID d
 	return resourcePlaneID, nil
 }
 
-func enqueueWorkspaceService(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, resourcePlaneID domain.ResourcePlaneID, service domain.Service, createdAt time.Time) error {
+func enqueueWorkspaceService(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, resourcePlaneID domain.ResourcePlaneID,
+	service domain.Service, correlationID string, createdAt time.Time) error {
 	eventID, err := idgen.New("evt_")
 	if err != nil {
 		return err
@@ -310,7 +311,7 @@ func enqueueWorkspaceService(ctx context.Context, tx pgx.Tx, tenantID domain.Ten
 		return errors.New("Workspace Service catalog config is invalid JSON")
 	}
 	command, err := json.Marshal(domain.WorkspaceServiceCommand{
-		SchemaVersion: 1, TenantID: tenantID, WorkspaceID: service.WorkspaceID,
+		SchemaVersion: 1, CorrelationID: correlationID, TenantID: tenantID, WorkspaceID: service.WorkspaceID,
 		ResourcePlaneID: resourcePlaneID, ServiceID: service.ID, Revision: service.DesiredRevision,
 		CredentialGeneration: service.CredentialGeneration, DesiredState: service.DesiredState,
 		CatalogVersion: service.CatalogVersion, Config: config,

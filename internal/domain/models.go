@@ -200,6 +200,7 @@ type Service struct {
 // the Control Plane Outbox to the Resource Plane Service runtime.
 type WorkspaceServiceCommand struct {
 	SchemaVersion        int             `json:"schema_version"`
+	CorrelationID        string          `json:"correlation_id,omitempty"`
 	TenantID             TenantID        `json:"tenant_id"`
 	WorkspaceID          WorkspaceID     `json:"workspace_id"`
 	ResourcePlaneID      ResourcePlaneID `json:"resource_plane_id"`

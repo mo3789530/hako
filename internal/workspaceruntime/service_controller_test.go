@@ -589,8 +589,14 @@ func TestWorkspaceServiceConsumerRejectsForeignPlaneAndNonRunningJournal(t *test
 func TestWorkspaceServiceLambdaAdapterUsesPartialBatchFailures(t *testing.T) {
 	// A valid record is acknowledged while a failed record is retried without
 	// discarding the successful record's acknowledgement.
+	command := runtimeServiceCommand(t)
+	command.CorrelationID = "req_cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	failedPayload, err := json.Marshal(command)
+	if err != nil {
+		t.Fatal(err)
+	}
 	consumer := serviceCommandRuntimeFunc(func(_ context.Context, payload []byte) error {
-		if string(payload) == "retry" {
+		if bytes.Equal(payload, failedPayload) {
 			return errors.New("sensitive provider response: secret reference leaked")
 		}
 		return nil
@@ -601,13 +607,16 @@ func TestWorkspaceServiceLambdaAdapterUsesPartialBatchFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	response, err := handler.Handle(context.Background(), events.SQSEvent{Records: []events.SQSMessage{
-		{MessageId: "ok-1", Body: "ack"}, {MessageId: "retry-2", Body: "retry"},
+		{MessageId: "ok-1", Body: "ack"}, {MessageId: "retry-2", Body: string(failedPayload)},
 	}})
 	if err != nil || len(response.BatchItemFailures) != 1 || response.BatchItemFailures[0].ItemIdentifier != "retry-2" {
 		t.Fatalf("partial batch failure response = %+v, %v", response, err)
 	}
 	if !strings.Contains(logs.String(), "failure_class=command_delivery") || !strings.Contains(logs.String(), "sqs_message_id=retry-2") ||
-		strings.Contains(logs.String(), "sensitive provider response") || strings.Contains(logs.String(), "secret reference leaked") {
+		!strings.Contains(logs.String(), "correlation_id=req_cccccccc-cccc-4ccc-8ccc-cccccccccccc") ||
+		!strings.Contains(logs.String(), "workspace_id=ws_test") || !strings.Contains(logs.String(), "service_id=svc_test") ||
+		strings.Contains(logs.String(), "sensitive provider response") || strings.Contains(logs.String(), "secret reference leaked") ||
+		strings.Contains(logs.String(), "postgres:18") {
 		t.Fatalf("Workspace Service failure log leaked raw details or omitted identifiers: %q", logs.String())
 	}
 }
@@ -699,6 +708,7 @@ func TestSignedWorkspaceServiceCommandResolverAuthenticatesAndReturnsLatestRevis
 	key := []byte("0123456789abcdef0123456789abcdef")
 	now := time.Date(2026, 10, 18, 1, 2, 3, 0, time.UTC)
 	trigger := runtimeServiceCommand(t)
+	trigger.CorrelationID = "req_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	current := trigger
 	current.Revision = trigger.Revision + 1
 	current.DesiredState = "stopped"
@@ -717,10 +727,12 @@ func TestSignedWorkspaceServiceCommandResolverAuthenticatesAndReturnsLatestRevis
 				t.Fatal(err)
 			}
 			var lookup struct {
-				TenantID    domain.TenantID    `json:"tenant_id"`
-				WorkspaceID domain.WorkspaceID `json:"workspace_id"`
+				TenantID      domain.TenantID    `json:"tenant_id"`
+				WorkspaceID   domain.WorkspaceID `json:"workspace_id"`
+				CorrelationID string             `json:"correlation_id"`
 			}
-			if json.Unmarshal(body, &lookup) != nil || lookup.TenantID != trigger.TenantID || lookup.WorkspaceID != trigger.WorkspaceID {
+			if json.Unmarshal(body, &lookup) != nil || lookup.TenantID != trigger.TenantID || lookup.WorkspaceID != trigger.WorkspaceID ||
+				lookup.CorrelationID != trigger.CorrelationID {
 				t.Fatalf("desired-state request disclosed wrong scope: %s", body)
 			}
 			timestamp, requestID := request.Header.Get("X-Hako-Timestamp"), request.Header.Get("X-Hako-Report-ID")
@@ -755,6 +767,18 @@ func TestSignedWorkspaceServiceCommandResolverAuthenticatesAndReturnsLatestRevis
 	}
 	if _, err := wrongResolver.Resolve(context.Background(), trigger); !errors.Is(err, ErrWorkspaceServiceDelivery) {
 		t.Fatalf("foreign Plane desired state must be rejected: %v", err)
+	}
+	wrong = current
+	wrong.CorrelationID = "req_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	wrongResolver, err = NewSignedWorkspaceServiceCommandResolver("https://control.example", trigger.ResourcePlaneID, key,
+		&http.Client{Transport: serviceRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(mustJSON(t, wrong)))}, nil
+		})}, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wrongResolver.Resolve(context.Background(), trigger); !errors.Is(err, ErrWorkspaceServiceDelivery) {
+		t.Fatalf("changed correlation ID must be rejected: %v", err)
 	}
 }
 

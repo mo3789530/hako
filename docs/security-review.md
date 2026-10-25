@@ -18,7 +18,7 @@
 
 ## 確認した境界
 
-- APIは全リクエストにサーバー生成の`X-Hako-Request-ID`を返し、route template、status、durationと共に構造化ログへ記録する。入力された同名Headerは採用しない。GitHub webhook ingressも同じIDを信頼済みrequest context経由でInboxに保存し、repository-triggered Workload RunとActions Runner Checkに引き継ぐ。Actions Runner Checkを含むCheck Outboxは相関IDを保持し、consumerは永続Checkと一致するIDだけ配信してstructured delivery logに記録する。Workload Runの相関IDはDB・transactional Scheduler Outbox/SQS・認証済みResource Plane execution metadata・Lambda MicroVM run hook・署名付きAgent execution binding・terminal result・GitHub Check Outboxまで伝播し、resultは永続Runと一致する場合だけ適用する。artifact metadataは所有RunからIDを解決する。個別worker/API failure logへの相関ID追加は未完了。
+- APIは全リクエストにサーバー生成の`X-Hako-Request-ID`を返し、route template、status、durationと共に構造化ログへ記録する。入力された同名Headerは採用しない。GitHub webhook ingressも同じIDを信頼済みrequest context経由でInboxに保存し、repository-triggered Workload RunとActions Runner Checkに引き継ぐ。Actions Runner Checkを含むCheck Outboxは相関IDを保持し、consumerは永続Checkと一致するIDだけ配信してstructured delivery logに記録する。Workload Runの相関IDはDB・transactional Scheduler Outbox/SQS・認証済みResource Plane execution metadata・Lambda MicroVM run hook・署名付きAgent execution binding・terminal result・GitHub Check Outboxまで伝播し、resultは永続Runと一致する場合だけ適用する。Workspace Serviceのrequest IDもAPI→Outbox→署名付きdesired-state照会→Resource Plane failure logまで伝播する。artifact metadataは所有RunからIDを解決する。すべての個別worker/API failure logへの相関ID追加は未完了。
 
 - Cognito verifierはRS256、issuer、client_id、token_use、期限を検証し、API scopeとDB Tenant membershipを別に確認する。
 - MemberのWorkspaceはowner_idで絞り、Owner/Adminの表示・操作もTenant内に限定する。越境はhidden 404。Tenant App設定はOwner/Adminのみ。

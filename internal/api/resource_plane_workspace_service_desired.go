@@ -26,9 +26,12 @@ const maxWorkspaceServiceDesiredRequestBytes = 2 << 10
 var workspaceServiceDesiredRequestIDPattern = regexp.MustCompile(`^[a-f0-9]{48}$`)
 
 type workspaceServiceDesiredStateRequest struct {
-	TenantID    domain.TenantID    `json:"tenant_id"`
-	WorkspaceID domain.WorkspaceID `json:"workspace_id"`
+	TenantID      domain.TenantID    `json:"tenant_id"`
+	WorkspaceID   domain.WorkspaceID `json:"workspace_id"`
+	CorrelationID string             `json:"correlation_id,omitempty"`
 }
+
+var workspaceServiceCorrelationIDPattern = regexp.MustCompile(`^req_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 func resolveResourcePlaneWorkspaceServiceDesiredState(pool transaction.Beginner, resolveKey ResourcePlaneServiceReportKeyResolver) echo.HandlerFunc {
 	return func(c *echo.Context) error {
@@ -73,7 +76,8 @@ func resolveResourcePlaneWorkspaceServiceDesiredState(pool transaction.Beginner,
 		var lookup workspaceServiceDesiredStateRequest
 		decoder := json.NewDecoder(bytes.NewReader(body))
 		decoder.DisallowUnknownFields()
-		if decoder.Decode(&lookup) != nil || decoder.Decode(new(any)) != io.EOF || lookup.TenantID == "" || lookup.WorkspaceID == "" {
+		if decoder.Decode(&lookup) != nil || decoder.Decode(new(any)) != io.EOF || lookup.TenantID == "" || lookup.WorkspaceID == "" ||
+			(lookup.CorrelationID != "" && !workspaceServiceCorrelationIDPattern.MatchString(lookup.CorrelationID)) {
 			return echo.NewHTTPError(http.StatusBadRequest, "invalid desired-state request")
 		}
 		command, err := transaction.Within(c.Request().Context(), pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (domain.WorkspaceServiceCommand, error) {
@@ -94,6 +98,7 @@ func resolveResourcePlaneWorkspaceServiceDesiredState(pool transaction.Beginner,
 			}
 			command.SchemaVersion, command.TenantID, command.WorkspaceID = 1, lookup.TenantID, lookup.WorkspaceID
 			command.ResourcePlaneID, command.ServiceID, command.Config = planeID, serviceID, json.RawMessage(config)
+			command.CorrelationID = lookup.CorrelationID
 			return command, nil
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
