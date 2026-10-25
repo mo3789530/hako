@@ -123,6 +123,28 @@ private Workspace MicroVM executor. Lambda MicroVM is the only execution
 substrate; EC2 is out of scope. No AWS apply or external cutover is included.
 Priority: P1. Parent: Task 47. Depends on: Tasks 40, 43–46, 47, 80–83.
 
+Local verification entrypoint: `make test-workspace-service-runtime-integration`
+runs the Guest/Controller package tests and the PostgreSQL API lifecycle test
+for authorization, desired-state revisions, transactional Outbox delivery,
+signed reports, stale-report fencing, and credential rotation. This does not
+exercise the Workspace `NerdctlServiceEngine` against Podman inside a Lambda
+MicroVM. The existing `make test-job-services-podman` targets the separate
+Workload Job Service adapter and is not evidence for Workspace Service runtime
+behavior. Real ARM64 image/containerd execution and MicroVM isolation remain
+unverified.
+
+## Focused local verification refresh (2026-10-25)
+
+`make test-workspace-service-runtime-integration` passes on the local host.
+It runs `internal/workspaceagent` and `internal/workspaceruntime` unit tests,
+then the PostgreSQL-backed API lifecycle test
+`TestTenantMembershipRouteResolvesUserAndRejectsNonMembers`, which exercises
+Workspace Service admission, authorization, transactional command Outbox,
+revision transitions, signed Resource Plane reports, stale-report rejection,
+and credential rotation. The always-on `hako-dev-postgres` container remained
+running. `make test-job-services-podman` also passes, but exercises the distinct
+Workload Job adapter; it does not close the Workspace MicroVM runtime gate.
+
 ## Goal
 
 Make `hako add`, `hako service start|stop|remove`, and `hako services` reflect
