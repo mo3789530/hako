@@ -147,6 +147,16 @@ statement coverage; `workspace_copy.go` is 74.4% overall and its path/ID
 validators are 100%. This is local protocol evidence and does not verify a
 deployed Lambda MicroVM or Gateway route.
 
+## Port-forward CLI failure-path coverage (2026-10-25)
+
+Added direct `workspaceForward` CLI checks for nil context/output, malformed
+remote/local ports, missing login, missing API/Gateway URLs, and a local port
+already in use. The existing TLS/WSS test still verifies loopback binding,
+per-connection Session authorization, byte relay, and revocation. `go test
+./cmd/hako -count=1 -coverprofile=...` passes; `workspaceForward` statement
+coverage is now 88.0% and the CLI package is 62.7%. These tests do not verify a
+deployed Gateway or Lambda MicroVM.
+
 ## Acceptance criteria
 
 - CLI unit and authenticated integration tests cover happy path, re-login, authorization failure, disconnect, cancellation, and invalid forwards.

@@ -7,10 +7,12 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -955,5 +957,56 @@ func TestWorkspaceForwardRejectsInvalidPortsBeforeOpeningListener(t *testing.T) 
 				t.Fatal("invalid port accepted")
 			}
 		})
+	}
+}
+
+func TestWorkspaceForwardCLIRejectsInvalidConfigurationAndListener(t *testing.T) {
+	previousGetter := cliCredentialGetter
+	t.Cleanup(func() { cliCredentialGetter = previousGetter })
+
+	validCredentials := fmt.Sprintf(`{"access_token":"forward-access","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+		time.Now().UTC().Format(time.RFC3339))
+	for _, test := range []struct {
+		name       string
+		ctx        context.Context
+		stderr     io.Writer
+		remotePort string
+		localPort  string
+		credential string
+		apiURL     string
+		gatewayURL string
+		want       string
+	}{
+		{name: "nil context", stderr: io.Discard, remotePort: "5432", want: "context and status output"},
+		{name: "nil status output", ctx: context.Background(), remotePort: "5432", want: "context and status output"},
+		{name: "invalid remote port", ctx: context.Background(), stderr: io.Discard, remotePort: "postgres", want: "remote port"},
+		{name: "invalid local port", ctx: context.Background(), stderr: io.Discard, remotePort: "5432", localPort: "nope", want: "local port"},
+		{name: "missing login", ctx: context.Background(), stderr: io.Discard, remotePort: "5432", credential: "", want: "saved Hako login is invalid"},
+		{name: "missing API URL", ctx: context.Background(), stderr: io.Discard, remotePort: "5432", credential: validCredentials, want: "HAKO_API_URL is required"},
+		{name: "missing Gateway URL", ctx: context.Background(), stderr: io.Discard, remotePort: "5432", credential: validCredentials, apiURL: "https://api.example.test", want: "HAKO_GATEWAY_URL is required"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HAKO_API_URL", test.apiURL)
+			t.Setenv("HAKO_GATEWAY_URL", test.gatewayURL)
+			cliCredentialGetter = workspaceShellCredentials(test.credential)
+			err := workspaceForward(test.ctx, "tenant_cli", "ws_cli", test.remotePort, test.localPort, test.stderr)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("workspaceForward error = %v, want substring %q", err, test.want)
+			}
+		})
+	}
+
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	t.Setenv("HAKO_API_URL", "https://api.example.test")
+	t.Setenv("HAKO_GATEWAY_URL", "https://gateway.example.test")
+	cliCredentialGetter = workspaceShellCredentials(validCredentials)
+	err = workspaceForward(context.Background(), "tenant_cli", "ws_cli", "5432",
+		strconv.Itoa(occupied.Addr().(*net.TCPAddr).Port), io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "listen on local loopback port") {
+		t.Fatalf("occupied local port error = %v", err)
 	}
 }
