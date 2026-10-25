@@ -486,10 +486,10 @@ Add optional repository-level preview environments and service metadata/deploy p
   provision success. The shared Gateway denies every Preview runtime port
   except 3000, even if a general Workspace policy would allow another port;
   Preview forwarding also defaults to and accepts only 3000. The production
-  Gateway Lambda injects `PreviewPortAuthorizer`, allowing only that port for
-  a valid Preview runtime identity with `port-forward` scope. Ordinary
-  Workspace ports remain denied until their service state is connected to a
-  separate policy.
+  Gateway Lambda composes `PreviewPortAuthorizer` with the signed Control
+  Plane Service authorizer: Preview remains fixed to port 3000, while ordinary
+  Workspaces require a healthy current-generation Catalog Service port. See
+  Task 86 for PostgreSQL fencing and denial coverage.
 - Unit and local integration tests cover strict manifest decoding, process
   start/idempotence/stop, file-channel authorization, API-to-Gateway Preview
   forwarding, the production authorizer policy, and denial of

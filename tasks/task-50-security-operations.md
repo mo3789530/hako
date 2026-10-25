@@ -42,8 +42,9 @@ Workspace Operations. Workspace Gateway authorization/dial/recheck failures
 now log trusted Ticket/Tenant/Workspace/Plane identifiers and a bounded failure
 class, and artifact cleanup failures log Run/artifact/correlation identifiers;
 neither includes raw errors or storage references. Tests cover active Session
-recheck failure and S3 cleanup failure. Remaining work is the wider
-Gateway/cleanup worker inventory and production log/alert review. The
+recheck failure and S3 cleanup failure. The local Gateway/cleanup failure-path
+inventory is now documented in the [Security review](../docs/security-review.md).
+Production log retention, alert delivery, and escalation review remain. The
 Workspace Service SQS adapter now logs a fixed failure class and AWS message ID
 without logging the command body or raw runtime/provider errors; a regression
 test checks this redaction boundary. The Resource Plane consumer also maps
@@ -119,9 +120,10 @@ The remaining Task 50 Gateway/cleanup inventory also covered startup boundaries:
 Resource Controller Lambda initialization and Workspace Gateway process-exit
 logs now emit fixed failure classes without formatting the underlying error.
 This prevents AWS SDK endpoint/configuration details and filesystem paths from
-being copied into CloudWatch. Preview cleanup still has no physical worker, so
-there is no provider cleanup log path to claim as implemented; the runtime
-binding/deletion worker remains Task 54 work. Production retention, alert
+being copied into CloudWatch. Preview cleanup has generation-fenced retry
+orchestration but no provider-backed deletion executor yet, so there is no
+MicroVM/route deletion log path to claim as implemented; the executor remains
+Task 54 work. Production retention, alert
 delivery, and escalation review remain unverified.
 
 The follow-up process-wide scan removed raw startup errors from API, Dispatcher,

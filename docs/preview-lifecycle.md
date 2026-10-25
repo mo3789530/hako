@@ -266,11 +266,12 @@ Terraform apply was performed. The deploy gate still requires the matching
 ticket public key and file-transfer endpoint in the immutable Guest image,
 Resource Plane egress/connectivity validation, Gateway routing/publication,
 and an end-to-end real MicroVM test. The resource adapter installs the source
-and starts the repository-declared Preview process. Production Gateway
-Preview-port authorization is composed locally; ordinary Workspace service
-port authorization, Resource Plane egress validation, and real MicroVM
-validation remain open. The app is reached through the loopback-only CLI
-tunnel, not a public application URL.
+and starts the repository-declared Preview process. Gateway authorization is
+composed locally: Preview is restricted to its fixed port, and ordinary
+Workspace forwarding requires a healthy current-generation Service Catalog
+port (Task 86). Resource Plane egress validation, the deployed Gateway path,
+and real MicroVM validation remain open. The app is reached through the
+loopback-only CLI tunnel, not a public application URL.
 
 Each present Preview records a fixed `expires_at` using the Tenant's configured
 Preview lifetime (24 hours when no quota row exists). `synchronize` deliveries
