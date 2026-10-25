@@ -231,8 +231,12 @@ Add optional repository-level preview environments and service metadata/deploy p
 - `go test ./cmd/hako -count=1 -coverprofile=...` reports 60.2% package
   statement coverage; `openGitHubRepositoryPreview` is 100% and the injected
   implementation path is 79.3%. This verifies CLI routing/session behavior
-  only; the Resource Plane MicroVM provisioner, public preview route, and
-  deployed Gateway remain unimplemented.
+  only. Preview provision/cleanup now also has a local Resource Plane Lambda
+  MicroVM composition, broker-pinned source staging, Guest archive install and
+  application startup, plus an authenticated Gateway route fixed to port 3000.
+  The externally reachable route, matching ARM64 Guest image, deployed queues
+  and schedules, and live Lambda MicroVM/Gateway behavior remain unverified;
+  see the follow-up sections below.
 
 ## Preview-to-Workspace MicroVM adapter (2026-10-25)
 
