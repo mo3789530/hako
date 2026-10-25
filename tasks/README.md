@@ -28,6 +28,7 @@ Task 41のGitHub Checks delivery（mTLS broker/consumer、idempotent Check更新
 | 後続 | [73 — Claude Code Action親タスク](task-73-claude-code-action.md) | 52 | Task 74–77のlocal provenance/credential/execution/E2Eは実装済み。pinned image、実MicroVM・GitHub/AWS接続、production rolloutが残る |
 | 完了（ローカル） | [78–79 — Webhook運用/E2E](task-78-webhook-platform-operator-dlq.md) | 51 | Operator API/runbookとretention/replay/trigger lifecycle E2EをPostgreSQLで検証。Production運用ゲートは別 |
 | 完了（ローカル） | [87 — Workload Artifact Download](task-87-workload-artifact-download.md) | 40, 46 | Short-lived Tenant/Run/artifact/Plane-bound ticket、Gateway直結S3 stream、exact-prefix IAM、CLI SHA-256検証を実装。AWS deployment/live S3 retrievalは未検証 |
+| 完了（ローカル） | [88 — Preview Application Log Tail](task-88-preview-application-logs.md) | 54 | Guest内256 KiB bounded log tail、Preview専用read-only Session/Gateway route、CLI取得を実装。実MicroVM/image/Gateway検証はTask 54のAWS gate |
 
 Tenant App子タスクのlocal受入条件はTask 70/71まで実装・検証済み。brokerのWorker接続とbroker専用IAM contractもlocal実装済み。cross-account certificate/Role trust/Secret/KMS provisioningと承認済みcutoverは未完了で、次の実装順は下の「整理後の実行キュー」に集約する。Task 68のローカル実装も完了扱いだが、監視・AWS配備レビューは別の運用作業として残る。Terraform配備はAPI/CLIとローカル検証の後段とする。Workspace/EFS/Gateway（43–47）、運用（48–50）、Software Factory拡張（53–55）も未完了。親子タスクは二重計上せず、詳細は各taskの受入条件を参照する。
 
@@ -36,12 +37,13 @@ Preview generation snapshots the eligible Tenant-owned GitHub App identity
 allocation row is first created. A separate mTLS broker endpoint issues a
 Contents-read token only for the exact current generation and active
 Resource Plane claim and returns verified Repository metadata through a
-bounded HTTPS client. A local Preview materializer now checks out the exact
-head SHA and stages a credential-free S3 archive under the Workspace,
-generation, and active claim identity. Unit tests cover staging and temporary
-checkout cleanup; PostgreSQL tests cover claim fencing and credential
-rotation. Materializer-to-runtime wiring, Guest delivery, and app startup
-remain open; see Task 54 and the Preview lifecycle document.
+bounded HTTPS client. The materializer checks out the exact head SHA and
+stages a credential-free S3 archive; the Lambda MicroVM runtime adapter
+installs it through the Guest one-use WSS route and starts the declared app.
+Local tests cover staging, Guest installation/startup, and the fake-provider
+provision/cleanup path. The matching ARM64 image, deployed Gateway, and real
+MicroVM execution remain AWS validation gates; see Task 54 and the Preview
+lifecycle document.
 
 ### ローカル実装と外部承認の境界
 
