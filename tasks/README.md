@@ -187,6 +187,13 @@ truncated output and all non-lint command output produce no annotations.
 Focused Worker tests cover parsing, redaction, bounds, truncation, and
 result-copy isolation. Actions Runner diagnostics remain summary-only.
 
+Task 41 full local integration refresh (2026-10-25): `make
+test-integration-local` passed all packages with `-tags=integration -p=1
+./... -count=1`, including Worker annotation production, PostgreSQL result
+validation/persistence, and fake GitHub Checks delivery. The existing
+`hako-dev-postgres` container remained running. This does not verify AWS
+deployment or live GitHub delivery.
+
 ## 着手ルール
 
 1. `P0`から順に、依存タスクが完了しているものを一件だけ選ぶ。
