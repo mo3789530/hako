@@ -40,3 +40,12 @@ production mTLS remain separate deployment gates.
 - Secret values never appear in API responses, DSQL, logs, command arguments, runner registration data or stored artifacts.
 - IAM/secret-reader purpose and trust boundaries are documented; no real Secret is read or provisioned in this task.
 - Terraform grants the Broker only exact `sts:AssumeRole` targets for each configured purpose and keeps model credentials distinct from GitHub App private-key and Webhook roles.
+
+## Model credential CLI failure-path coverage (2026-10-25)
+
+Added local CLI tests for empty/unknown actions, missing Tenant login, missing
+API origin, and Tenant authorization denial. The denial test confirms the
+server's bounded error code is propagated without any credential value. Both
+`parseModelCredentialCLI` and `manageModelCredentialCLI` now have 100% statement
+coverage; `cmd/hako` reports 72.4%. All requests use synthetic credentials and
+a local HTTP server; no Secret or AWS API is accessed.

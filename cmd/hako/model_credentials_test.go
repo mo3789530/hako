@@ -26,6 +26,9 @@ func TestParseModelCredentialCLI(t *testing.T) {
 		}
 	}
 	for _, args := range [][]string{
+		{},
+		{"list"},
+		{"unknown", "--tenant", "tenant_a"},
 		{"add", "--tenant", "tenant_a", "--binding", "binding_a", "--version-id", "plain-secret-value"},
 		{"rotate", "--tenant", "tenant_a", "--version-id", version},
 		{"disable", "--tenant", "tenant_a"},
@@ -35,6 +38,48 @@ func TestParseModelCredentialCLI(t *testing.T) {
 		if _, err := parseModelCredentialCLI(args); err == nil {
 			t.Errorf("parseModelCredentialCLI(%v) accepted invalid/secret-bearing arguments", args)
 		}
+	}
+}
+
+func TestManageModelCredentialCLIFailsClosedOnInvalidConfigurationAndAPIRejection(t *testing.T) {
+	validCredentials := fmt.Sprintf(`{"access_token":"model-credential-access","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+		time.Now().UTC().Format(time.RFC3339))
+	previousGetter := cliCredentialGetter
+	t.Cleanup(func() { cliCredentialGetter = previousGetter })
+
+	for _, test := range []struct {
+		name        string
+		args        []string
+		credentials string
+		apiURL      string
+		want        string
+	}{
+		{name: "invalid action", args: []string{"unknown", "--tenant", "tenant_model"}, credentials: validCredentials, apiURL: "https://api.example.test", want: "supported actions"},
+		{name: "missing login", args: []string{"list", "--tenant", "tenant_model"}, apiURL: "https://api.example.test", want: "saved Hako login is invalid"},
+		{name: "missing API URL", args: []string{"list", "--tenant", "tenant_model"}, credentials: validCredentials, want: "HAKO_API_URL"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HAKO_API_URL", test.apiURL)
+			cliCredentialGetter = workspaceShellCredentials(test.credentials)
+			if _, err := manageModelCredentialCLI(test.args); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("manageModelCredentialCLI error = %v, want %q", err, test.want)
+			}
+		})
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/tenants/tenant_model/model-credentials" {
+			t.Errorf("unexpected API request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = fmt.Fprint(w, `{"error":{"code":"tenant_forbidden","message":"Tenant Owner or Admin required"}}`)
+	}))
+	defer server.Close()
+	t.Setenv("HAKO_API_URL", server.URL)
+	cliCredentialGetter = workspaceShellCredentials(validCredentials)
+	if _, err := manageModelCredentialCLI([]string{"list", "--tenant", "tenant_model"}); err == nil || !strings.Contains(err.Error(), "tenant_forbidden") {
+		t.Fatalf("Tenant API denial = %v, want sanitized authorization error", err)
 	}
 }
 
