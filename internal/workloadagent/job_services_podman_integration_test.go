@@ -227,18 +227,20 @@ func TestNerdctlJobServicePodmanRuntimeContract(t *testing.T) {
 		t.Fatalf("Job Service port binding escaped loopback: binding=%q err=%v", strings.TrimSpace(string(output)), err)
 	}
 	if hostCanReachEgressProbe(ctx) {
-		probeCtx, probeCancel := context.WithTimeout(ctx, 5*time.Second)
-		probe := exec.CommandContext(probeCtx, podman, "exec", container, "bash", "-c", "exec 3<>/dev/tcp/1.1.1.1/443")
-		probe.Env = podmanIntegrationEnvironment()
-		probeErr := probe.Run()
-		probeCancel()
-		if probeErr == nil {
+		if jobContainerCanReachTCPProbe(ctx, podman, container, "1.1.1.1", "443") {
 			t.Fatal("Job Service internal network reached an external TCP endpoint")
 		}
 		t.Log("host egress baseline was reachable and the Job Service internal network denied the TCP probe")
 	} else {
 		t.Log("external egress denial probe skipped because the host cannot reach its baseline endpoint")
 	}
+	// This is a TCP connect-only check: it sends no HTTP request and retrieves
+	// no metadata or credentials. The isolated Job Service must not even reach
+	// the well-known instance metadata listener on its link-local address.
+	if jobContainerCanReachTCPProbe(ctx, podman, container, "169.254.169.254", "80") {
+		t.Fatal("Job Service internal network reached the instance metadata listener")
+	}
+	t.Log("Job Service internal network denied the link-local instance metadata TCP probe")
 	output, err = exec.CommandContext(ctx, podman, "inspect", "--format", `{{.HostConfig.Memory}}|{{.HostConfig.NanoCpus}}|{{.HostConfig.ReadonlyRootfs}}|{{.HostConfig.PidsLimit}}|{{.Config.User}}|{{json .HostConfig.Tmpfs}}|{{index .Config.Labels "hako.job-scope-key"}}`, container).CombinedOutput()
 	inspection := strings.TrimSpace(string(output))
 	if err != nil || !strings.HasPrefix(inspection, "1073741824|750000000|true|256|999:999|") || !strings.HasSuffix(inspection, "|"+owner) ||
@@ -272,4 +274,12 @@ func hostCanReachEgressProbe(ctx context.Context) bool {
 	}
 	_ = connection.Close()
 	return true
+}
+
+func jobContainerCanReachTCPProbe(ctx context.Context, podman, container, host, port string) bool {
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	probe := exec.CommandContext(probeCtx, podman, "exec", container, "bash", "-c", "exec 3<>/dev/tcp/"+host+"/"+port)
+	probe.Env = podmanIntegrationEnvironment()
+	return probe.Run() == nil
 }

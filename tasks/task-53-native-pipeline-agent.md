@@ -511,7 +511,9 @@ target gates pass.
   repository-controlled processes and sidecars cannot fetch images at runtime.
   The production engine's Podman acceptance test verified PostgreSQL remained
   reachable through loopback while a TCP connection to an external endpoint
-  was denied (2026-10-25).
+  was denied (2026-10-25). It now also attempts a connect-only TCP probe to the
+  link-local instance metadata listener and fails if reachable; it sends no
+  HTTP request and does not retrieve metadata or credentials.
 - [ ] Repeat the network and port-isolation acceptance on the pinned ARM64
   nerdctl image inside the Lambda MicroVM, including confirmation that its
   network connector cannot reach AWS endpoints or arbitrary Internet hosts.

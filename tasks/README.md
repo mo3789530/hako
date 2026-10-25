@@ -19,6 +19,9 @@ symlink replacement during reads and atomic writes. Descriptor-relative
 `openat`/`O_NOFOLLOW` operations and bounded reads keep repository test code
 from redirecting model file tools between path validation and use; unit and
 race tests cover the Agent path. Target MicroVM behavior remains unverified.
+The Podman Job Service acceptance now also checks that an internal network
+cannot establish TCP to the link-local instance-metadata listener; it performs
+no metadata HTTP request or credential read.
 
 ## 着手ルール
 
