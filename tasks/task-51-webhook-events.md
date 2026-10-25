@@ -22,3 +22,12 @@ Complete the durable GitHub Webhook path beyond the already-supported signature 
 - Event-to-Workload creation uses a stable Delivery ID idempotency key, reloads normalized identity from the authorized inbox and transactionally creates Run/Check/Outbox before enabling workflow-job scheduling. Task 52 still owns runner scheduling and workflow provenance checks.
 - Repository trigger scheduling is Owner/Admin opt-in, default-off, and must suppress inbox deliveries received before the repository's latest opt-in timestamp. It creates only fixed `untrusted` `standard` verification Jobs for push and PR opened/reopened/synchronize events; it does not execute `workflow_job`.
 - Runbook documents failed deliveries, replay eligibility, retention, and incident response.
+
+## Replay API error-contract coverage (2026-10-25)
+
+The PostgreSQL API integration test also verifies malformed JSON, missing,
+short, and over-limit replay reasons return `400 invalid_request`; an
+integration ID owned by another Tenant is hidden as `404`; and exhausting the
+per-delivery replay budget returns `429` with `Retry-After: 3600`. These cases
+use the real local API/store path and synthetic identities; they do not call
+GitHub or AWS.

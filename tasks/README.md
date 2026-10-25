@@ -140,6 +140,11 @@ synthetic test public key. This confirms build/package architecture, not a
 Lambda MicroVM image build or guest execution. The test key is not production
 usable; runtime/network/isolation PoC remains open.
 
+Task 51 replay API coverage follow-up (2026-10-25): the PostgreSQL API test now
+pins malformed/missing/short/oversized reasons, foreign-Tenant integration
+hiding, and replay-rate exhaustion (`429` plus `Retry-After`). The focused test
+passes locally without GitHub or AWS access.
+
 Added `make verify-workload-microvm-artifact` so the Agent ZIP check is
 repeatable: it validates the public-key JSON, exact package contents, key-byte
 identity, and static ELF64/AArch64 architecture. Focused key validation tests

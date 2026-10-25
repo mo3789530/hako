@@ -75,16 +75,39 @@ func TestTenantWebhookReplayAPIIsAdminOnlyAndDoesNotExposeRawPayload(t *testing.
 	memberToken := signTenantAPIToken(t, key, issuer, "replay-member", "openid hako/api")
 	path := "/v1/tenants/tenant_replay_api/github/apps/integration_replay_api/deliveries/" + delivery.DeliveryID + "/replay"
 	listPath := "/v1/tenants/tenant_replay_api/github/apps/integration_replay_api/deliveries?limit=10&offset=0"
-	call := func(token string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"reason":"retry reviewed processor failure"}`))
+	callBody := func(token, requestPath, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, requestPath, strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+token)
 		res := httptest.NewRecorder()
 		handler.ServeHTTP(res, req)
 		return res
 	}
+	call := func(token string) *httptest.ResponseRecorder {
+		return callBody(token, path, `{"reason":"retry reviewed processor failure"}`)
+	}
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{name: "malformed JSON", body: `{`},
+		{name: "missing reason", body: `{}`},
+		{name: "short reason", body: `{"reason":"short"}`},
+		{name: "oversized reason", body: `{"reason":"` + strings.Repeat("x", webhookstore.MaxWebhookReplayReasonBytes+1) + `"}`},
+	} {
+		t.Run("invalid replay "+test.name, func(t *testing.T) {
+			response := callBody(ownerToken, path, test.body)
+			if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"invalid_request"`) {
+				t.Fatalf("invalid replay request HTTP %d: %s", response.Code, response.Body.String())
+			}
+		})
+	}
 	if response := call(memberToken); response.Code != http.StatusNotFound {
 		t.Fatalf("non-admin replay HTTP %d, want 404", response.Code)
+	}
+	otherDeliveryPath := "/v1/tenants/tenant_replay_api/github/apps/integration_replay_other/deliveries/" + delivery.DeliveryID + "/replay"
+	if response := callBody(ownerToken, otherDeliveryPath, `{"reason":"retry reviewed processor failure"}`); response.Code != http.StatusNotFound {
+		t.Fatalf("foreign Tenant integration replay HTTP %d, want hidden 404", response.Code)
 	}
 	listAs := func(token string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, listPath, nil)
@@ -139,5 +162,11 @@ func TestTenantWebhookReplayAPIIsAdminOnlyAndDoesNotExposeRawPayload(t *testing.
 	}
 	if response := call(ownerToken); response.Code != http.StatusConflict {
 		t.Fatalf("duplicate replay of non-failed delivery HTTP %d, want 409", response.Code)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE github_webhook_deliveries SET processing_status='failed',replay_count=$3,replay_window_started_at=now() WHERE integration_id=$1 AND delivery_id=$2`, delivery.IntegrationID, delivery.DeliveryID, webhookstore.MaxWebhookReplaysPerHour); err != nil {
+		t.Fatal(err)
+	}
+	if response := call(adminToken); response.Code != http.StatusTooManyRequests || response.Header().Get("Retry-After") != "3600" {
+		t.Fatalf("rate-limited replay HTTP %d Retry-After=%q, want 429/3600: %s", response.Code, response.Header().Get("Retry-After"), response.Body.String())
 	}
 }
