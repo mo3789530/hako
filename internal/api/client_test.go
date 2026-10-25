@@ -21,12 +21,12 @@ func TestCreateWorkloadArtifactDownloadTicketUsesExactTenantRunAndArtifactRoute(
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(WorkloadArtifactDownloadTicket{Ticket: "opaque-ticket", ExpiresAt: time.Now().Add(time.Minute),
-			SizeBytes: 12, SHA256: strings.Repeat("a", 64), Kind: "logs"})
+			SizeBytes: 12, SHA256: strings.Repeat("a", 64), Kind: "agent_changes"})
 	}))
 	defer server.Close()
 	result, err := CreateWorkloadArtifactDownloadTicket(context.Background(), server.URL, "artifact-test-token",
 		"tenant_123", "run_123", "artifact_123", server.Client())
-	if err != nil || result.Ticket != "opaque-ticket" || result.SizeBytes != 12 || result.Kind != "logs" {
+	if err != nil || result.Ticket != "opaque-ticket" || result.SizeBytes != 12 || result.Kind != "agent_changes" {
 		t.Fatalf("ticket = %+v, %v", result, err)
 	}
 	for _, ids := range [][3]string{{"../tenant", "run_123", "artifact_123"}, {"tenant_123", "../run", "artifact_123"}, {"tenant_123", "run_123", "../artifact"}} {

@@ -29,6 +29,7 @@ var (
 
 const maxSourceArchiveBytes = 1 << 30
 const maxAgentLogBytes = 16 << 20
+const maxAgentChangeBundleBytes = 8 << 20
 
 // Backend owns idempotency and process lifecycle. It must pin a single full
 // attempt identity to the MicroVM ID in the verified ticket and never execute
@@ -38,6 +39,10 @@ type Backend interface {
 	Status(context.Context, TicketClaims) (workloadjournal.ExecutionState, error)
 	Result(context.Context, TicketClaims) (workloadjobs.WorkloadResult, error)
 	Logs(context.Context, TicketClaims) ([]byte, error)
+}
+
+type changeBundleBackend interface {
+	ChangeBundle(context.Context, TicketClaims) ([]byte, error)
 }
 
 type SourceInstaller interface {
@@ -129,6 +134,8 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.result(w, r, claims)
 	case OperationLogs:
 		s.logs(w, r, claims)
+	case OperationChanges:
+		s.changes(w, r, claims)
 	default:
 		http.Error(w, "invalid Hako Agent request", http.StatusBadRequest)
 	}
@@ -269,6 +276,42 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request, claims TicketClaim
 	_, _ = w.Write(data)
 }
 
+func (s *Server) changes(w http.ResponseWriter, r *http.Request, claims TicketClaims) {
+	if r.ContentLength > 0 || len(r.TransferEncoding) > 0 || claims.Execution == nil || claims.Execution.Kind != "agent" {
+		http.Error(w, "invalid Hako Agent request", http.StatusBadRequest)
+		return
+	}
+	backend, ok := s.backend.(changeBundleBackend)
+	if !ok {
+		http.Error(w, "change bundle unavailable", http.StatusNotFound)
+		return
+	}
+	data, err := backend.ChangeBundle(r.Context(), claims)
+	if err != nil {
+		writeBackendError(w, err)
+		return
+	}
+	defer clear(data)
+	if len(data) == 0 {
+		w.Header().Set("X-Hako-Agent-Protocol", ProtocolVersion)
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if len(data) > maxAgentChangeBundleBytes {
+		http.Error(w, "change bundle unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	digest := sha256.Sum256(data)
+	w.Header().Set("X-Hako-Agent-Protocol", ProtocolVersion)
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.Header().Set("X-Hako-Change-SHA256", hex.EncodeToString(digest[:]))
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
 func routeIdentity(r *http.Request) (workloadjournal.Command, Operation, error) {
 	if r.URL.RawQuery != "" || r.URL.Fragment != "" {
 		return workloadjournal.Command{}, "", ErrProtocolRequest
@@ -303,6 +346,8 @@ func routeIdentity(r *http.Request) (workloadjournal.Command, Operation, error) 
 			return identity, OperationResult, nil
 		case "logs":
 			return identity, OperationLogs, nil
+		case "changes":
+			return identity, OperationChanges, nil
 		}
 	}
 	return workloadjournal.Command{}, "", ErrProtocolRequest

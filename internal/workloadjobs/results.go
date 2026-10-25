@@ -40,6 +40,7 @@ type WorkloadResult struct {
 	ErrorCode       string                   `json:"error_code,omitempty"`
 	CompletedAt     time.Time                `json:"completed_at"`
 	LogArtifact     *WorkloadLogArtifact     `json:"log_artifact,omitempty"`
+	ChangeBundle    *WorkloadChangeArtifact  `json:"change_bundle,omitempty"`
 	PipelineResults []WorkloadPipelineResult `json:"pipeline_results,omitempty"`
 }
 
@@ -57,6 +58,14 @@ type WorkloadLogArtifact struct {
 	SizeBytes  int64  `json:"size_bytes"`
 	SHA256     string `json:"sha256"`
 	Redacted   bool   `json:"redacted"`
+}
+
+// WorkloadChangeArtifact identifies a bounded Native Agent proposal bundle.
+// The bundle is untrusted source material and is not a patch authorization.
+type WorkloadChangeArtifact struct {
+	StorageRef string `json:"storage_ref"`
+	SizeBytes  int64  `json:"size_bytes"`
+	SHA256     string `json:"sha256"`
 }
 
 type ResultOutcome string
@@ -92,11 +101,19 @@ func (h *ResultHandler) Handle(ctx context.Context, result WorkloadResult) (Resu
 		completedAt = now().UTC()
 	}
 	artifactID := ""
+	changeArtifactID := ""
 	if result.LogArtifact != nil {
 		var err error
 		artifactID, err = idgen.New("artifact_")
 		if err != nil {
 			return "", fmt.Errorf("generate Workload artifact ID: %w", err)
+		}
+	}
+	if result.ChangeBundle != nil {
+		var err error
+		changeArtifactID, err = idgen.New("artifact_")
+		if err != nil {
+			return "", fmt.Errorf("generate Workload change artifact ID: %w", err)
 		}
 	}
 	outcome, err := transaction.Within(ctx, h.Pool, h.Policy, func(ctx context.Context, tx pgx.Tx) (ResultOutcome, error) {
@@ -132,7 +149,8 @@ func (h *ResultHandler) Handle(ctx context.Context, result WorkloadResult) (Resu
 		if err != nil {
 			return "", err
 		}
-		if run.ResourcePlaneID != result.ResourcePlaneID || run.CommitSHA != result.CommitSHA {
+		if run.ResourcePlaneID != result.ResourcePlaneID || run.CommitSHA != result.CommitSHA ||
+			result.ChangeBundle != nil && run.Kind != domain.WorkloadAgent {
 			return "", ErrWorkloadResultMismatch
 		}
 		if result.CorrelationID != run.CorrelationID {
@@ -172,6 +190,14 @@ func (h *ResultHandler) Handle(ctx context.Context, result WorkloadResult) (Resu
 				SizeBytes: result.LogArtifact.SizeBytes, SHA256: result.LogArtifact.SHA256,
 				Redacted: result.LogArtifact.Redacted, CreatedAt: completedAt}); err != nil {
 				return "", fmt.Errorf("record Workload log artifact: %w", err)
+			}
+		}
+		if result.ChangeBundle != nil && next == domain.WorkloadSucceeded {
+			if err := workloads.AddArtifact(ctx, tx, domain.WorkloadArtifact{ID: changeArtifactID, TenantID: run.TenantID,
+				RunID: run.ID, Kind: "agent_changes", StorageRef: result.ChangeBundle.StorageRef,
+				SizeBytes: result.ChangeBundle.SizeBytes, SHA256: result.ChangeBundle.SHA256,
+				Redacted: false, CreatedAt: completedAt}); err != nil {
+				return "", fmt.Errorf("record Workload Agent change artifact: %w", err)
 			}
 		}
 		if len(result.PipelineResults) > 0 {
@@ -276,6 +302,14 @@ func validateWorkloadResult(result WorkloadResult) error {
 		}
 		if _, err := hex.DecodeString(result.LogArtifact.SHA256); err != nil {
 			return fmt.Errorf("%w: log artifact SHA-256 is invalid", ErrWorkloadResultInvalid)
+		}
+	}
+	if result.ChangeBundle != nil {
+		if result.Status != domain.WorkloadSucceeded || result.ChangeBundle.SizeBytes < 1 || result.ChangeBundle.SizeBytes > 8<<20 || len(result.ChangeBundle.SHA256) != 64 {
+			return fmt.Errorf("%w: change bundle metadata must be bounded and SHA-256 identified", ErrWorkloadResultInvalid)
+		}
+		if _, err := hex.DecodeString(result.ChangeBundle.SHA256); err != nil {
+			return fmt.Errorf("%w: change bundle SHA-256 is invalid", ErrWorkloadResultInvalid)
 		}
 	}
 	return nil

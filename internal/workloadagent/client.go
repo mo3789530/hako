@@ -194,6 +194,63 @@ func (c *Client) Logs(ctx context.Context, endpoint, authToken, agentTicket stri
 	return data, digest, nil
 }
 
+// Changes fetches the bounded Agent proposal archive for one completed
+// attempt. The archive is streamed only to the Resource Plane, which owns the
+// S3 upload role; the MicroVM never receives AWS credentials.
+func (c *Client) Changes(ctx context.Context, endpoint, authToken, agentTicket string, id workloadjournal.Command) ([]byte, string, error) {
+	if c == nil || c.logsHTTP == nil || ctx == nil || !validIdentity(id) || authToken == "" || strings.ContainsAny(authToken, "\r\n") ||
+		agentTicket == "" || len(agentTicket) > 8192 || strings.ContainsAny(agentTicket, " \t\r\n") {
+		return nil, "", ErrProtocolRequest
+	}
+	u, err := endpointURL(endpoint)
+	if err != nil {
+		return nil, "", err
+	}
+	segments := []string{"v1", "tenants", id.TenantID, "runs", id.WorkloadRunID, "attempts", id.AttemptID,
+		"generations", strconv.FormatInt(id.Generation, 10), "resource-planes", id.ResourcePlaneID, "changes"}
+	u.Path = path.Join(append([]string{u.Path}, segments...)...)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, "", ErrProtocolRequest
+	}
+	req.Header.Set("Accept", "application/zip")
+	req.Header.Set("Cache-Control", "no-store")
+	req.Header.Set("X-Hako-Agent-Protocol", ProtocolVersion)
+	req.Header.Set("X-aws-proxy-auth", authToken)
+	req.Header.Set("X-aws-proxy-port", "8080")
+	req.Header.Set("Authorization", "Bearer "+agentTicket)
+	req.Header.Set("X-Hako-Idempotency-Token", id.IdempotencyToken)
+	resp, err := c.logsHTTP.Do(req)
+	if err != nil {
+		return nil, "", ErrAgentTransport
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNoContent && resp.Header.Get("X-Hako-Agent-Protocol") == ProtocolVersion &&
+		strings.EqualFold(strings.TrimSpace(resp.Header.Get("Cache-Control")), "no-store") {
+		return nil, "", nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("Hako Agent returned HTTP status %d", resp.StatusCode)
+	}
+	mediaType, _, mediaErr := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	digest := resp.Header.Get("X-Hako-Change-SHA256")
+	if resp.Header.Get("X-Hako-Agent-Protocol") != ProtocolVersion || !strings.EqualFold(strings.TrimSpace(resp.Header.Get("Cache-Control")), "no-store") ||
+		mediaErr != nil || mediaType != "application/zip" ||
+		resp.ContentLength < 1 || resp.ContentLength > maxAgentChangeBundleBytes || !protocolDigest.MatchString(digest) {
+		return nil, "", ErrProtocolResponse
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxAgentChangeBundleBytes+1))
+	if err != nil || int64(len(data)) != resp.ContentLength || len(data) > maxAgentChangeBundleBytes {
+		return nil, "", ErrProtocolResponse
+	}
+	sum := sha256.Sum256(data)
+	if hex.EncodeToString(sum[:]) != digest {
+		clear(data)
+		return nil, "", ErrProtocolResponse
+	}
+	return data, digest, nil
+}
+
 func (c *Client) call(ctx context.Context, method, endpoint, token, agentTicket string, id workloadjournal.Command, operation string, body any, out any) (int, error) {
 	if c == nil || c.http == nil || ctx == nil || !validIdentity(id) || token == "" || strings.ContainsAny(token, "\r\n") ||
 		len(agentTicket) == 0 || len(agentTicket) > 8192 || strings.ContainsAny(agentTicket, " \t\r\n") {

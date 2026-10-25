@@ -113,3 +113,31 @@ func TestS3AttemptLogWriterSanitizesUploadErrors(t *testing.T) {
 		t.Fatalf("upload error was not sanitized: %v", err)
 	}
 }
+
+func TestS3AttemptChangeBundleWriterUsesAttemptScopedUnredactedArtifactKey(t *testing.T) {
+	bundle := []byte("bounded proposal archive")
+	digest := sha256.Sum256(bundle)
+	digestHex := hex.EncodeToString(digest[:])
+	client := &attemptLogPutStub{}
+	writer, err := NewS3AttemptChangeBundleWriter(client, "hako-attempt-artifacts-example", "hako/workloads", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := workloadjournal.Command{TenantID: "tenant_1", WorkloadRunID: "run_1", AttemptID: "attempt_2", Generation: 2,
+		ResourcePlaneID: "rp_1", IdempotencyToken: "idempotency_2"}
+	artifact, err := writer.PutAgentChangeBundle(context.Background(), id, bundle, digestHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantKey := "hako/workloads/tenant_1/run_1/attempt_2/agent-changes/" + digestHex + ".zip"
+	if artifact.StorageRef != "s3://hako-attempt-artifacts-example/"+wantKey || artifact.SizeBytes != int64(len(bundle)) || artifact.SHA256 != digestHex {
+		t.Fatalf("Agent change artifact = %+v", artifact)
+	}
+	if *client.input.Key != wantKey || client.input.ContentType == nil || *client.input.ContentType != "application/zip" ||
+		client.input.ServerSideEncryption != types.ServerSideEncryptionAes256 || client.input.Metadata["hako-artifact-kind"] != "agent-changes" {
+		t.Fatalf("change bundle storage key or metadata is not scoped: %+v", client.input)
+	}
+	if _, err := writer.PutAgentChangeBundle(context.Background(), id, bundle, strings.Repeat("a", 64)); err == nil {
+		t.Fatal("change bundle with a mismatched digest was stored")
+	}
+}

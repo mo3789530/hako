@@ -23,6 +23,7 @@ type LambdaWorkloadHandlerConfig struct {
 	Resolver              Resolver
 	SourceArchives        workloadsource.SourceArchiveReader
 	AttemptLogs           workloadagent.AttemptLogWriter
+	AttemptChanges        workloadagent.AttemptChangeBundleWriter
 	AgentTransport        http.RoundTripper
 	AgentTasks            AgentTaskProvider
 	AgentModelCredentials AgentModelCredentialProvider
@@ -69,8 +70,8 @@ func NewLambdaWorkloadController(config LambdaWorkloadHandlerConfig) (*Controlle
 	if err != nil {
 		return nil, ErrLambdaComposition
 	}
-	agent := NewHTTPAgentRunnerWithModelCredentials(workloadagent.NewClient(config.AgentTransport), config.SourceArchives,
-		config.AttemptLogs, config.AgentTasks, config.AgentModelCredentials)
+	agent := NewHTTPAgentRunnerWithArtifacts(workloadagent.NewClient(config.AgentTransport), config.SourceArchives,
+		config.AttemptLogs, config.AttemptChanges, config.AgentTasks, config.AgentModelCredentials)
 	runtime, err := NewLambdaMicroVM(config.LambdaAPI, config.Journal, config.Resolver, agent, config.Runtime, now)
 	if err != nil {
 		return nil, ErrLambdaComposition

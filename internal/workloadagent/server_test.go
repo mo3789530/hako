@@ -30,7 +30,15 @@ type memoryAgentBackend struct {
 	state    workloadjournal.ExecutionState
 	result   workloadjobs.WorkloadResult
 	logs     []byte
+	changes  []byte
 	err      error
+}
+
+func (b *memoryAgentBackend) ChangeBundle(_ context.Context, claims TicketClaims) ([]byte, error) {
+	if claims.Operation != OperationChanges || claims.Identity.Command() != b.identity || claims.MicroVMID != b.vmID {
+		return nil, ErrAttemptNotFound
+	}
+	return append([]byte(nil), b.changes...), nil
 }
 
 type memorySourceInstaller struct {
@@ -190,6 +198,39 @@ func TestAgentProtocolClientAndAuthenticatedServerLifecycle(t *testing.T) {
 	}
 	if backend.vmID != "microvm_1" || backend.identity != id {
 		t.Fatal("backend did not pin the authenticated ticket to the attempt")
+	}
+}
+
+func TestAgentChangeBundleEndpointRequiresBoundAgentTicketAndChecksDigest(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 25, 1, 2, 3, 0, time.UTC)
+	id := testIdentity()
+	bundle := []byte("proposal bundle")
+	backend := &memoryAgentBackend{identity: id, vmID: "microvm_1", state: workloadjournal.Succeeded, changes: bundle}
+	handler, err := NewHandler(backend, &memorySourceInstaller{}, map[string]ed25519.PublicKey{"rp-v1": publicKey}, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := NewClient(handlerRoundTripper{handler})
+	issuer := &Ed25519TicketIssuer{KeyID: "rp-v1", PrivateKey: privateKey, Now: func() time.Time { return now }}
+	binding := ExecutionBinding{Kind: domain.WorkloadAgent, AgentIntegrationID: "integration_1", AgentInstallationID: 71,
+		AgentRepositoryID: 81, AgentTaskContextSHA256: strings.Repeat("c", 64), SourceDigest: strings.Repeat("a", 64),
+		CommitSHA: strings.Repeat("b", 40), TriggerEvent: "issue_comment", TriggerBranch: "main", Deadline: now.Add(time.Hour)}
+	ticket, err := issuer.IssueExecution("microvm_1", id, OperationChanges, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, digest, err := client.Changes(context.Background(), "https://microvm_1.lambda-microvm.ap-northeast-1.on.aws", "aws-token", ticket, id)
+	actual := sha256.Sum256(bundle)
+	if err != nil || !bytes.Equal(data, bundle) || digest != hex.EncodeToString(actual[:]) {
+		t.Fatalf("change bundle fetch = %q, %q, %v", data, digest, err)
+	}
+	if _, _, err := client.Changes(context.Background(), "https://microvm_1.lambda-microvm.ap-northeast-1.on.aws", "aws-token",
+		mustIssue(t, issuer, "microvm_1", id, OperationLogs), id); err == nil {
+		t.Fatal("log ticket was accepted by the change bundle endpoint")
 	}
 }
 

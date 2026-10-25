@@ -1547,7 +1547,7 @@ resource "aws_iam_role_policy" "workload_controller_runtime" {
         Resource = "${var.workload_controller_runtime.source_bucket_arn}/${var.workload_controller_runtime.source_prefix}/*"
       },
       {
-        Sid      = "AttemptLogWriteAndExpiredObjectCleanup"
+        Sid      = "AttemptArtifactWriteAndExpiredObjectCleanup"
         Effect   = "Allow"
         Action   = ["s3:PutObject", "s3:DeleteObject"]
         Resource = "${var.workload_controller_runtime.artifact_bucket_arn}/${var.workload_controller_runtime.artifact_prefix}/*"

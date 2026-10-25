@@ -314,12 +314,24 @@ process factory. The factory exposes only bounded `list_files`, `read_file`,
 secret paths, symlinks, path traversal, excessive edits, and completion after
 changes unless tests pass. Unit tests use a scripted model and synthetic
 credential; no live API request is made. The factory is not composed into the
-production `hako-agent` image, and Agent scheduling remains disabled. It also
-does not return a patch artifact or create a GitHub branch/Pull Request, and
-does not prove target MicroVM egress or cgroup enforcement. Anthropic's
+production `hako-agent` image, and Agent scheduling remains disabled. It does
+not create an apply-ready patch or a GitHub branch/Pull Request, and does not
+prove target MicroVM egress or cgroup enforcement. Anthropic's
 client-side tool protocol requires the application to execute each returned
 tool call and send a tool result back in a subsequent Messages request; see
 [Anthropic tool use](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/overview).
+
+On successful Agent Runs with source edits, the Guest now builds a deterministic
+ZIP proposal bundle from only the bounded files it changed. A separate
+execution-bound `changes` ticket can read the bundle after terminal completion;
+the Resource Plane verifies its SHA-256 and uploads it under the exact attempt's
+`agent-changes/` S3 prefix with server-side encryption. Control Plane stores
+only bounded metadata as an `agent_changes` artifact (`000176`); the existing
+artifact download flow retrieves the bytes. Failed/cancelled runs do not publish
+a proposal bundle. The bundle remains untrusted source material: this path does
+not mint GitHub write credentials, push a branch, create a PR, or authorize
+merge/deploy. S3 deployment policy and Lambda MicroVM execution remain
+unverified.
 
 Treat `.hako/factory.yaml`, workflow files, action references, shell steps,
 container images, cache contents, and webhook payloads as untrusted inputs.

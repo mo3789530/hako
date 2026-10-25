@@ -1,6 +1,7 @@
 package workloadagent
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
@@ -23,6 +25,7 @@ const (
 	defaultNativeAgentChangeBytes = 1 << 20
 	defaultNativeAgentFileCount   = 32
 	defaultNativeAgentTestTimeout = 5 * time.Minute
+	maxNativeAgentChangeArchive   = 8 << 20
 )
 
 var ErrNativeAgentExecution = errors.New("Native Agent execution failed")
@@ -106,7 +109,9 @@ func (f NativeAgentProcessFactory) bounds() (turns, tools, files, bytes int) {
 }
 
 type nativeAgentProcess struct {
-	done chan processExit
+	done    chan processExit
+	mu      sync.Mutex
+	changes []byte
 }
 
 func (p *nativeAgentProcess) Wait() (int, error) {
@@ -115,6 +120,15 @@ func (p *nativeAgentProcess) Wait() (int, error) {
 	}
 	result := <-p.done
 	return result.code, result.err
+}
+
+func (p *nativeAgentProcess) ChangesArchive() []byte {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]byte(nil), p.changes...)
 }
 
 func (p *nativeAgentProcess) run(ctx context.Context, plan ExecutionPlan, credential []byte, output io.Writer,
@@ -169,6 +183,14 @@ func (p *nativeAgentProcess) run(ctx context.Context, plan ExecutionPlan, creden
 				p.done <- processExit{code: 1, err: ErrNativeAgentExecution}
 				return
 			}
+			archive, archiveErr := workspace.changeArchive()
+			if archiveErr != nil {
+				p.done <- processExit{code: 1, err: ErrNativeAgentExecution}
+				return
+			}
+			p.mu.Lock()
+			p.changes = archive
+			p.mu.Unlock()
 			_, _ = fmt.Fprintf(output, "[Hako] Native Agent finished; changed_files=%d tests_passed=%t\n", workspace.changedCount(), testsPassed)
 			p.done <- processExit{code: 0}
 			return
@@ -357,7 +379,7 @@ func (w *nativeAgentWorkspace) listFiles() ([]nativeAgentFileEntry, error) {
 
 func (w *nativeAgentWorkspace) readFile(rel string) ([]byte, error) {
 	name, info, err := w.resolve(rel, false)
-	if err != nil || nativeAgentSensitivePath(rel) || info.Size() > int64(w.maxFileBytes) {
+	if err != nil || nativeAgentProtectedReadPath(rel) || info.Size() > int64(w.maxFileBytes) {
 		return nil, ErrNativeAgentExecution
 	}
 	data, err := os.ReadFile(name)
@@ -433,7 +455,7 @@ func (w *nativeAgentWorkspace) writeFile(rel string, content []byte) error {
 }
 
 func (w *nativeAgentWorkspace) resolve(rel string, allowNew bool) (string, os.FileInfo, error) {
-	if w == nil || !fs.ValidPath(rel) || strings.ContainsAny(rel, "\\\r\n\x00") || filepath.IsAbs(rel) ||
+	if w == nil || !fs.ValidPath(rel) || strings.ContainsAny(rel, "\\\r\n\x00:") || filepath.IsAbs(rel) ||
 		filepath.Clean(filepath.FromSlash(rel)) != filepath.FromSlash(rel) {
 		return "", nil, ErrNativeAgentExecution
 	}
@@ -487,10 +509,50 @@ func (w *nativeAgentWorkspace) changedBytes() int {
 	return total
 }
 
+func (w *nativeAgentWorkspace) changeArchive() ([]byte, error) {
+	if w == nil || w.changedCount() == 0 || w.changedCount() > w.maxFiles || w.changedBytes() > w.maxBytes || w.changedBytes() > maxNativeAgentChangeArchive {
+		if w != nil && w.changedCount() == 0 {
+			return nil, nil
+		}
+		return nil, ErrNativeAgentExecution
+	}
+	paths := make([]string, 0, len(w.changed))
+	for path := range w.changed {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	var buffer bytes.Buffer
+	archive := zip.NewWriter(&buffer)
+	for _, path := range paths {
+		content, err := w.readFile(path)
+		if err != nil || len(content) != w.changed[path] {
+			clear(content)
+			_ = archive.Close()
+			return nil, ErrNativeAgentExecution
+		}
+		header := &zip.FileHeader{Name: path, Method: zip.Deflate}
+		header.SetMode(0644)
+		header.Modified = time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC)
+		writer, err := archive.CreateHeader(header)
+		if err == nil {
+			_, err = writer.Write(content)
+		}
+		clear(content)
+		if err != nil || buffer.Len() > maxNativeAgentChangeArchive {
+			_ = archive.Close()
+			return nil, ErrNativeAgentExecution
+		}
+	}
+	if err := archive.Close(); err != nil || buffer.Len() > maxNativeAgentChangeArchive {
+		return nil, ErrNativeAgentExecution
+	}
+	return append([]byte(nil), buffer.Bytes()...), nil
+}
+
 func nativeAgentSkipDirectory(rel string) bool {
 	for _, part := range strings.Split(rel, "/") {
 		switch strings.ToLower(part) {
-		case ".git", ".aws", "node_modules":
+		case ".git", ".aws", ".ssh", ".hako", ".github", "node_modules":
 			return true
 		}
 	}
@@ -509,6 +571,10 @@ func nativeAgentSensitivePath(rel string) bool {
 		}
 	}
 	return false
+}
+
+func nativeAgentProtectedReadPath(rel string) bool {
+	return nativeAgentSensitivePath(rel) || nativeAgentProtectedWritePath(rel)
 }
 
 func nativeAgentProtectedWritePath(rel string) bool {

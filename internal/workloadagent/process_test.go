@@ -38,7 +38,7 @@ func (r fixedExecutionResolver) ResolveExecution(context.Context, TicketClaims) 
 
 func planTicketClaims(vm string, id workloadjournal.Command, operation Operation, plan ExecutionPlan) TicketClaims {
 	claims := TicketClaims{MicroVMID: vm, Identity: IdentityFromCommand(id), Operation: operation}
-	if operation == OperationStart || operation == OperationSource {
+	if operation == OperationStart || operation == OperationSource || operation == OperationChanges {
 		claims.Execution = &ExecutionBinding{Kind: plan.Kind, AgentIntegrationID: plan.AgentIntegrationID,
 			AgentInstallationID: plan.AgentInstallationID, AgentRepositoryID: plan.AgentRepositoryID,
 			AgentTaskContextSHA256: plan.AgentTaskContextSHA256,

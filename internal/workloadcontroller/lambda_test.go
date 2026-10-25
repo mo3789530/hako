@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/lambdamicrovms"
 	"github.com/aws/aws-sdk-go-v2/service/lambdamicrovms/types"
+	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/workloadagent"
 	"github.com/mo3789530/hako/internal/workloadjobs"
 	"github.com/mo3789530/hako/internal/workloadjournal"
@@ -335,6 +336,30 @@ func TestLambdaRequiresAgentTicketIssuer(t *testing.T) {
 	config.AgentTicketIssuer = nil
 	if _, err := NewLambdaMicroVM(api, runtime.store, runtime.resolver, agent, config, nil); !errors.Is(err, ErrSpecification) {
 		t.Fatalf("runtime accepted missing app-layer agent credential issuer: %v", err)
+	}
+}
+
+func TestLambdaIssuesSeparateAttemptBoundAgentChangesTicket(t *testing.T) {
+	_, runtime, _, _, now := setupLambda(t)
+	id := workloadjournal.Command{TenantID: "tenant_1", WorkloadRunID: "run_1", AttemptID: "attempt_1", Generation: 1,
+		ResourcePlaneID: "rp_1", IdempotencyToken: "token_1"}
+	spec := Specification{Identity: id, Kind: domain.WorkloadAgent, SourceDigest: strings.Repeat("a", 64), CommitSHA: strings.Repeat("b", 40),
+		TriggerEvent: "issue_comment", TriggerBranch: "main", GitHubIntegrationID: "integration_1", GitHubInstallationID: 71,
+		GitHubRepositoryID: 81, AgentTaskContextSHA256: strings.Repeat("c", 64), Deadline: now.Add(time.Hour).UTC(),
+		ImageIdentifier: runtime.config.ImageIdentifier, ImageVersion: runtime.config.ImageVersion}
+	vm := &lambdamicrovms.GetMicrovmOutput{MicrovmId: aws.String("microvm_1"), ImageArn: aws.String("arn:aws:lambda:ap-northeast-1:123456789012:microvm-image:hako-job"),
+		ImageVersion: aws.String("1"), State: types.MicrovmStateRunning, Endpoint: aws.String("https://microvm_1.lambda-microvm.ap-northeast-1.on.aws"),
+		ExecutionRoleArn: aws.String("arn:aws:iam::123456789012:role/hako-runtime")}
+	connection, err := runtime.agentConnection(context.Background(), spec, "microvm_1", vm, workloadagent.OperationResult)
+	if err != nil || connection.ChangesTicket == "" || connection.LogTicket == "" {
+		t.Fatalf("Agent result connection did not get separate artifact tickets: connection=%+v err=%v", connection, err)
+	}
+	issuer := runtime.config.AgentTicketIssuer.(*recordingTicketIssuer)
+	if len(issuer.issued) != 3 || issuer.issued[0].operation != workloadagent.OperationResult ||
+		issuer.issued[1].operation != workloadagent.OperationLogs || issuer.issued[2].operation != workloadagent.OperationChanges ||
+		issuer.issued[2].execution == nil || issuer.issued[2].execution.Kind != domain.WorkloadAgent ||
+		issuer.issued[2].execution.AgentTaskContextSHA256 != spec.AgentTaskContextSHA256 {
+		t.Fatalf("Agent change bundle ticket is not independently execution-bound: %+v", issuer.issued)
 	}
 }
 

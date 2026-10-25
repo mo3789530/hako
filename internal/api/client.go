@@ -1048,7 +1048,7 @@ func CreateWorkloadArtifactDownloadTicket(ctx context.Context, baseURL, accessTo
 
 func validArtifactKind(kind string) bool {
 	switch kind {
-	case "logs", "test_report", "coverage", "sbom", "binary", "container_image", "other":
+	case "logs", "test_report", "coverage", "sbom", "binary", "container_image", "agent_changes", "other":
 		return true
 	default:
 		return false

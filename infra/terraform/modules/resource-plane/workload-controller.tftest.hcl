@@ -755,7 +755,7 @@ run "workload_controller_wires_only_dedicated_queue_and_recovery" {
 
   assert {
     condition = anytrue([for statement in jsondecode(aws_iam_role_policy.workload_controller_runtime[0].policy).Statement :
-      statement.Sid == "AttemptLogWriteAndExpiredObjectCleanup" &&
+      statement.Sid == "AttemptArtifactWriteAndExpiredObjectCleanup" &&
       toset(statement.Action) == toset(["s3:PutObject", "s3:DeleteObject"]) &&
       statement.Resource == "arn:aws:s3:::hako-artifact-bucket/v1/artifacts/*"
     ])

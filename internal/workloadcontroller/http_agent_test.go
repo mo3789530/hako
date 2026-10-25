@@ -232,6 +232,17 @@ type captureAgentLogWriter struct {
 	digest   string
 }
 
+type captureAgentChangeWriter struct {
+	identity workloadjournal.Command
+	bundle   []byte
+	digest   string
+}
+
+func (w *captureAgentChangeWriter) PutAgentChangeBundle(_ context.Context, id workloadjournal.Command, bundle []byte, digest string) (workloadjobs.WorkloadChangeArtifact, error) {
+	w.identity, w.bundle, w.digest = id, append([]byte(nil), bundle...), digest
+	return workloadjobs.WorkloadChangeArtifact{StorageRef: "s3://artifacts/tenant_1/run_1/attempt_1/agent-changes/change.zip", SizeBytes: int64(len(bundle)), SHA256: digest}, nil
+}
+
 func (w *captureAgentLogWriter) PutAttemptLogs(_ context.Context, id workloadjournal.Command, logs []byte, digest string) (workloadjobs.WorkloadLogArtifact, error) {
 	w.identity, w.logs, w.digest = id, append([]byte(nil), logs...), digest
 	return workloadjobs.WorkloadLogArtifact{StorageRef: "s3://artifacts/tenant_1/run_1/attempt_1/log.txt", SizeBytes: int64(len(logs)), SHA256: digest, Redacted: true}, nil
@@ -241,6 +252,8 @@ func TestHTTPAgentRunnerFetchesRedactedLogsAndStoresThemFromController(t *testin
 	id := workloadjournal.Command{TenantID: "tenant_1", WorkloadRunID: "run_1", AttemptID: "attempt_1", Generation: 1, ResourcePlaneID: "rp_1", IdempotencyToken: "idem_1"}
 	logs := []byte("redacted test output\n")
 	logSum := sha256.Sum256(logs)
+	changeBundle := []byte("proposal zip bytes")
+	changeSum := sha256.Sum256(changeBundle)
 	result := workloadjobs.WorkloadResult{SchemaVersion: 1, TenantID: domain.TenantID(id.TenantID), WorkloadRunID: domain.WorkloadRunID(id.WorkloadRunID),
 		AttemptID: id.AttemptID, Generation: id.Generation, ResourcePlaneID: domain.ResourcePlaneID(id.ResourcePlaneID), CommitSHA: strings.Repeat("b", 40),
 		Status: domain.WorkloadSucceeded, ExitCode: 0, CompletedAt: time.Date(2026, 10, 12, 1, 2, 3, 0, time.UTC)}
@@ -268,24 +281,38 @@ func TestHTTPAgentRunnerFetchesRedactedLogsAndStoresThemFromController(t *testin
 			headers.Set("X-Hako-Log-SHA256", hex.EncodeToString(logSum[:]))
 			return &http.Response{StatusCode: http.StatusOK, Header: headers,
 				Body: io.NopCloser(bytes.NewReader(logs)), ContentLength: int64(len(logs))}, nil
+		case strings.HasSuffix(req.URL.Path, "/changes"):
+			if req.Header.Get("Authorization") != "Bearer changes-ticket" {
+				t.Fatal("change bundle operation used the wrong ticket")
+			}
+			headers := make(http.Header)
+			headers.Set("Content-Type", "application/zip")
+			headers.Set("X-Hako-Agent-Protocol", workloadagent.ProtocolVersion)
+			headers.Set("X-Hako-Change-SHA256", hex.EncodeToString(changeSum[:]))
+			headers.Set("Cache-Control", "no-store")
+			return &http.Response{StatusCode: http.StatusOK, Header: headers,
+				Body: io.NopCloser(bytes.NewReader(changeBundle)), ContentLength: int64(len(changeBundle))}, nil
 		default:
 			t.Fatalf("unexpected agent route: %s", req.URL.Path)
 			return nil, nil
 		}
 	})
 	writer := &captureAgentLogWriter{}
+	changeWriter := &captureAgentChangeWriter{}
 	client := workloadagent.NewClient(transport)
 	connection := AgentConnection{MicroVMID: "vm_1", Endpoint: "https://microvm_1.lambda-microvm.ap-northeast-1.on.aws",
-		AuthToken: "vm-token", AgentTicket: "result-ticket", LogTicket: "logs-ticket"}
+		AuthToken: "vm-token", AgentTicket: "result-ticket", LogTicket: "logs-ticket", ChangesTicket: "changes-ticket"}
 	if _, err := client.Result(context.Background(), connection.Endpoint, connection.AuthToken, connection.AgentTicket, id); err != nil {
 		t.Fatalf("Result() failed: %v", err)
 	}
 	if _, _, err := client.Logs(context.Background(), connection.Endpoint, connection.AuthToken, connection.LogTicket, id); err != nil {
 		t.Fatalf("Logs() failed: %v", err)
 	}
-	runner := NewHTTPAgentRunner(client, nil, writer)
+	runner := NewHTTPAgentRunnerWithArtifacts(client, nil, writer, changeWriter, nil, nil)
 	got, err := runner.CollectResult(context.Background(), connection, id)
-	if err != nil || got.LogArtifact == nil || !got.LogArtifact.Redacted || writer.identity != id || !bytes.Equal(writer.logs, logs) || writer.digest != hex.EncodeToString(logSum[:]) {
-		t.Fatalf("CollectResult() = %+v, writer=%+v, err=%v", got, writer, err)
+	if err != nil || got.LogArtifact == nil || !got.LogArtifact.Redacted || got.ChangeBundle == nil ||
+		writer.identity != id || !bytes.Equal(writer.logs, logs) || writer.digest != hex.EncodeToString(logSum[:]) ||
+		changeWriter.identity != id || !bytes.Equal(changeWriter.bundle, changeBundle) || changeWriter.digest != hex.EncodeToString(changeSum[:]) {
+		t.Fatalf("CollectResult() = %+v, log_writer=%+v change_writer=%+v err=%v", got, writer, changeWriter, err)
 	}
 }

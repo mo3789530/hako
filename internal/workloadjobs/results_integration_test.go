@@ -69,6 +69,12 @@ func TestWorkloadResultFencesAttemptsAndPersistsTerminalMetadata(t *testing.T) {
 	}
 	create("run_result_cancel", "attempt_result_cancel", "cancelled", now.Add(10*time.Minute))
 	create("run_result_timeout", "attempt_result_timeout", "running", now.Add(time.Minute))
+	create("run_result_agent", "attempt_result_agent", "running", now.Add(10*time.Minute))
+	create("run_result_agent_cancel", "attempt_result_agent_cancel", "cancelled", now.Add(10*time.Minute))
+	if _, err := pool.Exec(ctx, `UPDATE workload_runs SET kind='agent',github_installation_id=901,github_repository_id=902
+		WHERE tenant_id='tenant_result' AND id IN ('run_result_agent','run_result_agent_cancel')`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := pool.Exec(ctx, `UPDATE workload_runs SET github_installation_id=901,github_repository_id=902
 		WHERE tenant_id='tenant_result' AND id='run_result_ok'`); err != nil {
 		t.Fatal(err)
@@ -85,6 +91,12 @@ func TestWorkloadResultFencesAttemptsAndPersistsTerminalMetadata(t *testing.T) {
 	spoofedCorrelation.CorrelationID = "req_99999999-9999-4999-8999-999999999999"
 	if _, err := handler.Handle(ctx, spoofedCorrelation); !errors.Is(err, ErrWorkloadResultMismatch) {
 		t.Fatalf("result with a foreign correlation ID was accepted: %v", err)
+	}
+	jobWithAgentBundle := result
+	jobWithAgentBundle.ChangeBundle = &WorkloadChangeArtifact{StorageRef: "s3://hako-results/run_result_ok/agent-changes/change.zip",
+		SizeBytes: 4, SHA256: strings.Repeat("c", 64)}
+	if _, err := handler.Handle(ctx, jobWithAgentBundle); !errors.Is(err, ErrWorkloadResultMismatch) {
+		t.Fatalf("Job run accepted a Native Agent proposal artifact: %v", err)
 	}
 	outcome, err := handler.Handle(ctx, result)
 	if err != nil || outcome != ResultApplied {
@@ -192,6 +204,35 @@ func TestWorkloadResultFencesAttemptsAndPersistsTerminalMetadata(t *testing.T) {
 	}
 	if artifacts[0].CorrelationID != result.CorrelationID {
 		t.Fatalf("artifact correlation ID=%q, want %q", artifacts[0].CorrelationID, result.CorrelationID)
+	}
+	agentResult := WorkloadResult{SchemaVersion: 1, TenantID: "tenant_result", WorkloadRunID: "run_result_agent",
+		AttemptID: "attempt_result_agent", Generation: 1, ResourcePlaneID: "rp_result", CommitSHA: commit,
+		Status: domain.WorkloadSucceeded, CompletedAt: now.Add(30 * time.Second),
+		ChangeBundle: &WorkloadChangeArtifact{StorageRef: "s3://hako-results/run_result_agent/agent-changes/change.zip",
+			SizeBytes: 128, SHA256: strings.Repeat("c", 64)}}
+	if outcome, err := handler.Handle(ctx, agentResult); err != nil || outcome != ResultApplied {
+		t.Fatalf("Agent change result = %q, %v", outcome, err)
+	}
+	agentArtifacts, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) ([]domain.WorkloadArtifact, error) {
+		return workloads.ListArtifacts(ctx, tx, "tenant_result", "run_result_agent")
+	})
+	if err != nil || len(agentArtifacts) != 1 || agentArtifacts[0].Kind != "agent_changes" || agentArtifacts[0].Redacted ||
+		agentArtifacts[0].SHA256 != strings.Repeat("c", 64) {
+		t.Fatalf("persisted Agent proposal artifact = %+v, %v", agentArtifacts, err)
+	}
+	cancelledAgentResult := WorkloadResult{SchemaVersion: 1, TenantID: "tenant_result", WorkloadRunID: "run_result_agent_cancel",
+		AttemptID: "attempt_result_agent_cancel", Generation: 1, ResourcePlaneID: "rp_result", CommitSHA: commit,
+		Status: domain.WorkloadSucceeded, CompletedAt: now.Add(30 * time.Second),
+		ChangeBundle: &WorkloadChangeArtifact{StorageRef: "s3://hako-results/run_result_agent_cancel/agent-changes/change.zip",
+			SizeBytes: 128, SHA256: strings.Repeat("c", 64)}}
+	if outcome, err := handler.Handle(ctx, cancelledAgentResult); err != nil || outcome != ResultApplied {
+		t.Fatalf("cancelled Agent result = %q, %v", outcome, err)
+	}
+	cancelledAgentArtifacts, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) ([]domain.WorkloadArtifact, error) {
+		return workloads.ListArtifacts(ctx, tx, "tenant_result", "run_result_agent_cancel")
+	})
+	if err != nil || len(cancelledAgentArtifacts) != 0 {
+		t.Fatalf("cancelled Agent proposal artifact was exposed: %+v %v", cancelledAgentArtifacts, err)
 	}
 }
 

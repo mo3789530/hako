@@ -235,6 +235,10 @@ func compose(ctx context.Context, awsCfg aws.Config, config deploymentConfig) (w
 	if err != nil {
 		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("configure attempt log writer")
 	}
+	changeWriter, err := workloadagent.NewS3AttemptChangeBundleWriter(awsS3, config.ArtifactBucket, config.ArtifactPrefix, config.ArtifactKMSKeyID)
+	if err != nil {
+		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("configure Agent change bundle writer")
+	}
 	resultPublisher, err := workloadcontroller.NewSQSResultPublisher(sqs.NewFromConfig(awsCfg), config.ResultQueueURL)
 	if err != nil {
 		return workloadcontroller.LambdaWorkloadHandlerConfig{}, nil, nil, nil, errors.New("configure Workload result queue publisher")
@@ -242,7 +246,7 @@ func compose(ctx context.Context, awsCfg aws.Config, config deploymentConfig) (w
 	ticketIssuer := &workloadagent.Ed25519TicketIssuer{KeyID: config.TicketKeyID, PrivateKey: ticketKey, TTL: workloadagent.AgentTicketMaxTTL}
 	controllerConfig := workloadcontroller.LambdaWorkloadHandlerConfig{
 		ResourcePlaneID: string(config.ResourcePlaneID), Journal: journal, LambdaAPI: lambdamicrovms.NewFromConfig(awsCfg), Resolver: resolver,
-		SourceArchives: archiveReader, AttemptLogs: logWriter, AgentTasks: brokerAgentTaskProvider{client: agentTaskClient},
+		SourceArchives: archiveReader, AttemptLogs: logWriter, AttemptChanges: changeWriter, AgentTasks: brokerAgentTaskProvider{client: agentTaskClient},
 		AgentModelCredentials: brokerAgentModelCredentialProvider{client: agentModelCredentialClient},
 		Runtime: workloadcontroller.LambdaConfig{ImageIdentifier: config.Runtime.ImageIdentifier, ImageVersion: config.Runtime.ImageVersion,
 			ImageDigest: config.Runtime.ImageDigest, IngressConnector: config.Runtime.IngressConnector,

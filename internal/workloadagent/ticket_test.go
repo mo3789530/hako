@@ -11,6 +11,37 @@ import (
 	"github.com/mo3789530/hako/internal/workloadjournal"
 )
 
+func TestAgentChangesTicketRequiresAgentExecutionBinding(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 25, 1, 2, 3, 0, time.UTC)
+	issuer := &Ed25519TicketIssuer{KeyID: "rp-agent", PrivateKey: privateKey, Now: func() time.Time { return now }}
+	id := testIdentity()
+	binding := ExecutionBinding{Kind: domain.WorkloadAgent, AgentIntegrationID: "integration_1", AgentInstallationID: 71,
+		AgentRepositoryID: 81, AgentTaskContextSHA256: strings.Repeat("c", 64), SourceDigest: strings.Repeat("a", 64),
+		CommitSHA: strings.Repeat("b", 40), TriggerEvent: "issue_comment", TriggerBranch: "main", Deadline: now.Add(time.Hour)}
+	ticket, err := issuer.IssueExecution("microvm_1", id, OperationChanges, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := VerifyTicketClaims(ticket, map[string]ed25519.PublicKey{"rp-agent": publicKey}, id, OperationChanges, now)
+	if err != nil || claims.Execution == nil || claims.Execution.Kind != domain.WorkloadAgent || *claims.Execution != binding {
+		t.Fatalf("Agent change ticket failed execution binding verification: claims=%+v err=%v", claims, err)
+	}
+	if _, err := issuer.Issue("microvm_1", id, OperationChanges); err == nil {
+		t.Fatal("unbound change ticket was issued")
+	}
+	jobBinding := binding
+	jobBinding.Kind = domain.WorkloadJob
+	jobBinding.AgentIntegrationID, jobBinding.AgentInstallationID, jobBinding.AgentRepositoryID, jobBinding.AgentTaskContextSHA256 = "", 0, 0, ""
+	jobBinding.TriggerEvent, jobBinding.TriggerBranch = "push", "main"
+	if _, err := issuer.IssueExecution("microvm_1", id, OperationChanges, jobBinding); err == nil {
+		t.Fatal("Job ticket was allowed to read an Agent change bundle")
+	}
+}
+
 func TestEd25519TicketIsShortLivedAndBoundToVMIdentityAndOperation(t *testing.T) {
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

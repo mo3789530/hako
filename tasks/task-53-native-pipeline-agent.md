@@ -193,9 +193,28 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
 - Scripted model tests cover write → fixed tests → successful completion,
   untested-write rejection, and path/secret/symlink protections. Tests use
   synthetic credentials only. The executor is not selected by the production
-  `hako-agent` composition; Agent scheduling therefore remains disabled. Patch
-  artifact return, branch/PR creation, target MicroVM egress/cgroup proof, and
-  production image wiring remain incomplete.
+  `hako-agent` composition; Agent scheduling therefore remains disabled.
+  Branch/PR creation, target MicroVM egress/cgroup proof, and production image
+  wiring remain incomplete.
+
+## Agent proposal artifact progress (2026-10-25)
+
+- Successful edits now produce a deterministic ZIP containing only bounded
+  files changed by the Native Agent. The artifact is held in Guest memory until
+  the Resource Plane fetches it using a separate short-lived, signed
+  `changes` ticket bound to the same Agent execution, Tenant, Run, attempt,
+  generation, Plane, immutable commit, and task-context digest. Failed and
+  cancelled runs do not publish the bundle.
+- The Resource Plane verifies the response length and SHA-256, writes it to the
+  exact attempt's `agent-changes/` S3 key with SSE-S3 or configured SSE-KMS, and
+  includes metadata only in the signed Workload result. Control Plane records
+  kind `agent_changes` with migration 000176; the existing artifact download
+  path serves the bytes. The proposal is explicitly untrusted and grants no
+  branch/PR token. Unit coverage spans archive generation, ticket/API fencing,
+  controller upload composition, storage scope, and result validation; the
+  PostgreSQL migration 000176 and metadata persistence integration passed against
+  the local database on 2026-10-25. Production IAM/deployment, MicroVM behavior,
+  branch/PR creation, and human-review workflow remain incomplete.
 
 ## Local verification refresh (2026-10-24)
 
@@ -568,11 +587,13 @@ network isolation behavior.
   existing Run endpoint. PostgreSQL integration coverage verifies the
   metadata and proves the backing storage URI is not exposed. General artifact
   byte retrieval is now implemented by [Task 87](task-87-workload-artifact-download.md).
-  Agent-generated change artifacts and PR submission remain unimplemented.
+  Agent-generated change artifacts now use the bounded attempt-scoped
+  `agent_changes` bundle described below. GitHub branch/PR submission remains
+  unimplemented.
 
 ## Native Agent model transport foundation (2026-10-25)
 
-- Added a bounded Anthropic Messages API transport for the future Native Agent
+- Added a bounded Anthropic Messages API transport used by the injectable Native Agent
   executor. It pins requests to `https://api.anthropic.com/v1/messages`, uses
   TLS 1.2+, disables proxy discovery and redirects, requires an operator-chosen
   model name, and rejects oversized or malformed messages/tool blocks. Provider
@@ -581,7 +602,9 @@ network isolation behavior.
   endpoint, authentication/version headers, client-tool response parsing,
   malformed tool rejection, request-model pinning, and provider-error
   redaction. No real API request or credential retrieval was performed.
-- This is transport only. No Agent tool loop or process factory consumes it;
-  Agent scheduling remains disabled until the isolated executor, output
-  artifact/PR submission path, and target MicroVM resource/network controls are
-  implemented and validated.
+- The transport is consumed by the injectable fixed-tool process factory and
+  its scripted tests. It makes no live API request. No production Guest
+  composition uses the factory; Agent scheduling remains disabled until image
+  wiring and target MicroVM resource/network controls are validated. The
+  attempt-scoped proposal bundle is implemented in the following section;
+  branch/PR submission remains unavailable.

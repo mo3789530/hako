@@ -118,6 +118,7 @@ type processAttempt struct {
 	state           workloadjournal.ExecutionState
 	result          workloadjobs.WorkloadResult
 	logs            []byte
+	changeBundle    []byte
 	modelCredential []byte
 	output          *boundedOutput
 	cancel          context.CancelFunc
@@ -330,6 +331,37 @@ func (b *ProcessBackend) Logs(ctx context.Context, claims TicketClaims) ([]byte,
 	return append([]byte(nil), a.logs...), nil
 }
 
+func sameAgentExecutionBinding(left, right ExecutionBinding) bool {
+	return left.Kind == domain.WorkloadAgent && right.Kind == domain.WorkloadAgent &&
+		left.AgentIntegrationID == right.AgentIntegrationID && left.AgentInstallationID == right.AgentInstallationID &&
+		left.AgentRepositoryID == right.AgentRepositoryID && left.AgentTaskContextSHA256 == right.AgentTaskContextSHA256 &&
+		left.SourceDigest == right.SourceDigest && left.CommitSHA == right.CommitSHA && left.TriggerEvent == right.TriggerEvent &&
+		left.TriggerBranch == right.TriggerBranch && left.CorrelationID == right.CorrelationID &&
+		left.JobMemoryLimitMB == right.JobMemoryLimitMB && left.JobCPULimitMillis == right.JobCPULimitMillis && left.Deadline.Equal(right.Deadline)
+}
+
+func (b *ProcessBackend) ChangeBundle(ctx context.Context, claims TicketClaims) ([]byte, error) {
+	if b == nil || ctx == nil || claims.Operation != OperationChanges {
+		return nil, ErrAgentTicket
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	a := b.attempt
+	if !matchesAttempt(a, claims) || a.claims.Execution == nil || claims.Execution == nil || !sameAgentExecutionBinding(*a.claims.Execution, *claims.Execution) {
+		return nil, ErrAttemptNotFound
+	}
+	if !terminalAgentState(a.state) {
+		return nil, ErrAgentBusy
+	}
+	if len(a.changeBundle) > maxAgentChangeBundleBytes {
+		return nil, ErrAttemptConflict
+	}
+	return append([]byte(nil), a.changeBundle...), nil
+}
+
 // Result is an idempotent snapshot of the completed attempt. Copy pointer
 // fields so a protocol adapter or caller cannot mutate the backend's cached
 // result and change what a later retry observes.
@@ -337,6 +369,10 @@ func cloneWorkloadResult(result workloadjobs.WorkloadResult) workloadjobs.Worklo
 	if result.LogArtifact != nil {
 		artifact := *result.LogArtifact
 		result.LogArtifact = &artifact
+	}
+	if result.ChangeBundle != nil {
+		artifact := *result.ChangeBundle
+		result.ChangeBundle = &artifact
 	}
 	return result
 }
@@ -365,6 +401,12 @@ func (b *ProcessBackend) Close(ctx context.Context) error {
 	}()
 	select {
 	case <-done:
+		b.mu.Lock()
+		if b.attempt != nil {
+			clear(b.attempt.changeBundle)
+			b.attempt.changeBundle = nil
+		}
+		b.mu.Unlock()
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -417,6 +459,16 @@ func (b *ProcessBackend) wait(a *processAttempt, processCtx context.Context, pro
 		PipelineResults() []workloadjobs.WorkloadPipelineResult
 	}); ok {
 		result.PipelineResults = pipelineProcess.PipelineResults()
+	}
+	if changeProvider, ok := process.(interface{ ChangesArchive() []byte }); ok {
+		changes := changeProvider.ChangesArchive()
+		if len(changes) > maxAgentChangeBundleBytes {
+			clear(changes)
+			result.Status, result.ExitCode, result.ErrorCode = domain.WorkloadFailed, 1, "agent_changes_invalid"
+		} else {
+			a.changeBundle = append([]byte(nil), changes...)
+			clear(changes)
+		}
 	}
 	if workloadjobs.ValidateResult(result) != nil {
 		result.Status, result.ExitCode, result.ErrorCode, result.LogArtifact = domain.WorkloadFailed, 1, "agent_result_invalid", nil

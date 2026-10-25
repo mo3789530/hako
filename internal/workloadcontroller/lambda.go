@@ -38,12 +38,13 @@ type LambdaAPI interface {
 // logged, or returned to a user-facing API. AWS scopes AuthToken to one VM and
 // WorkloadAgentPort for five minutes.
 type AgentConnection struct {
-	MicroVMID    string `json:"microvm_id"`
-	Endpoint     string `json:"endpoint"`
-	AuthToken    string `json:"-"`
-	AgentTicket  string `json:"-"`
-	SourceTicket string `json:"-"`
-	LogTicket    string `json:"-"`
+	MicroVMID     string `json:"microvm_id"`
+	Endpoint      string `json:"endpoint"`
+	AuthToken     string `json:"-"`
+	AgentTicket   string `json:"-"`
+	SourceTicket  string `json:"-"`
+	LogTicket     string `json:"-"`
+	ChangesTicket string `json:"-"`
 }
 
 // AgentRunner must authenticate only to the bound MicroVM, validate source
@@ -327,6 +328,20 @@ func (r *LambdaMicroVM) agentConnection(ctx context.Context, spec Specification,
 		logTicket, err = r.config.AgentTicketIssuer.Issue(handle, spec.Identity, workloadagent.OperationLogs)
 		if err != nil || logTicket == "" || strings.ContainsAny(logTicket, " \t\r\n") {
 			return AgentConnection{}, ErrMicroVMNotReady
+		}
+		if spec.Kind == domain.WorkloadAgent {
+			changesTicket, issueErr := r.config.AgentTicketIssuer.IssueExecution(handle, spec.Identity, workloadagent.OperationChanges, workloadagent.ExecutionBinding{
+				Kind: spec.Kind, AgentIntegrationID: spec.GitHubIntegrationID, AgentInstallationID: spec.GitHubInstallationID,
+				AgentRepositoryID: spec.GitHubRepositoryID, AgentTaskContextSHA256: spec.AgentTaskContextSHA256,
+				SourceDigest: spec.SourceDigest, CommitSHA: spec.CommitSHA, TriggerEvent: spec.TriggerEvent, TriggerBranch: spec.TriggerBranch,
+				CorrelationID: spec.CorrelationID, JobMemoryLimitMB: spec.JobMemoryLimitMB, JobCPULimitMillis: spec.JobCPULimitMillis,
+				Deadline: spec.Deadline.UTC(),
+			})
+			if issueErr != nil || changesTicket == "" || strings.ContainsAny(changesTicket, " \t\r\n") {
+				return AgentConnection{}, ErrMicroVMNotReady
+			}
+			return AgentConnection{MicroVMID: handle, Endpoint: endpoint, AuthToken: awsToken, AgentTicket: agentTicket,
+				SourceTicket: sourceTicket, LogTicket: logTicket, ChangesTicket: changesTicket}, nil
 		}
 	}
 	return AgentConnection{MicroVMID: handle, Endpoint: endpoint, AuthToken: awsToken, AgentTicket: agentTicket, SourceTicket: sourceTicket, LogTicket: logTicket}, nil

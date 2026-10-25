@@ -142,6 +142,16 @@ func validateResult(r workloadjobs.WorkloadResult, s Specification) error {
 			return ErrSpecification
 		}
 	}
+	if r.ChangeBundle != nil {
+		ref, err := url.Parse(r.ChangeBundle.StorageRef)
+		prefix, perr := url.Parse(s.ArtifactPrefix)
+		if err != nil || perr != nil || ref.Scheme != "s3" || ref.Host == "" || prefix.Scheme != "s3" || prefix.Host != ref.Host ||
+			ref.RawQuery != "" || ref.Fragment != "" || ref.User != nil || ref.RawPath != "" || prefix.RawQuery != "" || prefix.Fragment != "" || prefix.User != nil || prefix.RawPath != "" ||
+			!strings.HasSuffix(prefix.Path, "/"+id.TenantID+"/"+id.WorkloadRunID+"/"+id.AttemptID+"/") ||
+			!strings.HasPrefix(ref.Path, prefix.Path+"agent-changes/") || strings.Contains(ref.Path, "..") || strings.ContainsAny(ref.Path, "\\\x00") {
+			return ErrSpecification
+		}
+	}
 	if (r.Status == domain.WorkloadSucceeded || r.Status == domain.WorkloadFailed) && !r.CompletedAt.Before(s.Deadline) {
 		return ErrSpecification
 	}

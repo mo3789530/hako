@@ -70,7 +70,7 @@ func validateArtifact(artifact domain.WorkloadArtifact) error {
 	if artifact.ID == "" || artifact.TenantID == "" || artifact.RunID == "" {
 		return errors.New("artifact ID, Tenant ID, and Workload Run ID are required")
 	}
-	if !oneOf(artifact.Kind, "logs", "test_report", "coverage", "sbom", "binary", "container_image", "other") {
+	if !oneOf(artifact.Kind, "logs", "test_report", "coverage", "sbom", "binary", "container_image", "agent_changes", "other") {
 		return errors.New("unsupported Workload artifact kind")
 	}
 	if artifact.SizeBytes < 0 || !artifactSHA256Pattern.MatchString(artifact.SHA256) {

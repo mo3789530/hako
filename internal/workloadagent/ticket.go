@@ -28,15 +28,16 @@ var (
 type Operation string
 
 const (
-	OperationStart  Operation = "start"
-	OperationSource Operation = "source"
-	OperationStatus Operation = "status"
-	OperationResult Operation = "result"
-	OperationLogs   Operation = "logs"
+	OperationStart   Operation = "start"
+	OperationSource  Operation = "source"
+	OperationStatus  Operation = "status"
+	OperationResult  Operation = "result"
+	OperationLogs    Operation = "logs"
+	OperationChanges Operation = "changes"
 )
 
 func validOperation(op Operation) bool {
-	return op == OperationStart || op == OperationSource || op == OperationStatus || op == OperationResult || op == OperationLogs
+	return op == OperationStart || op == OperationSource || op == OperationStatus || op == OperationResult || op == OperationLogs || op == OperationChanges
 }
 
 type TicketIssuer interface {
@@ -82,14 +83,15 @@ type Ed25519TicketIssuer struct {
 }
 
 func (i *Ed25519TicketIssuer) Issue(microVMID string, identity workloadjournal.Command, operation Operation) (string, error) {
-	if operation == OperationStart || operation == OperationSource {
+	if operation == OperationStart || operation == OperationSource || operation == OperationChanges {
 		return "", ErrAgentTicket
 	}
 	return i.issue(microVMID, identity, operation, nil)
 }
 
 func (i *Ed25519TicketIssuer) IssueExecution(microVMID string, identity workloadjournal.Command, operation Operation, execution ExecutionBinding) (string, error) {
-	if (operation != OperationStart && operation != OperationSource) || !validExecutionBinding(execution) {
+	if (operation != OperationStart && operation != OperationSource && operation != OperationChanges) || !validExecutionBinding(execution) ||
+		operation == OperationChanges && execution.Kind != domain.WorkloadAgent {
 		return "", ErrAgentTicket
 	}
 	return i.issue(microVMID, identity, operation, &execution)
@@ -98,7 +100,7 @@ func (i *Ed25519TicketIssuer) IssueExecution(microVMID string, identity workload
 func (i *Ed25519TicketIssuer) issue(microVMID string, identity workloadjournal.Command, operation Operation, execution *ExecutionBinding) (string, error) {
 	if i == nil || !keyIDPattern.MatchString(i.KeyID) || len(i.PrivateKey) != ed25519.PrivateKeySize ||
 		!protocolID.MatchString(microVMID) || !validIdentity(identity) || !validOperation(operation) ||
-		((operation == OperationStart || operation == OperationSource) != (execution != nil)) {
+		((operation == OperationStart || operation == OperationSource || operation == OperationChanges) != (execution != nil)) {
 		return "", ErrAgentTicket
 	}
 	ttl := i.TTL
@@ -174,7 +176,7 @@ func VerifyTicketClaims(token string, keys map[string]ed25519.PublicKey, identit
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&claims) != nil || decoder.Decode(new(any)) != io.EOF || (claims.Version != 1 && claims.Version != 2 && claims.Version != 3) || !protocolID.MatchString(claims.MicroVMID) ||
 		claims.Identity.Command() != identity || claims.Operation != operation || !validOperation(claims.Operation) || len(claims.Nonce) != 32 ||
-		((claims.Operation == OperationStart || claims.Operation == OperationSource) != (claims.Execution != nil)) {
+		((claims.Operation == OperationStart || claims.Operation == OperationSource || claims.Operation == OperationChanges) != (claims.Execution != nil)) {
 		return TicketClaims{}, ErrAgentTicket
 	}
 	if claims.Execution != nil && !validExecutionBinding(*claims.Execution) {

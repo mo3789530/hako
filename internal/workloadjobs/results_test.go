@@ -34,7 +34,20 @@ func TestValidateWorkloadResult(t *testing.T) {
 		{name: "invalid digest", mutate: func(result *WorkloadResult) {
 			result.LogArtifact = &WorkloadLogArtifact{StorageRef: "s3://bucket/key", SizeBytes: 1, SHA256: strings.Repeat("z", 64), Redacted: true}
 		}},
+		{name: "oversized Agent change bundle", mutate: func(result *WorkloadResult) {
+			result.ChangeBundle = &WorkloadChangeArtifact{StorageRef: "s3://bucket/key", SizeBytes: (8 << 20) + 1, SHA256: strings.Repeat("a", 64)}
+		}},
+		{name: "invalid Agent change digest", mutate: func(result *WorkloadResult) {
+			result.ChangeBundle = &WorkloadChangeArtifact{StorageRef: "s3://bucket/key", SizeBytes: 1, SHA256: strings.Repeat("z", 64)}
+		}},
 	}
+	t.Run("valid bounded Agent change metadata", func(t *testing.T) {
+		result := valid
+		result.ChangeBundle = &WorkloadChangeArtifact{StorageRef: "s3://bucket/key", SizeBytes: 4, SHA256: strings.Repeat("a", 64)}
+		if err := ValidateResult(result); err != nil {
+			t.Fatalf("valid change bundle metadata rejected: %v", err)
+		}
+	})
 	if err := validateWorkloadResult(valid); err != nil {
 		t.Fatalf("valid result rejected: %v", err)
 	}

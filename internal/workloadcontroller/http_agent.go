@@ -31,6 +31,7 @@ type HTTPAgentRunner struct {
 	client           *workloadagent.Client
 	sources          workloadsource.SourceArchiveReader
 	logs             workloadagent.AttemptLogWriter
+	changes          workloadagent.AttemptChangeBundleWriter
 	tasks            AgentTaskProvider
 	modelCredentials AgentModelCredentialProvider
 }
@@ -50,6 +51,14 @@ func NewHTTPAgentRunnerWithModelCredentials(client *workloadagent.Client, source
 	logs workloadagent.AttemptLogWriter, tasks AgentTaskProvider, credentials AgentModelCredentialProvider) *HTTPAgentRunner {
 	runner := NewHTTPAgentRunner(client, sources, logs, tasks)
 	runner.modelCredentials = credentials
+	return runner
+}
+
+func NewHTTPAgentRunnerWithArtifacts(client *workloadagent.Client, sources workloadsource.SourceArchiveReader,
+	logs workloadagent.AttemptLogWriter, changes workloadagent.AttemptChangeBundleWriter, tasks AgentTaskProvider,
+	credentials AgentModelCredentialProvider) *HTTPAgentRunner {
+	runner := NewHTTPAgentRunnerWithModelCredentials(client, sources, logs, tasks, credentials)
+	runner.changes = changes
 	return runner
 }
 
@@ -137,6 +146,24 @@ func (r *HTTPAgentRunner) CollectResult(ctx context.Context, conn AgentConnectio
 		return workloadjobs.WorkloadResult{}, ErrExecutionMaterialization
 	}
 	result.LogArtifact = &artifact
+	if conn.ChangesTicket != "" && result.Status == domain.WorkloadSucceeded {
+		bundle, bundleDigest, err := r.client.Changes(ctx, conn.Endpoint, conn.AuthToken, conn.ChangesTicket, id)
+		if err != nil {
+			return workloadjobs.WorkloadResult{}, err
+		}
+		if len(bundle) > 0 {
+			if r.changes == nil {
+				clear(bundle)
+				return workloadjobs.WorkloadResult{}, ErrExecutionMaterialization
+			}
+			changeArtifact, err := r.changes.PutAgentChangeBundle(ctx, id, bundle, bundleDigest)
+			clear(bundle)
+			if err != nil || changeArtifact.SizeBytes < 1 || changeArtifact.SizeBytes > 8<<20 || changeArtifact.SHA256 != bundleDigest {
+				return workloadjobs.WorkloadResult{}, ErrExecutionMaterialization
+			}
+			result.ChangeBundle = &changeArtifact
+		}
+	}
 	if workloadjobs.ValidateResult(result) != nil {
 		return workloadjobs.WorkloadResult{}, ErrExecutionMaterialization
 	}
