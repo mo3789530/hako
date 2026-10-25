@@ -2,7 +2,7 @@
 
 残作業の実行単位：[Task 66](task-66-tenant-oauth-broker.md)、[Task 67](task-67-tenant-oauth-cli-wiring.md)、[Task 68](task-68-webhook-abuse-controls.md)。親タスクは集約用に保持し、子タスク完了だけで配備済みとはしない。
 
-Status: In Progress (Webhook resolver/authorizer, generation fence, route/IAM allowlist and pinned OAuth setup/callback adapter implemented; API/CLI mTLS adapter and local checkout broker added in Tasks 67/69. Production broker composition, certificate lifecycle and real role provisioning remain). Priority: P0.
+Status: Local implementation and acceptance complete through Tasks 66–72 and 78–79. Tenant Webhook ingress/authorization, pinned OAuth setup/callback, API/CLI mTLS wiring, checkout broker, abuse controls, and two-Tenant lifecycle E2E are implemented locally. Production IAM/Role/Secret provisioning, certificate lifecycle, network review, and deployment remain approval-gated. Priority: P0.
 
 ## Goal
 
@@ -29,3 +29,14 @@ App identity follow-up: optional `installation.app_id` is preserved in the norma
 - Fake GitHub/API/Postgres tests cover correct setup, cross-App callback, state changed mid-flight, membership removal, bad/missing signature, wrong route, replay/conflict, same delivery ID across integrations and bounded grace expiry.
 - Existing shared setup/Webhook tests remain valid. Unverified payload cannot trigger Tenant Secret selection or state mutation.
 - Update callback/log-redaction and App setup/runbook docs. No GitHub settings or real Secret modifications.
+
+## Local acceptance refresh (2026-10-25)
+
+The prior “Remaining” list above described work later completed by Tasks 66–72
+and Task 71. Re-run the dependency-ordered local acceptance with
+`make test-tenant-github-apps-integration`. It covers the two-Tenant
+setup→Webhook→Run→checkout E2E, API OAuth callback through the mTLS Broker and
+PostgreSQL, exact App proof credential pin resolution, checkout credential
+resolution, and Tenant webhook integration cases. All external GitHub/Secret providers in
+these tests are fake. Production trust policies, certificates, network access,
+and deployment remain unverified and have not been applied.
