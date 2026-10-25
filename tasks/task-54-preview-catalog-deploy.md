@@ -90,8 +90,10 @@ Add optional repository-level preview environments and service metadata/deploy p
   lifetime; synchronize does not extend it. PostgreSQL E2E verifies expiry and
   duplicate sweep idempotency. A default-off ARM64 Lambda and EventBridge
   schedule invoke the transactional bounded sweep; it has only a dedicated
-  DSQL role and can update Preview cleanup metadata. Physical runtime cleanup
-  worker remains unimplemented; no infrastructure was applied.
+  DSQL role and can update Preview cleanup metadata. At this stage the sweep
+  did not execute physical cleanup. Later entries below add the generation
+  cleanup worker and Resource Plane command path; no AWS infrastructure was
+  applied.
 - Added a direct Preview store PostgreSQL test for cleanup claim exclusion,
   fixed backoff, expired-lease recovery, stale claimant rejection, confirmed
   completion, and duplicate acknowledgement. `make test-preview-expiry-integration`
@@ -104,9 +106,10 @@ Add optional repository-level preview environments and service metadata/deploy p
   Preview cleaned only after executor confirmation. Its PostgreSQL integration
   test verifies that a failed MicroVM termination keeps the quota slot reserved,
   the retry uses a new claim/attempt, a later confirmed cleanup releases the
-  slot, and a repeated sweep is idempotent. This is worker orchestration with a
-  fake executor; Preview-to-runtime binding, AWS MicroVM/Gateway deletion, and
-  a scheduled production composition are still unimplemented.
+  slot, and a repeated sweep is idempotent. This initial check covers worker
+  orchestration with a fake executor; later entries add generation binding, the
+  Resource Plane Lambda MicroVM delete command, and local end-to-end fake-provider
+  coverage. AWS deployment and live MicroVM/Gateway deletion remain unverified.
 - Added PostgreSQL integration coverage for bounded Tenant/Installation/
   Repository-scoped Preview listing, list limits and ordering, foreign-scope
   isolation, expiry batch transitions, and repeated-sweep idempotency. Before
@@ -119,9 +122,10 @@ Add optional repository-level preview environments and service metadata/deploy p
   cleanup-pending atomically; reopen creates a new generation without
   overwriting old rows. Confirmed PR-level cleanup marks all absent generations
   cleaned. A PostgreSQL lifecycle test covers close/reopen/expiry and confirms
-  the Tenant API still does not expose provider identifiers. This is generation
-  metadata only: provision claims, Lambda MicroVM allocation, Gateway routing,
-  and provider-backed per-generation cleanup are still unimplemented.
+  the Tenant API still does not expose provider identifiers. This was generation
+  metadata only at this migration step. Later entries document the provision
+  claims, Lambda MicroVM allocation, Gateway routing, and provider-backed
+  per-generation cleanup implemented in the local Resource Plane composition.
 - Migration 000160 adds provisioning lease/claim metadata, attempt tracking,
   fixed error classes with retry deadlines, and a store API that binds provider
   IDs only for the current unexpired Preview generation and exact claim/attempt.
@@ -135,9 +139,10 @@ Add optional repository-level preview environments and service metadata/deploy p
   Local PostgreSQL integration covers partial MicroVM creation followed by
   route-publish failure and cleanup, retry, binding, and compensation after a
   PR head changes during provisioning, plus failed-compensation lease recovery;
-  unit tests cover bounded config and fixed error classification. A concrete
-  Resource Plane command, deployed worker/DSQL role grant, Lambda
-  MicroVM allocation, and Gateway route are not wired yet.
+  unit tests cover bounded config and fixed error classification. The local
+  Resource Plane command now uses the durable Lambda MicroVM journal and a
+  logical Gateway route identity. AWS deployment, DSQL grants, matching Guest
+  image, and live Gateway/MicroVM verification remain incomplete.
 - Migrations 000161–000162 add claim/lease/retry state and a bounded due index
   for each retired runtime generation. `previewcleanup.RuntimeWorker` sends
   exact persisted bindings to an injected generation cleanup executor and
@@ -171,9 +176,10 @@ Add optional repository-level preview environments and service metadata/deploy p
   attributes is returned in `BatchItemFailures`. The
   Resource Plane has a strict SQS Lambda handler core, bounded execution
   deadline, fixed failure classes, partial-success compensation, and SQS result
-  sink. Lambda MicroVM/Gateway provider operations, durable journal-backed
-  provider fencing/recovery, queue infrastructure, worker deployment, and
-  scheduled composition remain unwired.
+  sink. This paragraph records the state before the later Resource Controller
+  composition documented below. That later implementation connects the strict
+  Preview command to the durable Lambda MicroVM journal and default-off queue
+  infrastructure; AWS deployment and live provider verification remain open.
 - Migrations 000163–000164 add a separate Preview Gateway session registry
   because deterministic Preview runtime Workspace IDs are intentionally absent
   from the public Workspace table. Tenant members can request/revoke scoped
@@ -302,15 +308,18 @@ Add optional repository-level preview environments and service metadata/deploy p
   require the generation captured by the claim. The bounded list API exposes
   the generation, and PostgreSQL integration coverage checks stale generation
   fencing across PR update, close/reopen, expiry, retry, and cleanup.
-- The generic cleanup worker now executes the claim/retry/confirmation state
-  machine, but Preview-to-runtime binding and provider/Gateway deletion remain
-  unimplemented. No delete is inferred from the metadata transition.
+- The generic cleanup worker executes the claim/retry/confirmation state
+  machine. Later generation-specific work adds Preview-to-runtime binding and
+  an idempotent Resource Plane delete command; no delete is inferred from the
+  metadata transition. The local command/result path is covered with a fake
+  provider, while AWS provider behavior remains unverified.
 - The default worker test now covers invalid configuration, canceled input,
   missing dependencies, lease/timeout/batch bounds, and claim-ID failure before
   opening a database transaction. `go test ./internal/previewcleanup -cover`
   reports 34.3% statement coverage; the focused PostgreSQL integration target
-  reports 70.0% for the package. Provider/Gateway deletion remains untested
-  because its production binding is not implemented.
+  reports 70.0% for the package. These package coverage numbers predate the
+  Resource Plane command integration; they do not measure live AWS provider or
+  Gateway deletion behavior.
 
 ## Preview concurrency admission (2026-10-24)
 
@@ -325,9 +334,9 @@ Add optional repository-level preview environments and service metadata/deploy p
   reservation count. Migration 000156 extends the lifecycle-state constraint.
 - PostgreSQL integration covers an active cleanup reservation rejecting a
   second PR and a Workload Preview, followed by successful admission after the
-  first Preview is cleanup-confirmed. These checks cover quota metadata;
-  runtime allocation, Gateway routing, and provider-backed deletion remain
-  unimplemented.
+  first Preview is cleanup-confirmed. This test specifically covers quota
+  metadata; runtime allocation, Gateway routing, and provider-backed deletion
+  are covered by the later Resource Plane tests and remain unverified in AWS.
 
 ## Software Catalog CLI/API wiring refresh (2026-10-24)
 
