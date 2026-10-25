@@ -176,6 +176,15 @@ passed every package with the `integration` build tag against isolated schemas
 in the already-running PostgreSQL database. This covers the local PostgreSQL
 acceptance suite; it does not validate AWS deployment or live MicroVM behavior.
 
+Integration suite stability follow-up (2026-10-25): a package-parallel full
+run passed the test bodies but two isolated-schema drops failed with
+PostgreSQL `out of shared memory`. Both affected packages passed when run
+sequentially, and the complete suite then passed with `-p=1`. The local,
+disposable-database, coverage, and CI integration commands now serialize Go
+packages. The two schemas created by the failed run were verified as generated
+`hako_test_*` schemas and removed; the persistent PostgreSQL container remains
+running.
+
 Gateway observability follow-up: an active Session lookup failure already closed
 the WSS stream and emitted a redacted failure log, but was indistinguishable
 from a normal client disconnect in the lifecycle metric. It now emits the

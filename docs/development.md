@@ -25,9 +25,9 @@ make terraform-validate
 
 ## PostgreSQL統合テスト
 
-`make test-integration-local`は常時起動の開発用PostgreSQL 18を使い、migration、Cognito subjectとHako Userの対応付け、Tenant membership拒否、Workspace作成とOutboxの原子性、冪等再送、Operation状態遷移、イベント順序、Observed State更新、Tenantごと最大10件の同時作成quotaと削除後のslot再利用を検証します。CLI suiteはローカルOAuth/JWKSと署名済みテストtokenでPKCE login、Fake Runtime、結果Consumerを使い、作成・状態確認・停止・再開・削除に加えて、重複command、result ack失敗後の再配送、非同期Desired/Observed State差、他Member Workspaceへの認可拒否を通します。OS keyringや実AWS/Cognitoは不要です。DBには専用のランダムschemaを作成し、テスト終了時にそのschemaだけを削除します。データベースやvolumeは削除しません。テスト境界は[Authenticated CLI Lifecycle E2E](cli-lifecycle-e2e.md)を参照してください。
+`make test-integration-local`は常時起動の開発用PostgreSQL 18を使い、migration、Cognito subjectとHako Userの対応付け、Tenant membership拒否、Workspace作成とOutboxの原子性、冪等再送、Operation状態遷移、イベント順序、Observed State更新、Tenantごと最大10件の同時作成quotaと削除後のslot再利用を検証します。CLI suiteはローカルOAuth/JWKSと署名済みテストtokenでPKCE login、Fake Runtime、結果Consumerを使い、作成・状態確認・停止・再開・削除に加えて、重複command、result ack失敗後の再配送、非同期Desired/Observed State差、他Member Workspaceへの認可拒否を通します。OS keyringや実AWS/Cognitoは不要です。DBには専用のランダムschemaを作成し、テスト終了時にそのschemaだけを削除します。データベースやvolumeは削除しません。ローカルの常時起動DBではpackage並列実行によるPostgreSQL共有lock枯渇を避けるため、package単位で直列に実行します。テスト境界は[Authenticated CLI Lifecycle E2E](cli-lifecycle-e2e.md)を参照してください。
 
-別の使い捨てPostgreSQLを使う場合は、`HAKO_TEST_DATABASE_URL`を設定して`make test-integration`を実行します。接続先のDBユーザーにはschema作成・削除権限が必要です。integration testはbuild tag付きのため、通常の`go test ./...`では実行されません。GitHub ActionsではPostgreSQL serviceを起動して全packageのintegration testを実行します。
+別の使い捨てPostgreSQLを使う場合は、`HAKO_TEST_DATABASE_URL`を設定して`make test-integration`を実行します。接続先のDBユーザーにはschema作成・削除権限が必要です。integration testはbuild tag付きのため、通常の`go test ./...`では実行されません。GitHub ActionsもPostgreSQL serviceを使い、relation lockの共有枯渇を避けるため全packageを直列実行します。
 
 coverageは`make test-coverage HAKO_TEST_DATABASE_URL=...`で測定します。これはintegration build tagを含めて全Go packageをinstrumentし、`coverage.out`と関数別reportを生成します。通常の単体test coverageとDB-backed coverageを区別し、低coverageのpackage/branchから回帰テストを追加してください。coverage percentageは機械的な合格目標にせず、認可、冪等性、transaction境界、retry、失敗cleanupなど重要な分岐がテストされているかをレビューします。
 

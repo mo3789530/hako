@@ -19,10 +19,10 @@ test:
 
 test-integration:
 	@test -n "$${HAKO_TEST_DATABASE_URL:-}" || (echo "set HAKO_TEST_DATABASE_URL to a disposable PostgreSQL database" >&2; exit 1)
-	go test -tags=integration ./... -count=1
+	go test -tags=integration -p=1 ./... -count=1
 
 test-integration-local:
-	HAKO_TEST_DATABASE_URL="$${HAKO_TEST_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" go test -tags=integration ./... -count=1
+	HAKO_TEST_DATABASE_URL="$${HAKO_TEST_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" go test -tags=integration -p=1 ./... -count=1
 
 # Uses an isolated schema in the already-running local PostgreSQL database.
 test-webhook-lifecycle-integration:
@@ -61,7 +61,7 @@ test-preview-expiry-integration:
 
 test-coverage:
 	@test -n "$${HAKO_TEST_DATABASE_URL:-}" || (echo "set HAKO_TEST_DATABASE_URL to a disposable PostgreSQL database" >&2; exit 1)
-	go test -tags=integration -coverpkg=./... -coverprofile=coverage.out ./... -count=1
+	go test -tags=integration -p=1 -coverpkg=./... -coverprofile=coverage.out ./... -count=1
 	go tool cover -func=coverage.out
 
 integration-db-up:
