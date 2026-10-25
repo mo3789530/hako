@@ -205,6 +205,11 @@ Repository. The proposal remains untrusted. Hako must never merge or deploy it.
   bucket configuration for external buckets, and Broker deployment
   configuration remain operator/deployment work; Terraform tests do not apply
   policies or retrieve Secrets.
-- Still open: deployed Broker configuration, full PostgreSQL Broker composition integration, and Lambda
-  MicroVM execution verification. No AWS apply or production activation has
-  been performed.
+- A composed PostgreSQL Broker integration test now sends a Control Plane
+  caller through the HTTP route, Postgres resolver, digest-bound evidence and
+  active Tenant App lookup, synthetic archive/token adapters, fenced publisher,
+  and Postgres recorder. It verifies safe `no-store` response metadata and the
+  durable branch/PR state. All providers are synthetic; no external service is
+  contacted.
+- Still open: deployed Broker configuration and Lambda MicroVM execution
+  verification. No AWS apply or production activation has been performed.

@@ -421,8 +421,10 @@ it creates a new verifier attempt and transactional dispatch Outbox event.
 Duplicate submit while verification is active does not enqueue another copy.
 The submit API returns `202 verification_queued` while verification is active
 and calls the publication Broker only after verifier success. Task 89 remains
-open: deployed Broker configuration and end-to-end PostgreSQL Broker
-composition. The
+open: deployed Broker configuration and Lambda MicroVM execution. The local
+PostgreSQL Broker route E2E uses synthetic archive/token/GitHub adapters and
+exercises the real resolver and recorder; it does not contact external
+services. The
 authenticated
 `GET .../agent-publication` endpoint and `hako workload publication show`
 display only safe state, branch, confirmed commit, PR number, and timestamps;
