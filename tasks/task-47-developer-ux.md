@@ -171,6 +171,15 @@ byte relay, cancellation, and revocation. `workspaceSSHProxy` entry coverage is
 62.9%. This does not prove that the Workspace image has a configured `sshd` or
 that production Gateway routing is deployed.
 
+## Local terminal mode and resize coverage (2026-10-25)
+
+Added Linux PTY tests for `hako shell` local terminal handling. They verify
+initial size propagation, character-mode flags, SIGWINCH resize propagation,
+exact terminal-state restoration, resize callback failure cleanup, and safe
+no-op behavior for non-terminals and invalid window sizes. The focused
+`enableWorkspaceTerminal` coverage is 93.2%; this exercises the local terminal
+adapter and does not substitute for the separate Guest PTY/Gateway tests.
+
 ## Acceptance criteria
 
 - CLI unit and authenticated integration tests cover happy path, re-login, authorization failure, disconnect, cancellation, and invalid forwards.
