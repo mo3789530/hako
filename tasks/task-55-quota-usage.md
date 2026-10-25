@@ -157,3 +157,9 @@ write failures. Table-driven CLI tests cover invalid Tenant, Workspace,
 Workload, queue, Preview, Artifact, and compute values; invalid responses are
 rejected before usage text is emitted. This is defensive CLI validation;
 authoritative quota enforcement remains in the transactional API/store paths.
+
+The Workspace Service reservation usage renderer also rejects missing identity,
+negative usage, and non-positive limits before writing, and returns output
+writer failures. Its table-driven validation tests now bring both
+`writeTenantUsage` and `writeWorkspaceServiceResourceUsage` to 100% statement
+coverage; the complete `cmd/hako` package remains at 72.0%.
