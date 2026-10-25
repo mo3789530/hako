@@ -39,6 +39,34 @@ must never infer “test account” from a profile name alone. No AWS test is
 currently wired to CI; CI should continue to run unit/integration tests without
 AWS credentials.
 
+## Read-only preflight guard
+
+`make aws-e2e-preflight` (or `go run ./cmd/hako-aws-e2e-preflight preflight`)
+performs only STS `GetCallerIdentity` calls;
+it does not plan, apply, create, delete, retrieve Secrets Manager values, or
+change GitHub configuration. It requires all of these explicit settings:
+
+```sh
+HAKO_AWS_E2E_ENABLED=true
+HAKO_AWS_E2E_REGION=ap-northeast-1
+HAKO_AWS_E2E_RUN_ID=<unique-lowercase-run-id>
+HAKO_AWS_E2E_CONTROL_PROFILE=<dedicated-control-profile>
+HAKO_AWS_E2E_CONTROL_ACCOUNT_ID=<12-digit-test-account>
+HAKO_AWS_E2E_RESOURCE_PROFILE=<dedicated-resource-profile>
+HAKO_AWS_E2E_RESOURCE_ACCOUNT_ID=<12-digit-test-account>
+HAKO_AWS_E2E_MANAGEMENT_ACCOUNT_ID=<12-digit-management-account>
+HAKO_AWS_E2E_PRODUCTION_ACCOUNT_IDS=<12-digit-id>,<12-digit-id>
+```
+
+The preflight rejects missing opt-in, malformed IDs/region/run ID, duplicate
+Plane accounts, Management or production accounts, and ambient credential
+environment variables before calling STS. It explicitly loads each named
+profile in the configured region, compares both returned account IDs to the
+allowlist, and prints only account IDs/region/run ID (never caller ARN). Run
+`make test-aws-e2e-guard` to test these checks with stubbed STS responses; this
+target makes no AWS calls. The guard is not yet wired to resource creation or
+cleanup, and the actual Workspace AWS E2E remains unimplemented.
+
 ## Provisioning and cleanup runbook
 
 1. Record the unique run ID, both account IDs, region, Terraform workspace/state
@@ -80,6 +108,8 @@ creating resources and ask the test-account owner to resolve it.
 ## Implementation status
 
 This document defines environment isolation, opt-in conditions, CI boundary,
-and cleanup expectations. The actual AWS lifecycle E2E test, account allowlist
-guard, test stack ownership, runtime/Gateway connectivity assertions, and
-automated resource cleanup are not implemented yet.
+and cleanup expectations. The read-only STS preflight/account allowlist guard
+is implemented and locally tested. The actual AWS lifecycle E2E test, guard
+enforcement at each resource mutation, test stack ownership, runtime/Gateway
+connectivity assertions, and automated resource cleanup are not implemented
+yet.

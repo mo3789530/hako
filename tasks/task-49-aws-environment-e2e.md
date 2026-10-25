@@ -21,6 +21,19 @@ Reproducibly validate the real Workspace lifecycle in a dedicated AWS environmen
 - Document AWS prerequisites, estimated cost/TTL, rollback, and evidence artifacts.
 - This task requires a separate explicit approval for apply/cutover; code completion alone does not authorize deployment.
 
+## Read-only account preflight
+
+Added `make aws-e2e-preflight` (`go run ./cmd/hako-aws-e2e-preflight preflight`)
+and `make test-aws-e2e-guard`. The
+preflight requires explicit opt-in, two distinct named profiles and account
+IDs, an explicit Region/run ID, a Management Account ID, and a production
+account denylist. It rejects ambient AWS credential environment variables,
+then performs only STS `GetCallerIdentity` for each profile and compares both
+caller IDs to the allowlist. Unit tests use mocked lookups and prove no STS
+lookup occurs when any configuration, opt-in, or ambient-credential guard
+fails. Resource creation/cleanup is not wired to this command; the actual AWS
+Workspace E2E remains unimplemented and requires separate approval.
+
 ## Local OCI image smoke
 
 `make test-api-lambda-image-smoke` builds the API OCI image for the local

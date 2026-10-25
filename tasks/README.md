@@ -118,6 +118,14 @@ returns 200 for `/healthz` and 401 for unauthenticated `/v1/health`, and checks
 JSON bodies, response headers, and encoding. This covers local event conversion,
 not AWS orchestration, IAM, or API Gateway authorization.
 
+Task 49 safety follow-up: `make aws-e2e-preflight` now validates a
+strict opt-in, dedicated account/profile allowlist, Management/production
+account denylist, run ID, and Region before making read-only STS identity
+lookups. `make test-aws-e2e-guard` uses mocked STS and verifies rejected
+preflight cases cause zero lookups. It is not connected to mutations or
+cleanup; real Workspace E2E, per-operation identity rechecks, and automated
+cleanup remain open.
+
 Task 61's published contract/cost documentation now reflects the explicit
 1–28,800 second `RunMicrovm` API range and separates Dockerfile snapshot builds
 from nested guest containers. Hako pricing meters and a Tokyo-safe estimate
