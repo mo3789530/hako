@@ -250,6 +250,8 @@ func TestConsumerPublishesNamedPipelineCheckIndependently(t *testing.T) {
 	desired.Check.Conclusion = "success"
 	desired.Check.OutputTitle = "Hako pipeline verify"
 	desired.Check.OutputSummary = "Pipeline verify completed with status succeeded and exit code 0."
+	desired.Check.Annotations = []domain.WorkloadCheckAnnotation{{Path: "internal/api/handler.go", StartLine: 42,
+		EndLine: 42, AnnotationLevel: "warning", Message: "Review this API boundary."}}
 	desired.Run.State = domain.WorkloadSucceeded
 	store := &fakeStore{desired: desired}
 	body, err := json.Marshal(request{SchemaVersion: 1, TenantID: string(desired.Run.TenantID),
@@ -269,6 +271,10 @@ func TestConsumerPublishesNamedPipelineCheckIndependently(t *testing.T) {
 		var check githubapp.CheckRunRequest
 		if err := json.NewDecoder(r.Body).Decode(&check); err != nil {
 			t.Errorf("decode pipeline Check: %v", err)
+		}
+		if len(check.Output.Annotations) != 1 || check.Output.Annotations[0].Path != "internal/api/handler.go" ||
+			check.Output.Annotations[0].StartLine != 42 || check.Output.Annotations[0].Message != "Review this API boundary." {
+			t.Errorf("pipeline Check annotations were not delivered: %+v", check.Output.Annotations)
 		}
 		requestName = check.Name
 		w.Header().Set("Content-Type", "application/json")

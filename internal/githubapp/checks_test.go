@@ -200,7 +200,7 @@ func TestValidateCheckRequestBoundsAnnotationsAndPayload(t *testing.T) {
 	if err := validateCheckRequest(request); err != nil {
 		t.Fatalf("valid annotation rejected: %v", err)
 	}
-	for _, path := range []string{"../secret", "a/../../secret", "/etc/passwd", "a//b"} {
+	for _, path := range []string{"../secret", "a/../../secret", "/etc/passwd", "a//b", `a\b.go`, `a\..\secret`} {
 		invalid := request
 		invalid.Output.Annotations = []CheckAnnotation{{Path: path, StartLine: 1, EndLine: 1, AnnotationLevel: "failure", Message: "bad"}}
 		if err := validateCheckRequest(invalid); err == nil {
@@ -208,7 +208,7 @@ func TestValidateCheckRequestBoundsAnnotationsAndPayload(t *testing.T) {
 		}
 	}
 	tooMany := request
-	tooMany.Output.Annotations = make([]CheckAnnotation, maxCheckAnnotations+1)
+	tooMany.Output.Annotations = make([]CheckAnnotation, MaxCheckAnnotations+1)
 	if err := validateCheckRequest(tooMany); err == nil {
 		t.Fatal("annotation count limit was not enforced")
 	}

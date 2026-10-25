@@ -65,7 +65,9 @@ func TestValidateWorkloadResult(t *testing.T) {
 		result := valid
 		result.PipelineResults = []WorkloadPipelineResult{
 			{Name: "build", Status: "succeeded"},
-			{Name: "test", Status: "failed", ExitCode: 2, ErrorCode: "step_failed"},
+			{Name: "test", Status: "failed", ExitCode: 2, ErrorCode: "step_failed", Annotations: []domain.WorkloadCheckAnnotation{{
+				Path: "internal/api/handler.go", StartLine: 12, EndLine: 12, AnnotationLevel: "failure", Message: "Expected value was not found.",
+			}}},
 		}
 		result.Status, result.ExitCode, result.ErrorCode = domain.WorkloadFailed, 2, "test_failed"
 		if err := ValidateResult(result); err != nil {
@@ -82,6 +84,17 @@ func TestValidateWorkloadResult(t *testing.T) {
 		{name: "unsupported status", results: []WorkloadPipelineResult{{Name: "test", Status: "running"}}},
 		{name: "failed without exit code", results: []WorkloadPipelineResult{{Name: "test", Status: "failed", ErrorCode: "step_failed"}}},
 		{name: "timeout without exit code", results: []WorkloadPipelineResult{{Name: "test", Status: "timed_out"}}},
+		{name: "unsafe annotation path", results: []WorkloadPipelineResult{{Name: "test", Status: "succeeded", Annotations: []domain.WorkloadCheckAnnotation{{
+			Path: "../secret", StartLine: 1, EndLine: 1, AnnotationLevel: "failure", Message: "unsafe path",
+		}}}}},
+		{name: "too many annotations", results: []WorkloadPipelineResult{{Name: "test", Status: "succeeded", Annotations: make([]domain.WorkloadCheckAnnotation, 51)}}},
+		{name: "annotation payload exceeds bound", results: []WorkloadPipelineResult{{Name: "test", Status: "succeeded", Annotations: []domain.WorkloadCheckAnnotation{
+			{Path: "a.go", StartLine: 1, EndLine: 1, AnnotationLevel: "warning", Message: "x", RawDetails: strings.Repeat("x", 10000)},
+			{Path: "b.go", StartLine: 1, EndLine: 1, AnnotationLevel: "warning", Message: "x", RawDetails: strings.Repeat("x", 10000)},
+			{Path: "c.go", StartLine: 1, EndLine: 1, AnnotationLevel: "warning", Message: "x", RawDetails: strings.Repeat("x", 10000)},
+			{Path: "d.go", StartLine: 1, EndLine: 1, AnnotationLevel: "warning", Message: "x", RawDetails: strings.Repeat("x", 10000)},
+			{Path: "e.go", StartLine: 1, EndLine: 1, AnnotationLevel: "warning", Message: "x", RawDetails: strings.Repeat("x", 10000)},
+		}}}},
 	} {
 		t.Run("reject pipeline "+test.name, func(t *testing.T) {
 			result := valid

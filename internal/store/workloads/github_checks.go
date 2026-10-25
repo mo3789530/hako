@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/githubapp"
 	"github.com/mo3789530/hako/internal/idgen"
 )
 
@@ -51,6 +52,7 @@ type GitHubCheck struct {
 	CompletedAt          *time.Time
 	OutputTitle          string
 	OutputSummary        string
+	Annotations          []domain.WorkloadCheckAnnotation
 	Revision             int64
 }
 
@@ -68,11 +70,11 @@ func GetGitHubPipelineCheck(ctx context.Context, tx pgx.Tx, tenantID domain.Tena
 	var checkRunID *int64
 	err := tx.QueryRow(ctx, `SELECT tenant_id, workload_run_id, github_installation_id, github_repository_id,
 		commit_sha, pipeline_name, check_name, external_id, check_run_id, status, COALESCE(conclusion,''), started_at,
-		completed_at, output_title, output_summary, revision
+		completed_at, output_title, output_summary, output_annotations, revision
 		FROM workload_github_checks WHERE tenant_id = $1 AND workload_run_id = $2 AND pipeline_name = $3`, tenantID, runID, pipelineName).
 		Scan(&check.TenantID, &check.WorkloadRunID, &check.GitHubInstallationID, &check.GitHubRepositoryID,
 			&check.CommitSHA, &check.PipelineName, &check.Name, &check.ExternalID, &checkRunID, &check.Status, &check.Conclusion,
-			&check.StartedAt, &check.CompletedAt, &check.OutputTitle, &check.OutputSummary, &check.Revision)
+			&check.StartedAt, &check.CompletedAt, &check.OutputTitle, &check.OutputSummary, &check.Annotations, &check.Revision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return GitHubCheck{}, ErrNotFound
 	}
@@ -133,6 +135,14 @@ func SyncGitHubPipelineCheck(ctx context.Context, tx pgx.Tx, run domain.Workload
 	if run.State != domain.WorkloadSucceeded && run.State != domain.WorkloadFailed && run.State != domain.WorkloadCancelled && run.State != domain.WorkloadTimedOut {
 		return errors.New("GitHub pipeline Check requires a terminal Workload Run")
 	}
+	if len(pipeline.Annotations) > githubapp.MaxCheckAnnotations {
+		return errors.New("GitHub pipeline Check has too many annotations")
+	}
+	for _, annotation := range pipeline.Annotations {
+		if err := githubapp.ValidateCheckAnnotation(githubapp.CheckAnnotation(annotation)); err != nil {
+			return errors.New("GitHub pipeline Check has an invalid annotation")
+		}
+	}
 	conclusion := ""
 	switch pipeline.Status {
 	case "succeeded":
@@ -161,12 +171,23 @@ func SyncGitHubPipelineCheck(ctx context.Context, tx pgx.Tx, run domain.Workload
 	if pipeline.ErrorCode != "" {
 		summary += " Error code: " + pipeline.ErrorCode + "."
 	}
+	annotations := pipeline.Annotations
+	if annotations == nil {
+		annotations = []domain.WorkloadCheckAnnotation{}
+	}
+	annotationsJSON, err := json.Marshal(annotations)
+	if err != nil {
+		return fmt.Errorf("encode GitHub pipeline Check annotations: %w", err)
+	}
+	if len(annotationsJSON) > 48<<10 {
+		return errors.New("GitHub pipeline Check annotations exceed their byte bound")
+	}
 	if _, err := tx.Exec(ctx, `INSERT INTO workload_github_checks
 		(tenant_id, workload_run_id, github_installation_id, github_repository_id, commit_sha, pipeline_name, check_name, external_id,
-		 status, conclusion, started_at, completed_at, output_title, output_summary, revision, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'completed',$9,$10,$11,$12,$13,1,$14)`,
+		 status, conclusion, started_at, completed_at, output_title, output_summary, output_annotations, revision, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'completed',$9,$10,$11,$12,$13,$14::jsonb,1,$15)`,
 		run.TenantID, run.ID, run.GitHubInstallation, run.GitHubRepository, run.CommitSHA, pipeline.Name, name, string(run.ID),
-		conclusion, startedAt, completedAt, "Hako pipeline "+pipeline.Name, summary, occurredAt.UTC()); err != nil {
+		conclusion, startedAt, completedAt, "Hako pipeline "+pipeline.Name, summary, string(annotationsJSON), occurredAt.UTC()); err != nil {
 		return fmt.Errorf("persist GitHub pipeline Check state: %w", err)
 	}
 	eventID, err := idgen.New("evt_")

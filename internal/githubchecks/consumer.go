@@ -209,11 +209,15 @@ func (c *Consumer) deliver(ctx context.Context, message request) error {
 		completed := check.CompletedAt.UTC()
 		completedAt = &completed
 	}
+	annotations := make([]githubapp.CheckAnnotation, 0, len(check.Annotations))
+	for _, annotation := range check.Annotations {
+		annotations = append(annotations, githubapp.CheckAnnotation(annotation))
+	}
 	result, err := c.api.EnsureCheckRun(ctx, token, repository, checkID, githubapp.CheckRunRequest{
 		Name: check.Name, ExternalID: check.ExternalID, HeadSHA: check.CommitSHA,
 		Status: githubapp.CheckRunStatus(check.Status), Conclusion: githubapp.CheckRunConclusion(check.Conclusion),
 		StartedAt: check.StartedAt.UTC(), CompletedAt: completedAt,
-		Output: githubapp.CheckOutput{Title: check.OutputTitle, Summary: check.OutputSummary},
+		Output: githubapp.CheckOutput{Title: check.OutputTitle, Summary: check.OutputSummary, Annotations: annotations},
 	})
 	if err != nil {
 		return fmt.Errorf("publish GitHub Check: %w", err)

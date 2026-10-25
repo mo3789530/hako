@@ -18,7 +18,7 @@ import (
 const (
 	maxCheckResponseBytes = 256 << 10
 	maxCheckPayloadBytes  = 64 << 10
-	maxCheckAnnotations   = 50
+	MaxCheckAnnotations   = 50
 	maxCheckLookupPages   = 10
 )
 
@@ -232,11 +232,11 @@ func validateCheckRequest(request CheckRunRequest) error {
 	} else if request.Conclusion != "" || request.CompletedAt != nil {
 		return errors.New("nonterminal Check cannot include a conclusion or completion time")
 	}
-	if len(request.Output.Annotations) > maxCheckAnnotations {
+	if len(request.Output.Annotations) > MaxCheckAnnotations {
 		return errors.New("too many Check annotations")
 	}
 	for _, annotation := range request.Output.Annotations {
-		if err := validateCheckAnnotation(annotation); err != nil {
+		if err := ValidateCheckAnnotation(annotation); err != nil {
 			return err
 		}
 	}
@@ -247,9 +247,11 @@ func validateCheckRequest(request CheckRunRequest) error {
 	return nil
 }
 
-func validateCheckAnnotation(annotation CheckAnnotation) error {
-	path := strings.ReplaceAll(annotation.Path, "\\", "/")
-	if path == "" || strings.HasPrefix(path, "/") || len(path) > 255 || strings.ContainsAny(path, "\r\n\x00") ||
+// ValidateCheckAnnotation validates an untrusted diagnostic before persisting
+// it or sending it to GitHub.
+func ValidateCheckAnnotation(annotation CheckAnnotation) error {
+	path := annotation.Path
+	if path == "" || strings.Contains(path, "\\") || strings.HasPrefix(path, "/") || len(path) > 255 || strings.ContainsAny(path, "\r\n\x00") ||
 		annotation.StartLine < 1 || annotation.EndLine < annotation.StartLine || annotation.StartColumn < 0 || annotation.EndColumn < 0 ||
 		annotation.StartColumn > 65535 || annotation.EndColumn > 65535 ||
 		(annotation.StartColumn > 0 && annotation.EndColumn > 0 && annotation.EndLine == annotation.StartLine && annotation.EndColumn < annotation.StartColumn) ||

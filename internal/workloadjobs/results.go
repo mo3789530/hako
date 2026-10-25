@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/githubapp"
 	"github.com/mo3789530/hako/internal/idgen"
 	"github.com/mo3789530/hako/internal/store/transaction"
 	"github.com/mo3789530/hako/internal/store/workloads"
@@ -49,13 +50,14 @@ type WorkloadResult struct {
 	PipelineResults []WorkloadPipelineResult `json:"pipeline_results,omitempty"`
 }
 
-// WorkloadPipelineResult records only bounded, allowlisted manifest pipeline
-// metadata. It contains no command output or user-controlled error text.
+// WorkloadPipelineResult records bounded manifest metadata and validated
+// repository diagnostics. It never contains raw command output.
 type WorkloadPipelineResult struct {
-	Name      string `json:"name"`
-	Status    string `json:"status"`
-	ExitCode  int    `json:"exit_code"`
-	ErrorCode string `json:"error_code,omitempty"`
+	Name        string                           `json:"name"`
+	Status      string                           `json:"status"`
+	ExitCode    int                              `json:"exit_code"`
+	ErrorCode   string                           `json:"error_code,omitempty"`
+	Annotations []domain.WorkloadCheckAnnotation `json:"annotations,omitempty"`
 }
 
 type WorkloadLogArtifact struct {
@@ -233,7 +235,8 @@ func (h *ResultHandler) Handle(ctx context.Context, result WorkloadResult) (Resu
 			return "", err
 		}
 		for _, pipeline := range result.PipelineResults {
-			resultMetadata := domain.WorkloadPipelineResult{Name: pipeline.Name, Status: pipeline.Status, ExitCode: pipeline.ExitCode, ErrorCode: pipeline.ErrorCode}
+			resultMetadata := domain.WorkloadPipelineResult{Name: pipeline.Name, Status: pipeline.Status, ExitCode: pipeline.ExitCode,
+				ErrorCode: pipeline.ErrorCode, Annotations: pipeline.Annotations}
 			if proposalVerification != nil {
 				if err := workloads.RecordAgentProposalVerificationCheck(ctx, tx, *proposalVerification, result.Generation, resultMetadata, completedAt); err != nil {
 					return "", err
@@ -389,6 +392,18 @@ func validateWorkloadResult(result WorkloadResult) error {
 	for _, pipeline := range result.PipelineResults {
 		if !pipelineNamePattern.MatchString(pipeline.Name) || pipeline.Name <= previousPipeline || pipeline.ExitCode < 0 || pipeline.ExitCode > 255 {
 			return fmt.Errorf("%w: pipeline results must have unique sorted names and bounded exit codes", ErrWorkloadResultInvalid)
+		}
+		if len(pipeline.Annotations) > githubapp.MaxCheckAnnotations {
+			return fmt.Errorf("%w: pipeline Check annotation count exceeds its bound", ErrWorkloadResultInvalid)
+		}
+		for _, annotation := range pipeline.Annotations {
+			if err := githubapp.ValidateCheckAnnotation(githubapp.CheckAnnotation(annotation)); err != nil {
+				return fmt.Errorf("%w: pipeline Check annotation is invalid", ErrWorkloadResultInvalid)
+			}
+		}
+		annotationJSON, err := json.Marshal(pipeline.Annotations)
+		if err != nil || len(annotationJSON) > 48<<10 {
+			return fmt.Errorf("%w: pipeline Check annotations exceed their byte bound", ErrWorkloadResultInvalid)
 		}
 		switch pipeline.Status {
 		case "succeeded":

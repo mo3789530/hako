@@ -95,11 +95,20 @@ func TestPostgresOutboxDispatcherConsumerPersistsAndRecoversCheckDelivery(t *tes
 			t.Fatal(err)
 		}
 	}
-	// Leave only the latest desired Check revision for the dispatcher. The
-	// preceding generic Run events and earlier Check revisions are not relevant
+	annotation := domain.WorkloadCheckAnnotation{Path: "internal/api/handler.go", StartLine: 42, EndLine: 42,
+		AnnotationLevel: "warning", Message: "Review this API boundary."}
+	if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (struct{}, error) {
+		return struct{}{}, workloads.SyncGitHubPipelineCheck(ctx, tx, current, domain.WorkloadPipelineResult{
+			Name: "verify", Status: "succeeded", Annotations: []domain.WorkloadCheckAnnotation{annotation},
+		}, now.Add(4*time.Second))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Leave only the named pipeline Check event for the dispatcher. The
+	// preceding generic Run events and base Check revisions are not relevant
 	// to this delivery/recovery scenario.
 	if _, err := pool.Exec(ctx, `UPDATE outbox_events SET published_at=$1 WHERE event_type <> 'workload_run.github_check_requested'
-		OR (event_type = 'workload_run.github_check_requested' AND payload_json::jsonb->>'revision' <> '4')`, now.Add(5*time.Second)); err != nil {
+		OR payload_json::jsonb->>'pipeline_name' IS DISTINCT FROM 'verify'`, now.Add(5*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	queue := &fakeQueue{}
@@ -134,6 +143,10 @@ func TestPostgresOutboxDispatcherConsumerPersistsAndRecoversCheckDelivery(t *tes
 			var input githubapp.CheckRunRequest
 			if json.NewDecoder(r.Body).Decode(&input) != nil || input.HeadSHA != strings.Repeat("c", 40) || input.Status != githubapp.CheckCompleted || input.Conclusion != githubapp.CheckRunConclusion("success") {
 				t.Error("GitHub Check request did not contain the exact terminal Run result")
+			}
+			if input.Name != "hako/job/verify" || len(input.Output.Annotations) != 1 || input.Output.Annotations[0].Path != annotation.Path ||
+				input.Output.Annotations[0].StartLine != annotation.StartLine || input.Output.Annotations[0].Message != annotation.Message {
+				t.Errorf("GitHub Check did not receive the durable pipeline annotation: %+v", input.Output.Annotations)
 			}
 			id := int64(987)
 			if r.Method == http.MethodPatch {
@@ -170,7 +183,7 @@ func TestPostgresOutboxDispatcherConsumerPersistsAndRecoversCheckDelivery(t *tes
 	}
 	var persisted int64
 	var status, conclusion string
-	if err := pool.QueryRow(ctx, `SELECT check_run_id,status,conclusion FROM workload_github_checks WHERE tenant_id=$1 AND workload_run_id=$2`, run.TenantID, run.ID).
+	if err := pool.QueryRow(ctx, `SELECT check_run_id,status,conclusion FROM workload_github_checks WHERE tenant_id=$1 AND workload_run_id=$2 AND pipeline_name='verify'`, run.TenantID, run.ID).
 		Scan(&persisted, &status, &conclusion); err != nil || persisted != 987 || status != "completed" || conclusion != "success" {
 		t.Fatalf("persisted GitHub Check = ID %d status %q conclusion %q err=%v", persisted, status, conclusion, err)
 	}

@@ -304,10 +304,26 @@ type WorkloadArtifactSummary struct {
 }
 
 type WorkloadPipelineResult struct {
-	Name      string `json:"name"`
-	Status    string `json:"status"`
-	ExitCode  int    `json:"exit_code"`
-	ErrorCode string `json:"error_code,omitempty"`
+	Name        string                    `json:"name"`
+	Status      string                    `json:"status"`
+	ExitCode    int                       `json:"exit_code"`
+	ErrorCode   string                    `json:"error_code,omitempty"`
+	Annotations []WorkloadCheckAnnotation `json:"annotations,omitempty"`
+}
+
+// WorkloadCheckAnnotation is bounded repository-relative diagnostic metadata
+// carried from a trusted Workload result to its GitHub Check. Its path and
+// text fields are untrusted and must pass the shared GitHub Check validator.
+type WorkloadCheckAnnotation struct {
+	Path            string `json:"path"`
+	StartLine       int    `json:"start_line"`
+	EndLine         int    `json:"end_line"`
+	StartColumn     int    `json:"start_column,omitempty"`
+	EndColumn       int    `json:"end_column,omitempty"`
+	AnnotationLevel string `json:"annotation_level"`
+	Message         string `json:"message"`
+	Title           string `json:"title,omitempty"`
+	RawDetails      string `json:"raw_details,omitempty"`
 }
 
 type WorkloadRunEvent struct {

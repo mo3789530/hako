@@ -83,9 +83,11 @@ func TestWorkloadResultFencesAttemptsAndPersistsTerminalMetadata(t *testing.T) {
 	handler := ResultHandler{Pool: pool, Policy: transaction.DefaultPolicy(), Now: func() time.Time { return now.Add(2 * time.Minute) }}
 	result := WorkloadResult{SchemaVersion: 1, TenantID: "tenant_result", WorkloadRunID: "run_result_ok",
 		AttemptID: "attempt_result_ok", Generation: 1, ResourcePlaneID: "rp_result", CommitSHA: commit,
-		CorrelationID:   "req_dddddddd-dddd-4ddd-8ddd-dddddddddddd",
-		PipelineResults: []WorkloadPipelineResult{{Name: "build", Status: "succeeded"}, {Name: "test", Status: "succeeded"}},
-		Status:          domain.WorkloadSucceeded, CompletedAt: now.Add(20 * time.Second), LogArtifact: &WorkloadLogArtifact{
+		CorrelationID: "req_dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+		PipelineResults: []WorkloadPipelineResult{{Name: "build", Status: "succeeded"}, {Name: "test", Status: "succeeded",
+			Annotations: []domain.WorkloadCheckAnnotation{{Path: "internal/api/handler.go", StartLine: 42, EndLine: 42,
+				AnnotationLevel: "warning", Message: "Review this API boundary."}}}},
+		Status: domain.WorkloadSucceeded, CompletedAt: now.Add(20 * time.Second), LogArtifact: &WorkloadLogArtifact{
 			StorageRef: "s3://hako-results/run_result_ok/logs", SizeBytes: 12, SHA256: strings.Repeat("b", 64), Redacted: true}}
 	spoofedCorrelation := result
 	spoofedCorrelation.CorrelationID = "req_99999999-9999-4999-8999-999999999999"
@@ -139,7 +141,8 @@ func TestWorkloadResultFencesAttemptsAndPersistsTerminalMetadata(t *testing.T) {
 	pipelineCheck, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (workloads.GitHubCheck, error) {
 		return workloads.GetGitHubPipelineCheck(ctx, tx, "tenant_result", "run_result_ok", "test")
 	})
-	if err != nil || pipelineCheck.PipelineName != "test" || pipelineCheck.Name != "hako/job/test" || pipelineCheck.Conclusion != "success" {
+	if err != nil || pipelineCheck.PipelineName != "test" || pipelineCheck.Name != "hako/job/test" || pipelineCheck.Conclusion != "success" ||
+		len(pipelineCheck.Annotations) != 1 || pipelineCheck.Annotations[0].Path != "internal/api/handler.go" || pipelineCheck.Annotations[0].StartLine != 42 {
 		t.Fatalf("load pipeline-scoped durable Check = %+v, %v", pipelineCheck, err)
 	}
 	if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (struct{}, error) {
