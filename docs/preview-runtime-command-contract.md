@@ -5,8 +5,9 @@ Resource Plane queue router. A local database-only producer now commits Preview
 claims and provision/cleanup events atomically. PostgreSQL integration follows
 the committed commands through the Dispatcher, fake Resource Plane controller,
 and generation-fenced result projection. The Control Plane result-consumer
-Lambda entry point builds locally, but its SQS event-source mapping,
-least-privilege database role, and AWS deployment remain unwired.
+Lambda entry point and default-off Terraform contracts for exact-queue SQS
+mappings and a least-privilege DSQL role are implemented locally. AWS resources
+and database grants remain unapplied.
 
 ## Producer transaction
 
@@ -50,8 +51,7 @@ composes producer, Dispatcher, fake Resource Plane controller, and the result
 Lambda handler, including a mixed-batch partial failure. The ARM64 Lambda
 entry point is `cmd/hako-preview-result-consumer-lambda` and builds with
 `make build-preview-result-consumer-lambda`. Its queue event-source mapping and
-database IAM grants are not deployed. The Lambda MicroVM/Gateway provider is
-also not wired.
+database IAM grants have default-off Terraform contracts but are not deployed.
 
 `previewcontroller.WorkspaceRuntimeAdapter` now maps a Preview provision to
 the existing Resource Plane Workspace Runtime using the generation-derived
@@ -72,11 +72,12 @@ and exact ticket private-key Secret ARN.
 The adapter is locally tested through the Preview controller/result path
 against a fake Resource Controller Runtime. The Resource Controller Lambda
 composes it with the configured Lambda MicroVM Workspace runtime, brokered
-checkout, attempt-scoped S3 archive, Guest installer, and Preview result sink.
-The Guest verifies and installs source at `/workspace/src`. It does not yet
-start a repository Preview application or publish an application URL. Guest
-application bootstrap and real provider end-to-end checks remain before
-application Previews can be enabled.
+checkout, attempt-scoped S3 archive, Guest installer, Preview application
+bootstrap, and Preview result sink. The Guest verifies and installs source at
+`/workspace/src`, then starts the strict `.hako/preview.yaml` command as the
+unprivileged Agent user, bound to loopback port 3000. No public application
+URL or inbound port is published. Real provider end-to-end checks remain
+before application Previews can be enabled.
 
 ## Resource Controller Lambda composition
 
@@ -99,13 +100,14 @@ included in the immutable Guest image's trusted-key file. Set
 The Control Plane Dispatcher manifest must use the output
 `preview_runtime_commands_queue_url`; the Control Plane result-consumer
 configuration must map the Plane ID to `preview_runtime_results_queue_arn`.
-Both sides remain default-off and no AWS resources or grants were applied.
+Terraform contracts for both sides are default-off; no AWS resources or grants
+were applied.
 
 Even after queue wiring, a successful result means that the generation-scoped
-Lambda MicroVM exists, the pinned PR source is installed, and its logical
-Workspace identity can be resolved by the shared Gateway journal. The Guest
-does not yet start a repository application, and no public application route
-is issued. No AWS resources, Secrets, or runtime access have been applied.
+Lambda MicroVM exists, the pinned PR source is installed, the declared app is
+healthy on loopback port 3000, and its logical Workspace identity can be
+resolved by the shared Gateway journal. No public application route is issued.
+No AWS resources, Secrets, or runtime access have been applied.
 
 ## Outbox event
 

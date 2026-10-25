@@ -25,8 +25,11 @@ It returns PR number, pinned head SHA/ref, a monotonic lifecycle `generation`,
 desired/observed lifecycle state, expiry, cleanup retry metadata, and update
 time. The limit defaults to 50 and is capped at 100. Tenant membership is
 required; an Installation or Repository outside that Tenant is not disclosed.
-`runtime_enabled` remains false because this listing reports lifecycle
-metadata only.
+`runtime_enabled` remains false in the public list response. The local
+provisioning, Guest startup, and cleanup command paths are implemented, but the
+Preview runtime is not enabled for user traffic until the default-off
+Control Plane/Resource Plane deployment and real MicroVM acceptance gates are
+completed.
 
 When a runtime allocation for the current PR generation is marked `running`,
 Tenant members can request a short-lived Gateway Session:
@@ -70,9 +73,11 @@ general Workspace port policy allows them. The Resource Plane Gateway
 composition injects `PreviewPortAuthorizer`, which allows only a valid
 generation-specific Preview Workspace ID, the `port-forward` permission, and
 port `3000`. The Gateway's existing active-session check verifies that the
-ticket still maps to a current, running Preview generation. Ordinary Workspace
-ports remain deny-by-default until their Service state is connected to a
-separate authorization policy.
+ticket still maps to a current, running Preview generation. For ordinary
+Workspaces, the Gateway separately asks the Control Plane to authorize only
+declared TCP ports of healthy Services in the current runtime generation
+(Task 86). This is locally tested; production Gateway rollout remains
+unverified.
 
 An opted-in repository must include `.hako/preview.yaml` in the pinned PR
 commit:
@@ -101,7 +106,8 @@ generation, the API rejects session creation. The shared Gateway resolves the
 private runtime Workspace through its Resource Plane journal; there is no
 separately published Preview network route. Terraform requires its image,
 journal bucket/prefix, public origin, and Agent ticket signing key to match the
-Preview Resource Controller. This command does not create runtime resources.
+Preview Resource Controller. The `open` command only connects to an already
+provisioned generation; it does not create runtime resources.
 A local API + TLS/WSS Gateway E2E verifies the CLI's loopback tunnel,
 generation-specific Session issuance, byte relay to the authorized Workspace
 ID, cancellation, and Session revocation using a fake Guest stream. This does
@@ -207,11 +213,11 @@ but cannot update provider IDs or call AWS/Resource Plane APIs. Dispatch to a
 Plane still depends on the existing Dispatcher schedule and a configured
 Preview queue URL. PostgreSQL integration covers Tenant region/Plane filters,
 full-capacity exclusion, pinned placement, and capacity release after cleanup.
-Resource Plane queue infrastructure, Lambda MicroVM API calls, Gateway route
-publication, and journal-backed provider executor are still missing, so no
-Preview runtime is allocated for user traffic.
+The Resource Plane queue/provider composition has since been added locally as
+described in Runtime and cleanup status below; deployment and real MicroVM
+verification remain open.
 
-The accepted Preview Outbox envelope and current routing-only status are
+The accepted Preview Outbox envelope and current runtime status are
 documented in [Preview Runtime command routing contract](preview-runtime-command-contract.md).
 
 Migrations 000172–000175 add an optional Tenant GitHub App identity pin to each
@@ -223,9 +229,9 @@ the then-current eligible integration. Shared Hako credentials are never used
 as a fallback. If no eligible Tenant App exists, the generation remains
 unpinned and must fail closed for source checkout. Existing unpinned rows are
 not silently backfilled, so enabling checkout for them requires a new
-generation or an explicit migration policy. This is credential identity
-metadata only: broker checkout, source transfer into the MicroVM, and Guest
-startup are not yet composed, and the migration has not been applied to AWS.
+generation or an explicit migration policy. Broker checkout, source transfer
+into the MicroVM, and Guest startup are now composed locally. The migrations
+have not been applied to AWS.
 
 The Tenant App broker now has a separate mTLS-only
 `POST /v1/preview-checkout/token` endpoint for Resource Plane certificates on
@@ -285,37 +291,46 @@ Tenant quota or the 24-hour fallback.
 
 ## Runtime and cleanup status
 
-This is lifecycle metadata only. No MicroVM is created and no Gateway route is
-published: responses report `runtime_enabled: false`, and records remain in
-`awaiting_runtime`, `quota_exceeded`, `cleanup_pending`, or `cleaned`. The existing Lambda MicroVM Workspace
-runtime does not yet provision a PR-scoped Workspace binding or expiring
-Tenant-scoped Gateway route. A default-off scheduled Lambda invokes the bounded
-expiry sweep, but it is not enabled by default and only updates DSQL metadata.
-A separate default-off scheduled Lambda claims current Preview generations,
-reserves and pins Resource Plane placement, and enqueues provision/cleanup
-commands transactionally; the normal Outbox Dispatcher sends those commands.
-Neither schedule calls a MicroVM provider or publishes a Gateway route.
-The store records only fixed cleanup error categories and schedules bounded
-exponential retries (5 seconds to 1 hour). `cleaned` is written only after the
-runtime executor confirms MicroVM and Gateway route deletion, and duplicate
-confirmation is idempotent. Migrations 000145–000147 add parent cleanup leases
-and lifecycle generations. Migrations 000161–000162 add separate lease,
-attempt, and retry state to each runtime generation. The local
-`internal/previewcleanup.RuntimeWorker` claims bounded generation batches and
-uses immutable provider bindings, or the deterministic private runtime
-Workspace ID plus pinned Resource Plane ID when an interrupted provision
-attempt has no binding, and marks a generation cleaned only after an injected
-executor confirms deletion. It can
-also retire generations that never had a provision attempt without calling a
-provider. The legacy PR-wide worker
-does not claim Previews that have generation rows, preventing it from
-acknowledging those rows without per-generation confirmation. The quota remains
-reserved until every generation is cleaned. PostgreSQL integration verifies
-lease recovery, active-claim exclusion, retry/backoff, stale-claim rejection,
-provider-bound cleanup, interrupted unbound-attempt journal-recovery identity,
-and final quota release. A concrete Resource Plane cleanup command/executor
-that resolves the exact durable journal, and scheduled worker deployment are
-still required before Preview can be enabled for user traffic.
+The public Preview feature remains disabled: metadata/list responses report
+`runtime_enabled: false`, and Session creation requires a current running
+provider binding. The local execution path is implemented beyond lifecycle
+metadata. A default-off scheduled producer claims current generations, reserves
+and pins Resource Plane placement, and writes provision/cleanup commands to
+the Control Plane Outbox. The normal Outbox Dispatcher routes those commands
+to the exact pinned Plane queue. The Resource Plane Lambda has a strict Preview
+queue handler and composes the existing durable Lambda MicroVM Workspace
+runtime journal with Preview generation fencing. It uses stable ensure/delete
+revisions and resolves the MicroVM only through that journal; it does not scan
+for or adopt unjournaled MicroVMs.
+
+Provisioning checks out the exact pinned PR head using the Tenant App
+credential pin and mTLS broker, stages a credential-free archive in the
+configured S3 prefix, installs it at `/workspace/src` over the Guest's one-use
+file channel, and starts the strict `.hako/preview.yaml` command. The app is
+health-checked on loopback port 3000 before provision success is reported. The
+Gateway uses the logical generation Workspace ID and resolves it through the
+same journal; no separate public Preview network route is published. The CLI
+connects through a loopback-only tunnel.
+
+Cleanup claims are generation-fenced and retryable. The Resource Plane
+controller resolves and deletes the exact journaled MicroVM, and cleanup is
+acknowledged only after provider confirmation. Unjournaled resources are never
+discovered by scanning. Quota remains reserved until all generations are
+confirmed cleaned. Local PostgreSQL/fake-provider tests cover provisioning,
+source installation, app startup, partial-create compensation, retries,
+generation changes, cleanup, and result replay.
+
+The scheduled producer, result consumer, command/result queues, IAM grants,
+Guest ticket-key agreement, source broker/S3 access, and Gateway configuration
+have default-off deployment contracts. No AWS resources or DSQL grants have
+been applied, no real Secret was retrieved, and the pinned ARM64 image has not
+been exercised in a Lambda MicroVM. Therefore this local execution path is not
+yet enabled for user traffic; real AWS networking, Gateway routing, app
+health, and physical cleanup remain unverified.
+
+A separate default-off scheduled Lambda also invokes the bounded metadata
+expiry sweep. It only changes lifecycle state; the provision/cleanup producer
+and Resource Plane command path perform the later runtime work.
 
 Webhook admission reserves the Tenant Preview concurrency slot in the same
 transaction as the PR lifecycle update, using the shared Tenant quota OCC row.
