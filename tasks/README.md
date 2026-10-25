@@ -24,6 +24,18 @@ action, and quota). The CLI package reported 66.7% in its integration-tagged
 package run. Coverage identifies untested code but does not itself establish
 behavior outside these local tests.
 
+Tenant Webhook adapter follow-up (2026-10-25): added a PostgreSQL composition
+test for `TenantGitHubWebhookCredentialResolver` and
+`TenantGitHubWebhookAttemptLimiter`. The secret path uses only a synthetic
+STS/Secrets Manager HTTP endpoint, verifies exact Webhook-purpose Role/Secret/
+Version pins, and rejects unknown integration or nil DB. The limiter verifies
+the database-backed admission boundary. `make test-tenant-github-apps-integration`
+includes these tests; it does not retrieve real secrets. API integration
+coverage increased to 76.0% in the focused package run. Corrected stale Task 58
+text that claimed OAuth broker/API/CLI wiring was still missing; Tasks 66/67/72
+contain that local implementation, while production certificate/IAM/network
+provisioning remains open.
+
 Task 52 workflow policy read API was added on 2026-10-25. Tenant members can
 inspect the active repository allowlist through the authenticated API/CLI;
 configuration remains Owner/Admin-only. API/CLI and PostgreSQL integration
