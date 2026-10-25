@@ -39,9 +39,11 @@ Control Plane.
   requests, Gateway TLS/ticket binding/streaming, S3 bucket and prefix fences,
   CLI integrity/atomic-file behavior, and CLI rejection of a nil output writer,
   malformed arguments, missing login, and missing API/Gateway URLs before any
-  network request. The CLI artifact download orchestration function is 94.4%
-  statement-covered and `cmd/hako` is 62.1% covered in the current local suite.
-  Agent proposal CLI tests cover Run
+  network request. Additional CLI tests cover API ticket denial, Gateway
+  rejection, wrong content type/digest/length, failed temporary-file creation,
+  failed atomic rename, and preservation of prior output with temporary-file
+  cleanup. `downloadWorkloadArtifactExpected` is 80.8% statement-covered and
+  `cmd/hako` is 63.1% covered in the current local suite. Agent proposal CLI tests cover Run
   selection, private file permissions, and a mismatched ticket that must not
   contact the Gateway or replace an existing destination.
 - PostgreSQL integration covers authorized ticket issuance, requester/Tenant

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -173,6 +174,159 @@ func TestDownloadWorkloadArtifactRejectsDigestMismatchWithoutReplacingDestinatio
 	actual, err := os.ReadFile(outputPath)
 	if err != nil || string(actual) != "existing file" {
 		t.Fatalf("failed download replaced destination: %q err=%v", actual, err)
+	}
+}
+
+func TestDownloadWorkloadArtifactRejectsGatewayMetadataAndStatusFailures(t *testing.T) {
+	content := []byte("artifact body")
+	digest := sha256.Sum256(content)
+	sha := hex.EncodeToString(digest[:])
+	for _, test := range []struct {
+		name        string
+		status      int
+		contentType string
+		responseSHA string
+		contentLen  int
+		want        string
+	}{
+		{name: "gateway denied", status: http.StatusForbidden, want: "rejected"},
+		{name: "wrong media type", status: http.StatusOK, contentType: "text/plain", responseSHA: sha, contentLen: len(content), want: "invalid Workload artifact metadata"},
+		{name: "wrong digest header", status: http.StatusOK, contentType: "application/octet-stream", responseSHA: strings.Repeat("0", 64), contentLen: len(content), want: "invalid Workload artifact metadata"},
+		{name: "wrong content length", status: http.StatusOK, contentType: "application/octet-stream", responseSHA: sha, contentLen: len(content) + 1, want: "invalid Workload artifact metadata"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v1/tenants/tenant_cli/workload-runs/run_cli/artifacts/artifact_cli/download-ticket" {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusCreated)
+					_ = json.NewEncoder(w).Encode(map[string]any{"ticket": "ticket", "expires_at": time.Now().Add(time.Minute),
+						"size_bytes": len(content), "sha256": sha, "kind": "logs"})
+					return
+				}
+				w.Header().Set("Content-Type", test.contentType)
+				w.Header().Set("X-Hako-Artifact-SHA256", test.responseSHA)
+				w.Header().Set("Content-Length", fmt.Sprint(test.contentLen))
+				w.WriteHeader(test.status)
+				if test.status == http.StatusOK {
+					_, _ = w.Write(content)
+				}
+			}))
+			defer server.Close()
+
+			outputPath := filepath.Join(t.TempDir(), "artifact.bin")
+			if err := os.WriteFile(outputPath, []byte("previous file"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			err := downloadWorkloadArtifact(t.Context(), server.URL, server.URL, "access", "tenant_cli", "run_cli", "artifact_cli", outputPath, server.Client())
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("download error = %v, want %q", err, test.want)
+			}
+			got, readErr := os.ReadFile(outputPath)
+			if readErr != nil || string(got) != "previous file" {
+				t.Fatalf("failed response replaced destination: %q, %v", got, readErr)
+			}
+			entries, readErr := os.ReadDir(filepath.Dir(outputPath))
+			if readErr != nil || len(entries) != 1 || entries[0].Name() != filepath.Base(outputPath) {
+				t.Fatalf("temporary download file leaked: entries=%v err=%v", entries, readErr)
+			}
+		})
+	}
+}
+
+func TestDownloadWorkloadArtifactRejectsInvalidConfigurationBeforeRequest(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		ctx        context.Context
+		gatewayURL string
+		outputPath string
+	}{
+		{name: "nil context", gatewayURL: "https://gateway.example.test", outputPath: "artifact.bin"},
+		{name: "non-loopback http", ctx: context.Background(), gatewayURL: "http://gateway.example.test", outputPath: "artifact.bin"},
+		{name: "blank output", ctx: context.Background(), gatewayURL: "https://gateway.example.test", outputPath: " "},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := downloadWorkloadArtifact(test.ctx, "not a URL", test.gatewayURL, "access", "tenant", "run", "artifact", test.outputPath, nil); err == nil || !strings.Contains(err.Error(), "configuration is invalid") {
+				t.Fatalf("invalid configuration error = %v", err)
+			}
+		})
+	}
+}
+
+func TestDownloadWorkloadArtifactHandlesTicketAndFilesystemFailures(t *testing.T) {
+	content := []byte("artifact bytes")
+	digest := sha256.Sum256(content)
+	sha := hex.EncodeToString(digest[:])
+	for _, test := range []struct {
+		name    string
+		prepare func(string) (string, error)
+		deny    bool
+		want    string
+	}{
+		{name: "ticket denied", prepare: func(path string) (string, error) {
+			output := filepath.Join(path, "artifact.bin")
+			return output, os.WriteFile(output, []byte("keep"), 0600)
+		}, deny: true, want: "HTTP 403"},
+		{name: "temporary file create fails", prepare: func(path string) (string, error) {
+			return filepath.Join(path, "missing", "artifact.bin"), nil
+		}, want: "create temporary artifact file"},
+		{name: "install rename fails", prepare: func(path string) (string, error) {
+			output := filepath.Join(path, "destination")
+			return output, os.Mkdir(output, 0700)
+		}, want: "install verified artifact file"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			outputPath, err := test.prepare(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gatewayReached := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v1/tenants/tenant_cli/workload-runs/run_cli/artifacts/artifact_cli/download-ticket" {
+					if test.deny {
+						http.Error(w, "denied", http.StatusForbidden)
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusCreated)
+					_ = json.NewEncoder(w).Encode(map[string]any{"ticket": "ticket", "expires_at": time.Now().Add(time.Minute),
+						"size_bytes": len(content), "sha256": sha, "kind": "logs"})
+					return
+				}
+				gatewayReached = true
+				w.Header().Set("Content-Type", "application/octet-stream")
+				w.Header().Set("X-Hako-Artifact-SHA256", sha)
+				w.Header().Set("Content-Length", fmt.Sprint(len(content)))
+				_, _ = w.Write(content)
+			}))
+			defer server.Close()
+
+			err = downloadWorkloadArtifact(t.Context(), server.URL, server.URL, "access", "tenant_cli", "run_cli", "artifact_cli", outputPath, server.Client())
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("download error = %v, want %q", err, test.want)
+			}
+			if test.deny && gatewayReached {
+				t.Fatal("Gateway was contacted after ticket denial")
+			}
+			if !test.deny && !gatewayReached {
+				t.Fatal("Gateway was not contacted for a valid ticket")
+			}
+			entries, err := os.ReadDir(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				if strings.HasPrefix(entry.Name(), ".hako-artifact-") {
+					t.Fatalf("temporary artifact file leaked: %s", entry.Name())
+				}
+			}
+			if test.deny {
+				got, err := os.ReadFile(outputPath)
+				if err != nil || string(got) != "keep" {
+					t.Fatalf("ticket denial changed destination: %q err=%v", got, err)
+				}
+			}
+		})
 	}
 }
 
