@@ -5,8 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"os"
-	"path/filepath"
+	"errors"
 	"strings"
 	"testing"
 
@@ -16,6 +15,17 @@ import (
 )
 
 type reconcileEFSStub struct{ deleted, created bool }
+
+type journalListStub struct {
+	bindings []workspacestorage.WorkspaceBinding
+}
+
+func (s journalListStub) ListStorageBindings(_ context.Context, limit int) ([]workspacestorage.WorkspaceBinding, error) {
+	if len(s.bindings) > limit {
+		return nil, errors.New("limit exceeded")
+	}
+	return s.bindings, nil
+}
 
 func (*reconcileEFSStub) DescribeAccessPoints(context.Context, *efs.DescribeAccessPointsInput, ...func(*efs.Options)) (*efs.DescribeAccessPointsOutput, error) {
 	return &efs.DescribeAccessPointsOutput{AccessPoints: nil}, nil
@@ -31,25 +41,24 @@ func (s *reconcileEFSStub) DeleteAccessPoint(context.Context, *efs.DeleteAccessP
 	return nil, nil
 }
 
-func TestRunProducesReadOnlyJournalAndEFSReport(t *testing.T) {
+func TestRunListsJournalsAndProducesReadOnlyEFSReport(t *testing.T) {
 	identity := workspacestorage.Identity{TenantID: domain.TenantID("tenant_a"), WorkspaceID: domain.WorkspaceID("workspace_a"), ResourcePlaneID: domain.ResourcePlaneID("rp_tokyo")}
 	uid := posixID(string(identity.TenantID) + ":" + string(identity.WorkspaceID))
 	binding := workspacestorage.Binding{
 		FileSystemID: "fs-0123456789abcdef0", Region: "us-east-1", AccessPointID: "fsap-0123456789abcdef0",
 		RootPath: "/hako/" + hash(string(identity.ResourcePlaneID)) + "/" + hash(string(identity.TenantID)) + "/" + hash(string(identity.WorkspaceID)), UID: uid, GID: uid,
 	}
-	inputPath := filepath.Join(t.TempDir(), "bindings.json")
-	data, err := json.Marshal([]workspacestorage.WorkspaceBinding{{Identity: identity, Binding: binding}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(inputPath, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
 	api := &reconcileEFSStub{}
+	journals := journalListStub{bindings: []workspacestorage.WorkspaceBinding{{Identity: identity, Binding: binding}}}
 	var output strings.Builder
-	err = run(context.Background(), []string{"--region", "us-east-1", "--filesystem", binding.FileSystemID, "--bindings", inputPath}, &output,
-		func(context.Context, string) (workspacestorage.EFSAPI, error) { return api, nil })
+	err := run(context.Background(), []string{"--region", "us-east-1", "--filesystem", binding.FileSystemID,
+		"--journal-bucket", "hako-rp-journal", "--journal-prefix", "workspace-journal/rp_tokyo"}, &output,
+		func(_ context.Context, region, bucket, prefix string) (workspacestorage.EFSAPI, journalBindingLister, error) {
+			if region != "us-east-1" || bucket != "hako-rp-journal" || prefix != "workspace-journal/rp_tokyo" {
+				t.Fatalf("unexpected read scope region=%q bucket=%q prefix=%q", region, bucket, prefix)
+			}
+			return api, journals, nil
+		})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,21 +77,16 @@ func TestRunProducesReadOnlyJournalAndEFSReport(t *testing.T) {
 	}
 }
 
-func TestReadBindingsRejectsUnknownFieldsTrailingDataAndOversize(t *testing.T) {
-	for name, contents := range map[string]string{
-		"unknown":  `[{"identity":{"tenant_id":"t","workspace_id":"w","resource_plane_id":"rp"},"binding":{},"delete":true}]`,
-		"trailing": `[] []`,
-		"oversize": strings.Repeat(" ", maxJournalInputBytes+1),
-	} {
-		t.Run(name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "bindings.json")
-			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := readBindings(path); err == nil {
-				t.Fatal("invalid input was accepted")
-			}
+func TestRunRequiresDedicatedJournalPrefix(t *testing.T) {
+	called := false
+	err := run(context.Background(), []string{"--region", "us-east-1", "--filesystem", "fs-0123456789abcdef0",
+		"--journal-bucket", "hako-rp-journal", "--journal-prefix", "/"}, &strings.Builder{},
+		func(context.Context, string, string, string) (workspacestorage.EFSAPI, journalBindingLister, error) {
+			called = true
+			return nil, nil, nil
 		})
+	if err == nil || called {
+		t.Fatal("empty normalized journal prefix reached AWS client creation")
 	}
 }
 

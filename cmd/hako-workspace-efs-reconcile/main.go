@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,54 +13,68 @@ import (
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/efs"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/mo3789530/hako/internal/workspacejournal"
 	"github.com/mo3789530/hako/internal/workspacestorage"
 )
 
-const maxJournalInputBytes = 16 << 20
+const maxJournalBindings = 100000
 
-type efsClientFactory func(context.Context, string) (workspacestorage.EFSAPI, error)
+type journalBindingLister interface {
+	ListStorageBindings(context.Context, int) ([]workspacestorage.WorkspaceBinding, error)
+}
+
+type clientsFactory func(context.Context, string, string, string) (workspacestorage.EFSAPI, journalBindingLister, error)
 
 func main() {
-	if err := run(context.Background(), os.Args[1:], os.Stdout, defaultEFSClient); err != nil {
+	if err := run(context.Background(), os.Args[1:], os.Stdout, defaultClients); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, "workspace EFS reconciliation failed")
 		os.Exit(1)
 	}
 }
 
-func defaultEFSClient(ctx context.Context, region string) (workspacestorage.EFSAPI, error) {
+func defaultClients(ctx context.Context, region, bucket, prefix string) (workspacestorage.EFSAPI, journalBindingLister, error) {
 	config, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return efs.NewFromConfig(config), nil
+	journalStore, err := workspacejournal.NewS3Store(s3.NewFromConfig(config), bucket, prefix)
+	if err != nil {
+		return nil, nil, err
+	}
+	return efs.NewFromConfig(config), journalStore, nil
 }
 
-func run(ctx context.Context, args []string, output io.Writer, newClient efsClientFactory) error {
-	if ctx == nil || output == nil || newClient == nil {
+func run(ctx context.Context, args []string, output io.Writer, newClients clientsFactory) error {
+	if ctx == nil || output == nil || newClients == nil {
 		return errors.New("invalid reconciliation dependencies")
 	}
 	flags := flag.NewFlagSet("hako-workspace-efs-reconcile", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	region := flags.String("region", "", "AWS Region containing the Workspace EFS filesystem")
 	fileSystemID := flags.String("filesystem", "", "Workspace EFS filesystem ID")
-	bindingsPath := flags.String("bindings", "", "JSON export of durable Workspace journal bindings")
+	journalBucket := flags.String("journal-bucket", "", "S3 bucket containing Resource Plane Workspace runtime journals")
+	journalPrefix := flags.String("journal-prefix", "", "dedicated S3 prefix containing Workspace runtime journals")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || strings.TrimSpace(*region) == "" ||
-		strings.TrimSpace(*fileSystemID) == "" || strings.TrimSpace(*bindingsPath) == "" {
-		return errors.New("region, filesystem, and bindings are required")
-	}
-	bindings, err := readBindings(*bindingsPath)
-	if err != nil {
-		return err
+		strings.TrimSpace(*fileSystemID) == "" || strings.TrimSpace(*journalBucket) == "" || strings.Trim(strings.TrimSpace(*journalPrefix), "/") == "" {
+		return errors.New("region, filesystem, journal-bucket, and journal-prefix are required")
 	}
 	clientCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	api, err := newClient(clientCtx, strings.TrimSpace(*region))
+	api, journals, err := newClients(clientCtx, strings.TrimSpace(*region), strings.TrimSpace(*journalBucket), strings.Trim(strings.TrimSpace(*journalPrefix), "/"))
 	if err != nil {
-		return errors.New("AWS EFS client initialization failed")
+		return errors.New("AWS read-only client initialization failed")
+	}
+	if journals == nil {
+		return errors.New("Workspace journal listing is unavailable")
 	}
 	storage, err := workspacestorage.NewEFS(api, strings.TrimSpace(*fileSystemID), strings.TrimSpace(*region))
 	if err != nil {
 		return errors.New("Workspace EFS configuration is invalid")
+	}
+	bindings, err := journals.ListStorageBindings(clientCtx, maxJournalBindings)
+	if err != nil {
+		return errors.New("Workspace journal listing could not complete")
 	}
 	entries, err := storage.Reconcile(clientCtx, bindings)
 	if err != nil {
@@ -78,30 +91,4 @@ func run(ctx context.Context, args []string, output io.Writer, newClient efsClie
 		return errors.New("Workspace EFS reconciliation report could not be encoded")
 	}
 	return nil
-}
-
-func readBindings(path string) ([]workspacestorage.WorkspaceBinding, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, errors.New("cannot open Workspace journal binding export")
-	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, maxJournalInputBytes+1))
-	if err != nil || len(data) > maxJournalInputBytes {
-		return nil, errors.New("Workspace journal binding export is unreadable or too large")
-	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	var bindings []workspacestorage.WorkspaceBinding
-	if err := decoder.Decode(&bindings); err != nil || bindings == nil {
-		return nil, errors.New("Workspace journal binding export is invalid")
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		return nil, errors.New("Workspace journal binding export has trailing data")
-	}
-	if len(bindings) > 100000 {
-		return nil, errors.New("Workspace journal binding export has too many entries")
-	}
-	return bindings, nil
 }

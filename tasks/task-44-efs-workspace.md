@@ -11,9 +11,10 @@ creation tags, existing-role ownership tags, and Lambda-only PassRole are
 separate conditions. Mock plan tests verify the default-off and scoped policy.
 Read-only journal/AP reconciliation reports referenced, unbound, stale,
 duplicate, mismatched, and missing bindings; it never deletes candidates.
-`cmd/hako-workspace-efs-reconcile` accepts a strict bounded journal-binding
-export and performs a read-only paginated EFS comparison with sanitized JSON
-output. It deliberately does not list S3 journals or mutate Access Points.
+`cmd/hako-workspace-efs-reconcile` lists a bounded, explicitly configured S3
+journal prefix, validates and reads each durable Workspace journal, then
+performs a read-only paginated EFS comparison with sanitized JSON output. It
+retains tombstones until cleanup confirmation and never mutates Access Points.
 Real role lifecycle, EFS authorization behavior, private subnet/connector
 compatibility, image execution, restore testing, and deployment gates remain
 unverified.
