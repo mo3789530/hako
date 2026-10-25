@@ -29,32 +29,42 @@ Repository. The proposal remains untrusted. Hako must never merge or deploy it.
 
 ## Work
 
-1. Define a durable, idempotent submission identity keyed by Tenant, Run,
-   attempt, proposal digest, and pinned App/Repository generation. Model retry,
-   lost GitHub responses, credential rotation, Factory disablement, and stale
-   base branch without creating a second PR or changing a different branch.
-2. Add a Control Plane resolver that reads the authoritative terminal Run,
-   current attempt, successful Agent result, `agent_changes` artifact metadata,
-   per-Repository branch/PR policy, required passing Hako Checks, current
-   default branch, and immutable Tenant App identity. Reject missing or stale
-   evidence before any credential request.
-3. Add a broker-only endpoint and caller allowlist. Revalidate all pins before
+1. Materialize the bounded proposal onto its exact immutable base in a separate
+   verifier Workload with no GitHub write token, model credential, or cloud
+   credential. Run only the Repository's allowlisted, bounded Hako checks.
+   Persist an immutable verification result bound to the proposal SHA-256, base
+   commit, verifier Run/attempt, and each required Check name. A successful
+   Agent Run or a Check on the unmodified base commit is not proof that the
+   proposed tree passed.
+2. Define a durable, idempotent submission identity keyed by Tenant, Agent Run,
+   attempt, proposal digest, verifier Run/attempt, and pinned App/Repository
+   generation. Model retry, lost GitHub responses, credential rotation,
+   Factory disablement, and stale base branch without creating a second PR or
+   changing a different branch.
+3. Add a Control Plane resolver that reads the authoritative terminal Agent
+   Run and cleanup confirmation, latest attempt, `agent_changes` artifact
+   metadata, the digest-bound verifier result for every required Check,
+   per-Repository branch/PR policy, current default branch, and immutable
+   Tenant App identity. Reject missing, stale, or base-only evidence before any
+   credential request.
+4. Add a broker-only endpoint and caller allowlist. Revalidate all pins before
    and after GitHub calls. Mint an exact-repository installation token with
    only Contents and Pull Requests write permissions; verify GitHub's returned
    repository and permission scope.
-4. Add a bounded GitHub publisher that validates every archive entry before
+5. Add a bounded GitHub publisher that validates every archive entry before
    writes, checks the base ref against the pinned SHA, creates blobs/tree/commit
    and the new branch, and creates or recovers the one matching PR. It must
    reject forks, arbitrary base refs, existing unrelated branches, policy
    mismatch, failed required checks, and replay with a different digest.
-5. Persist only bounded submission state and safe PR metadata. Do not persist
+6. Persist only bounded submission state and safe PR metadata. Do not persist
    the token, raw GitHub payloads, or archive contents in DSQL.
-6. Add local fake-provider and PostgreSQL tests for success, duplicate request,
+7. Add local fake-provider and PostgreSQL tests for success, duplicate request,
    lost response recovery, duplicate event, stale attempt/base/App generation,
    Factory disablement, cross-Tenant/Repository, foreign branch, failed Check,
-   missing PR permission, token over-scope, API failure, cancellation, and
+   base-only Check, changed proposal digest after verification, missing PR
+   permission, token over-scope, API failure, cancellation, and
    cleanup-before-publish ordering.
-7. Add API/CLI status and retry UX with no token or artifact reference exposure.
+8. Add API/CLI status and retry UX with no token or artifact reference exposure.
    Keep scheduling and publication default-off. Document coexistence with
    GitHub Actions and the human-review-only contract.
 
