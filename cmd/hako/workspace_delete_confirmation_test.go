@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -92,4 +93,58 @@ func TestAuthorizeWorkspaceServiceRemovalYesSkipsPrompt(t *testing.T) {
 	if err != nil || !confirmed {
 		t.Fatalf("--yes authorization = %t, %v; want confirmed without prompt", confirmed, err)
 	}
+}
+
+func TestRunConfirmedActionRunsOnlyAfterConfirmation(t *testing.T) {
+	t.Run("confirmed", func(t *testing.T) {
+		actionCalls := 0
+		result, accepted, err := runConfirmedAction(
+			func() (bool, error) { return true, nil },
+			func() (string, error) {
+				actionCalls++
+				return "removed", nil
+			},
+		)
+		if err != nil || !accepted || result != "removed" || actionCalls != 1 {
+			t.Fatalf("confirmed action = (%q, %t, %v), calls=%d; want (removed, true, nil), calls=1", result, accepted, err, actionCalls)
+		}
+	})
+
+	t.Run("declined", func(t *testing.T) {
+		actionCalls := 0
+		result, accepted, err := runConfirmedAction(
+			func() (bool, error) { return false, nil },
+			func() (string, error) {
+				actionCalls++
+				return "removed", nil
+			},
+		)
+		if err != nil || accepted || result != "" || actionCalls != 0 {
+			t.Fatalf("declined action = (%q, %t, %v), calls=%d; want empty result, false, nil, calls=0", result, accepted, err, actionCalls)
+		}
+	})
+
+	t.Run("confirmation error", func(t *testing.T) {
+		wantErr := errors.New("prompt failed")
+		actionCalls := 0
+		_, accepted, err := runConfirmedAction(
+			func() (bool, error) { return true, wantErr },
+			func() (string, error) {
+				actionCalls++
+				return "removed", nil
+			},
+		)
+		if !errors.Is(err, wantErr) || accepted || actionCalls != 0 {
+			t.Fatalf("confirmation error = (accepted=%t, err=%v), calls=%d; want prompt error and calls=0", accepted, err, actionCalls)
+		}
+	})
+
+	t.Run("missing callback", func(t *testing.T) {
+		if _, _, err := runConfirmedAction[string](nil, func() (string, error) { return "", nil }); err == nil {
+			t.Fatal("missing confirmation callback accepted")
+		}
+		if _, _, err := runConfirmedAction[string](func() (bool, error) { return true, nil }, nil); err == nil {
+			t.Fatal("missing action callback accepted")
+		}
+	})
 }

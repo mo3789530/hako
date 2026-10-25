@@ -407,18 +407,27 @@ func main() {
 			fmt.Fprintf(os.Stderr, "hako service %s: %v\nusage: hako service %s <tenant-id> <workspace-id> <instance-name> [--yes]\n", action, err, action)
 			os.Exit(2)
 		}
+		requestAction := func() (domain.Service, error) {
+			return requestWorkspaceServiceAction(action, os.Args[3], os.Args[4], os.Args[5])
+		}
+		var service domain.Service
 		if action == "remove" {
-			confirmed, err := authorizeWorkspaceServiceRemoval(options.yes, os.Stdin, os.Stderr, os.Args[3], os.Args[4], os.Args[5])
+			confirmedService, accepted, err := runConfirmedAction(
+				func() (bool, error) {
+					return authorizeWorkspaceServiceRemoval(options.yes, os.Stdin, os.Stderr, os.Args[3], os.Args[4], os.Args[5])
+				}, requestAction)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "hako service remove: %v\n", err)
 				os.Exit(1)
 			}
-			if !confirmed {
+			if !accepted {
 				fmt.Fprintln(os.Stderr, "Workspace Service removal cancelled.")
 				return
 			}
+			service = confirmedService
+		} else {
+			service, err = requestAction()
 		}
-		service, err := requestWorkspaceServiceAction(action, os.Args[3], os.Args[4], os.Args[5])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "hako service %s: %v\n", action, err)
 			os.Exit(1)
@@ -482,17 +491,6 @@ func main() {
 			fmt.Fprintf(os.Stderr, "hako %s: %v\nusage: hako %s <tenant-id> <workspace-id> [--idempotency-key <key>] [--wait] [--yes]\n", action, err, action)
 			os.Exit(2)
 		}
-		if action == "delete" {
-			confirmed, err := authorizeWorkspaceDeletion(options.yes, os.Stdin, os.Stderr, tenantID, workspaceID)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "hako delete: %v\n", err)
-				os.Exit(1)
-			}
-			if !confirmed {
-				fmt.Fprintln(os.Stderr, "Workspace deletion cancelled.")
-				return
-			}
-		}
 		idempotencyKey := options.idempotencyKey
 		if idempotencyKey == "" {
 			generatedKey, err := idgen.New("req_")
@@ -502,7 +500,27 @@ func main() {
 			}
 			idempotencyKey = generatedKey
 		}
-		result, err := workspaceAction(action, tenantID, workspaceID, idempotencyKey)
+		requestAction := func() (api.WorkspaceActionResult, error) {
+			return workspaceAction(action, tenantID, workspaceID, idempotencyKey)
+		}
+		var result api.WorkspaceActionResult
+		if action == "delete" {
+			confirmedResult, accepted, err := runConfirmedAction(
+				func() (bool, error) {
+					return authorizeWorkspaceDeletion(options.yes, os.Stdin, os.Stderr, tenantID, workspaceID)
+				}, requestAction)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "hako delete: %v\n", err)
+				os.Exit(1)
+			}
+			if !accepted {
+				fmt.Fprintln(os.Stderr, "Workspace deletion cancelled.")
+				return
+			}
+			result = confirmedResult
+		} else {
+			result, err = requestAction()
+		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "hako %s: %v\nRetry the same request with --idempotency-key %s\n", action, err, idempotencyKey)
 			os.Exit(1)
