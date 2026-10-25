@@ -229,12 +229,27 @@ func TestExecuteTenantQuotaUpdateDoesNotMutateUntilConfirmed(t *testing.T) {
 	if updates != 1 {
 		t.Fatalf("EOF quota update called mutation; updates=%d", updates)
 	}
+	if _, err := executeTenantQuotaUpdate("tenant_1", target, false, strings.NewReader("yes\n"), workspaceBasicCLIWriterError{}, readLimits, readUsage, update); err == nil {
+		t.Fatal("quota update must fail when the confirmation prompt cannot be displayed")
+	}
+	if _, err := executeTenantQuotaUpdate("tenant_1", target, false, quotaUpdateReadError{}, io.Discard, readLimits, readUsage, update); err == nil {
+		t.Fatal("quota update must fail when confirmation input cannot be read")
+	}
+	if updates != 1 {
+		t.Fatalf("confirmation I/O failure called mutation; updates=%d", updates)
+	}
 	if _, err := executeTenantQuotaUpdate("tenant_1", target, true, nil, nil, readLimits, readUsage, update); err != nil {
 		t.Fatalf("--yes should permit a non-interactive update: %v", err)
 	}
 	if updates != 2 {
 		t.Fatalf("--yes update calls=%d want 2", updates)
 	}
+}
+
+type quotaUpdateReadError struct{}
+
+func (quotaUpdateReadError) Read([]byte) (int, error) {
+	return 0, errors.New("synthetic terminal read failure")
 }
 
 func TestWriteWorkspaceServiceListShowsRevisionGenerationAndHealth(t *testing.T) {

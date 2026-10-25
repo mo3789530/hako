@@ -131,3 +131,12 @@ the endpoint and cross-Plane isolation.
   are changed. Missing token/API URL fail closed. Values remain configured
   admission reservations; this does not claim live resource measurement.
   The focused CLI package now reports 55.7% statement coverage.
+
+## Quota confirmation I/O failure coverage (2026-10-25)
+
+The quota update path now has regression coverage for a terminal that cannot
+display the confirmation prompt and for an input stream that fails while
+reading the answer. Both failures abort before the mutation callback; only an
+explicit confirmation or the existing `--yes` path can update the Tenant
+limits. This supplements the existing decline/EOF checks and does not change
+the quota API or its configured-reservation semantics.
