@@ -215,6 +215,14 @@ argument rejection before network access, and a nonzero result when output
 writing fails. This covers the user-facing command boundary without spawning
 the process or changing its asynchronous lifecycle semantics.
 
+Lifecycle `suspend`, `resume`, and `delete` dispatch now uses a testable
+handler as well. HTTP-backed tests verify authenticated action bodies and
+idempotency keys, exact-ID delete confirmation (a generic `yes` makes no API
+request), resume readiness waiting after acceptance, and clear reporting when
+readiness is not confirmed. Invalid options and a missing wait adapter fail
+before an API request. The process entry point supplies the signal-aware
+Workspace wait implementation.
+
 ## Local terminal mode and resize coverage (2026-10-25)
 
 Added Linux PTY tests for `hako shell` local terminal handling. They verify

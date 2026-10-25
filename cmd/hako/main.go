@@ -439,54 +439,13 @@ func main() {
 			os.Exit(code)
 		}
 	case len(os.Args) >= 4 && len(os.Args) <= 7 && (os.Args[1] == "suspend" || os.Args[1] == "resume" || os.Args[1] == "delete"):
-		action, tenantID, workspaceID := os.Args[1], os.Args[2], os.Args[3]
-		options, err := parseWorkspaceActionOptions(action, os.Args[4:])
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "hako %s: %v\nusage: hako %s <tenant-id> <workspace-id> [--idempotency-key <key>] [--wait] [--yes]\n", action, err, action)
-			os.Exit(2)
-		}
-		idempotencyKey := options.idempotencyKey
-		if idempotencyKey == "" {
-			generatedKey, err := idgen.New("req_")
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "hako %s: %v\n", action, err)
-				os.Exit(1)
-			}
-			idempotencyKey = generatedKey
-		}
-		requestAction := func() (api.WorkspaceActionResult, error) {
-			return workspaceAction(action, tenantID, workspaceID, idempotencyKey)
-		}
-		var result api.WorkspaceActionResult
-		if action == "delete" {
-			confirmedResult, accepted, err := runConfirmedAction(
-				func() (bool, error) {
-					return authorizeWorkspaceDeletion(options.yes, os.Stdin, os.Stderr, tenantID, workspaceID)
-				}, requestAction)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "hako delete: %v\n", err)
-				os.Exit(1)
-			}
-			if !accepted {
-				fmt.Fprintln(os.Stderr, "Workspace deletion cancelled.")
-				return
-			}
-			result = confirmedResult
-		} else {
-			result, err = requestAction()
-		}
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "hako %s: %v\nRetry the same request with --idempotency-key %s\n", action, err, idempotencyKey)
-			os.Exit(1)
-		}
-		fmt.Fprintf(os.Stdout, "Workspace %s accepted: desired=%s observed=%s (operation=%s state=%s, request-key=%s)\n", result.Workspace.Workspace.ID, result.Workspace.Status.DesiredState, result.Workspace.Status.ObservedState, result.OperationID, result.OperationState, idempotencyKey)
-		if options.wait {
+		wait := func(tenantID, workspaceID string) error {
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
-			if err := workspaceWaitCLI(ctx, []string{tenantID, workspaceID, "--state", "running"}, os.Stdout); err != nil {
-				fmt.Fprintf(os.Stderr, "hako resume: operation %s was accepted, but Workspace readiness was not confirmed: %v\n", result.OperationID, err)
-				os.Exit(1)
-			}
+			return workspaceWaitCLI(ctx, []string{tenantID, workspaceID, "--state", "running"}, os.Stdout)
+		}
+		if code := runWorkspaceLifecycleActionCLI(os.Args[1], os.Args[2:], os.Stdin, os.Stdout, os.Stderr, wait); code != 0 {
+			os.Exit(code)
 		}
 	default:
 		_ = writeCLIUsage(os.Stderr)

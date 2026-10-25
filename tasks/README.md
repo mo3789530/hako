@@ -67,6 +67,12 @@ Task 47 CLI dispatch follow-up (2026-10-25): `hako create`, `hako list`, and
 point. HTTP-backed tests cover output, paging, invalid arguments before API
 access, and output-write failure handling.
 
+Task 47 lifecycle CLI follow-up (2026-10-25): `suspend`, `resume`, and `delete`
+now use a directly testable handler called by the process entry point. Tests
+cover authenticated action bodies/idempotency, exact Workspace ID confirmation
+before delete, `resume --wait` reporting, and fail-before-request behavior for
+cancelled or invalid actions.
+
 Task 52 workflow policy read API was added on 2026-10-25. Tenant members can
 inspect the active repository allowlist through the authenticated API/CLI;
 configuration remains Owner/Admin-only. API/CLI and PostgreSQL integration
