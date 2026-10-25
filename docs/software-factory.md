@@ -392,8 +392,11 @@ under the first configured prefix. State advances monotonically from
 idempotent and conflicting branch commits or PR numbers fail closed. This is
 durable state only: no GitHub write is performed yet. Task 89 remains open:
 safe verifier retry, brokered exact-scope write credentials, branch/PR create
-and lost-response recovery, and API/CLI status. Terraform IAM and AWS execution
-have not been verified.
+and lost-response recovery, and API/CLI submit/retry UX. The authenticated
+`GET .../agent-publication` endpoint and `hako workload publication show`
+display only safe state, branch, confirmed commit, PR number, and timestamps;
+they omit artifact references, digests, tokens, and verifier internals.
+Terraform IAM and AWS execution have not been verified.
 
 Treat `.hako/factory.yaml`, workflow files, action references, shell steps,
 container images, cache contents, and webhook payloads as untrusted inputs.

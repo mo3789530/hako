@@ -17,6 +17,7 @@ import (
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/idempotency"
 	"github.com/mo3789530/hako/internal/servicecatalog"
+	"github.com/mo3789530/hako/internal/store/workloads"
 	"github.com/mo3789530/hako/internal/workloadartifactaccess"
 	"github.com/mo3789530/hako/internal/workspacesession"
 )
@@ -1031,6 +1032,39 @@ func GetWorkloadRun(ctx context.Context, baseURL, accessToken, tenantID, runID s
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil {
 		return domain.WorkloadRun{}, errors.New("Hako API returned an invalid Workload Run response")
+	}
+	return result, nil
+}
+
+// GetWorkloadAgentPublication retrieves safe publication state for a Run
+// visible to the caller. The response contains no GitHub token or artifact URI.
+func GetWorkloadAgentPublication(ctx context.Context, baseURL, accessToken, tenantID, runID string,
+	client *http.Client) (WorkloadAgentPublicationStatus, error) {
+	var result WorkloadAgentPublicationStatus
+	if !validTenantID(tenantID) || !validOpaqueID(runID) {
+		return result, errors.New("Tenant and Workload Run IDs must contain only letters, numbers, underscores, or hyphens")
+	}
+	endpoint, err := apiEndpoint(baseURL, "/v1/tenants/"+url.PathEscape(tenantID)+"/workload-runs/"+url.PathEscape(runID)+"/agent-publication")
+	if err != nil {
+		return result, err
+	}
+	response, err := doAPIRequest(ctx, endpoint, accessToken, client)
+	if err != nil {
+		return result, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return result, readAPIError(response)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize)).Decode(&result); err != nil ||
+		result.TenantID != tenantID || result.WorkloadRunID != runID || result.BaseBranch == "" || result.BranchName == "" ||
+		result.CreatedAt.IsZero() || result.UpdatedAt.IsZero() ||
+		(result.State == workloads.AgentProposalPublicationRequested && (result.BranchCommitSHA != "" || result.PullRequestNumber != 0)) ||
+		(result.State == workloads.AgentProposalPublicationBranchCreated && (!validCommitSHA(result.BranchCommitSHA) || result.PullRequestNumber != 0)) ||
+		(result.State == workloads.AgentProposalPublicationPullRequestCreated && (!validCommitSHA(result.BranchCommitSHA) || result.PullRequestNumber < 1)) ||
+		(result.State != workloads.AgentProposalPublicationRequested && result.State != workloads.AgentProposalPublicationBranchCreated &&
+			result.State != workloads.AgentProposalPublicationPullRequestCreated) {
+		return WorkloadAgentPublicationStatus{}, errors.New("Hako API returned an invalid Agent publication status")
 	}
 	return result, nil
 }

@@ -511,6 +511,22 @@ func TestWorkloadRunClientListGetAndCancel(t *testing.T) {
 	}
 }
 
+func TestGetWorkloadAgentPublicationValidatesSafeStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/tenants/tenant_123/workload-runs/run_agent/agent-publication" ||
+			r.Header.Get("Authorization") != "Bearer test-access-token" {
+			t.Errorf("unexpected publication request %s %s auth=%q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"tenant_id":"tenant_123","workload_run_id":"run_agent","state":"pull_request_created","base_branch":"main","branch_name":"hako/agent/proposal-123","branch_commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","pull_request_number":42,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:01:00Z"}`))
+	}))
+	defer server.Close()
+	status, err := GetWorkloadAgentPublication(context.Background(), server.URL, "test-access-token", "tenant_123", "run_agent", server.Client())
+	if err != nil || status.State != "pull_request_created" || status.PullRequestNumber != 42 || status.BranchName != "hako/agent/proposal-123" {
+		t.Fatalf("unexpected Agent publication status: %+v error=%v", status, err)
+	}
+}
+
 func TestCreateWorkloadRunSendsIdempotentRequest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/tenants/tenant_123/workload-runs" {

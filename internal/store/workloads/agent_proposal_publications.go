@@ -172,13 +172,34 @@ func GetAgentProposalPublication(ctx context.Context, tx pgx.Tx, tenantID domain
 	if ctx == nil || tx == nil || tenantID == "" || runID == "" || attemptID == "" {
 		return AgentProposalPublication{}, ErrAgentProposalPublicationConflict
 	}
-	var result AgentProposalPublication
-	err := tx.QueryRow(ctx, `SELECT tenant_id,agent_run_id,agent_attempt_id,proposal_artifact_id,proposal_sha256,base_commit_sha,
+	return scanAgentProposalPublication(tx.QueryRow(ctx, agentProposalPublicationSelect+` WHERE tenant_id=$1 AND agent_run_id=$2 AND agent_attempt_id=$3`,
+		tenantID, runID, attemptID))
+}
+
+// GetLatestAgentProposalPublication returns the newest attempt's safe
+// publication record for an Agent Run.
+func GetLatestAgentProposalPublication(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID,
+	runID domain.WorkloadRunID) (AgentProposalPublication, error) {
+	if ctx == nil || tx == nil || tenantID == "" || runID == "" {
+		return AgentProposalPublication{}, ErrAgentProposalPublicationConflict
+	}
+	return scanAgentProposalPublication(tx.QueryRow(ctx, agentProposalPublicationSelect+` WHERE tenant_id=$1 AND agent_run_id=$2
+		ORDER BY (SELECT attempt.generation FROM workload_run_attempts attempt
+		  WHERE attempt.tenant_id=workload_agent_proposal_publications.tenant_id
+		    AND attempt.workload_run_id=workload_agent_proposal_publications.agent_run_id
+		    AND attempt.id=workload_agent_proposal_publications.agent_attempt_id) DESC,
+		 created_at DESC,agent_attempt_id DESC LIMIT 1`, tenantID, runID))
+}
+
+const agentProposalPublicationSelect = `SELECT tenant_id,agent_run_id,agent_attempt_id,proposal_artifact_id,proposal_sha256,base_commit_sha,
 		verifier_run_id,verifier_attempt_id,verifier_generation,installation_id,repository_id,COALESCE(integration_id,''),
 		config_revision,credential_generation,default_branch,policy_sha256,branch_name,state,
 		COALESCE(branch_commit_sha,''),COALESCE(pull_request_number,0),created_at,updated_at
-		FROM workload_agent_proposal_publications WHERE tenant_id=$1 AND agent_run_id=$2 AND agent_attempt_id=$3`,
-		tenantID, runID, attemptID).Scan(&result.TenantID, &result.AgentRunID, &result.AgentAttemptID,
+		FROM workload_agent_proposal_publications`
+
+func scanAgentProposalPublication(row pgx.Row) (AgentProposalPublication, error) {
+	var result AgentProposalPublication
+	err := row.Scan(&result.TenantID, &result.AgentRunID, &result.AgentAttemptID,
 		&result.ProposalArtifactID, &result.ProposalSHA256, &result.BaseCommitSHA, &result.VerifierRunID,
 		&result.VerifierAttemptID, &result.VerifierGeneration, &result.InstallationID, &result.RepositoryID,
 		&result.IntegrationID, &result.ConfigRevision, &result.CredentialGeneration, &result.DefaultBranch,

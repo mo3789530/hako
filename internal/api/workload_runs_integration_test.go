@@ -269,6 +269,34 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 		detail.Artifacts[0].SHA256 != strings.Repeat("a", 64) || strings.Contains(own.Body.String(), "private-artifacts") {
 		t.Fatalf("Run detail did not expose safe artifact metadata: detail=%+v body=%s err=%v", detail, own.Body.String(), err)
 	}
+	if _, err := pool.Exec(ctx, `UPDATE workload_runs SET kind='agent' WHERE tenant_id='tenant_runs_a' AND id='run_owned_member'`); err != nil {
+		t.Fatalf("mark proposal Run as Agent: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO workload_agent_proposal_publications
+		(tenant_id,agent_run_id,agent_attempt_id,proposal_artifact_id,proposal_sha256,base_commit_sha,
+		 verifier_run_id,verifier_attempt_id,verifier_generation,installation_id,repository_id,integration_id,
+		 config_revision,credential_generation,default_branch,policy_sha256,branch_name,state,created_at,updated_at)
+		VALUES ('tenant_runs_a','run_owned_member','attempt_publication','artifact_run_detail',$1,$2,
+		 'run_owned_owner','attempt_verifier',1,9301,9302,NULL,0,0,'main',$3,'hako/agent/proposal-test','requested',$4,$4)`,
+		strings.Repeat("b", 64), strings.Repeat("a", 40), strings.Repeat("c", 64), now); err != nil {
+		t.Fatalf("seed Agent publication status: %v", err)
+	}
+	publicationStatus := request("runs-member", http.MethodGet, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_member/agent-publication")
+	if publicationStatus.Code != http.StatusOK || !strings.Contains(publicationStatus.Body.String(), `"state":"requested"`) ||
+		publicationStatus.Header().Get("Cache-Control") != "no-store" || strings.Contains(publicationStatus.Body.String(), "proposal_sha256") ||
+		strings.Contains(publicationStatus.Body.String(), "storage_ref") {
+		t.Fatalf("Agent publication status is unavailable or exposes private metadata: HTTP %d %s", publicationStatus.Code, publicationStatus.Body.String())
+	}
+	ownerPublication := request("runs-owner", http.MethodGet, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_member/agent-publication")
+	if ownerPublication.Code != http.StatusOK {
+		t.Fatalf("Tenant owner could not inspect Agent publication: HTTP %d %s", ownerPublication.Code, ownerPublication.Body.String())
+	}
+	if hiddenPublication := request("runs-member", http.MethodGet, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_owner/agent-publication"); hiddenPublication.Code != http.StatusNotFound {
+		t.Fatalf("member could see another requester's Agent publication: HTTP %d %s", hiddenPublication.Code, hiddenPublication.Body.String())
+	}
+	if crossTenantPublication := request("runs-other", http.MethodGet, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_member/agent-publication"); crossTenantPublication.Code != http.StatusNotFound {
+		t.Fatalf("cross-Tenant member could see Agent publication: HTTP %d %s", crossTenantPublication.Code, crossTenantPublication.Body.String())
+	}
 	artifactTicketPath := "/v1/tenants/tenant_runs_a/workload-runs/run_owned_member/artifacts/artifact_run_detail/download-ticket"
 	ticketRecorder := request("runs-member", http.MethodPost, artifactTicketPath)
 	var artifactTicket workloadArtifactTicketResponse

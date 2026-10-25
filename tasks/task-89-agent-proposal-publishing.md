@@ -134,8 +134,16 @@ Repository. The proposal remains untrusted. Hako must never merge or deploy it.
   artifact URI. PostgreSQL integration covers reservation retry, the branch
   and PR transitions, and conflicting branch commit. Broker and GitHub writes
   are not wired yet.
+- An authenticated Tenant/Requester-scoped status endpoint and
+  `hako workload publication show <tenant-id> <agent-run-id>` expose only
+  publication state, branch, confirmed commit, PR number, and timestamps.
+  They return no artifact URI, proposal digest, token, verifier internals, or
+  raw GitHub payload. PostgreSQL integration checks requester/cross-tenant
+  isolation and metadata redaction; API client and CLI tests cover the route
+  and output. The record selected for display follows the latest Agent attempt
+  generation.
 - Still open: verifier retry, broker-only exact-scope write credentials,
-  branch/PR create and lost-response recovery, and API/CLI status/retry. AWS
+  branch/PR create and lost-response recovery, and API/CLI submit/retry UX. AWS
   IAM and Lambda MicroVM execution remain unverified.
 - Migration `000181` and `BindAgentProposalVerification` persist an immutable
   relation from the exact successful, cleanup-confirmed Agent attempt and
