@@ -44,7 +44,7 @@ func TestWorkloadCLIsUseTenantScopedAPIAndImmutableCommit(t *testing.T) {
 			}
 			_, _ = fmt.Fprintf(w, `{"items":[%s],"total":1,"limit":10,"offset":3}`, runJSON)
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/tenants/tenant_cli/workload-runs/run_cli":
-			_, _ = fmt.Fprint(w, runJSON)
+			_, _ = fmt.Fprint(w, `{"id":"run_cli","tenant_id":"tenant_cli","kind":"job","commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","ref":"refs/heads/main","state":"pending","artifacts":[{"id":"artifact_cli","kind":"logs","size_bytes":10,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","redacted":true,"created_at":"2026-10-25T00:00:00Z"}]}`)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/tenants/tenant_cli/workload-runs/run_cli/cancel":
 			w.WriteHeader(http.StatusAccepted)
 			_, _ = fmt.Fprint(w, runJSON)
@@ -70,7 +70,7 @@ func TestWorkloadCLIsUseTenantScopedAPIAndImmutableCommit(t *testing.T) {
 		t.Fatalf("Workload list = %+v error=%v", listed, err)
 	}
 	got, err := getWorkloadRun("tenant_cli", "run_cli")
-	if err != nil || got.ID != "run_cli" {
+	if err != nil || got.ID != "run_cli" || len(got.Artifacts) != 1 || got.Artifacts[0].ID != "artifact_cli" {
 		t.Fatalf("Workload show = %+v error=%v", got, err)
 	}
 	got, err = cancelWorkloadRun("tenant_cli", "run_cli")

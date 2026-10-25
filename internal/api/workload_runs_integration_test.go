@@ -67,6 +67,13 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 	}
 	createRun("run_owned_member", "usr_runs_member")
 	createRun("run_owned_owner", "usr_runs_owner")
+	if _, err := pool.Exec(ctx, `INSERT INTO workload_artifacts
+		(id, tenant_id, workload_run_id, kind, storage_ref, size_bytes, sha256, redacted, expires_at, created_at)
+		VALUES ('artifact_run_detail', 'tenant_runs_a', 'run_owned_member', 'logs',
+		's3://private-artifacts/workloads/secret-key-path', 12, $1, true, $2, $3)`,
+		strings.Repeat("a", 64), now.Add(time.Hour), now); err != nil {
+		t.Fatalf("seed Workload artifact: %v", err)
+	}
 
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -187,8 +194,15 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 	if crossTenant := request("runs-other", http.MethodGet, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_member"); crossTenant.Code != http.StatusNotFound {
 		t.Fatalf("cross-Tenant run lookup returned HTTP %d", crossTenant.Code)
 	}
-	if own := request("runs-member", http.MethodGet, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_member"); own.Code != http.StatusOK {
+	own := request("runs-member", http.MethodGet, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_member")
+	if own.Code != http.StatusOK {
 		t.Fatalf("requester could not read own Workload Run: HTTP %d %s", own.Code, own.Body.String())
+	}
+	var detail domain.WorkloadRun
+	if err := json.Unmarshal(own.Body.Bytes(), &detail); err != nil || len(detail.Artifacts) != 1 ||
+		detail.Artifacts[0].ID != "artifact_run_detail" || detail.Artifacts[0].Kind != "logs" ||
+		detail.Artifacts[0].SHA256 != strings.Repeat("a", 64) || strings.Contains(own.Body.String(), "private-artifacts") {
+		t.Fatalf("Run detail did not expose safe artifact metadata: detail=%+v body=%s err=%v", detail, own.Body.String(), err)
 	}
 
 	cancelled := request("runs-member", http.MethodPost, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_member/cancel")

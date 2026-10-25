@@ -542,3 +542,12 @@ Job Service test and Task 42 Software Factory Podman/PostgreSQL E2E pass
 locally; the coverage run reports 70.5% aggregate statement coverage. These
 host container tests do not establish Lambda MicroVM, ARM64 nerdctl, or AWS
 network isolation behavior.
+
+## Authorized Run artifact metadata (2026-10-25)
+
+- Authenticated Workload Run detail now includes bounded artifact metadata for
+  the authorized requester or Tenant Owner/Admin. It omits the internal S3
+  storage reference; `hako workload show` decodes the metadata through the
+  existing Run endpoint. PostgreSQL integration coverage verifies the
+  metadata and proves the backing storage URI is not exposed. Artifact byte
+  retrieval remains a separate, unimplemented short-lived authorization path.

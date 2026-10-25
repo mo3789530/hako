@@ -605,3 +605,9 @@ runtime execution, model-credential authorization/handoff, and runtime
 resource/network enforcement remain incomplete. When enabled in a future
 deployment, Agent Runs must use an isolated Lambda MicroVM with no cloud
 credentials by default and remain untrusted proposals requiring human review.
+
+Authorized `GET /v1/tenants/{tenant_id}/workload-runs/{run_id}` responses and
+`hako workload show` include artifact metadata (kind, size, SHA-256, redaction
+status, and timestamps). They deliberately omit the Resource Plane storage
+reference. Artifact bytes are not downloadable through this interface yet;
+retrieval requires a separately authorized, short-lived artifact access path.

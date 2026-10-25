@@ -529,6 +529,18 @@ func getWorkloadRun(pool transaction.Beginner) echo.HandlerFunc {
 			if membership.Role != domain.TenantRoleOwner && membership.Role != domain.TenantRoleAdmin && stored.RequestedBy != user.ID {
 				return domain.WorkloadRun{}, workloads.ErrNotFound
 			}
+			artifacts, err := workloads.ListArtifacts(ctx, tx, tenantID, runID)
+			if err != nil {
+				return domain.WorkloadRun{}, err
+			}
+			stored.Artifacts = make([]domain.WorkloadArtifactSummary, 0, len(artifacts))
+			for _, artifact := range artifacts {
+				stored.Artifacts = append(stored.Artifacts, domain.WorkloadArtifactSummary{
+					ID: artifact.ID, Kind: artifact.Kind, SizeBytes: artifact.SizeBytes,
+					SHA256: artifact.SHA256, Redacted: artifact.Redacted,
+					ExpiresAt: artifact.ExpiresAt, CreatedAt: artifact.CreatedAt,
+				})
+			}
 			return stored, nil
 		})
 		if errors.Is(err, authz.ErrTenantAccessDenied) {
