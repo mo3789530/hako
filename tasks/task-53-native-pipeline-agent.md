@@ -387,9 +387,11 @@ target gates pass.
 - [x] Generate PostgreSQL credentials per attempt, pass them only to the
   service and test process, and include them in the bounded log redaction set.
   Never persist them in DSQL, journal, result, artifact, or container labels.
-- [ ] Wait for catalog health checks before executing pipeline commands and
-  always perform bounded teardown. A teardown failure must keep the Workload
-  non-terminal/cleanup-pending until the Resource Plane confirms removal.
+- [x] Wait for catalog health checks before executing pipeline commands and
+  always perform bounded teardown. The Resource Plane durably checkpoints the
+  Agent's terminal result but withholds publication to the Control Plane until
+  MicroVM cleanup is confirmed; cleanup errors retain the result and retryable
+  cleanup state without making the Control Plane Workload terminal.
 - [x] Add fake-backed lifecycle tests and a local Podman integration test
   covering startup, health failure, command failure, cancel/timeout, crash
   recovery, resource limits, port isolation, credential/log redaction, and
@@ -418,6 +420,19 @@ until those gates pass.
   inside that cgroup with `SysProcAttr.UseCgroupFD`. Cancellation/finish kills
   remaining descendants and removes the cgroup before returning terminal
   completion. Missing controllers, writes, or cleanup fail closed.
+
+## Terminal result and Job Service cleanup ordering (2026-10-25)
+
+The Resource Plane saves a terminal Agent result in its journal, confirms
+Lambda MicroVM termination, and only then publishes the result to the Control
+Plane. If cleanup fails, the result remains durable and unpublished while the
+journal stays cleanup-pending/failed; a later Poll retries provider cleanup
+without recollecting the Agent result. This also covers Job Service teardown
+failure: the Control Plane Workload remains nonterminal until the attempt
+MicroVM, and therefore its sidecar containers, is confirmed removed.
+PostgreSQL/fake-runtime tests cover cleanup failure, withheld publication,
+retry, and successful result publication. This is local lifecycle evidence;
+deployed recovery scheduling and Lambda MicroVM termination remain unverified.
 - Pipeline process limits subtract the immutable catalog CPU/memory requests
   for declared Service containers. Service containers keep their own fixed
   catalog limits, making the requested CPU and memory caps sum to the pipeline

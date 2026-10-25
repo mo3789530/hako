@@ -71,6 +71,17 @@ func TestRPResultReplaysIntoPostgresControlPlane(t *testing.T) {
 		}
 		return nil
 	})
+	r.cleanupErr = errors.New("Lambda MicroVM cleanup unavailable")
+	pending, err := c.Poll(ctx, data, p)
+	if err == nil || pending.Journal.CleanupState != workloadjournal.CleanupFailed ||
+		pending.Journal.ResultPublished || len(pending.Journal.ResultPayload) == 0 || sends != 0 {
+		t.Fatalf("cleanup failure published the terminal result: journal=%+v sends=%d err=%v", pending.Journal, sends, err)
+	}
+	var stateBeforeCleanup domain.WorkloadRunState
+	if err := pool.QueryRow(ctx, `SELECT state FROM workload_runs WHERE id='run_1'`).Scan(&stateBeforeCleanup); err != nil || stateBeforeCleanup != domain.WorkloadProvisioning {
+		t.Fatalf("Control Plane Workload became terminal before RP cleanup: state=%s err=%v", stateBeforeCleanup, err)
+	}
+	r.cleanupErr = nil
 	if _, err := c.Poll(ctx, data, p); !errors.Is(err, lost) {
 		t.Fatal(err)
 	}

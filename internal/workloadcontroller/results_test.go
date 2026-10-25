@@ -136,6 +136,34 @@ func TestCollectFailurePreservesRunning(t *testing.T) {
 	}
 }
 
+func TestPollDoesNotPublishTerminalResultUntilRuntimeCleanupConfirmed(t *testing.T) {
+	c, _, runtime, _ := setupController(t)
+	data := envelope(t, nil)
+	if _, err := c.Ensure(context.Background(), data); err != nil {
+		t.Fatal(err)
+	}
+	runtime.result = successfulResult(t, c)
+	runtime.cleanupErr = errors.New("provider cleanup unavailable")
+	published := 0
+	publisher := publishFunc(func(context.Context, workloadjobs.WorkloadResult) error {
+		published++
+		return nil
+	})
+	snapshot, err := c.Poll(context.Background(), data, publisher)
+	if err == nil || snapshot.Journal.ExecutionState != workloadjournal.Succeeded ||
+		snapshot.Journal.CleanupState != workloadjournal.CleanupFailed || snapshot.Journal.ResultPublished ||
+		len(snapshot.Journal.ResultPayload) == 0 || published != 0 || len(runtime.handles) != 1 {
+		t.Fatalf("terminal result escaped before runtime cleanup: snapshot=%+v published=%d err=%v", snapshot.Journal, published, err)
+	}
+
+	runtime.cleanupErr = nil
+	snapshot, err = c.Poll(context.Background(), data, publisher)
+	if err != nil || snapshot.Journal.CleanupState != workloadjournal.CleanupConfirmed ||
+		!snapshot.Journal.ResultPublished || published != 1 || len(runtime.handles) != 0 {
+		t.Fatalf("cleanup/result retry failed: snapshot=%+v published=%d err=%v", snapshot.Journal, published, err)
+	}
+}
+
 func TestResultTenantAndArtifactScope(t *testing.T) {
 	for _, test := range []string{"tenant", "generation", "commit", "unredacted", "path", "deadline", "encoded_path", "query"} {
 		t.Run(test, func(t *testing.T) {

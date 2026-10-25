@@ -15,9 +15,10 @@ type ResultPublisher interface {
 	Publish(context.Context, workloadjobs.WorkloadResult) error
 }
 
-// Poll checkpoints immutable metadata before send. A crash after send but
-// before CAS replays the same result for CP fencing/deduplication. There is no
-// deployable queue recovery scheduler or production provider implied here.
+// Poll checkpoints immutable metadata and confirms physical cleanup before
+// publishing a terminal result. A crash after send but before CAS replays the
+// same result for CP fencing/deduplication. There is no deployable queue
+// recovery scheduler or production provider implied here.
 func (c *Controller) Poll(ctx context.Context, data []byte, publisher ResultPublisher) (workloadjournal.Snapshot, error) {
 	if publisher == nil {
 		return workloadjournal.Snapshot{}, ErrInvalidCommand
@@ -96,6 +97,14 @@ func (c *Controller) Poll(ctx context.Context, data []byte, publisher ResultPubl
 		}
 	}
 	if !s.Journal.ResultPublished {
+		// Keep the Control Plane Workload nonterminal until the MicroVM,
+		// including any failed-to-remove Job sidecars, is confirmed terminated.
+		if s.Journal.CleanupState != workloadjournal.CleanupConfirmed {
+			s, err = c.cleanup(ctx, s)
+			if err != nil {
+				return s, err
+			}
+		}
 		var result workloadjobs.WorkloadResult
 		if json.Unmarshal(s.Journal.ResultPayload, &result) != nil || workloadjobs.ValidateResult(result) != nil {
 			return s, ErrSpecification
@@ -110,7 +119,10 @@ func (c *Controller) Poll(ctx context.Context, data []byte, publisher ResultPubl
 			return s, err
 		}
 	}
-	return c.cleanup(ctx, s)
+	if s.Journal.CleanupState != workloadjournal.CleanupConfirmed {
+		return c.cleanup(ctx, s)
+	}
+	return s, nil
 }
 
 func validateResult(r workloadjobs.WorkloadResult, s Specification) error {
