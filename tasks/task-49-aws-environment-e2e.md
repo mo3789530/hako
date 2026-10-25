@@ -1,6 +1,9 @@
 # Task 49: Isolated AWS Environment and E2E
 
-Status: Blocked on Tasks 43, 44, 46, and 48. Priority: P2.
+Status: Local preflight, per-mutation guard, OCI smoke, and Lambda Web Adapter RIE
+smoke are implemented. A real AWS Workspace E2E remains pending the deployed
+Workspace/Gateway runtime from Tasks 43, 44, 46, and 48, plus explicit
+dedicated-account apply/cutover approval. Priority: P2.
 
 ## Goal
 
