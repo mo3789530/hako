@@ -378,11 +378,10 @@ func (w *nativeAgentWorkspace) listFiles() ([]nativeAgentFileEntry, error) {
 }
 
 func (w *nativeAgentWorkspace) readFile(rel string) ([]byte, error) {
-	name, info, err := w.resolve(rel, false)
-	if err != nil || nativeAgentProtectedReadPath(rel) || info.Size() > int64(w.maxFileBytes) {
+	if w == nil || nativeAgentProtectedReadPath(rel) {
 		return nil, ErrNativeAgentExecution
 	}
-	data, err := os.ReadFile(name)
+	data, _, err := readNativeAgentWorkspaceFile(w.root, rel, w.maxFileBytes)
 	if err != nil || len(data) > w.maxFileBytes || !utf8.Valid(data) || bytes.IndexByte(data, 0) >= 0 || containsPrivateCredential(data) {
 		clear(data)
 		return nil, ErrNativeAgentExecution
@@ -395,14 +394,14 @@ func (w *nativeAgentWorkspace) writeFile(rel string, content []byte) error {
 		nativeAgentSensitivePath(rel) || nativeAgentProtectedWritePath(rel) || containsPrivateCredential(content) {
 		return ErrNativeAgentExecution
 	}
-	name, info, err := w.resolve(rel, true)
-	if err != nil {
+	previous, changed := w.changed[rel]
+	old, oldMode, readErr := readNativeAgentWorkspaceFile(w.root, rel, w.maxFileBytes)
+	infoExists := readErr == nil
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
 		return ErrNativeAgentExecution
 	}
-	previous, changed := w.changed[rel]
-	if info != nil {
-		old, readErr := os.ReadFile(name)
-		if readErr != nil || len(old) > w.maxFileBytes || !utf8.Valid(old) || containsPrivateCredential(old) {
+	if infoExists {
+		if len(old) > w.maxFileBytes || !utf8.Valid(old) || containsPrivateCredential(old) {
 			clear(old)
 			return ErrNativeAgentExecution
 		}
@@ -420,75 +419,17 @@ func (w *nativeAgentWorkspace) writeFile(rel string, content []byte) error {
 		return ErrNativeAgentExecution
 	}
 	mode := os.FileMode(0644)
-	if info != nil {
-		mode = info.Mode().Perm() & 0755
+	if infoExists {
+		mode = oldMode.Perm() & 0755
 		if mode == 0 {
 			mode = 0644
 		}
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(name), ".hako-agent-*")
-	if err != nil {
-		return ErrNativeAgentExecution
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if err := tmp.Chmod(mode); err != nil {
-		_ = tmp.Close()
-		return ErrNativeAgentExecution
-	}
-	if _, err := tmp.Write(content); err != nil {
-		_ = tmp.Close()
-		return ErrNativeAgentExecution
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return ErrNativeAgentExecution
-	}
-	if err := tmp.Close(); err != nil {
-		return ErrNativeAgentExecution
-	}
-	if err := os.Rename(tmpName, name); err != nil {
+	if err := writeNativeAgentWorkspaceFile(w.root, rel, content, mode); err != nil {
 		return ErrNativeAgentExecution
 	}
 	w.changed[rel] = len(content)
 	return nil
-}
-
-func (w *nativeAgentWorkspace) resolve(rel string, allowNew bool) (string, os.FileInfo, error) {
-	if w == nil || !fs.ValidPath(rel) || strings.ContainsAny(rel, "\\\r\n\x00:") || filepath.IsAbs(rel) ||
-		filepath.Clean(filepath.FromSlash(rel)) != filepath.FromSlash(rel) {
-		return "", nil, ErrNativeAgentExecution
-	}
-	current := w.root
-	parts := strings.Split(rel, "/")
-	var finalInfo os.FileInfo
-	for index, part := range parts {
-		current = filepath.Join(current, part)
-		info, err := os.Lstat(current)
-		if errors.Is(err, os.ErrNotExist) && allowNew && index == len(parts)-1 {
-			finalInfo = nil
-			continue
-		}
-		if err != nil || info.Mode()&os.ModeSymlink != 0 || (index < len(parts)-1 && !info.IsDir()) ||
-			(index == len(parts)-1 && !info.Mode().IsRegular()) {
-			return "", nil, ErrNativeAgentExecution
-		}
-		finalInfo = info
-	}
-	base, err := filepath.Abs(w.root)
-	if err != nil {
-		return "", nil, ErrNativeAgentExecution
-	}
-	relative, err := filepath.Rel(base, current)
-	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return "", nil, ErrNativeAgentExecution
-	}
-	if finalInfo == nil && allowNew {
-		if info, err := os.Lstat(filepath.Dir(current)); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return "", nil, ErrNativeAgentExecution
-		}
-	}
-	return current, finalInfo, nil
 }
 
 func (w *nativeAgentWorkspace) changedCount() int {

@@ -312,8 +312,13 @@ The codebase has an Anthropic Messages transport and an injectable Native Agent
 process factory. The factory exposes only bounded `list_files`, `read_file`,
 `write_file`, and fixed offline `go test ./...` tools; it rejects protected or
 secret paths, symlinks, path traversal, excessive edits, and completion after
-changes unless tests pass. Unit tests use a scripted model and synthetic
-credential; no live API request is made. The factory is not composed into the
+changes unless tests pass. On Linux, Guest file reads walk from an opened
+repository directory using descriptor-relative `openat` calls with
+`O_NOFOLLOW`; atomic writes create and rename temporary files through the
+already-open parent directory descriptor. This keeps concurrent repository
+test processes from replacing a checked path with a symlink between validation
+and file access. Unit tests use a scripted model and synthetic credential; no
+live API request is made. The factory is not composed into the
 production `hako-agent` image, and Agent scheduling remains disabled. It does
 not create an apply-ready patch or a GitHub branch/Pull Request, and does not
 prove target MicroVM egress or cgroup enforcement. Anthropic's

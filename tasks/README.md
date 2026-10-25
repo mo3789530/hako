@@ -14,6 +14,12 @@ configuration remains Owner/Admin-only. API/CLI and PostgreSQL integration
 tests cover authorization and disabled-repository hiding. Runner admission and
 execution remain default-off.
 
+Task 53 Native Agent file access was hardened on Linux against concurrent
+symlink replacement during reads and atomic writes. Descriptor-relative
+`openat`/`O_NOFOLLOW` operations and bounded reads keep repository test code
+from redirecting model file tools between path validation and use; unit and
+race tests cover the Agent path. Target MicroVM behavior remains unverified.
+
 ## 着手ルール
 
 1. `P0`から順に、依存タスクが完了しているものを一件だけ選ぶ。

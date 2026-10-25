@@ -189,6 +189,16 @@ func TestNativeAgentWorkspaceRejectsTraversalSecretsProtectedFilesAndSymlinks(t 
 	if err := os.Symlink(outside, filepath.Join(root, "link.txt")); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
+	if err := os.MkdirAll(filepath.Join(root, ".github", "workflows"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	protected := filepath.Join(root, ".github", "workflows", "review.yml")
+	if err := os.WriteFile(protected, []byte("name: protected\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, ".github"), filepath.Join(root, "config-alias")); err != nil {
+		t.Skipf("directory symlink unavailable: %v", err)
+	}
 	workspace := &nativeAgentWorkspace{root: root, maxFiles: 2, maxBytes: 32, maxFileBytes: 16, changed: make(map[string]int)}
 	for _, path := range []string{"../outside.txt", "link.txt", ".env", ".aws/credentials", ".github/workflows/test.yml", "terraform/main.tf", "C:/outside.txt"} {
 		if err := workspace.writeFile(path, []byte("bad")); err == nil {
@@ -200,6 +210,12 @@ func TestNativeAgentWorkspaceRejectsTraversalSecretsProtectedFilesAndSymlinks(t 
 	}
 	if _, err := workspace.readFile("../outside.txt"); err == nil {
 		t.Fatal("read_file escaped the repository")
+	}
+	if _, err := workspace.readFile("config-alias/workflows/review.yml"); err == nil {
+		t.Fatal("read_file followed a symlinked parent into protected configuration")
+	}
+	if err := workspace.writeFile("config-alias/workflows/review.yml", []byte("name: changed\n")); err == nil {
+		t.Fatal("write_file followed a symlinked parent into protected configuration")
 	}
 	if _, err := workspace.readFile(".github/workflows/test.yml"); err == nil {
 		t.Fatal("read_file exposed protected workflow configuration")

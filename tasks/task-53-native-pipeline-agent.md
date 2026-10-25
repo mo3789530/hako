@@ -218,6 +218,16 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
 
 ## Agent proposal artifact progress (2026-10-25)
 
+Native Agent repository access now uses descriptor-relative Linux filesystem
+operations. Each path component is opened with `O_NOFOLLOW`, reads are bounded
+from an opened file descriptor, and writes use a temporary file plus rename
+against the same already-open parent directory. This closes the validation to
+open/rename race where untrusted repository test code could swap a directory
+for a symlink while the model tool was operating. Regression tests reject
+symlinked parent paths to protected files; regular-path edits, Agent tests,
+`-race`, and the `hako-agent` command tests pass. This is local Linux behavior;
+it does not establish the target MicroVM kernel, mount, or Agent runtime gates.
+
 - Successful edits now produce a deterministic ZIP containing only bounded
   files changed by the Native Agent. The artifact is held in Guest memory until
   the Resource Plane fetches it using a separate short-lived, signed
