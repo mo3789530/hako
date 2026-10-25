@@ -379,11 +379,17 @@ target gates pass.
   remaining after those reservations. The selected profile ceiling is checked
   before scheduling. Target Lambda MicroVM cgroup delegation/effective-limit
   validation remains an operational gate.
-- [ ] Bind service ports only to the MicroVM loopback interface. Permit only
-  the registry traffic needed to obtain pinned catalog images; do not provide
-  arbitrary Internet or AWS access to the Job or its service containers. Host
-  process loopback-only enforcement is now implemented in the workload image;
-  container egress and target MicroVM behavior remain unverified.
+- [x] Bind catalog service ports only to `127.0.0.1`. Each Job attempt uses an
+  internal container network, and service creation uses `--pull=never`, so
+  repository-controlled processes and sidecars cannot fetch images at runtime.
+  The production engine's Podman acceptance test verified PostgreSQL remained
+  reachable through loopback while a TCP connection to an external endpoint
+  was denied (2026-10-25).
+- [ ] Repeat the network and port-isolation acceptance on the pinned ARM64
+  nerdctl image inside the Lambda MicroVM, including confirmation that its
+  network connector cannot reach AWS endpoints or arbitrary Internet hosts.
+  Podman on the development host does not prove the target connector,
+  rootless-network, or MicroVM firewall behavior.
 - [x] Generate PostgreSQL credentials per attempt, pass them only to the
   service and test process, and include them in the bounded log redaction set.
   Never persist them in DSQL, journal, result, artifact, or container labels.

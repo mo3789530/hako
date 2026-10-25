@@ -483,8 +483,11 @@ Service manager. `NewFilesystemAgent` fails construction if Service admission
 is enabled but the configured process factory does not declare Job Service
 support; `GoTestProcessFactory` declares support only when an attempt-scoped
 provisioner is configured. The default resolver and default workload image
-continue to reject/disable services. This local composition does not establish
-Lambda MicroVM cgroup enforcement, target-image availability, or egress policy.
+continue to reject/disable services. The local Podman acceptance verifies
+loopback PostgreSQL access and denies an external TCP probe from the internal
+sidecar network. It does not establish the pinned ARM64 nerdctl behavior,
+Lambda MicroVM cgroup enforcement, target-image availability, or target egress
+policy.
 For a non-root Job command, the trusted Agent now requires a Resource Plane
 configured cgroup v2 root with `cpu`, `memory`, and `pids` controllers enabled.
 It creates a fresh cgroup, starts the command atomically inside it, applies
