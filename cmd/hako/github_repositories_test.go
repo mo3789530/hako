@@ -487,12 +487,6 @@ func TestOpenGitHubRepositoryPreviewRequiresBothEndpoints(t *testing.T) {
 	}
 }
 
-type previewForwardTestPortAuthorizer struct{}
-
-func (previewForwardTestPortAuthorizer) AllowPort(_ context.Context, _ workspacesession.Claims, port uint16) (bool, error) {
-	return port == 3000, nil
-}
-
 type previewForwardTestDialer struct {
 	vscodeTestDialer
 	port atomic.Uint32
@@ -553,7 +547,7 @@ func TestForwardGitHubRepositoryPreviewUsesPortScopedSessionAndTLSGateway(t *tes
 	dialer := &previewForwardTestDialer{}
 	gateway, err := workspacegateway.New(workspacegateway.Config{ResourcePlaneID: "rp_cli",
 		Verifier: &workspacesession.Verifier{Keys: map[string]ed25519.PublicKey{"preview-forward-test": publicKey}, Audience: workspacesession.AudienceGateway, Lookup: activeWorkspaceSession{}},
-		Dialer:   dialer, PortAuthorizer: previewForwardTestPortAuthorizer{}, MaxConnections: 2, MaxConnectionsPerWorkspace: 2})
+		Dialer:   dialer, PortAuthorizer: workspacegateway.PreviewPortAuthorizer{}, MaxConnections: 2, MaxConnectionsPerWorkspace: 2})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -66,8 +66,13 @@ The CLI binds only to `127.0.0.1`, requests a fresh Preview Session scoped to
 closes. The remote destination is a numeric port on the Preview MicroVM; no
 host or public route is accepted. Preview Sessions are restricted at the
 Gateway to the application port `3000`; all other ports are denied even if the
-general Workspace port policy allows them. The Gateway's configured port
-authorizer must also allow `3000`.
+general Workspace port policy allows them. The Resource Plane Gateway
+composition injects `PreviewPortAuthorizer`, which allows only a valid
+generation-specific Preview Workspace ID, the `port-forward` permission, and
+port `3000`. The Gateway's existing active-session check verifies that the
+ticket still maps to a current, running Preview generation. Ordinary Workspace
+ports remain deny-by-default until their Service state is connected to a
+separate authorization policy.
 
 An opted-in repository must include `.hako/preview.yaml` in the pinned PR
 commit:
@@ -262,7 +267,10 @@ ticket public key and file-transfer endpoint in the immutable Guest image,
 Resource Plane egress/connectivity validation, Gateway routing/publication,
 and an end-to-end real MicroVM test. The resource adapter installs the source
 and starts the repository-declared Preview process. Production Gateway
-port-policy composition and real MicroVM validation remain open.
+Preview-port authorization is composed locally; ordinary Workspace service
+port authorization, Resource Plane egress validation, and real MicroVM
+validation remain open. The app is reached through the loopback-only CLI
+tunnel, not a public application URL.
 
 Each present Preview records a fixed `expires_at` using the Tenant's configured
 Preview lifetime (24 hours when no quota row exists). `synchronize` deliveries

@@ -159,7 +159,7 @@ func buildGateway(awsCfg aws.Config, cfg deploymentConfig) (*workspacegateway.Ga
 	return workspacegateway.New(workspacegateway.Config{
 		ResourcePlaneID: cfg.ResourcePlaneID,
 		Verifier:        &workspacesession.Verifier{Keys: publicKeys, Audience: workspacesession.AudienceGateway, Lookup: lookup},
-		Dialer:          directory, AllowedOrigins: cfg.AllowedOrigins,
+		Dialer:          directory, PortAuthorizer: workspacegateway.PreviewPortAuthorizer{}, AllowedOrigins: cfg.AllowedOrigins,
 		MaxConnections: cfg.MaxConnections, MaxConnectionsPerWorkspace: cfg.MaxConnectionsPerWS,
 		SessionRecheckInterval: cfg.SessionRecheckInterval, MetricsWriter: os.Stdout,
 	})

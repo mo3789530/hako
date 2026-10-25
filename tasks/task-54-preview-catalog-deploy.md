@@ -13,11 +13,12 @@ provision/cleanup commands now have a Resource Plane Lambda MicroVM controller
 composition, brokered immutable SHA checkout, S3 archive staging, verified
 Guest source installation, and default-off queue/source IAM Terraform. Preview
 deployment requires a matching Workspace Gateway image, journal, origin, and
-Agent-ticket signing key. Guest Preview application startup and authenticated
-loopback forwarding are now implemented locally. No AWS resources or DSQL
-grants have been applied. Production port-policy composition,
-schedule/queues, and real MicroVM E2E remain incomplete; cleanup retry metadata
-and attempt-fenced leases are implemented.
+Agent-ticket signing key. Guest Preview application startup, authenticated
+loopback forwarding, and a Preview-only production Gateway port policy are
+implemented locally. No AWS resources or DSQL grants have been applied.
+Schedule/queue deployment and real MicroVM E2E remain incomplete; ordinary
+Workspace service-port authorization, cleanup retry metadata, and
+attempt-fenced leases are tracked separately.
 The dormant approval verifier checks
 the live Actions run attempt against signed repository, owner, ref, SHA,
 workflow and event claims, checks pending deployments and approval history,
@@ -463,8 +464,8 @@ Add optional repository-level preview environments and service metadata/deploy p
 - Parser tests cover required identity and enforce the fixed application port. A local
   API + TLS/WSS Gateway test verifies permission scoping, port authorization,
   byte relay, cancellation, and Session revocation.
-- Guest application startup/health checking is implemented in the following
-  section. Gateway production port-authorizer composition, public Preview URL
+- Guest application startup/health checking and the Preview-only Gateway
+  authorizer are implemented in the following sections. Public Preview URL
   handling, queue/schedule deployment, and real Lambda MicroVM E2E remain
   incomplete. See [Preview lifecycle](../docs/preview-lifecycle.md). No AWS
   resources or Secrets were applied/read.
@@ -483,10 +484,14 @@ Add optional repository-level preview environments and service metadata/deploy p
   second one-use file-transfer capability, and starts the app before reporting
   provision success. The shared Gateway denies every Preview runtime port
   except 3000, even if a general Workspace policy would allow another port;
-  Preview forwarding also defaults to and accepts only 3000.
+  Preview forwarding also defaults to and accepts only 3000. The production
+  Gateway Lambda injects `PreviewPortAuthorizer`, allowing only that port for
+  a valid Preview runtime identity with `port-forward` scope. Ordinary
+  Workspace ports remain denied until their service state is connected to a
+  separate policy.
 - Unit and local integration tests cover strict manifest decoding, process
   start/idempotence/stop, file-channel authorization, API-to-Gateway Preview
-  forwarding, and denial of non-application ports. This still does not verify
-  deployment port-authorizer configuration, public URL lifecycle, actual
-  Lambda MicroVM networking, or production cleanup. No AWS resources or
+  forwarding, the production authorizer policy, and denial of
+  non-application ports. This still does not verify public URL lifecycle,
+  actual Lambda MicroVM networking, or production cleanup. No AWS resources or
   Secrets were applied/read.
