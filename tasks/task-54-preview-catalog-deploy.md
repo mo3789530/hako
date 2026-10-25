@@ -534,3 +534,15 @@ an invalid commit before network checkout. The Preview controller package is
 generation claim and its temporary checkout cleanup. PostgreSQL provision and
 dispatch integration tests pass. Tests use synthetic credentials and do not
 contact GitHub or read a real Secret.
+
+## Preview Dispatcher IAM routing fix (2026-10-25)
+
+The Control Plane Terraform previously derived Dispatcher send permissions for
+the general, Workload, and Actions Runner queues, but omitted the dedicated
+`preview_runtime_command_queue_url` present in the Resource Plane manifest.
+The Go Dispatcher could route Preview Outbox events correctly, but its Lambda
+role would be denied by IAM at publish time. The Control Plane now derives the
+Preview queue ARN from the manifest and grants `sqs:SendMessage` only to those
+exact ARNs. Terraform input validation also checks the Preview queue URL's
+Region and account against its registered Resource Plane. `docs/resource-plane-registration.md`
+records the producer/dispatcher boundary. No AWS policy was applied.

@@ -62,6 +62,13 @@ the result queue ARN in Control Plane `preview_result_queue_arns`; the
 Control Plane Preview result consumer remains separately default-off. No AWS
 resources or grants have been applied.
 
+The Control Plane Dispatcher derives the Preview command queue ARN from this
+manifest and grants `sqs:SendMessage` only to the configured Preview queue
+ARNs. Its Terraform validation also requires each optional Preview queue URL
+to match the registered Plane's account and Region. This is separate from the
+Control Plane Preview runtime producer, which only writes the transactional
+Outbox and has no SQS permissions.
+
 The Resource Plane Lambda consumer allocates the generation-scoped Lambda
 MicroVM using the durable Workspace runtime journal, then reports the
 provider binding. This still does not checkout the PR's immutable SHA, start a

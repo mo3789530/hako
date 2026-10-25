@@ -776,9 +776,14 @@ variable "resource_plane_manifest_json" {
         try(trimspace(plane.actions_runner_startup_queue_url), "") == "" ||
         can(regex("^https://sqs\\.${plane.region}\\.amazonaws\\.com(\\.cn)?/${plane.account_id}/[A-Za-z0-9_-]+$", plane.actions_runner_startup_queue_url))
       ]), false) &&
+      try(alltrue([
+        for plane in jsondecode(var.resource_plane_manifest_json).resource_planes :
+        try(trimspace(plane.preview_runtime_command_queue_url), "") == "" ||
+        can(regex("^https://sqs\\.${plane.region}\\.amazonaws\\.com(\\.cn)?/${plane.account_id}/[A-Za-z0-9_-]+$", plane.preview_runtime_command_queue_url))
+      ]), false) &&
       length([for plane in jsondecode(var.resource_plane_manifest_json).resource_planes : plane if try(trimspace(plane.actions_runner_startup_queue_url), "") != ""]) <= 1
     )
-    error_message = "When enabled, the Dispatcher needs a valid non-empty version-1 manifest no larger than 2500 bytes; Workload command/result queue URLs must be paired, and Actions runner may have at most one queue until placement is implemented."
+    error_message = "When enabled, the Dispatcher needs a valid non-empty version-1 manifest no larger than 2500 bytes; Workload command/result queue URLs must be paired, optional queue URLs must match their Plane's Region/account, and Actions runner may have at most one queue until placement is implemented."
   }
 }
 
