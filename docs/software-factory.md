@@ -333,6 +333,13 @@ not mint GitHub write credentials, push a branch, create a PR, or authorize
 merge/deploy. S3 deployment policy and Lambda MicroVM execution remain
 unverified.
 
+An authorized Tenant Run viewer can retrieve a successful Agent proposal with
+`hako workload changes download <tenant> <run> --out changes.zip`. The CLI
+selects the unique unredacted `agent_changes` artifact, writes through the
+short-lived artifact ticket, verifies the ticket matches Run metadata, checks
+the bytes' SHA-256, and atomically saves the file with mode `0600`. The output
+is labeled as untrusted and is not applied to a checkout automatically.
+
 Treat `.hako/factory.yaml`, workflow files, action references, shell steps,
 container images, cache contents, and webhook payloads as untrusted inputs.
 The Native pipeline schema needs a version, strict parser, allowlisted step

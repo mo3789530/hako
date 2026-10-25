@@ -333,6 +333,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "hako workload artifact download: %v\n", err)
 			os.Exit(1)
 		}
+	case len(os.Args) >= 5 && os.Args[1] == "workload" && os.Args[2] == "changes" && os.Args[3] == "download":
+		if err := downloadAgentChangesCLI(os.Args[4:]); err != nil {
+			fmt.Fprintf(os.Stderr, "hako workload changes download: %v\n", err)
+			os.Exit(1)
+		}
 	case len(os.Args) >= 4 && len(os.Args) <= 6 && os.Args[1] == "workload" && os.Args[2] == "list":
 		limit, offset, err := parseCLIPage(os.Args[4:])
 		if err != nil {

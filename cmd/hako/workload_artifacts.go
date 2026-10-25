@@ -19,13 +19,13 @@ import (
 
 	"github.com/mo3789530/hako/internal/api"
 	"github.com/mo3789530/hako/internal/auth"
+	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/workloadartifactaccess"
 )
 
 func downloadWorkloadArtifactCLI(args []string) error {
-	flags := flag.NewFlagSet("hako workload artifact download", flag.ContinueOnError)
-	outputPath := flags.String("out", "", "destination file path")
-	if err := flags.Parse(args); err != nil || flags.NArg() != 3 || strings.TrimSpace(*outputPath) == "" {
+	outputPath, positional, err := parseArtifactDownloadArgs("hako workload artifact download", args, 3)
+	if err != nil {
 		return errors.New("usage: hako workload artifact download <tenant-id> <run-id> <artifact-id> --out <path>")
 	}
 	accessToken, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
@@ -41,21 +41,120 @@ func downloadWorkloadArtifactCLI(args []string) error {
 		return errors.New("HAKO_GATEWAY_URL is required")
 	}
 	if err := downloadWorkloadArtifact(context.Background(), apiURL, gatewayURL, accessToken,
-		flags.Arg(0), flags.Arg(1), flags.Arg(2), *outputPath, nil); err != nil {
+		positional[0], positional[1], positional[2], outputPath, nil); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(os.Stdout, "Workload artifact %s saved to %s\n", flags.Arg(2), *outputPath)
+	_, err = fmt.Fprintf(os.Stdout, "Workload artifact %s saved to %s\n", positional[2], outputPath)
 	return err
+}
+
+func downloadAgentChangesCLI(args []string) error {
+	outputPath, positional, err := parseArtifactDownloadArgs("hako workload changes download", args, 2)
+	if err != nil {
+		return errors.New("usage: hako workload changes download <tenant-id> <run-id> --out <path>")
+	}
+	accessToken, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
+	if err != nil {
+		return err
+	}
+	apiURL := strings.TrimSpace(os.Getenv("HAKO_API_URL"))
+	if apiURL == "" {
+		return errors.New("HAKO_API_URL is required")
+	}
+	run, err := api.GetWorkloadRun(context.Background(), apiURL, accessToken, positional[0], positional[1], nil)
+	if err != nil {
+		return err
+	}
+	if string(run.TenantID) != positional[0] || string(run.ID) != positional[1] {
+		return errors.New("Hako API returned a Workload Run with a mismatched identity")
+	}
+	artifact, err := agentChangesArtifact(run)
+	if err != nil {
+		return err
+	}
+	gatewayURL := strings.TrimSpace(os.Getenv("HAKO_GATEWAY_URL"))
+	if gatewayURL == "" {
+		return errors.New("HAKO_GATEWAY_URL is required")
+	}
+	if err := downloadWorkloadArtifactExpected(context.Background(), apiURL, gatewayURL, accessToken,
+		positional[0], positional[1], artifact.ID, outputPath, nil, &artifact); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(os.Stdout, "Agent change proposal %s saved to %s; review it as untrusted source before use\n", artifact.ID, outputPath)
+	return err
+}
+
+func parseArtifactDownloadArgs(name string, args []string, positionalCount int) (string, []string, error) {
+	flags := flag.NewFlagSet(name, flag.ContinueOnError)
+	outputPath := flags.String("out", "", "destination file path")
+	flagArgs := make([]string, 0, 2)
+	positionals := make([]string, 0, positionalCount)
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--out":
+			if i+1 >= len(args) {
+				return "", nil, errors.New("missing artifact output path")
+			}
+			flagArgs = append(flagArgs, arg, args[i+1])
+			i++
+		case strings.HasPrefix(arg, "--out="):
+			flagArgs = append(flagArgs, arg)
+		case strings.HasPrefix(arg, "-"):
+			flagArgs = append(flagArgs, arg)
+		default:
+			positionals = append(positionals, arg)
+		}
+	}
+	if err := flags.Parse(flagArgs); err != nil || flags.NArg() != 0 || len(positionals) != positionalCount || strings.TrimSpace(*outputPath) == "" {
+		return "", nil, errors.New("invalid artifact download arguments")
+	}
+	return *outputPath, positionals, nil
+}
+
+func agentChangesArtifact(run domain.WorkloadRun) (domain.WorkloadArtifactSummary, error) {
+	if run.Kind != domain.WorkloadAgent || run.State != domain.WorkloadSucceeded {
+		return domain.WorkloadArtifactSummary{}, errors.New("Agent changes are available only for successful Agent Runs")
+	}
+	var found *domain.WorkloadArtifactSummary
+	for i := range run.Artifacts {
+		artifact := &run.Artifacts[i]
+		if artifact.Kind != "agent_changes" {
+			continue
+		}
+		if found != nil {
+			return domain.WorkloadArtifactSummary{}, errors.New("Agent Run has ambiguous change proposals")
+		}
+		if artifact.Redacted || artifact.SizeBytes < 1 || artifact.SizeBytes > 8<<20 || len(artifact.SHA256) != 64 {
+			return domain.WorkloadArtifactSummary{}, errors.New("Agent change proposal metadata is invalid")
+		}
+		if digest, err := hex.DecodeString(artifact.SHA256); err != nil || len(digest) != sha256.Size || strings.ToLower(artifact.SHA256) != artifact.SHA256 {
+			return domain.WorkloadArtifactSummary{}, errors.New("Agent change proposal digest is invalid")
+		}
+		found = artifact
+	}
+	if found == nil {
+		return domain.WorkloadArtifactSummary{}, errors.New("successful Agent Run has no change proposal")
+	}
+	return *found, nil
 }
 
 func downloadWorkloadArtifact(ctx context.Context, apiURL, gatewayURL, accessToken, tenantID, runID, artifactID, outputPath string,
 	client *http.Client) error {
+	return downloadWorkloadArtifactExpected(ctx, apiURL, gatewayURL, accessToken, tenantID, runID, artifactID, outputPath, client, nil)
+}
+
+func downloadWorkloadArtifactExpected(ctx context.Context, apiURL, gatewayURL, accessToken, tenantID, runID, artifactID, outputPath string,
+	client *http.Client, expected *domain.WorkloadArtifactSummary) error {
 	if ctx == nil || strings.TrimSpace(outputPath) == "" || !validArtifactGatewayURL(gatewayURL) {
 		return errors.New("artifact download configuration is invalid")
 	}
 	ticket, err := api.CreateWorkloadArtifactDownloadTicket(ctx, apiURL, accessToken, tenantID, runID, artifactID, client)
 	if err != nil {
 		return err
+	}
+	if expected != nil && (ticket.Kind != expected.Kind || ticket.SizeBytes != expected.SizeBytes || ticket.SHA256 != expected.SHA256) {
+		return errors.New("artifact download ticket does not match the Workload Run metadata")
 	}
 	if client == nil {
 		client = &http.Client{Timeout: 3 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
