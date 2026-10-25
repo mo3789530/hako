@@ -14,6 +14,7 @@ import (
 const (
 	FileMaxControlBytes = 4096
 	FileMaxBytes        = int64(1 << 30)
+	PreviewLogsMaxBytes = int64(256 << 10)
 	fileControlHeader   = 9
 	fileRequestFrame    = 1
 	fileResponseFrame   = 2
@@ -84,6 +85,8 @@ func validFileRequest(request FileRequest) bool {
 		return request.Path == "/workspace/src" && request.Size > 0 && request.Size <= FileMaxBytes && err == nil && len(digest) == 32 && hex.EncodeToString(digest) == request.Digest
 	case "start_preview":
 		return request.Path == "/workspace/src/.hako/preview.yaml" && request.Size == 0 && request.Digest == ""
+	case "preview_logs":
+		return request.Path == "/workspace/src/.hako/preview.log" && request.Size == 0 && request.Digest == ""
 	default:
 		return false
 	}

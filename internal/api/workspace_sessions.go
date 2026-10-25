@@ -51,6 +51,11 @@ func createWorkspaceSession(pool transaction.Beginner, issuer workspacesession.I
 		if err := workspacesession.ValidatePermissions(request.Permissions); err != nil {
 			return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_request", Message: "Workspace session permissions are invalid"}})
 		}
+		for _, permission := range request.Permissions {
+			if permission == workspacesession.PermissionPreviewLogs {
+				return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_request", Message: "Workspace session permissions are invalid"}})
+			}
+		}
 		tenantID := domain.TenantID(strings.TrimSpace(c.Param("tenant_id")))
 		workspaceID := domain.WorkspaceID(strings.TrimSpace(c.Param("workspace_id")))
 		now := time.Now().UTC()

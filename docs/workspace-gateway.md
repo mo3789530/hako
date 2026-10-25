@@ -13,6 +13,7 @@ Routes are:
 - `GET /v1/workspaces/{workspace_id}/ssh` (`ssh-proxy` permission; fixed loopback TCP port 22)
 - `GET /v1/workspaces/{workspace_id}/vscode` (`vscode` permission)
 - `GET /v1/workspaces/{workspace_id}/ports/{port}` (`port-forward` permission)
+- `GET /v1/workspaces/{workspace_id}/preview-logs` (`preview-logs` permission; fixed, bounded, read-only Guest operation)
 - `GET /healthz` (unauthenticated health probe)
 
 All stream routes negotiate `hako.workspace.v1`. Browser Origins must exactly
@@ -184,6 +185,13 @@ fixed guest-loopback port and does not change its authentication policy.
 `/healthz` is an unauthenticated static liveness check,
 not proof of downstream AWS or Control Plane reachability. See Task 46 for
 remaining deployment and live-validation gates.
+
+The Preview log route is distinct from general file transfer. A public Session
+may carry only the `preview-logs` permission, and the Gateway internally opens
+the Guest file channel with a new fixed Resource Plane ticket, requests only
+the `preview_logs` operation, and exposes a read-only stream capped at 256
+KiB. Ordinary Workspace Session creation cannot mint this permission. Log
+bytes remain in the Guest's bounded memory buffer and are not persisted.
 
 ### Workload artifact download
 

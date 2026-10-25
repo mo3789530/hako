@@ -79,6 +79,20 @@ declared TCP ports of healthy Services in the current runtime generation
 (Task 86). This is locally tested; production Gateway rollout remains
 unverified.
 
+To read the running Preview application's recent stdout/stderr:
+
+```bash
+hako github repository previews logs --tenant <tenant> \
+  --installation <installation-id> --repository <repository-id> \
+  --pull-request <number>
+```
+
+This requests a separate Preview Session with only the `preview-logs`
+permission. The Gateway asks the Guest for one fixed read-only log operation;
+the Guest returns at most the latest 256 KiB held in memory. The CLI revokes
+the Session after retrieval. Logs are not persisted to S3 or the Control Plane
+and disappear when the MicroVM is replaced.
+
 An opted-in repository must include `.hako/preview.yaml` in the pinned PR
 commit:
 
@@ -94,8 +108,8 @@ The command is an argv array, runs with `/workspace/src` as its working
 directory and a minimal environment (`PORT=3000`, `HOST=127.0.0.1`), and runs
 as the unprivileged Guest Agent user. Hako waits until `127.0.0.1:3000` accepts
 connections before acknowledging Preview provisioning. Startup failure
-compensates by deleting that exact generation's MicroVM. App logs are not
-persisted yet. The CLI opens the local URL for the Preview application; no
+compensates by deleting that exact generation's MicroVM. A bounded in-memory
+log tail is available through `previews logs`; logs are not persisted. The CLI opens the local URL for the Preview application; no
 public application URL or inbound port is created.
 
 The CLI creates a fresh Preview Session for each Gateway WebSocket connection,

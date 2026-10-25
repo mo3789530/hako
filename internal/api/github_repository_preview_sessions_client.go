@@ -23,7 +23,7 @@ func CreateRepositoryPreviewSession(ctx context.Context, baseURL, accessToken, t
 	if ctx == nil || !validTenantID(tenantID) || strings.TrimSpace(accessToken) == "" || installationID <= 0 || repositoryID <= 0 || pullRequestNumber <= 0 {
 		return result, errors.New("valid Tenant, Preview identity, and access token are required")
 	}
-	if len(permissions) > 0 && workspacesession.ValidatePermissions(permissions) != nil {
+	if len(permissions) > 0 && !validRepositoryPreviewPermissions(permissions) {
 		return result, errors.New("Preview session permissions are invalid")
 	}
 	path := "/v1/tenants/" + url.PathEscape(tenantID) + "/github/installations/" + strconv.FormatInt(installationID, 10) +
@@ -57,7 +57,7 @@ func CreateRepositoryPreviewSession(ctx context.Context, baseURL, accessToken, t
 	if decoder.Decode(&result) != nil || decoder.Decode(new(any)) != io.EOF ||
 		!validPreviewSessionID(string(result.SessionID)) || !validPreviewRuntimeWorkspaceID(string(result.WorkspaceID)) || result.Ticket == "" || len(result.Ticket) > 8192 ||
 		!result.ExpiresAt.After(time.Now()) || result.ExpiresAt.After(time.Now().Add(workspacesession.TicketMaxTTL+time.Minute)) ||
-		workspacesession.ValidatePermissions(result.Permissions) != nil {
+		!validRepositoryPreviewPermissions(result.Permissions) {
 		return RepositoryPreviewSession{}, errors.New("Hako API returned an invalid Preview session response")
 	}
 	return result, nil

@@ -54,6 +54,9 @@ func createRepositoryPreviewSession(pool transaction.Beginner, issuer workspaces
 		if workspacesession.ValidatePermissions(request.Permissions) != nil {
 			return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_request", Message: "Preview session permissions are invalid"}})
 		}
+		if !validRepositoryPreviewPermissions(request.Permissions) {
+			return c.JSON(http.StatusBadRequest, errorResponse{Error: errorBody{Code: "invalid_request", Message: "Preview session permissions are invalid"}})
+		}
 		tenantID := domain.TenantID(strings.TrimSpace(c.Param("tenant_id")))
 		installationID, installErr := strconv.ParseInt(c.Param("installation_id"), 10, 64)
 		repositoryID, repoErr := strconv.ParseInt(c.Param("repository_id"), 10, 64)
@@ -147,6 +150,18 @@ func createRepositoryPreviewSession(pool transaction.Beginner, issuer workspaces
 		c.Response().Header().Set("Cache-Control", "no-store")
 		return c.JSON(http.StatusCreated, result)
 	}
+}
+
+func validRepositoryPreviewPermissions(permissions []workspacesession.Permission) bool {
+	if workspacesession.ValidatePermissions(permissions) != nil {
+		return false
+	}
+	for _, permission := range permissions {
+		if permission != workspacesession.PermissionVSCode && permission != workspacesession.PermissionPortForward && permission != workspacesession.PermissionPreviewLogs {
+			return false
+		}
+	}
+	return true
 }
 
 func revokeRepositoryPreviewSession(pool transaction.Beginner) echo.HandlerFunc {

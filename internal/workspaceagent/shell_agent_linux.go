@@ -318,6 +318,17 @@ func (a *WorkspaceShellAgent) serveFiles(w http.ResponseWriter, r *http.Request)
 					response = workspaceprotocol.FileResponse{Code: "transfer_failed"}
 				}
 				_ = workspaceprotocol.WriteFileResponse(conn, response)
+			case "preview_logs":
+				if previewApps == nil {
+					_ = workspaceprotocol.WriteFileResponse(conn, workspaceprotocol.FileResponse{Code: "not_found"})
+					return
+				}
+				logs := previewApps.Logs()
+				if err := workspaceprotocol.WriteFileResponse(conn, workspaceprotocol.FileResponse{OK: true, Size: int64(len(logs))}); err != nil {
+					_ = conn.Close()
+					return
+				}
+				_, _ = conn.Write(logs)
 			case "upload":
 				err := files.Write(r.Context(), request.Path, request.Size, conn)
 				response := workspaceprotocol.FileResponse{OK: err == nil, Size: request.Size}

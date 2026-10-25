@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"io"
@@ -25,6 +26,7 @@ import (
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/previewprotocol"
 	"github.com/mo3789530/hako/internal/workspaceagent"
+	"github.com/mo3789530/hako/internal/workspaceprotocol"
 	"github.com/mo3789530/hako/internal/workspacesession"
 	"golang.org/x/net/websocket"
 )
@@ -88,6 +90,30 @@ type testDialer struct {
 	opens atomic.Int32
 	port  atomic.Uint32
 	err   error
+}
+
+type previewLogTestDialer struct {
+	testDialer
+	logs []byte
+}
+
+func (d *previewLogTestDialer) OpenFileTransfer(_ context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
+	if len(claims.Permissions) != 1 || claims.Permissions[0] != workspacesession.PermissionFileTransfer {
+		return nil, errors.New("Gateway did not create its narrowly scoped Guest file channel")
+	}
+	gatewayEnd, runtimeEnd := net.Pipe()
+	go func() {
+		defer runtimeEnd.Close()
+		request, err := workspaceprotocol.ReadFileRequest(runtimeEnd)
+		if err != nil || request.Operation != "preview_logs" || request.Path != "/workspace/src/.hako/preview.log" {
+			return
+		}
+		if workspaceprotocol.WriteFileResponse(runtimeEnd, workspaceprotocol.FileResponse{OK: true, Size: int64(len(d.logs))}) != nil {
+			return
+		}
+		_, _ = runtimeEnd.Write(d.logs)
+	}()
+	return gatewayEnd, nil
 }
 
 type testGatewayStatusError int
@@ -167,6 +193,51 @@ func TestGatewaySSHProxyUsesDedicatedPermissionAndFixedLoopbackPort22(t *testing
 	waitForConnections(t, gateway, 0)
 	if dialer.port.Load() != 22 || dialer.opens.Load() != 1 {
 		t.Fatalf("SSH proxy destination port=%d opens=%d, want fixed port 22 and one stream", dialer.port.Load(), dialer.opens.Load())
+	}
+}
+
+func TestGatewayPreviewLogsRequiresDedicatedPermissionAndReturnsBoundedReadOnlyTail(t *testing.T) {
+	logs := []byte("preview process output\n")
+	dialer := &previewLogTestDialer{logs: logs}
+	gateway, err := New(Config{ResourcePlaneID: "rp_gateway_a", Verifier: newTestVerifier(t), Dialer: dialer,
+		AllowedOrigins: []string{"https://ide.example.test"}, MaxConnections: 2, MaxConnectionsPerWorkspace: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewTLSServer(gateway.Handler())
+	defer server.Close()
+	unauthorized := issueTestTicket(t, []workspacesession.Permission{workspacesession.PermissionFileTransfer})
+	if conn, err := dialWorkspace(server.URL, "/v1/workspaces/ws_gateway_a/preview-logs", unauthorized, "https://ide.example.test"); err == nil {
+		_ = conn.Close()
+		t.Fatal("file-transfer Session was accepted for Preview logs")
+	}
+	token := issueTestTicket(t, []workspacesession.Permission{workspacesession.PermissionPreviewLogs})
+	client, err := dialWorkspace(server.URL, "/v1/workspaces/ws_gateway_a/preview-logs", token, "https://ide.example.test")
+	if err != nil {
+		t.Fatalf("dial Preview log route: %v", err)
+	}
+	var sizeBytes [4]byte
+	if _, err := io.ReadFull(client, sizeBytes[:]); err != nil {
+		_ = client.Close()
+		t.Fatalf("read Preview log size: %v", err)
+	}
+	size := binary.BigEndian.Uint32(sizeBytes[:])
+	if size != uint32(len(logs)) {
+		_ = client.Close()
+		t.Fatalf("Preview log size=%d, want %d", size, len(logs))
+	}
+	got := make([]byte, size)
+	if _, err := io.ReadFull(client, got); err != nil || !bytes.Equal(got, logs) {
+		_ = client.Close()
+		t.Fatalf("Preview logs=%q error=%v", got, err)
+	}
+	_ = client.Close()
+}
+
+func TestPreviewLogsStreamRejectsClientWrites(t *testing.T) {
+	stream := &previewLogsStream{reader: bytes.NewReader([]byte("logs")), closer: io.NopCloser(strings.NewReader(""))}
+	if _, err := stream.Write([]byte("unexpected")); err == nil {
+		t.Fatal("Preview log stream accepted client-to-runtime bytes")
 	}
 }
 

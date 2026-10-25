@@ -43,6 +43,28 @@ type githubRepositoryPreviewForwardCLIInput struct {
 	localPort      string
 }
 
+type githubRepositoryPreviewLogsCLIInput struct {
+	tenantID       string
+	installationID int64
+	repositoryID   int64
+	pullRequest    int64
+}
+
+func parseGitHubRepositoryPreviewLogsCLI(args []string) (githubRepositoryPreviewLogsCLIInput, error) {
+	var input githubRepositoryPreviewLogsCLIInput
+	flags := flag.NewFlagSet("github repository previews logs", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&input.tenantID, "tenant", "", "Tenant ID")
+	flags.Int64Var(&input.installationID, "installation", 0, "GitHub Installation ID")
+	flags.Int64Var(&input.repositoryID, "repository", 0, "GitHub Repository ID")
+	flags.Int64Var(&input.pullRequest, "pull-request", 0, "Pull request number")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || strings.TrimSpace(input.tenantID) == "" || input.installationID <= 0 || input.repositoryID <= 0 || input.pullRequest <= 0 {
+		return githubRepositoryPreviewLogsCLIInput{}, errors.New("--tenant, positive --installation, --repository, and --pull-request are required")
+	}
+	input.tenantID = strings.TrimSpace(input.tenantID)
+	return input, nil
+}
+
 func parseGitHubRepositoryPreviewForwardCLI(args []string) (githubRepositoryPreviewForwardCLIInput, error) {
 	var input githubRepositoryPreviewForwardCLIInput
 	flags := flag.NewFlagSet("github repository previews forward", flag.ContinueOnError)

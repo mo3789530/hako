@@ -50,6 +50,11 @@ func Dial(ctx context.Context, gatewayURL string, workspaceID domain.WorkspaceID
 			return nil, ErrClientConfig
 		}
 		path += "/files"
+	case workspacesession.PermissionPreviewLogs:
+		if port != 0 {
+			return nil, ErrClientConfig
+		}
+		path += "/preview-logs"
 	case workspacesession.PermissionVSCode:
 		if port != 0 {
 			return nil, ErrClientConfig

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -21,8 +22,30 @@ import (
 	"github.com/mo3789530/hako/internal/api"
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/workspacegateway"
+	"github.com/mo3789530/hako/internal/workspaceprotocol"
 	"github.com/mo3789530/hako/internal/workspacesession"
 )
+
+type previewLogsCLIDialer struct {
+	vscodeTestDialer
+	logs []byte
+}
+
+func (d previewLogsCLIDialer) OpenFileTransfer(_ context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
+	client, runtime := net.Pipe()
+	go func() {
+		defer runtime.Close()
+		request, err := workspaceprotocol.ReadFileRequest(runtime)
+		if err != nil || request.Operation != "preview_logs" || len(claims.Permissions) != 1 || claims.Permissions[0] != workspacesession.PermissionFileTransfer {
+			return
+		}
+		if workspaceprotocol.WriteFileResponse(runtime, workspaceprotocol.FileResponse{OK: true, Size: int64(len(d.logs))}) != nil {
+			return
+		}
+		_, _ = runtime.Write(d.logs)
+	}()
+	return client, nil
+}
 
 func TestParseGitHubRepositoryAgentWritePolicyCLI(t *testing.T) {
 	got, err := parseGitHubRepositoryAgentWritePolicyCLI([]string{"set", "--tenant", " tenant_a ", "--installation", "4", "--repository", "8", "--policy-file", "policy.json"})
@@ -464,6 +487,72 @@ func TestOpenGitHubRepositoryPreviewUsesSessionAndTLSGateway(t *testing.T) {
 	}
 	if created.Load() != 1 || revoked.Load() != 1 {
 		t.Fatalf("Preview session create=%d revoke=%d", created.Load(), revoked.Load())
+	}
+}
+
+func TestReadGitHubRepositoryPreviewLogsUsesReadOnlySessionAndRevokes(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceID := domain.WorkspaceID("prvws_0123456789abcdef0123456789abcdef")
+	issuer := &workspacesession.Ed25519Issuer{KeyID: "preview-logs-test", PrivateKey: privateKey, TTL: time.Minute}
+	ticket, claims, err := issuer.Issue(workspacesession.Claims{UserID: "usr_cli", TenantID: "tenant_cli", WorkspaceID: workspaceID,
+		ResourcePlane: "rp_cli", Permissions: []workspacesession.Permission{workspacesession.PermissionPreviewLogs}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created, revoked atomic.Int32
+	apiServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer preview-logs-access" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		const createPath = "/v1/tenants/tenant_cli/github/installations/42/repositories/7/previews/19/sessions"
+		if r.Method == http.MethodPost && r.URL.Path == createPath {
+			var request struct {
+				Permissions []workspacesession.Permission `json:"permissions"`
+			}
+			if json.NewDecoder(r.Body).Decode(&request) != nil || len(request.Permissions) != 1 || request.Permissions[0] != workspacesession.PermissionPreviewLogs {
+				http.Error(w, "unexpected Preview permissions", http.StatusBadRequest)
+				return
+			}
+			created.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(api.RepositoryPreviewSession{SessionID: domain.SessionID(claims.TicketID), WorkspaceID: workspaceID,
+				Ticket: ticket, ExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC(), Permissions: []workspacesession.Permission{workspacesession.PermissionPreviewLogs}})
+			return
+		}
+		if r.Method == http.MethodDelete && r.URL.Path == createPath+"/"+claims.TicketID {
+			revoked.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer apiServer.Close()
+	logs := []byte("preview app started\nrequest failed: synthetic\n")
+	gateway, err := workspacegateway.New(workspacegateway.Config{ResourcePlaneID: "rp_cli",
+		Verifier: &workspacesession.Verifier{Keys: map[string]ed25519.PublicKey{"preview-logs-test": publicKey}, Audience: workspacesession.AudienceGateway, Lookup: activeWorkspaceSession{}},
+		Dialer:   previewLogsCLIDialer{logs: logs}, MaxConnections: 2, MaxConnectionsPerWorkspace: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatewayServer := httptest.NewTLSServer(gateway.Handler())
+	defer gatewayServer.Close()
+	gatewayTLS := gatewayServer.Client().Transport.(*http.Transport).TLSClientConfig
+	previous := cliCredentialGetter
+	cliCredentialGetter = workspaceShellCredentials(fmt.Sprintf(`{"access_token":"preview-logs-access","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+		time.Now().UTC().Format(time.RFC3339)))
+	t.Cleanup(func() { cliCredentialGetter = previous })
+	t.Setenv("HAKO_API_URL", apiServer.URL)
+	t.Setenv("HAKO_GATEWAY_URL", gatewayServer.URL)
+	var output bytes.Buffer
+	err = readGitHubRepositoryPreviewLogsWith(context.Background(), []string{"--tenant", "tenant_cli", "--installation", "42", "--repository", "7", "--pull-request", "19"},
+		&output, apiServer.Client(), &tls.Config{RootCAs: gatewayTLS.RootCAs})
+	if err != nil || output.String() != string(logs) || created.Load() != 1 || revoked.Load() != 1 {
+		t.Fatalf("Preview logs output=%q created=%d revoked=%d error=%v", output.String(), created.Load(), revoked.Load(), err)
 	}
 }
 

@@ -62,6 +62,10 @@ func TestRepositoryPreviewSessionClientRejectsInvalidIdentityAndResponse(t *test
 		[]workspacesession.Permission{"admin"}, server.Client()); err == nil {
 		t.Fatal("CreateRepositoryPreviewSession accepted an invalid permission")
 	}
+	if _, err := CreateRepositoryPreviewSession(context.Background(), server.URL, "token", "tenant_preview_client", 1, 2, 3,
+		[]workspacesession.Permission{workspacesession.PermissionShell}, server.Client()); err == nil {
+		t.Fatal("CreateRepositoryPreviewSession accepted a general Workspace shell permission")
+	}
 	if _, err := CreateRepositoryPreviewSession(context.Background(), server.URL, "token", "tenant_preview_client", 1, 2, 3, nil, server.Client()); err == nil || !strings.Contains(err.Error(), "invalid Preview session response") {
 		t.Fatalf("CreateRepositoryPreviewSession invalid response error = %v", err)
 	}

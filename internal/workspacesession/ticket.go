@@ -40,6 +40,7 @@ const (
 	PermissionPortForward  Permission = "port-forward"
 	PermissionSSHProxy     Permission = "ssh-proxy"
 	PermissionFileTransfer Permission = "file-transfer"
+	PermissionPreviewLogs  Permission = "preview-logs"
 )
 
 type Claims struct {
@@ -191,7 +192,7 @@ func validPermissions(permissions []Permission) bool {
 	seen := make(map[Permission]struct{}, len(permissions))
 	for _, permission := range permissions {
 		switch permission {
-		case PermissionShell, PermissionExec, PermissionVSCode, PermissionPortForward, PermissionSSHProxy, PermissionFileTransfer:
+		case PermissionShell, PermissionExec, PermissionVSCode, PermissionPortForward, PermissionSSHProxy, PermissionFileTransfer, PermissionPreviewLogs:
 		default:
 			return false
 		}

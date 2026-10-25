@@ -51,6 +51,8 @@ func TestFileControlFramesRejectUnsafeRequestsAndMalformedResponses(t *testing.T
 		{Operation: "install_archive", Path: "/workspace/other", Size: 1, Digest: validDigest},
 		{Operation: "install_archive", Path: "/workspace/src", Size: 0, Digest: validDigest},
 		{Operation: "install_archive", Path: "/workspace/src", Size: 1, Digest: strings.ToUpper(validDigest)},
+		{Operation: "preview_logs", Path: "/workspace/src/.hako/preview.yaml"},
+		{Operation: "preview_logs", Path: "/workspace/src/.hako/preview.log", Size: 1},
 	} {
 		if err := WriteFileRequest(&bytes.Buffer{}, request); !errors.Is(err, ErrInvalidFileTransfer) {
 			t.Errorf("unsafe request %+v error=%v", request, err)
@@ -58,6 +60,9 @@ func TestFileControlFramesRejectUnsafeRequestsAndMalformedResponses(t *testing.T
 	}
 	if err := WriteFileRequest(&bytes.Buffer{}, FileRequest{Operation: "install_archive", Path: "/workspace/src", Size: 1, Digest: validDigest}); err != nil {
 		t.Fatalf("valid Preview source install request rejected: %v", err)
+	}
+	if err := WriteFileRequest(&bytes.Buffer{}, FileRequest{Operation: "preview_logs", Path: "/workspace/src/.hako/preview.log"}); err != nil {
+		t.Fatalf("valid read-only Preview log request rejected: %v", err)
 	}
 	if err := WriteFileRequest(&bytes.Buffer{}, FileRequest{Operation: "start_preview", Path: "/workspace/src/.hako/preview.yaml"}); err != nil {
 		t.Fatalf("valid Preview start request rejected: %v", err)

@@ -5,8 +5,10 @@
 package workspacegateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +23,7 @@ import (
 
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/previewprotocol"
+	"github.com/mo3789530/hako/internal/workspaceprotocol"
 	"github.com/mo3789530/hako/internal/workspacesession"
 	"golang.org/x/net/websocket"
 )
@@ -129,6 +132,7 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/workspaces/{workspace_id}/shell", g.serveShell)
 	mux.HandleFunc("GET /v1/workspaces/{workspace_id}/exec", g.serveExec)
 	mux.HandleFunc("GET /v1/workspaces/{workspace_id}/files", g.serveFiles)
+	mux.HandleFunc("GET /v1/workspaces/{workspace_id}/preview-logs", g.servePreviewLogs)
 	mux.HandleFunc("GET /v1/workspaces/{workspace_id}/ssh", g.serveSSH)
 	mux.HandleFunc("GET /v1/workspaces/{workspace_id}/vscode", g.serveVSCode)
 	mux.HandleFunc("GET /v1/workspaces/{workspace_id}/ports/{port}", g.servePort)
@@ -159,6 +163,50 @@ func (g *Gateway) serveFiles(w http.ResponseWriter, r *http.Request) {
 	g.serve(w, r, workspacesession.PermissionFileTransfer, func(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
 		return g.config.Dialer.OpenFileTransfer(ctx, claims)
 	})
+}
+
+func (g *Gateway) servePreviewLogs(w http.ResponseWriter, r *http.Request) {
+	g.serve(w, r, workspacesession.PermissionPreviewLogs, func(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
+		// The public Session has only preview-logs permission. The Gateway uses
+		// its trusted Resource Plane identity to open a private Guest file channel,
+		// then sends one fixed read-only operation and never exposes that channel.
+		guestClaims := claims
+		guestClaims.Permissions = []workspacesession.Permission{workspacesession.PermissionFileTransfer}
+		upstream, err := g.config.Dialer.OpenFileTransfer(ctx, guestClaims)
+		if err != nil || upstream == nil {
+			return nil, errors.New("Preview log stream is unavailable")
+		}
+		request := workspaceprotocol.FileRequest{Operation: "preview_logs", Path: "/workspace/src/.hako/preview.log"}
+		if err := workspaceprotocol.WriteFileRequest(upstream, request); err != nil {
+			_ = upstream.Close()
+			return nil, errors.New("Preview log request failed")
+		}
+		response, err := workspaceprotocol.ReadFileResponse(upstream)
+		if err != nil || !response.OK || response.Size > workspaceprotocol.PreviewLogsMaxBytes {
+			_ = upstream.Close()
+			return nil, errors.New("Preview logs are unavailable")
+		}
+		var size [4]byte
+		binary.BigEndian.PutUint32(size[:], uint32(response.Size))
+		return &previewLogsStream{reader: io.MultiReader(bytes.NewReader(size[:]), io.LimitReader(upstream, response.Size)), closer: upstream}, nil
+	})
+}
+
+type previewLogsStream struct {
+	reader io.Reader
+	closer io.Closer
+}
+
+func (s *previewLogsStream) Read(data []byte) (int, error) {
+	return s.reader.Read(data)
+}
+
+func (s *previewLogsStream) Write([]byte) (int, error) {
+	return 0, errors.New("Preview log stream is read-only")
+}
+
+func (s *previewLogsStream) Close() error {
+	return s.closer.Close()
 }
 
 func (g *Gateway) serveVSCode(w http.ResponseWriter, r *http.Request) {

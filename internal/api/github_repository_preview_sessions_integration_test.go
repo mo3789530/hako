@@ -132,6 +132,12 @@ func TestRepositoryPreviewSessionIsTenantScopedAndFencedByPreviewLifecycle(t *te
 	if invalid := request("preview-session-owner", http.MethodPost, path, `{"unexpected":true}`); invalid.Code != http.StatusBadRequest {
 		t.Fatalf("unknown session field status = HTTP %d %s", invalid.Code, invalid.Body.String())
 	}
+	for _, permissions := range []string{`["shell"]`, `["exec"]`, `["file-transfer"]`, `["ssh-proxy"]`} {
+		invalid := request("preview-session-owner", http.MethodPost, path, `{"permissions":`+permissions+`}`)
+		if invalid.Code != http.StatusBadRequest {
+			t.Errorf("unsafe Preview Session permissions %s returned HTTP %d %s", permissions, invalid.Code, invalid.Body.String())
+		}
+	}
 	if _, err := pool.Exec(ctx, `UPDATE repository_previews SET desired_state='absent',state='cleanup_pending',generation=generation+1 WHERE tenant_id='tenant_preview_session' AND installation_id=8801 AND github_repository_id=8802 AND pull_request_number=19`); err != nil {
 		t.Fatal(err)
 	}

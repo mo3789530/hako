@@ -46,6 +46,49 @@ type PreviewApplicationManager struct {
 	cmd  *exec.Cmd
 	done chan error
 	hash [32]byte
+	logs *previewLogBuffer
+}
+
+type previewLogBuffer struct {
+	mu   sync.Mutex
+	data []byte
+}
+
+func (b *previewLogBuffer) Write(data []byte) (int, error) {
+	if b == nil {
+		return len(data), nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(data) >= int(workspaceprotocol.PreviewLogsMaxBytes) {
+		b.data = append(b.data[:0], data[len(data)-int(workspaceprotocol.PreviewLogsMaxBytes):]...)
+		return len(data), nil
+	}
+	excess := len(b.data) + len(data) - int(workspaceprotocol.PreviewLogsMaxBytes)
+	if excess > 0 {
+		copy(b.data, b.data[excess:])
+		b.data = b.data[:len(b.data)-excess]
+	}
+	b.data = append(b.data, data...)
+	return len(data), nil
+}
+
+func (b *previewLogBuffer) Snapshot() []byte {
+	if b == nil {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.data...)
+}
+
+func (b *previewLogBuffer) Reset() {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	b.data = b.data[:0]
+	b.mu.Unlock()
 }
 
 func NewPreviewApplicationManager(workspaceRoot string) (*PreviewApplicationManager, error) {
@@ -53,7 +96,16 @@ func NewPreviewApplicationManager(workspaceRoot string) (*PreviewApplicationMana
 	if err != nil || strings.TrimSpace(workspaceRoot) == "" || root == "/" {
 		return nil, ErrPreviewApplication
 	}
-	return &PreviewApplicationManager{root: root}, nil
+	return &PreviewApplicationManager{root: root, logs: &previewLogBuffer{}}, nil
+}
+
+// Logs returns a bounded in-memory tail of the current Preview process output.
+// It is diagnostic data for the active runtime and is not persisted.
+func (m *PreviewApplicationManager) Logs() []byte {
+	if m == nil {
+		return nil
+	}
+	return m.logs.Snapshot()
 }
 
 func (m *PreviewApplicationManager) Start(ctx context.Context, files *WorkspaceFiles) (uint16, error) {
@@ -100,7 +152,8 @@ func (m *PreviewApplicationManager) Start(ctx context.Context, files *WorkspaceF
 	command.Dir = filepath.Join(m.root, "src")
 	command.Env = []string{"HOME=" + m.root, "PATH=" + workspaceExecPath, "LANG=C.UTF-8",
 		"PORT=3000", "HOST=127.0.0.1", "HOSTNAME=127.0.0.1"}
-	command.Stdin, command.Stdout, command.Stderr = nil, io.Discard, io.Discard
+	m.logs.Reset()
+	command.Stdin, command.Stdout, command.Stderr = nil, m.logs, m.logs
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
 	if err := command.Start(); err != nil {
 		m.mu.Unlock()

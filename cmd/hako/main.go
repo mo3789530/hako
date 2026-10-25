@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -84,6 +85,13 @@ func main() {
 		if len(os.Args) >= 5 && os.Args[4] == "forward" {
 			if err := forwardGitHubRepositoryPreview(context.Background(), os.Args[5:], os.Stderr); err != nil {
 				fmt.Fprintf(os.Stderr, "hako github repository previews forward: %v\n", err)
+				os.Exit(1)
+			}
+			break
+		}
+		if len(os.Args) >= 5 && os.Args[4] == "logs" {
+			if err := readGitHubRepositoryPreviewLogs(os.Args[5:], os.Stdout); err != nil {
+				fmt.Fprintf(os.Stderr, "hako github repository previews logs: %v\n", err)
 				os.Exit(1)
 			}
 			break
@@ -735,6 +743,64 @@ func forwardGitHubRepositoryPreviewWith(ctx context.Context, args []string, stde
 					input.installationID, input.repositoryID, input.pullRequest, string(session.SessionID), apiHTTPClient)
 			}, nil
 		})
+}
+
+func readGitHubRepositoryPreviewLogs(args []string, stdout io.Writer) error {
+	return readGitHubRepositoryPreviewLogsWith(context.Background(), args, stdout, nil, nil)
+}
+
+func readGitHubRepositoryPreviewLogsWith(ctx context.Context, args []string, stdout io.Writer, apiHTTPClient *http.Client, gatewayTLSConfig *tls.Config) error {
+	if ctx == nil || stdout == nil {
+		return errors.New("Preview log context and output are required")
+	}
+	input, err := parseGitHubRepositoryPreviewLogsCLI(args)
+	if err != nil {
+		return err
+	}
+	accessToken, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
+	if err != nil {
+		return err
+	}
+	apiURL, gatewayURL := os.Getenv("HAKO_API_URL"), os.Getenv("HAKO_GATEWAY_URL")
+	if apiURL == "" || gatewayURL == "" {
+		return errors.New("HAKO_API_URL and HAKO_GATEWAY_URL are required")
+	}
+	sessionCtx, cancelSession := context.WithTimeout(ctx, 15*time.Second)
+	defer cancelSession()
+	session, err := api.CreateRepositoryPreviewSession(sessionCtx, apiURL, accessToken, input.tenantID,
+		input.installationID, input.repositoryID, input.pullRequest,
+		[]workspacesession.Permission{workspacesession.PermissionPreviewLogs}, apiHTTPClient)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		revokeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = api.RevokeRepositoryPreviewSession(revokeCtx, apiURL, accessToken, input.tenantID,
+			input.installationID, input.repositoryID, input.pullRequest, string(session.SessionID), apiHTTPClient)
+	}()
+	connection, err := workspacegateway.Dial(ctx, gatewayURL, session.WorkspaceID, workspacesession.PermissionPreviewLogs, 0,
+		session.Ticket, gatewayTLSConfig)
+	if err != nil {
+		return err
+	}
+	defer connection.Close()
+	var lengthBytes [4]byte
+	if _, err := io.ReadFull(connection, lengthBytes[:]); err != nil {
+		return errors.New("Preview log stream is unavailable")
+	}
+	length := binary.BigEndian.Uint32(lengthBytes[:])
+	if length > uint32(workspaceprotocol.PreviewLogsMaxBytes) {
+		return errors.New("Preview log response exceeds the configured limit")
+	}
+	logs := make([]byte, int(length))
+	if _, err := io.ReadFull(connection, logs); err != nil {
+		return errors.New("Preview log stream ended before the complete bounded response")
+	}
+	if _, err := stdout.Write(logs); err != nil {
+		return errors.New("write Preview logs")
+	}
+	return nil
 }
 
 func serveWorkspaceForward(ctx context.Context, listener net.Listener, tenantID, workspaceID string, remotePort uint16, apiURL, gatewayURL, accessToken string,

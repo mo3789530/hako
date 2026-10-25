@@ -98,6 +98,10 @@ func TestWorkspaceSessionAPIEnforcesRBACPersistsAndRevokesTickets(t *testing.T) 
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create Workspace session = HTTP %d %s", created.Code, created.Body.String())
 	}
+	previewOnly := request("session-owner", http.MethodPost, basePath, `{"permissions":["preview-logs"]}`)
+	if previewOnly.Code != http.StatusBadRequest {
+		t.Fatalf("ordinary Workspace issued Preview-only log permission: HTTP %d %s", previewOnly.Code, previewOnly.Body.String())
+	}
 	var response createWorkspaceSessionResponse
 	if err := json.Unmarshal(created.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)

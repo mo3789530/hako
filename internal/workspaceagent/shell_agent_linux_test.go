@@ -226,7 +226,7 @@ func TestWorkspaceShellAgentStartsPreviewThroughOneUseFileTransferTicket(t *test
 	if err := os.MkdirAll(filepath.Join(root, "src", ".hako"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	manifest := "version: 1\ncommand:\n  - python3\n  - -c\n  - |\n    import socket\n    s = socket.socket()\n    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n    s.bind(('127.0.0.1', 3000))\n    s.listen()\n    while True:\n      c, _ = s.accept()\n      c.close()\n"
+	manifest := "version: 1\ncommand:\n  - python3\n  - -c\n  - |\n    import socket\n    import sys\n    print('preview-ready', flush=True)\n    s = socket.socket()\n    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n    s.bind(('127.0.0.1', 3000))\n    s.listen()\n    while True:\n      c, _ = s.accept()\n      c.close()\n"
 	if err := os.WriteFile(filepath.Join(root, "src", ".hako", "preview.yaml"), []byte(manifest), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -268,6 +268,35 @@ func TestWorkspaceShellAgentStartsPreviewThroughOneUseFileTransferTicket(t *test
 		_ = agent.Close()
 		t.Fatalf("start Guest Preview application port=%d error=%v", port, err)
 	}
+	logTicket, _, err := issuer.Issue(AgentTicket{UserID: "controller", TenantID: "tenant-1", WorkspaceID: "workspace-1",
+		ResourcePlane: "rp-1", MicroVMID: "microvm-preview", Permission: workspacesession.PermissionFileTransfer})
+	if err != nil {
+		_ = agent.Close()
+		t.Fatal(err)
+	}
+	logStream, err := dialWorkspaceAgentChannel(server.URL, "https://gateway.hako.test", logTicket, "files")
+	if err != nil {
+		_ = agent.Close()
+		t.Fatal(err)
+	}
+	if err := workspaceprotocol.WriteFileRequest(logStream, workspaceprotocol.FileRequest{Operation: "preview_logs", Path: "/workspace/src/.hako/preview.log"}); err != nil {
+		_ = logStream.Close()
+		_ = agent.Close()
+		t.Fatalf("request Preview logs: %v", err)
+	}
+	logResponse, err := workspaceprotocol.ReadFileResponse(logStream)
+	if err != nil || !logResponse.OK || logResponse.Size == 0 || logResponse.Size > workspaceprotocol.PreviewLogsMaxBytes {
+		_ = logStream.Close()
+		_ = agent.Close()
+		t.Fatalf("Preview log response=%+v error=%v", logResponse, err)
+	}
+	logBytes := make([]byte, int(logResponse.Size))
+	if _, err := io.ReadFull(logStream, logBytes); err != nil || !strings.Contains(string(logBytes), "preview-ready") {
+		_ = logStream.Close()
+		_ = agent.Close()
+		t.Fatalf("Preview logs=%q error=%v", logBytes, err)
+	}
+	_ = logStream.Close()
 	connection, err := net.DialTimeout("tcp", "127.0.0.1:3000", time.Second)
 	if err != nil {
 		_ = agent.Close()
