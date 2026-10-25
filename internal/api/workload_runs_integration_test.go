@@ -346,18 +346,58 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox_events WHERE aggregate_id=$1 AND event_type='workload_attempt.dispatch'`, retryVerifierAttempt).Scan(&retryDispatchEvents); err != nil || retryDispatchEvents != 1 {
 		t.Fatalf("queued verifier dispatch outbox count=%d error=%v", retryDispatchEvents, err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE workload_run_attempts SET state='succeeded',cleanup_confirmed_at=$1,updated_at=$1 WHERE id=$2`, now, retryVerifierAttempt); err != nil {
-		t.Fatalf("complete retried verifier attempt: %v", err)
+	if _, err := pool.Exec(ctx, `UPDATE workload_run_attempts SET state='failed',cleanup_confirmed_at=NULL,updated_at=$1 WHERE id=$2`, now, retryVerifierAttempt); err != nil {
+		t.Fatalf("mark verifier retry as failed without cleanup proof: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE workload_runs SET state='succeeded',completed_at=$1,error_code=NULL,revision=revision+1,updated_at=$1 WHERE id='run_verifier_api'`, now); err != nil {
-		t.Fatalf("complete retried verifier Run: %v", err)
+	if _, err := pool.Exec(ctx, `UPDATE workload_runs SET state='failed',completed_at=$1,error_code='test_failed',revision=revision+1,updated_at=$1 WHERE id='run_verifier_api'`, now); err != nil {
+		t.Fatalf("mark verifier Run failed without cleanup proof: %v", err)
+	}
+	notReadySubmission := request("runs-member", http.MethodPost, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_member/agent-publication/publish")
+	if notReadySubmission.Code != http.StatusConflict || !strings.Contains(notReadySubmission.Body.String(), `"code":"verification_not_ready"`) || publicationSubmitter.calls != 0 {
+		t.Fatalf("uncleaned verifier retry = HTTP %d calls=%d body=%s", notReadySubmission.Code, publicationSubmitter.calls, notReadySubmission.Body.String())
+	}
+	if _, err := pool.Exec(ctx, `UPDATE workload_run_attempts SET cleanup_confirmed_at=$1,updated_at=$1 WHERE id=$2`, now.Add(time.Second), retryVerifierAttempt); err != nil {
+		t.Fatalf("confirm verifier retry cleanup: %v", err)
+	}
+	secondQueuedSubmission := request("runs-member", http.MethodPost, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_member/agent-publication/publish")
+	if secondQueuedSubmission.Code != http.StatusAccepted || publicationSubmitter.calls != 0 {
+		t.Fatalf("second verifier retry = HTTP %d calls=%d body=%s", secondQueuedSubmission.Code, publicationSubmitter.calls, secondQueuedSubmission.Body.String())
+	}
+	if err := pool.QueryRow(ctx, `SELECT verifier_attempt_id FROM workload_agent_proposal_verifications WHERE tenant_id='tenant_runs_a' AND agent_run_id='run_owned_member'`).Scan(&retryVerifierAttempt); err != nil {
+		t.Fatalf("read second verifier retry binding: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox_events WHERE event_type='workload_attempt.dispatch' AND aggregate_id IN
+		(SELECT id FROM workload_run_attempts WHERE workload_run_id='run_verifier_api')`).Scan(&retryDispatchEvents); err != nil || retryDispatchEvents != 2 {
+		t.Fatalf("retry dispatch event count=%d error=%v", retryDispatchEvents, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE workload_run_attempts SET state='failed',cleanup_confirmed_at=$1,updated_at=$1 WHERE id=$2`, now.Add(2*time.Second), retryVerifierAttempt); err != nil {
+		t.Fatalf("mark final verifier attempt failed: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE workload_runs SET state='failed',completed_at=$1,error_code='test_failed',revision=revision+1,updated_at=$1 WHERE id='run_verifier_api'`, now.Add(2*time.Second)); err != nil {
+		t.Fatalf("mark final verifier Run failed: %v", err)
+	}
+	limitSubmission := request("runs-member", http.MethodPost, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_member/agent-publication/publish")
+	if limitSubmission.Code != http.StatusConflict || !strings.Contains(limitSubmission.Body.String(), `"code":"verification_retry_limit"`) || publicationSubmitter.calls != 0 {
+		t.Fatalf("exhausted verifier retries = HTTP %d calls=%d body=%s", limitSubmission.Code, publicationSubmitter.calls, limitSubmission.Body.String())
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM workload_quota_slots WHERE tenant_id='tenant_runs_a' AND workload_run_id='run_verifier_api'`); err != nil {
+		t.Fatalf("release terminal verifier Run quota: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM workload_artifact_quota_reservations WHERE tenant_id='tenant_runs_a' AND workload_run_id='run_verifier_api'`); err != nil {
+		t.Fatalf("release terminal verifier Run artifact quota: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE workload_run_attempts SET state='succeeded',updated_at=$1 WHERE id=$2`, now.Add(3*time.Second), retryVerifierAttempt); err != nil {
+		t.Fatalf("complete verifier attempt for publication continuation: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE workload_runs SET state='succeeded',completed_at=$1,error_code=NULL,revision=revision+1,updated_at=$1 WHERE id='run_verifier_api'`, now.Add(3*time.Second)); err != nil {
+		t.Fatalf("complete verifier Run for publication continuation: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO workload_agent_proposal_publications
 		(tenant_id,agent_run_id,agent_attempt_id,proposal_artifact_id,proposal_sha256,base_commit_sha,
 		 verifier_run_id,verifier_attempt_id,verifier_generation,installation_id,repository_id,integration_id,
 		 config_revision,credential_generation,default_branch,policy_sha256,branch_name,state,created_at,updated_at)
 		VALUES ('tenant_runs_a','run_owned_member','attempt_publish_api','artifact_agent_proposal_api',$1,$2,
-		 'run_verifier_api',$5,2,9301,9302,NULL,0,0,'main',$3,'hako/agent/proposal-test','requested',$4,$4)`,
+		 'run_verifier_api',$5,3,9301,9302,NULL,0,0,'main',$3,'hako/agent/proposal-test','requested',$4,$4)`,
 		proposalSHA, baseSHA, strings.Repeat("c", 64), now, retryVerifierAttempt); err != nil {
 		t.Fatalf("seed Agent publication status: %v", err)
 	}
@@ -413,7 +453,7 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 	publicationSubmitter.result.TenantID = "tenant_runs_a"
 	var publicationAuditCount int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE tenant_id='tenant_runs_a' AND actor_user_id='usr_runs_member'
-		AND action='workload.agent_proposal.publish' AND target_id='run_owned_member'`).Scan(&publicationAuditCount); err != nil || publicationAuditCount != 4 {
+		AND action='workload.agent_proposal.publish' AND target_id='run_owned_member'`).Scan(&publicationAuditCount); err != nil || publicationAuditCount != 5 {
 		t.Fatalf("publication submit success/failure audit count=%d error=%v", publicationAuditCount, err)
 	}
 	if hiddenSubmit := request("runs-member", http.MethodPost, "/v1/tenants/tenant_runs_a/workload-runs/run_owned_owner/agent-publication/publish"); hiddenSubmit.Code != http.StatusNotFound {

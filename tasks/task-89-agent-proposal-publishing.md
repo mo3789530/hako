@@ -115,6 +115,9 @@ returns `202 verification_queued` with `Cache-Control: no-store`, and does not
 call the Broker submitter. The test then completes that verifier attempt and
 continues through the publication success and sanitized failure cases. This
 verifies local queue/API ordering only; no worker, GitHub, or AWS service runs.
+It also verifies cleanup-unconfirmed failures return `409 verification_not_ready`
+and the initial attempt plus two retries cap at `409 verification_retry_limit`
+without calling the Broker or creating an extra dispatch event.
 
 The authenticated Control Plane publication API integration path also covers
 empty-body enforcement, malformed Run identity rejection before broker access,

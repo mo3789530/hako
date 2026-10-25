@@ -167,6 +167,9 @@ Broker. Successful and failed attempts are audited; invalid requests are not.
 It now also composes verifier retry through the API: one replacement attempt
 and dispatch Outbox are persisted, the route returns `202 verification_queued`,
 and the Broker submitter receives no call until verification is completed.
+The same API test verifies `409 verification_not_ready` before cleanup
+confirmation and `409 verification_retry_limit` after the initial attempt plus
+two retries, without an extra Broker call or dispatch event.
 
 Added `make verify-workload-microvm-artifact` so the Agent ZIP check is
 repeatable: it validates the public-key JSON, exact package contents, key-byte
