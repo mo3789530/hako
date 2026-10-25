@@ -648,6 +648,84 @@ func TestReadGitHubRepositoryPreviewLogsUsesReadOnlySessionAndRevokes(t *testing
 	}
 }
 
+type inactivePreviewLogSession struct{}
+
+func (inactivePreviewLogSession) IsActive(context.Context, workspacesession.Claims) (bool, error) {
+	return false, nil
+}
+
+func TestReadGitHubRepositoryPreviewLogsRevokesWhenGatewayRejectsSession(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceID := domain.WorkspaceID("prvws_0123456789abcdef0123456789abcdef")
+	issuer := &workspacesession.Ed25519Issuer{KeyID: "preview-logs-failure-test", PrivateKey: privateKey, TTL: time.Minute}
+	ticket, claims, err := issuer.Issue(workspacesession.Claims{UserID: "usr_cli", TenantID: "tenant_cli", WorkspaceID: workspaceID,
+		ResourcePlane: "rp_cli", Permissions: []workspacesession.Permission{workspacesession.PermissionPreviewLogs}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created, revoked atomic.Int32
+	const sessionPath = "/v1/tenants/tenant_cli/github/installations/42/repositories/7/previews/19/sessions"
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer preview-logs-failure-access" {
+			t.Errorf("Preview API authorization = %q", r.Header.Get("Authorization"))
+		}
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == sessionPath:
+			created.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(api.RepositoryPreviewSession{SessionID: domain.SessionID(claims.TicketID), WorkspaceID: workspaceID,
+				Ticket: ticket, ExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC(), Permissions: []workspacesession.Permission{workspacesession.PermissionPreviewLogs}})
+		case r.Method == http.MethodDelete && r.URL.Path == sessionPath+"/"+claims.TicketID:
+			revoked.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected Preview API request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer apiServer.Close()
+	gateway, err := workspacegateway.New(workspacegateway.Config{ResourcePlaneID: "rp_cli",
+		Verifier: &workspacesession.Verifier{Keys: map[string]ed25519.PublicKey{"preview-logs-failure-test": publicKey}, Audience: workspacesession.AudienceGateway, Lookup: inactivePreviewLogSession{}},
+		Dialer:   previewLogsCLIDialer{logs: []byte("must not be read")}, MaxConnections: 2, MaxConnectionsPerWorkspace: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatewayServer := httptest.NewTLSServer(gateway.Handler())
+	defer gatewayServer.Close()
+	gatewayTLS := gatewayServer.Client().Transport.(*http.Transport).TLSClientConfig
+	previous := cliCredentialGetter
+	cliCredentialGetter = workspaceShellCredentials(fmt.Sprintf(`{"access_token":"preview-logs-failure-access","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+		time.Now().UTC().Format(time.RFC3339)))
+	t.Cleanup(func() { cliCredentialGetter = previous })
+	t.Setenv("HAKO_API_URL", apiServer.URL)
+	t.Setenv("HAKO_GATEWAY_URL", gatewayServer.URL)
+	err = readGitHubRepositoryPreviewLogsWith(context.Background(), []string{"--tenant", "tenant_cli", "--installation", "42", "--repository", "7", "--pull-request", "19"},
+		io.Discard, apiServer.Client(), &tls.Config{RootCAs: gatewayTLS.RootCAs})
+	if err == nil {
+		t.Fatal("inactive Preview Session unexpectedly opened a log stream")
+	}
+	if created.Load() != 1 || revoked.Load() != 1 {
+		t.Fatalf("Preview Session create=%d revoke=%d after Gateway denial, want one each", created.Load(), revoked.Load())
+	}
+}
+
+func TestReadGitHubRepositoryPreviewLogsRejectsMissingInputsBeforeNetwork(t *testing.T) {
+	validArgs := []string{"--tenant", "tenant_cli", "--installation", "42", "--repository", "7", "--pull-request", "19"}
+	if err := readGitHubRepositoryPreviewLogsWith(nil, validArgs, io.Discard, nil, nil); err == nil {
+		t.Fatal("nil context was accepted")
+	}
+	if err := readGitHubRepositoryPreviewLogsWith(context.Background(), validArgs, nil, nil, nil); err == nil {
+		t.Fatal("nil output was accepted")
+	}
+	if err := readGitHubRepositoryPreviewLogsWith(context.Background(), []string{"--tenant", "tenant_cli"}, io.Discard, nil, nil); err == nil {
+		t.Fatal("incomplete Preview identity was accepted")
+	}
+}
+
 type previewLogShortWriter struct{}
 
 func (previewLogShortWriter) Write(data []byte) (int, error) {

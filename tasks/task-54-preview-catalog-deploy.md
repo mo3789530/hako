@@ -579,3 +579,11 @@ propagated for each operation. Focused statement coverage is 85.7%
 for Preview listing and Session creation; the revoke path's request/response
 contract is additionally covered by the existing successful lifecycle test.
 No live GitHub, AWS, or Resource Plane endpoint is contacted.
+
+Preview log streaming now also has failure-path coverage for an inactive
+Gateway Session: after the CLI creates a Preview-only log Session, a Gateway
+authorization failure causes the CLI to revoke that Session. Nil context,
+nil output, and incomplete Preview identity are rejected before network access.
+The log CLI integration tests pass under the race detector; coverage for
+`readGitHubRepositoryPreviewLogsWith` is 82.4%. No live Preview or AWS service
+is contacted.
