@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 )
 
 var ErrAgentTaskConflict = errors.New("Agent task context conflicts with its Issue delivery")
+var agentIssueClaimIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{8,128}$`)
 
 type AgentTaskRecord struct {
 	TenantID       domain.TenantID
@@ -39,13 +41,33 @@ type AgentTaskRecord struct {
 // reloaded from the inbox row here, not taken from supplied IDs alone.
 func CreateOrGetFromIssueComment(ctx context.Context, tx pgx.Tx, integrationID, deliveryID, correlationID string,
 	issue githubapp.AgentIssueContext, run domain.WorkloadRun) (domain.WorkloadRun, bool, error) {
+	return createOrGetFromIssueComment(ctx, tx, integrationID, deliveryID, correlationID, "", issue, run)
+}
+
+func CreateOrGetFromClaimedIssueComment(ctx context.Context, tx pgx.Tx, integrationID, deliveryID, correlationID, claimID string,
+	issue githubapp.AgentIssueContext, run domain.WorkloadRun) (domain.WorkloadRun, bool, error) {
+	if !agentIssueClaimIDPattern.MatchString(claimID) {
+		return domain.WorkloadRun{}, false, ErrAgentTaskConflict
+	}
+	return createOrGetFromIssueComment(ctx, tx, integrationID, deliveryID, correlationID, claimID, issue, run)
+}
+
+func createOrGetFromIssueComment(ctx context.Context, tx pgx.Tx, integrationID, deliveryID, correlationID, claimID string,
+	issue githubapp.AgentIssueContext, run domain.WorkloadRun) (domain.WorkloadRun, bool, error) {
 	if tx == nil || integrationID == "shared" || strings.TrimSpace(integrationID) == "" || deliveryID == "" ||
 		issue.IssueNumber <= 0 || strings.TrimSpace(issue.Title) == "" || len(issue.Title) > 1024 || len(issue.Body) > 64<<10 ||
 		len(issue.CommitSHA) != 40 && len(issue.CommitSHA) != 64 || !commitSHAPattern.MatchString(issue.CommitSHA) ||
 		issue.DefaultRef == "" || len(issue.DefaultRef) > 255 || strings.ContainsAny(issue.DefaultRef, "\r\n\x00") {
 		return domain.WorkloadRun{}, false, ErrAgentTaskConflict
 	}
-	authorization, allowed, err := webhookstore.AuthorizeIssueCommentAgentCommand(ctx, tx, integrationID, deliveryID)
+	var authorization webhookstore.IssueCommentAgentAuthorization
+	var allowed bool
+	var err error
+	if claimID == "" {
+		authorization, allowed, err = webhookstore.AuthorizeIssueCommentAgentCommand(ctx, tx, integrationID, deliveryID)
+	} else {
+		authorization, allowed, err = webhookstore.AuthorizeClaimedIssueCommentAgentCommand(ctx, tx, integrationID, deliveryID, claimID, run.CreatedAt)
+	}
 	if err != nil || !allowed || authorization.IssueNumber != issue.IssueNumber {
 		return domain.WorkloadRun{}, false, ErrAgentTaskConflict
 	}

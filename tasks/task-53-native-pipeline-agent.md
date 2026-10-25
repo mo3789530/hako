@@ -648,6 +648,19 @@ network isolation behavior.
   `agent_changes` bundle described below. GitHub branch/PR submission remains
   unimplemented.
 
+## Issue command claim fencing (2026-10-25)
+
+The separate Issue-to-Agent processor now claims eligible `/hako implement`
+deliveries with conditional OCC updates and a five-minute lease. Concurrent
+scheduled workers cannot resolve the same active delivery; an expired claim
+can be reclaimed, and the final Run/task transaction must present the current
+claim before acknowledging the delivery. Claim identity and expiry are cleared
+atomically on success or policy rejection. DSQL migrations and the
+`hako_webhook_processor` column grant were added. PostgreSQL integration covers
+exclusive claim, expiry recovery, stale claimant rejection, and Run/task
+creation by the current claimant. Scheduling/mTLS Broker wiring remains
+default-off and is not deployed; Native Agent dispatch remains disabled.
+
 ## Native Agent model transport foundation (2026-10-25)
 
 - Added a bounded Anthropic Messages API transport used by the injectable Native Agent

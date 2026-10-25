@@ -232,23 +232,38 @@ type IssueCommentAgentAuthorization struct {
 // the delivery processed or create a Run, allowing the caller to resolve a
 // server-trusted immutable SHA before doing either atomically.
 func AuthorizeIssueCommentAgentCommand(ctx context.Context, tx pgx.Tx, integrationID, deliveryID string) (IssueCommentAgentAuthorization, bool, error) {
+	return authorizeIssueCommentAgentCommand(ctx, tx, integrationID, deliveryID, "", time.Time{})
+}
+
+func AuthorizeClaimedIssueCommentAgentCommand(ctx context.Context, tx pgx.Tx, integrationID, deliveryID, claimID string, now time.Time) (IssueCommentAgentAuthorization, bool, error) {
+	if !agentIssueClaimPattern.MatchString(claimID) || now.IsZero() {
+		return IssueCommentAgentAuthorization{}, false, errors.New("valid Agent Issue claim identity and timestamp are required")
+	}
+	return authorizeIssueCommentAgentCommand(ctx, tx, integrationID, deliveryID, claimID, now)
+}
+
+func authorizeIssueCommentAgentCommand(ctx context.Context, tx pgx.Tx, integrationID, deliveryID, claimID string, now time.Time) (IssueCommentAgentAuthorization, bool, error) {
 	if tx == nil || !validStoredIntegrationID(integrationID) || !coreValidDeliveryID(deliveryID) {
 		return IssueCommentAgentAuthorization{}, false, errors.New("transaction and valid GitHub Delivery ID are required")
 	}
-	var status, eventJSON string
+	var status, eventJSON, storedClaimID string
 	var schemaVersion int
 	var generation int64
 	var receivedAt time.Time
-	err := tx.QueryRow(ctx, `SELECT processing_status,event_schema_version,normalized_event_json,credential_generation,received_at
-		FROM github_webhook_deliveries WHERE integration_id=$1 AND delivery_id=$2 FOR UPDATE`, integrationID, deliveryID).
-		Scan(&status, &schemaVersion, &eventJSON, &generation, &receivedAt)
+	var leaseExpires time.Time
+	err := tx.QueryRow(ctx, `SELECT processing_status,event_schema_version,normalized_event_json,credential_generation,received_at,
+		COALESCE(agent_processing_claim_id,''),COALESCE(agent_processing_lease_expires_at,'epoch'::timestamptz)
+		FROM github_webhook_deliveries WHERE integration_id=$1 AND delivery_id=$2`, integrationID, deliveryID).
+		Scan(&status, &schemaVersion, &eventJSON, &generation, &receivedAt, &storedClaimID, &leaseExpires)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return IssueCommentAgentAuthorization{}, false, pgx.ErrNoRows
 	}
 	if err != nil {
 		return IssueCommentAgentAuthorization{}, false, fmt.Errorf("lock Issue command delivery: %w", err)
 	}
-	if status != "received" || schemaVersion != githubwebhook.RepositoryEventSchemaVersion {
+	if schemaVersion != githubwebhook.RepositoryEventSchemaVersion ||
+		(claimID == "" && (status != "received" || storedClaimID != "")) ||
+		(claimID != "" && (status != "processing" || storedClaimID != claimID || !leaseExpires.After(now.UTC()))) {
 		return IssueCommentAgentAuthorization{}, false, nil
 	}
 	var event githubwebhook.RepositoryEvent

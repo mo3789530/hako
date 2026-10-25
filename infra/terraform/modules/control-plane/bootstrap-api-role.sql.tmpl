@@ -159,7 +159,7 @@ GRANT USAGE ON SCHEMA public TO hako_webhook_processor;
 GRANT SELECT ON TABLE github_webhook_deliveries, github_app_installation_bindings, tenant_github_installations,
     github_app_registrations, tenant_github_integrations, github_credential_bindings,
     tenant_github_app_installation_bindings TO hako_webhook_processor;
-GRANT UPDATE (processing_status, payload_json, payload_purged_at) ON TABLE github_webhook_deliveries TO hako_webhook_processor;
+GRANT UPDATE (processing_status, payload_json, payload_purged_at, agent_processing_claim_id, agent_processing_lease_expires_at) ON TABLE github_webhook_deliveries TO hako_webhook_processor;
 GRANT UPDATE (status, suspended_at, updated_at) ON TABLE tenant_github_installations TO hako_webhook_processor;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE tenant_github_repositories TO hako_webhook_processor;
 -- Admission writes only the shared OCC revision guard. It may not change

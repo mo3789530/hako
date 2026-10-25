@@ -6,9 +6,11 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/githubapp"
 	"github.com/mo3789530/hako/internal/githubwebhook"
@@ -26,7 +28,7 @@ type fakeAgentIssueContextProvider struct {
 
 func (p *fakeAgentIssueContextProvider) Resolve(_ context.Context, integrationID, deliveryID string) (githubapp.AgentIssueContext, error) {
 	p.calls++
-	if integrationID != "integration_agent_run" || deliveryID != "a6b2c3d4-e5f6-4789-8abc-def012345678" {
+	if integrationID != "integration_agent_run" || deliveryID != "a6b2c3d4-e5f6-4789-8abc-def012345678" && deliveryID != "c6b2c3d4-e5f6-4789-8abc-def012345678" {
 		return githubapp.AgentIssueContext{}, fmt.Errorf("unexpected issue request")
 	}
 	return p.issue, nil
@@ -110,6 +112,72 @@ func TestProcessAgentIssueCommentCreatesOneImmutableRunAndTask(t *testing.T) {
 	if runCount != 1 || taskCount != 1 || deliveryState != "processed" || provider.calls != 1 {
 		t.Fatalf("run count=%d task count=%d delivery=%q broker lookups=%d", runCount, taskCount, deliveryState, provider.calls)
 	}
+
+	second := delivery
+	second.DeliveryID = "c6b2c3d4-e5f6-4789-8abc-def012345678"
+	second.Payload = []byte(strings.Replace(string(delivery.Payload), `"id":41`, `"id":43`, 1))
+	if inserted, err := inbox.Record(ctx, second, now.Add(3*time.Second)); err != nil || !inserted {
+		t.Fatalf("record second Agent Issue command inserted=%v error=%v", inserted, err)
+	}
+	type claimResult struct {
+		id     string
+		claims []storewebhook.AgentIssueCommandDelivery
+		err    error
+	}
+	startClaims := make(chan struct{})
+	claimResults := make(chan claimResult, 2)
+	var claimWG sync.WaitGroup
+	for _, id := range []string{"agent-claim-first", "agent-claim-second"} {
+		claimWG.Add(1)
+		go func(id string) {
+			defer claimWG.Done()
+			<-startClaims
+			claims, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) ([]storewebhook.AgentIssueCommandDelivery, error) {
+				return storewebhook.ClaimAgentIssueCommands(ctx, tx, id, now.Add(4*time.Second), 5*time.Minute, 10)
+			})
+			claimResults <- claimResult{id: id, claims: claims, err: err}
+		}(id)
+	}
+	close(startClaims)
+	claimWG.Wait()
+	close(claimResults)
+	var activeClaimID, staleClaimID string
+	var totalClaims int
+	for result := range claimResults {
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		totalClaims += len(result.claims)
+		if len(result.claims) == 1 {
+			activeClaimID = result.id
+		} else if len(result.claims) == 0 {
+			staleClaimID = result.id
+		} else {
+			t.Fatalf("worker claimed more than one test delivery: %+v", result)
+		}
+	}
+	if totalClaims != 1 || activeClaimID == "" || staleClaimID == "" {
+		t.Fatalf("concurrent claims did not elect exactly one worker: active=%q stale=%q claims=%d", activeClaimID, staleClaimID, totalClaims)
+	}
+	reclaimed, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) ([]storewebhook.AgentIssueCommandDelivery, error) {
+		return storewebhook.ClaimAgentIssueCommands(ctx, tx, "agent-claim-recovery", now.Add(10*time.Minute), 5*time.Minute, 10)
+	})
+	if err != nil || len(reclaimed) != 1 || reclaimed[0].DeliveryID != second.DeliveryID {
+		t.Fatalf("expired claim was not reclaimed: claims=%v error=%v", reclaimed, err)
+	}
+	if processed, created, err := processClaimedAgentIssueComment(ctx, pool, transaction.DefaultPolicy(), provider,
+		second.IntegrationID, second.DeliveryID, staleClaimID, now.Add(10*time.Minute)); err == nil || processed || created || provider.calls != 1 {
+		t.Fatalf("stale Agent Issue claim was accepted: processed=%v created=%v calls=%d error=%v", processed, created, provider.calls, err)
+	}
+	processed, created, err := processClaimedAgentIssueComment(ctx, pool, transaction.DefaultPolicy(), provider,
+		second.IntegrationID, second.DeliveryID, "agent-claim-recovery", now.Add(10*time.Minute))
+	if err != nil || !processed || !created || provider.calls != 2 {
+		t.Fatalf("reclaimed Agent Issue command processed=%v created=%v calls=%d error=%v", processed, created, provider.calls, err)
+	}
+	var remainingClaim string
+	if err := pool.QueryRow(ctx, `SELECT COALESCE(agent_processing_claim_id,'') FROM github_webhook_deliveries WHERE integration_id=$1 AND delivery_id=$2`, second.IntegrationID, second.DeliveryID).Scan(&remainingClaim); err != nil || remainingClaim != "" {
+		t.Fatalf("completed Agent Issue command retained claim %q error=%v", remainingClaim, err)
+	}
 	if _, err := pool.Exec(ctx, `DELETE FROM tenant_members WHERE tenant_id='tenant_agent_run' AND user_id='usr_agent_run'`); err != nil {
 		t.Fatal(err)
 	}
@@ -119,8 +187,8 @@ func TestProcessAgentIssueCommentCreatesOneImmutableRunAndTask(t *testing.T) {
 	if inserted, err := inbox.Record(ctx, unauthorized, now.Add(3*time.Second)); err != nil || !inserted {
 		t.Fatalf("record unauthorized Issue command inserted=%v error=%v", inserted, err)
 	}
-	processed, created, err := ProcessAgentIssueComment(ctx, pool, transaction.DefaultPolicy(), provider, unauthorized.IntegrationID, unauthorized.DeliveryID, now.Add(4*time.Second))
-	if err != nil || processed || created || provider.calls != 1 {
+	processed, created, err = ProcessAgentIssueComment(ctx, pool, transaction.DefaultPolicy(), provider, unauthorized.IntegrationID, unauthorized.DeliveryID, now.Add(4*time.Second))
+	if err != nil || processed || created || provider.calls != 2 {
 		t.Fatalf("revoked Tenant member reached broker or created Run: processed=%v created=%v calls=%d error=%v", processed, created, provider.calls, err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT processing_status FROM github_webhook_deliveries WHERE integration_id=$1 AND delivery_id=$2`, unauthorized.IntegrationID, unauthorized.DeliveryID).Scan(&deliveryState); err != nil || deliveryState != "failed" {
