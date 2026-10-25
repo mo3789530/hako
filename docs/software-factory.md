@@ -409,7 +409,11 @@ decoding, stale-pin fencing, partial-result persistence, response redaction,
 and `no-store`. The executable composes this route only when
 `HAKO_GITHUB_BROKER_AGENT_PROPOSAL_BUCKET` is configured; optional
 `HAKO_GITHUB_BROKER_AGENT_PROPOSAL_PREFIX` must match the Resource Plane
-artifact prefix. No Secret retrieval or GitHub call occurs at startup. A failed
+artifact prefix. The default-off Control Plane and Resource Plane Terraform
+inputs now grant the Broker only `s3:GetObject` for
+`<artifact-prefix>/*/*/*/agent-changes/*.zip`; they grant no bucket listing or
+other artifact access. SSE-KMS additionally needs the exact Broker key grant
+and an operator-managed key policy. No Secret retrieval or GitHub call occurs at startup. A failed
 verifier can be retried at most twice (three attempts total) after Resource
 Plane cleanup is confirmed. Retrying preserves the same Agent attempt,
 proposal digest, base commit, Tenant App/Repository pins, and Resource Plane;
@@ -417,7 +421,7 @@ it creates a new verifier attempt and transactional dispatch Outbox event.
 Duplicate submit while verification is active does not enqueue another copy.
 The submit API returns `202 verification_queued` while verification is active
 and calls the publication Broker only after verifier success. Task 89 remains
-open: exact S3 read IAM/deployment wiring and end-to-end PostgreSQL Broker
+open: deployed Broker configuration and end-to-end PostgreSQL Broker
 composition. The
 authenticated
 `GET .../agent-publication` endpoint and `hako workload publication show`

@@ -11,6 +11,51 @@ run "empty_allowlist_creates_no_policy" {
     condition     = length(aws_iam_role_policy.tenant_model_credential_readers) == 0
     error_message = "an empty Tenant model credential allowlist must not attach broker permissions"
   }
+  assert {
+    condition     = length(aws_iam_role_policy.agent_proposal_artifact_readers) == 0
+    error_message = "an empty proposal artifact allowlist must not attach S3 or KMS permissions"
+  }
+}
+
+run "proposal_artifact_reader_is_exact_and_read_only" {
+  command = plan
+
+  variables {
+    broker_role_name = "hako-github-broker-prod"
+    agent_proposal_artifact_object_arns = [
+      "arn:aws:s3:::hako-rp-artifacts/v1/artifacts/*/*/*/agent-changes/*.zip",
+    ]
+    agent_proposal_artifact_kms_key_arns = [
+      "arn:aws:kms:ap-northeast-1:123456789012:key/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    ]
+  }
+
+  assert {
+    condition = (aws_iam_role_policy.agent_proposal_artifact_readers[0].role == "hako-github-broker-prod" &&
+      toset(jsondecode(aws_iam_role_policy.agent_proposal_artifact_readers[0].policy).Statement[0].Action) == toset(["s3:GetObject"]) &&
+      jsondecode(aws_iam_role_policy.agent_proposal_artifact_readers[0].policy).Statement[0].Resource == [
+        "arn:aws:s3:::hako-rp-artifacts/v1/artifacts/*/*/*/agent-changes/*.zip",
+    ])
+    error_message = "Broker S3 access must be limited to reading the exact attempt-scoped Agent proposal object pattern"
+  }
+  assert {
+    condition = (toset(jsondecode(aws_iam_role_policy.agent_proposal_artifact_readers[0].policy).Statement[1].Action) == toset(["kms:Decrypt"]) &&
+      jsondecode(aws_iam_role_policy.agent_proposal_artifact_readers[0].policy).Statement[1].Resource == [
+        "arn:aws:kms:ap-northeast-1:123456789012:key/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    ])
+    error_message = "Broker KMS decrypt must be scoped to the exact configured artifact key"
+  }
+}
+
+run "rejects_broad_proposal_artifact_object_scope" {
+  command = plan
+
+  variables {
+    broker_role_name                    = "hako-github-broker-prod"
+    agent_proposal_artifact_object_arns = ["arn:aws:s3:::hako-rp-artifacts/*"]
+  }
+
+  expect_failures = [var.agent_proposal_artifact_object_arns]
 }
 
 run "private_key_allowlist_is_exact_and_broker_only" {

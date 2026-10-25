@@ -693,6 +693,8 @@ module "github_broker_tenant_iam" {
   tenant_private_key_reader_role_arns      = var.tenant_github_private_key_reader_role_arns
   tenant_webhook_reader_role_arns          = var.tenant_github_webhook_reader_role_arns
   tenant_model_credential_reader_role_arns = var.tenant_model_credential_reader_role_arns
+  agent_proposal_artifact_object_arns      = var.tenant_agent_proposal_artifact_object_arns
+  agent_proposal_artifact_kms_key_arns     = var.tenant_agent_proposal_artifact_kms_key_arns
 }
 
 resource "aws_lambda_function" "api" {

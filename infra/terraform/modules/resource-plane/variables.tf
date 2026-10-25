@@ -317,6 +317,7 @@ variable "workload_controller_runtime" {
     artifact_bucket_arn       = string
     artifact_prefix           = string
     artifact_kms_key_arn      = optional(string, "")
+    proposal_broker_role_arn  = optional(string, "")
     secret_kms_key_arns       = optional(list(string), [])
   })
   default = null
@@ -343,10 +344,11 @@ variable "workload_controller_runtime" {
       !startswith(var.workload_controller_runtime.artifact_prefix, "/") && !endswith(var.workload_controller_runtime.artifact_prefix, "/") && !can(regex("\\.\\.|//", var.workload_controller_runtime.artifact_prefix)) &&
       (var.workload_controller_runtime.source_kms_key_arn == "" || can(regex("^arn:(aws|aws-us-gov|aws-cn):kms:[a-z0-9-]+:[0-9]{12}:key/[A-Fa-f0-9-]+$", var.workload_controller_runtime.source_kms_key_arn))) &&
       (var.workload_controller_runtime.artifact_kms_key_arn == "" || can(regex("^arn:(aws|aws-us-gov|aws-cn):kms:[a-z0-9-]+:[0-9]{12}:key/[A-Fa-f0-9-]+$", var.workload_controller_runtime.artifact_kms_key_arn))) &&
+      (var.workload_controller_runtime.proposal_broker_role_arn == "" || can(regex("^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:role/hako-github-broker[A-Za-z0-9+=,.@_-]{0,48}$", var.workload_controller_runtime.proposal_broker_role_arn))) &&
       alltrue([for arn in var.workload_controller_runtime.secret_kms_key_arns : can(regex("^arn:(aws|aws-us-gov|aws-cn):kms:[a-z0-9-]+:[0-9]{12}:key/[A-Fa-f0-9-]+$", arn))]) &&
       length(var.workload_controller_runtime.secret_kms_key_arns) == length(toset(var.workload_controller_runtime.secret_kms_key_arns))
     )
-    error_message = "Workload runtime IAM requires the dedicated queues, exact image/connectors, valid S3 bucket prefixes, an in-prefix lease object, and concrete optional KMS key ARNs."
+    error_message = "Workload runtime IAM requires the dedicated queues, exact image/connectors, valid S3 bucket prefixes, an in-prefix lease object, and concrete optional KMS key ARNs and Broker role ARN."
   }
 }
 
@@ -358,14 +360,15 @@ variable "workload_artifact_storage" {
   default = null
 
   validation {
-    condition = var.workload_artifact_storage == null || (
+    condition = (var.workload_artifact_storage == null || (
       var.workload_controller_runtime != null &&
       var.enable_workload_result_queue &&
       var.workload_artifact_storage.retention_days >= 1 &&
       var.workload_artifact_storage.retention_days <= 3650 &&
       floor(var.workload_artifact_storage.retention_days) == var.workload_artifact_storage.retention_days
-    )
-    error_message = "Managed artifact storage requires the enabled Workload runtime and an integer retention period from 1 to 3650 days."
+      )) && (var.workload_artifact_storage != null || var.workload_controller_runtime == null ||
+    var.workload_controller_runtime.proposal_broker_role_arn == "")
+    error_message = "Managed artifact storage requires the enabled Workload runtime, an integer retention period from 1 to 3650 days, and is required when Broker read access is configured."
   }
 }
 

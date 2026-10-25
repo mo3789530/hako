@@ -645,6 +645,7 @@ run "workload_controller_wires_only_dedicated_queue_and_recovery" {
       source_prefix             = "v1/source"
       artifact_bucket_arn       = "arn:aws:s3:::hako-artifact-bucket"
       artifact_prefix           = "v1/artifacts"
+      proposal_broker_role_arn  = "arn:aws:iam::123456789012:role/hako-github-broker-prod"
     }
     workload_artifact_storage = {
       retention_days = 90
@@ -799,6 +800,16 @@ run "workload_controller_wires_only_dedicated_queue_and_recovery" {
       statement.Resource == "arn:aws:s3:::hako-artifact-bucket/v1/artifacts/*"
     ]))
     error_message = "The bucket policy must deny insecure transport and grant only the controller role on the configured artifact prefix."
+  }
+
+  assert {
+    condition = anytrue([for statement in jsondecode(aws_s3_bucket_policy.workload_artifacts[0].policy).Statement :
+      statement.Sid == "AllowBrokerReadAgentProposalArchives" &&
+      statement.Principal.AWS == "arn:aws:iam::123456789012:role/hako-github-broker-prod" &&
+      statement.Action == ["s3:GetObject"] &&
+      statement.Resource == "arn:aws:s3:::hako-artifact-bucket/v1/artifacts/*/*/*/agent-changes/*.zip"
+    ])
+    error_message = "The managed artifact bucket must grant the exact Broker role read access only to attempt-scoped Agent proposal archives."
   }
 
   assert {

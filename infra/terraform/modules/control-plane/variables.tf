@@ -108,6 +108,18 @@ variable "tenant_model_credential_reader_role_arns" {
   }
 }
 
+variable "tenant_agent_proposal_artifact_object_arns" {
+  description = "Exact Resource Plane S3 object ARN patterns for Agent proposal ZIP reads by the separately deployed GitHub Broker. Empty keeps the permission absent."
+  type        = set(string)
+  default     = []
+}
+
+variable "tenant_agent_proposal_artifact_kms_key_arns" {
+  description = "Exact customer-managed KMS keys used by Broker-readable proposal artifacts. Empty when artifact buckets use SSE-S3. The external key policy must also grant the Broker role decrypt access."
+  type        = set(string)
+  default     = []
+}
+
 variable "resource_plane_health_report_secret_arns" {
   description = "Exact per-Resource-Plane HMAC Secret ARNs used by the opt-in signed health ingress. Values are ARNs only; secret contents are never Terraform inputs. Empty keeps the reporter route disabled."
   type        = map(string)

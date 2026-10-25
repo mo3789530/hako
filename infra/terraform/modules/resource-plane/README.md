@@ -163,3 +163,12 @@ module does not take ownership of or alter an external bucket implicitly.
 The output bucket ARN/name are null when disabled. Existing buckets must be
 imported and reviewed before switching to managed mode; Terraform does not
 adopt an existing bucket automatically.
+For the native Agent publication Broker, the runtime object can optionally set
+`proposal_broker_role_arn`. On a managed bucket this adds a bucket-policy grant
+for only `s3:GetObject` at
+`<artifact-prefix>/*/*/*/agent-changes/*.zip`; it does not allow listing, logs,
+other artifacts, writes, or deletes. The matching Control Plane Broker role
+must independently receive the same exact object ARN through the
+`github-broker-tenant-iam` module. This remains disabled when the role ARN is
+empty. SSE-KMS artifacts also require an exact Broker `kms:Decrypt` IAM grant
+and an operator-managed key policy for that role.

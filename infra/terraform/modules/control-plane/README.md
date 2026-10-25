@@ -76,6 +76,15 @@ cross-account reader-role trust policies, Tenant Secrets, or KMS grants; those
 must be provisioned and reviewed separately. See the
 [`github-broker-tenant-iam` module](../github-broker-tenant-iam/README.md).
 
+For Agent proposal publishing, `tenant_agent_proposal_artifact_object_arns`
+adds only `s3:GetObject` for exact Resource Plane patterns shaped like
+`arn:aws:s3:::bucket/prefix/*/*/*/agent-changes/*.zip` to that same Broker role.
+`tenant_agent_proposal_artifact_kms_key_arns` is optional for SSE-KMS and
+grants decrypt only on listed key ARNs. Both default empty. The Resource Plane
+managed bucket must independently allow the exact Broker role; SSE-KMS key
+policies remain externally managed. See the module README for the paired
+Resource Plane configuration.
+
 Tenant model credentials use the separate optional
 `tenant_model_credential_reader_role_arns` allowlist under
 `role/hako/tenant-model-credential-reader/`. The Broker receives only

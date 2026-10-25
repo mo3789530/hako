@@ -142,6 +142,7 @@ variable "workload_controller_runtime" {
     artifact_bucket_arn       = string
     artifact_prefix           = string
     artifact_kms_key_arn      = optional(string, "")
+    proposal_broker_role_arn  = optional(string, "")
     secret_kms_key_arns       = optional(list(string), [])
   })
   default = null

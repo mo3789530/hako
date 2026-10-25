@@ -63,6 +63,33 @@ variable "tenant_model_credential_reader_role_arns" {
   }
 }
 
+variable "tenant_agent_proposal_artifact_object_arns" {
+  description = "Exact Resource Plane Agent proposal S3 object ARN patterns granted to the GitHub Broker; empty disables the permission."
+  type        = set(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for object_arn in var.tenant_agent_proposal_artifact_object_arns : can(regex("^arn:(aws|aws-us-gov|aws-cn):s3:::[a-z0-9.-]{3,63}/[A-Za-z0-9/_=-]+/\\*/\\*/\\*/agent-changes/\\*\\.zip$", object_arn)) &&
+      !can(regex("\\.\\.|//", object_arn))
+    ]) && (length(var.tenant_agent_proposal_artifact_object_arns) == 0 || var.github_broker_role_name != "")
+    error_message = "Agent proposal artifact access requires exact bucket/prefix/*/*/*/agent-changes/*.zip ARNs and the existing GitHub Broker role."
+  }
+}
+
+variable "tenant_agent_proposal_artifact_kms_key_arns" {
+  description = "Exact customer-managed KMS key ARNs used for Broker-readable proposal artifacts. Empty for SSE-S3; external key policies must also allow the Broker role."
+  type        = set(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for key_arn in var.tenant_agent_proposal_artifact_kms_key_arns : can(regex("^arn:(aws|aws-us-gov|aws-cn):kms:[a-z0-9-]+:[0-9]{12}:key/[A-Fa-f0-9-]+$", key_arn))
+    ]) && (length(var.tenant_agent_proposal_artifact_kms_key_arns) == 0 || var.github_broker_role_name != "")
+    error_message = "Agent proposal artifact KMS access requires exact key ARNs and the existing GitHub Broker role."
+  }
+}
+
 variable "resource_plane_health_report_secret_arns" {
   description = "Exact Resource Plane ID to HMAC Secret ARN map. Empty disables the unauthenticated-by-Cognito but HMAC-authenticated health ingress."
   type        = map(string)

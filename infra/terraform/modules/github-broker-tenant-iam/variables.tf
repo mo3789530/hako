@@ -59,3 +59,30 @@ variable "tenant_model_credential_reader_role_arns" {
     error_message = "Model credential reader Roles must be distinct from GitHub private-key and Webhook reader Roles."
   }
 }
+
+variable "agent_proposal_artifact_object_arns" {
+  description = "Exact S3 object ARN patterns for attempt-scoped Agent proposal ZIPs: bucket/prefix/*/*/*/agent-changes/*.zip. No list, write, or delete permissions are granted."
+  type        = set(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for object_arn in var.agent_proposal_artifact_object_arns : can(regex("^arn:(aws|aws-us-gov|aws-cn):s3:::[a-z0-9.-]{3,63}/[A-Za-z0-9/_=-]+/\\*/\\*/\\*/agent-changes/\\*\\.zip$", object_arn)) &&
+      !can(regex("\\.\\.|//", object_arn))
+    ]) && (length(var.agent_proposal_artifact_object_arns) == 0 || var.broker_role_name != "")
+    error_message = "Agent proposal S3 access requires exact bucket/prefix/*/*/*/agent-changes/* object ARNs and an exact Hako Broker role."
+  }
+}
+
+variable "agent_proposal_artifact_kms_key_arns" {
+  description = "Exact customer-managed KMS key ARNs used by configured proposal artifact buckets. Each key policy must also authorize the exact Broker role."
+  type        = set(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for key_arn in var.agent_proposal_artifact_kms_key_arns : can(regex("^arn:(aws|aws-us-gov|aws-cn):kms:[a-z0-9-]+:[0-9]{12}:key/[A-Fa-f0-9-]+$", key_arn))
+    ]) && (length(var.agent_proposal_artifact_kms_key_arns) == 0 || var.broker_role_name != "")
+    error_message = "Agent proposal artifact KMS access requires concrete KMS key ARNs and an exact Hako Broker role."
+  }
+}

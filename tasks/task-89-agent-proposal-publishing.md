@@ -5,9 +5,9 @@ digest-bound Check persistence, publication evidence resolution and durable
 idempotency state, safe status API/CLI, exact-scope Tenant App token minting,
 fake-tested GitHub publisher, and a Control Plane-only mTLS Broker publication
 route with Postgres resolver/recorder, bounded post-cleanup verifier retry, and
-API/CLI queued response are implemented locally. Exact S3 read IAM/deployment,
-end-to-end Broker composition, and runtime activation remain open). Priority:
-P3.
+API/CLI queued response, and default-off exact S3 proposal read IAM contracts
+are implemented locally. Broker deployment/wiring, end-to-end Broker
+composition, and runtime activation remain open). Priority: P3.
 Depends on Tasks 39, 40, 53, 57, and 59.
 
 ## Goal
@@ -197,7 +197,14 @@ Repository. The proposal remains untrusted. Hako must never merge or deploy it.
   `202 verification_queued` and do not call the Broker until verifier success.
   PostgreSQL integration covers two retries, active retry idempotency, Outbox
   uniqueness, immutable proposal binding, and exhaustion.
-- Still open: exact S3 read IAM/deployed Broker
-  configuration, full PostgreSQL Broker composition integration, and Lambda
+- Terraform now has paired opt-in IAM contracts: the Control Plane Broker role
+  receives only `s3:GetObject` on `<bucket>/<artifact-prefix>/*/*/*/agent-changes/*.zip`
+  and optional `kms:Decrypt` on exact artifact key ARNs; the managed Resource
+  Plane artifact bucket grants that Broker principal only `s3:GetObject` on
+  the same proposal path. Inputs default empty. Cross-account KMS key policy,
+  bucket configuration for external buckets, and Broker deployment
+  configuration remain operator/deployment work; Terraform tests do not apply
+  policies or retrieve Secrets.
+- Still open: deployed Broker configuration, full PostgreSQL Broker composition integration, and Lambda
   MicroVM execution verification. No AWS apply or production activation has
   been performed.

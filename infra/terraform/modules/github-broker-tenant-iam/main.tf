@@ -29,3 +29,27 @@ resource "aws_iam_role_policy" "tenant_model_credential_readers" {
     }]
   })
 }
+
+resource "aws_iam_role_policy" "agent_proposal_artifact_readers" {
+  count = length(var.agent_proposal_artifact_object_arns) == 0 && length(var.agent_proposal_artifact_kms_key_arns) == 0 ? 0 : 1
+
+  name = "${var.policy_name_prefix}-agent-proposal-artifact-readers"
+  role = var.broker_role_name
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = concat(
+      length(var.agent_proposal_artifact_object_arns) == 0 ? [] : [{
+        Sid      = "ReadAgentProposalArchivesOnly"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = sort(tolist(var.agent_proposal_artifact_object_arns))
+      }],
+      length(var.agent_proposal_artifact_kms_key_arns) == 0 ? [] : [{
+        Sid      = "DecryptAgentProposalArtifactsOnly"
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt"]
+        Resource = sort(tolist(var.agent_proposal_artifact_kms_key_arns))
+      }]
+    )
+  })
+}

@@ -1670,7 +1670,7 @@ resource "aws_s3_bucket_policy" "workload_artifacts" {
   bucket = aws_s3_bucket.workload_artifacts[0].id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
         Sid       = "DenyInsecureTransport"
         Effect    = "Deny"
@@ -1691,7 +1691,13 @@ resource "aws_s3_bucket_policy" "workload_artifacts" {
         Action    = ["s3:PutObject", "s3:DeleteObject"]
         Resource  = "${aws_s3_bucket.workload_artifacts[0].arn}/${var.workload_controller_runtime.artifact_prefix}/*"
       },
-    ]
+      ], var.workload_controller_runtime.proposal_broker_role_arn == "" ? [] : [{
+        Sid       = "AllowBrokerReadAgentProposalArchives"
+        Effect    = "Allow"
+        Principal = { AWS = var.workload_controller_runtime.proposal_broker_role_arn }
+        Action    = ["s3:GetObject"]
+        Resource  = "${aws_s3_bucket.workload_artifacts[0].arn}/${var.workload_controller_runtime.artifact_prefix}/*/*/*/agent-changes/*.zip"
+    }])
   })
 }
 
