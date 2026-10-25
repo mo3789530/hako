@@ -36,6 +36,12 @@ synthetic test public key. This confirms build/package architecture, not a
 Lambda MicroVM image build or guest execution. The test key is not production
 usable; runtime/network/isolation PoC remains open.
 
+Added `make verify-workload-microvm-artifact` so the Agent ZIP check is
+repeatable: it validates the public-key JSON, exact package contents, key-byte
+identity, and static ELF64/AArch64 architecture. Focused key validation tests
+and the target pass with the synthetic fixture; no image execution or AWS
+operation is implied.
+
 ## 着手ルール
 
 1. `P0`から順に、依存タスクが完了しているものを一件だけ選ぶ。

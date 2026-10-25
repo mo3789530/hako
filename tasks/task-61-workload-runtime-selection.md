@@ -15,6 +15,7 @@ Status: API contract identified (AWS Lambda MicroVMs); image/container/network P
 - [ ] Prove Hako guest/runtime behavior on the pinned ARM64 Lambda MicroVM: nested rootless containerd/Podman and Compose, effective cgroup/namespace isolation, per-Tenant filesystem/runtime separation, source/artifact transfer, and VPC connector default-deny including AWS endpoints and public Internet. Local Podman tests do not satisfy this acceptance.
 - [x] provider mappingと復旧契約を定義・library実装（Tasks 63–65）。AWSは8時間上限、ARM64のみ、標準Internet egress。24時間Runとの不一致はadapterの起動前拒否で扱う。実AWSのidempotency保持期間・raceはPoCで確認する。
 - [x] Document published account/Region quotas, API rate limits, size tiers, 8-hour cap, baseline/peak billing, snapshot read/write/storage, and data-transfer billing in the runtime contract. Check live Service Quotas and prices only in the approved deployment account/Region.
+- [x] Add a repeatable local artifact check that validates public-key JSON, exact ZIP contents, and a statically linked ELF64/AArch64 Agent. This does not claim image-builder or MicroVM execution support.
 - [ ] Measure actual Hako image build/cold start, idle suspend/resume, run/cancel/cleanup, quota/throttling, and cost in a dedicated approved Lambda MicroVM environment. Do not treat host Podman or QEMU smoke tests as the provider PoC.
 
 ## Acceptance criteria
@@ -130,3 +131,12 @@ This verifies cross-compilation and package contents only. The test key cannot
 authenticate production traffic, and neither artifact was executed inside a
 Lambda MicroVM. Container runtime, network/isolation, and lifecycle/cost PoC
 remain open. No AWS API/resource was used.
+
+Added `make verify-workload-microvm-artifact`, which rebuilds the ZIP, checks
+its exact three-file allowlist, validates the supplied Ed25519 public-key JSON,
+compares the packaged key bytes with the caller input, and checks that the
+Agent is static ELF64/AArch64. `go test ./cmd/hako-agent-keycheck
+./internal/workloadagent -count=1` covers valid public keys, malformed/private
+material, missing files, and invalid arguments. The command passed with the
+synthetic test fixture. It remains a package/architecture check; it does not
+build or run the container image or verify Lambda MicroVM behavior.

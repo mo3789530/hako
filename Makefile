@@ -1,4 +1,4 @@
-.PHONY: fmt lint test test-integration test-integration-local test-webhook-lifecycle-integration test-tenant-app-proof-integration test-tenant-github-apps-integration test-actions-runner-lifecycle-integration test-software-factory-e2e test-workload-runtime test-workload-runtime-integration test-job-services-podman test-workspace-service-runtime-integration test-workspace-podman-network test-artifact-retention-integration test-workspace-idle-lifecycle-integration test-preview-expiry-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-workspace-service-controller-lambda build-health-reporter-lambda build-workspace-idle-reconciler-lambda build-preview-expiry-lambda build-preview-runtime-dispatch-lambda build-preview-result-consumer-lambda build-workload-controller-lambda build-actions-runner-lambda build-actions-runner-microvm-image build-workload-microvm-artifact build-workload-microvm-services-image build-workspace-microvm-image build-github-checks-consumer-image build-github-broker-image build-workspace-gateway-image check-arm64-podman-build terraform-fmt terraform-validate terraform-test
+.PHONY: fmt lint test test-integration test-integration-local test-webhook-lifecycle-integration test-tenant-app-proof-integration test-tenant-github-apps-integration test-actions-runner-lifecycle-integration test-software-factory-e2e test-workload-runtime test-workload-runtime-integration test-job-services-podman test-workspace-service-runtime-integration test-workspace-podman-network test-artifact-retention-integration test-workspace-idle-lifecycle-integration test-preview-expiry-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-workspace-service-controller-lambda build-health-reporter-lambda build-workspace-idle-reconciler-lambda build-preview-expiry-lambda build-preview-runtime-dispatch-lambda build-preview-result-consumer-lambda build-workload-controller-lambda build-actions-runner-lambda build-actions-runner-microvm-image build-workload-microvm-artifact verify-workload-microvm-artifact build-workload-microvm-services-image build-workspace-microvm-image build-github-checks-consumer-image build-github-broker-image build-workspace-gateway-image check-arm64-podman-build terraform-fmt terraform-validate terraform-test
 
 TERRAFORM ?= terraform
 
@@ -187,6 +187,23 @@ build-workload-microvm-artifact:
 	cp images/workload-agent/Dockerfile build/workload-microvm/Dockerfile
 	install -m 0644 "$(HAKO_AGENT_TRUSTED_KEYS_FILE)" build/workload-microvm/trusted-keys.json
 	zip -q -j -FS build/hako-workload-microvm.zip build/workload-microvm/Dockerfile build/workload-microvm/hako-agent build/workload-microvm/trusted-keys.json
+
+# Rebuild and verify the deployable ZIP's exact contents, key format, and static ARM64 Agent binary.
+verify-workload-microvm-artifact: build-workload-microvm-artifact
+	@set -eu; \
+	go run ./cmd/hako-agent-keycheck -file "$(HAKO_AGENT_TRUSTED_KEYS_FILE)"; \
+	tmpdir=$$(mktemp -d); trap 'rm -rf "$$tmpdir"' EXIT HUP INT TERM; \
+	unzip -q build/hako-workload-microvm.zip -d "$$tmpdir"; \
+	actual=$$(find "$$tmpdir" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | sort); \
+	expected=$$(printf '%s\n' Dockerfile hako-agent trusted-keys.json | sort); \
+	test "$$actual" = "$$expected" || { echo "unexpected workload artifact ZIP contents" >&2; exit 1; }; \
+	cmp "$(HAKO_AGENT_TRUSTED_KEYS_FILE)" "$$tmpdir/trusted-keys.json"; \
+	readelf -h "$$tmpdir/hako-agent" > "$$tmpdir/elf-header.txt"; \
+	grep -Eq 'Class:[[:space:]]+ELF64' "$$tmpdir/elf-header.txt"; \
+	grep -Eq 'Machine:[[:space:]]+AArch64' "$$tmpdir/elf-header.txt"; \
+	readelf -l "$$tmpdir/hako-agent" > "$$tmpdir/program-headers.txt"; \
+	if grep -q INTERP "$$tmpdir/program-headers.txt"; then echo "workload Agent must be statically linked" >&2; exit 1; fi; \
+	echo "verified workload MicroVM artifact: exact ZIP contents, public keys, static ELF64/AArch64 Agent"
 
 # Builds an opt-in Lambda MicroVM image variant with a separately-owned
 # rootless Job containerd daemon. Services remain disabled in the image.
