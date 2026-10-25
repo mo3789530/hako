@@ -4,7 +4,7 @@
 
 ## 全ローカル統合テストの再確認（2026-10-25）
 
-`make test-integration-local`を実行し、`go test -tags=integration -p=1 ./... -count=1`が全パッケージで成功した。loopback-only OpenSSH/Workspace host-key実装と、sshd listener readiness待機・起動失敗時cleanupを含む。既に起動中のローカルPostgreSQLを使用し、テスト後も`hako-dev-postgres`が稼働中であることを確認した。これはfake/local providerとPodmanを含むローカル統合受入の証拠であり、AWS配備、Lambda MicroVM上の実行、Secrets取得やGitHub/AWS外部接続の証拠ではない。
+`make test-integration-local`を実行し、`go test -tags=integration -p=1 ./... -count=1`が全パッケージで成功した。対象コードにはloopback-only OpenSSH/Workspace host-key実装と、sshd listener readiness待機・起動失敗時cleanupを含む。その後のfocused SSH testでは、ローカルOpenSSH 10.2p1がWorkspaceのsshd設定を`sshd -t`で受理することを確認した。既に起動中のローカルPostgreSQLを使用し、テスト後も`hako-dev-postgres`が稼働中であることを確認した。これはfake/local providerとPodmanを含むローカル統合受入の証拠であり、AWS配備、Lambda MicroVM上の実行、Secrets取得やGitHub/AWS外部接続の証拠ではない。
 
 ## 着手ルール
 

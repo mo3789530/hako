@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -232,5 +233,33 @@ func TestWorkspaceSSHDConfigDoesNotPermitPasswordOrExternalBind(t *testing.T) {
 	}
 	if _, err := filepath.Abs("."); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWorkspaceSSHDConfigParsesWithOpenSSHWhenAvailable(t *testing.T) {
+	sshd, err := exec.LookPath(workspaceSSHDPath)
+	if err != nil {
+		t.Skip("OpenSSH server is not installed")
+	}
+	keygen, err := exec.LookPath(workspaceSSHKeygenBinary)
+	if err != nil {
+		t.Skip("OpenSSH client tools are not installed")
+	}
+	root := t.TempDir()
+	hostKey := filepath.Join(root, "host_key")
+	if output, err := exec.Command(keygen, "-q", "-t", "ed25519", "-N", "", "-f", hostKey).CombinedOutput(); err != nil {
+		t.Fatalf("generate test host key: %v: %s", err, output)
+	}
+	authorizedKeys := filepath.Join(root, "authorized_keys")
+	if err := os.WriteFile(authorizedKeys, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "sshd_config")
+	config := workspaceSSHDConfig(hostKey, authorizedKeys, 100000, 100000)
+	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command(sshd, "-t", "-f", configPath).CombinedOutput(); err != nil {
+		t.Fatalf("OpenSSH rejected Workspace config: %v: %s", err, output)
 	}
 }
