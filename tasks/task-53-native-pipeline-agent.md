@@ -19,7 +19,7 @@ the feature remains disabled in deployment, and Native Agent execution remains
 unavailable until its runtime security and network controls are deployed and
 validated. See [Webhook Processor runtime configuration](../docs/github-webhook-processor.md).
 
-Status: In Progress (versioned manifest selection, fixed-catalog execution, durable per-pipeline results, and independent pipeline Checks through the existing Checks consumer are implemented and locally verified. Issue command authorization requires a verified GitHub identity that is a member of the resolved Tenant, an active Installation binding, exact repository identity, and a pre-existing Factory opt-in. A Tenant-App-only read scope, bounded Issue/default-branch SHA reader, Control Plane-only mTLS broker, and an atomic Issue inbox processor that creates one immutable Agent Run plus a bounded task record are locally composed and PostgreSQL-tested. The Resource Plane Worker retrieves the bounded task over mTLS and validates current attempt and immutable Run/App/Repository/branch/commit pins. A context digest is bound from launch specification through signed Start/Source tickets and guest `/run`; guest checks it before exposing task text in memory to a process factory. Purpose-scoped `native_agent` model credential metadata/API/CLI, a per-Repository default-off gate, an attempt/provenance-fenced in-process resolver, and an allowlisted Resource Plane mTLS Broker endpoint/client are implemented. The Worker now resolves model credentials after validating the immutable Issue task and sends them only in a no-store, attempt-ticket-bound HTTPS Start request to the allocated MicroVM. The Guest forwards the byte buffer only to an explicitly credential-capable process factory, clears request buffers, and redacts the credential from bounded output; the default Go-test factory remains incapable and fails closed. Linux Job command processes now use fail-closed cgroup v2 CPU/memory/PID scopes when launched as the fixed non-root identity; pipeline command budgets reserve fixed Service catalog requests first. Target Lambda MicroVM cgroup delegation/effective limits and egress remain unverified, so Agent scheduling and execution stay disabled pending a production isolated model executor and target network/resource validation. Service container orchestration is local and opt-in; live Agent write execution remains unavailable, and branch/PR policy is dormant configuration. Priority: P3.
+Status: In Progress (versioned manifest selection, fixed-catalog execution, durable per-pipeline results, and independent pipeline Checks through the existing Checks consumer are implemented and locally verified. Issue command authorization requires a verified GitHub identity that is a member of the resolved Tenant, an active Installation binding, exact repository identity, and a pre-existing Factory opt-in. A Tenant-App-only read scope, bounded Issue/default-branch SHA reader, Control Plane-only mTLS broker, and an atomic Issue inbox processor that creates one immutable Agent Run plus a bounded task record are locally composed and PostgreSQL-tested. The Resource Plane Worker retrieves the bounded task over mTLS and validates current attempt and immutable Run/App/Repository/branch/commit pins. A context digest is bound from launch specification through signed Start/Source tickets and guest `/run`; guest checks it before exposing task text in memory to a process factory. Purpose-scoped `native_agent` model credential metadata/API/CLI, a per-Repository default-off gate, an attempt/provenance-fenced in-process resolver, and an allowlisted Resource Plane mTLS Broker endpoint/client are implemented. The Worker now resolves model credentials after validating the immutable Issue task and sends them only in a no-store, attempt-ticket-bound HTTPS Start request to the allocated MicroVM. The Guest forwards the byte buffer only to an explicitly credential-capable process factory, clears request buffers, and redacts the credential from bounded output; the default Go-test factory remains incapable and fails closed. Linux Job command processes now use fail-closed cgroup v2 CPU/memory/PID scopes when launched as the fixed non-root identity; pipeline command budgets reserve fixed Service catalog requests first. Target Lambda MicroVM cgroup delegation/effective limits and egress remain unverified, so Agent scheduling and execution stay disabled pending image, network, and resource validation. Service container orchestration is local and opt-in; the Native Agent model executor and Task 89 publication path are implemented locally, while live Agent execution remains unavailable until runtime gates pass. Repository branch/PR policy is enforced by the publication Broker but requires eligible verifier evidence. Priority: P3.
 
 Runtime profile follow-up: profiles are now keyed by Workload kind, Runtime Class,
 and trust level. A Job profile cannot be implicitly reused by Agent or Preview;
@@ -131,7 +131,9 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
 - Added malicious YAML/resource-bound tests and documented the schema in
   [`docs/software-factory.md`](../docs/software-factory.md). The Agent currently rejects service containers, `network: none`,
   non-standard runtime classes, and does not translate CPU/memory bounds into
-  MicroVM controls. Issue-to-Agent/PR workflow remains unimplemented.
+  MicroVM controls. Later sections add local Issue-to-Agent admission,
+  verifier, and Task 89 publication paths; production dispatch still depends
+  on isolated Lambda MicroVM runtime validation.
 - Added a process-level regression test proving an expired execution context
   terminates a native pipeline and records the bounded `timed_out` result
   (`pipeline_timeout`) without waiting for the manifest's minimum timeout.
@@ -170,10 +172,10 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   Cognito-backed Hako user. A numeric GitHub identity is unique across Hako
   users and cannot be silently replaced. `issue_comment` normalization also
   retains the provider's numeric sender ID for lookup. The broker-backed
-  context resolver and atomic Agent Run processor now exist. They remain
-  disconnected from the scheduled Lambda until the Resource Plane supports
-  isolated Agent execution; delivery ID plus integration is the idempotency
-  key.
+  context resolver and atomic Agent Run processor now exist. The scheduled
+  Lambda composition is implemented but remains default-off until the
+  Resource Plane supports isolated Agent execution; delivery ID plus
+  integration is the idempotency key.
 
 - Added a separate broker `/v1/agent/task` read endpoint for the Worker
   path. It requires a verified, explicitly allowlisted Resource Plane mTLS
@@ -679,8 +681,9 @@ network isolation behavior.
   metadata and proves the backing storage URI is not exposed. General artifact
   byte retrieval is now implemented by [Task 87](task-87-workload-artifact-download.md).
   Agent-generated change artifacts now use the bounded attempt-scoped
-  `agent_changes` bundle described below. GitHub branch/PR submission remains
-  unimplemented.
+  `agent_changes` bundle described below. Branch/PR submission is implemented
+  locally in [Task 89](task-89-agent-proposal-publishing.md); Broker deployment
+  and Lambda MicroVM Agent execution remain unverified.
 
 ## Issue command claim fencing (2026-10-25)
 
@@ -710,5 +713,6 @@ default-off and is not deployed; Native Agent dispatch remains disabled.
   its scripted tests. It makes no live API request. No production Guest
   composition uses the factory; Agent scheduling remains disabled until image
   wiring and target MicroVM resource/network controls are validated. The
-  attempt-scoped proposal bundle is implemented in the following section;
-  branch/PR submission remains unavailable.
+  attempt-scoped proposal bundle and local branch/PR submission path are
+  implemented in [Task 89](task-89-agent-proposal-publishing.md); deployment
+  and live Lambda MicroVM execution remain unavailable.

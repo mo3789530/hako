@@ -394,8 +394,9 @@ Agent Run, and attempt. It captures the proposal/verifier/App/Repository pins,
 current default branch, and a write-policy digest. The branch is deterministic
 under the first configured prefix. State advances monotonically from
 `requested` to `branch_created` to `pull_request_created`; exact repeats are
-idempotent and conflicting branch commits or PR numbers fail closed. This is
-durable state only; the Broker does not invoke GitHub yet. A standalone
+idempotent and conflicting branch commits or PR numbers fail closed. The
+publication store itself performs no GitHub side effects; the Broker composes
+it with the writer below. A standalone
 `AgentProposalGitHubWriter` now revalidates the archive and base ref, creates a
 tree/commit on the deterministic branch, and opens a policy-approved same-repo
 PR. It recovers lost ref/PR responses only after confirming the branch's exact
