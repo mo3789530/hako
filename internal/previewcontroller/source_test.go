@@ -9,8 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/githubapp"
 	"github.com/mo3789530/hako/internal/previewprotocol"
+	"github.com/mo3789530/hako/internal/repositorycheckout"
 	"github.com/mo3789530/hako/internal/workloadjournal"
 	"github.com/mo3789530/hako/internal/workloadsource"
 )
@@ -165,5 +167,89 @@ func TestPreviewSourceMaterializerRejectsCleanupAndNonProvisionCommands(t *testi
 	invalid.HeadSHA = strings.Repeat("z", 40)
 	if _, err := materializer.Materialize(context.Background(), invalid); !errors.Is(err, ErrPreviewSourceUnavailable) || credentials.calls != 0 {
 		t.Fatalf("invalid source pin attempted broker request: err=%v credential calls=%d", err, credentials.calls)
+	}
+}
+
+func TestPreviewRunCredentialRequiresExactImmutablePin(t *testing.T) {
+	command := validCommand(time.Date(2026, 10, 25, 5, 0, 0, 0, time.UTC), previewprotocol.ActionProvision)
+	command.HeadSHA = strings.ToUpper(command.HeadSHA)
+	identity := previewRun(command)
+	credential := previewRunCredential{identity: identity, token: "ghs-preview-token-for-checkout"}
+	got, err := credential.CheckoutRunToken(context.Background(), identity)
+	if err != nil || got != credential.token {
+		t.Fatalf("exact pinned Run credential = %q, %v", got, err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*domain.WorkloadRun)
+	}{
+		{name: "run id", mutate: func(run *domain.WorkloadRun) { run.ID += "-foreign" }},
+		{name: "tenant", mutate: func(run *domain.WorkloadRun) { run.TenantID = "tenant_foreign" }},
+		{name: "installation", mutate: func(run *domain.WorkloadRun) { run.GitHubInstallation++ }},
+		{name: "repository", mutate: func(run *domain.WorkloadRun) { run.GitHubRepository++ }},
+		{name: "commit", mutate: func(run *domain.WorkloadRun) { run.CommitSHA = strings.Repeat("b", 40) }},
+		{name: "integration", mutate: func(run *domain.WorkloadRun) { run.GitHubIntegrationID = "integration_foreign" }},
+		{name: "config revision", mutate: func(run *domain.WorkloadRun) { run.GitHubConfigRevision++ }},
+		{name: "credential generation", mutate: func(run *domain.WorkloadRun) { run.GitHubCredentialGeneration++ }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			foreign := identity
+			test.mutate(&foreign)
+			if token, err := credential.CheckoutRunToken(context.Background(), foreign); !errors.Is(err, repositorycheckout.ErrCheckoutCredentialFailure) || token != "" {
+				t.Fatalf("foreign immutable Run pin received credential %q: %v", token, err)
+			}
+		})
+	}
+	empty := previewRunCredential{identity: identity}
+	if token, err := empty.CheckoutRunToken(context.Background(), identity); !errors.Is(err, repositorycheckout.ErrCheckoutCredentialFailure) || token != "" {
+		t.Fatalf("empty credential returned token %q: %v", token, err)
+	}
+}
+
+func TestPreviewRepositoryAuthorizerRequiresExactTenantAndRepository(t *testing.T) {
+	command := validCommand(time.Now().UTC(), previewprotocol.ActionProvision)
+	identity := previewRun(command)
+	repository := githubapp.RepositoryAccess{Owner: "preview-owner", Name: "preview_repo.v1"}
+	authorizer := previewRepositoryAuthorizer{identity: identity, repository: repository}
+	got, err := authorizer.AuthorizeRepository(context.Background(), identity.TenantID, identity.GitHubInstallation, identity.GitHubRepository)
+	if err != nil || got != repository {
+		t.Fatalf("exact Repository authorization = %+v, %v", got, err)
+	}
+	for _, test := range []struct {
+		name           string
+		tenant         domain.TenantID
+		installationID int64
+		repositoryID   int64
+	}{
+		{name: "foreign tenant", tenant: "tenant_foreign", installationID: identity.GitHubInstallation, repositoryID: identity.GitHubRepository},
+		{name: "foreign installation", tenant: identity.TenantID, installationID: identity.GitHubInstallation + 1, repositoryID: identity.GitHubRepository},
+		{name: "foreign repository", tenant: identity.TenantID, installationID: identity.GitHubInstallation, repositoryID: identity.GitHubRepository + 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := authorizer.AuthorizeRepository(context.Background(), test.tenant, test.installationID, test.repositoryID)
+			if !errors.Is(err, repositorycheckout.ErrCheckoutNotAuthorized) {
+				t.Fatalf("foreign Repository identity error = %v", err)
+			}
+		})
+	}
+	for _, invalid := range []githubapp.RepositoryAccess{
+		{}, {Owner: "-preview", Name: "repo"}, {Owner: "preview/owner", Name: "repo"},
+		{Owner: "preview-owner", Name: "../repo"}, {Owner: "preview-owner", Name: strings.Repeat("r", 101)},
+	} {
+		invalidAuthorizer := previewRepositoryAuthorizer{identity: identity, repository: invalid}
+		if _, err := invalidAuthorizer.AuthorizeRepository(context.Background(), identity.TenantID, identity.GitHubInstallation, identity.GitHubRepository); !errors.Is(err, repositorycheckout.ErrCheckoutNotAuthorized) {
+			t.Errorf("invalid Repository path %+v was authorized: %v", invalid, err)
+		}
+	}
+}
+
+func TestGitPreviewRepositoryCheckoutRejectsInvalidCommitBeforeNetwork(t *testing.T) {
+	command := validCommand(time.Now().UTC(), previewprotocol.ActionProvision)
+	command.HeadSHA = strings.Repeat("z", 40)
+	_, err := (GitPreviewRepositoryCheckout{}).Checkout(context.Background(), command,
+		"ghs-preview-token-for-checkout", githubapp.RepositoryAccess{Owner: "preview-owner", Name: "preview-repo"})
+	if !errors.Is(err, ErrPreviewSourceUnavailable) {
+		t.Fatalf("invalid pinned commit checkout error = %v", err)
 	}
 }

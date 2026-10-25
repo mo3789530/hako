@@ -517,3 +517,14 @@ Lambda batch retry responses, and payload-free failure logging. The
 Preview producer/dispatcher/result E2E also passes. Valid results still rely
 on the database-backed generation/claim fencing exercised by that integration
 path; this does not verify a deployed SQS/Lambda consumer.
+
+## Preview source authorization coverage (2026-10-25)
+
+Added tests for the exact immutable Run credential pin (Tenant, Installation,
+Repository, commit, App integration/config revision, and credential generation),
+Tenant/Repository authorization, invalid GitHub path components, and rejecting
+an invalid commit before network checkout. The Preview controller package is
+77.1% covered under `go test -race`; source materialization remains bound to the
+generation claim and its temporary checkout cleanup. PostgreSQL provision and
+dispatch integration tests pass. Tests use synthetic credentials and do not
+contact GitHub or read a real Secret.
