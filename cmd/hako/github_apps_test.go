@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -29,6 +30,14 @@ func TestParseGitHubAppCLIAllowsReferencesNotSecretInputs(t *testing.T) {
 	input, err = parseGitHubAppCLI([]string{"setup", "--tenant", "tenant_one", "--integration", "gint_one"})
 	if err != nil || input.Action != "setup" || input.IntegrationID != "gint_one" {
 		t.Fatal("Tenant GitHub App setup parsing failed")
+	}
+	input, err = parseGitHubAppCLI([]string{"show", "--tenant", "tenant_one", "--integration", "gint_one"})
+	if err != nil || input.Action != "show" || input.ExpectedRevision != 0 {
+		t.Fatal("Tenant GitHub App show parsing failed")
+	}
+	input, err = parseGitHubAppCLI([]string{"verify", "--tenant", "tenant_one", "--integration", "gint_one", "--revision", "2"})
+	if err != nil || input.Action != "verify" || input.ExpectedRevision != 2 {
+		t.Fatal("revision-bound Tenant GitHub App verification parsing failed")
 	}
 	input, err = parseGitHubAppCLI([]string{"deliveries", "--tenant", "tenant_one", "--integration", "gint_one", "--limit", "25", "--offset", "50"})
 	if err != nil || input.Action != "deliveries" || input.Limit != 25 || input.Offset != 50 {
@@ -80,6 +89,8 @@ func TestManageGitHubAppCLIUsesTenantScopedMetadataAPI(t *testing.T) {
 				t.Errorf("App list pagination = %s", r.URL.RawQuery)
 			}
 			_, _ = fmt.Fprint(w, `{"items":[],"total":0,"limit":10,"offset":2}`)
+		case r.Method == http.MethodGet && r.URL.Path == prefix+"/gint_app_cli":
+			_, _ = fmt.Fprint(w, `{"integration":{"id":"gint_app_cli","tenant_id":"tenant_app_cli","status":"active"}}`)
 		case r.Method == http.MethodPost && r.URL.Path == prefix:
 			if r.Header.Get("Idempotency-Key") != "app-add-key-1234" {
 				t.Errorf("App add idempotency key = %q", r.Header.Get("Idempotency-Key"))
@@ -99,6 +110,12 @@ func TestManageGitHubAppCLIUsesTenantScopedMetadataAPI(t *testing.T) {
 			var body map[string]int64
 			if json.NewDecoder(r.Body).Decode(&body) != nil || body["expected_revision"] != 3 {
 				t.Errorf("App disable revision body = %+v", body)
+			}
+			_, _ = fmt.Fprint(w, `{}`)
+		case r.Method == http.MethodPost && r.URL.Path == prefix+"/gint_app_cli/verify":
+			var body map[string]int64
+			if json.NewDecoder(r.Body).Decode(&body) != nil || body["expected_revision"] != 5 {
+				t.Errorf("App verify revision body = %+v", body)
 			}
 			_, _ = fmt.Fprint(w, `{}`)
 		case r.Method == http.MethodPost && r.URL.Path == prefix+"/gint_app_cli/select-default":
@@ -155,11 +172,17 @@ func TestManageGitHubAppCLIUsesTenantScopedMetadataAPI(t *testing.T) {
 	if _, key, err := manageGitHubAppCLI([]string{"list", "--tenant", "tenant_app_cli", "--limit", "10", "--offset", "2"}); err != nil || key != "" {
 		t.Fatalf("Tenant App list = key %q, error %v", key, err)
 	}
+	if _, _, err := manageGitHubAppCLI([]string{"show", "--tenant", "tenant_app_cli", "--integration", "gint_app_cli"}); err != nil {
+		t.Fatalf("Tenant App show = %v", err)
+	}
 	if _, key, err := manageGitHubAppCLI([]string{"add", "--tenant", "tenant_app_cli", "--app-id", "123", "--slug", "acme-app", "--client-id", "Iv1.client", "--credential-binding", "binding_app_cli", "--idempotency-key", "app-add-key-1234"}); err != nil || key != "app-add-key-1234" {
 		t.Fatalf("Tenant App add = key %q, error %v", key, err)
 	}
 	if _, _, err := manageGitHubAppCLI([]string{"disable", "--tenant", "tenant_app_cli", "--integration", "gint_app_cli", "--revision", "3"}); err != nil {
 		t.Fatalf("Tenant App disable = %v", err)
+	}
+	if _, _, err := manageGitHubAppCLI([]string{"verify", "--tenant", "tenant_app_cli", "--integration", "gint_app_cli", "--revision", "5"}); err != nil {
+		t.Fatalf("Tenant App verify = %v", err)
 	}
 	if _, _, err := manageGitHubAppCLI([]string{"select-default", "--tenant", "tenant_app_cli", "--integration", "gint_app_cli", "--revision", "4", "--generation", "2"}); err != nil {
 		t.Fatalf("Tenant App select-default = %v", err)
@@ -180,7 +203,67 @@ func TestManageGitHubAppCLIUsesTenantScopedMetadataAPI(t *testing.T) {
 			t.Fatalf("Tenant App %s = %v", action, err)
 		}
 	}
-	if calls != 8 {
-		t.Fatalf("Tenant App CLI made %d requests, want 8", calls)
+	if calls != 10 {
+		t.Fatalf("Tenant App CLI made %d requests, want 10", calls)
+	}
+}
+
+func TestManageGitHubAppCLIRejectsConfigurationAndProviderFailures(t *testing.T) {
+	validCredentials := fmt.Sprintf(`{"access_token":"cli-github-app-test","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+		time.Now().UTC().Format(time.RFC3339))
+	previousGetter := cliCredentialGetter
+	previousBrowser := cliBrowserOpener
+	t.Cleanup(func() {
+		cliCredentialGetter = previousGetter
+		cliBrowserOpener = previousBrowser
+	})
+
+	for _, test := range []struct {
+		name        string
+		args        []string
+		credentials string
+		apiURL      string
+		want        string
+	}{
+		{name: "invalid action", args: []string{"invalid", "--tenant", "tenant_cli"}, credentials: validCredentials, apiURL: "https://api.example.test", want: "supported actions"},
+		{name: "missing login", args: []string{"list", "--tenant", "tenant_cli"}, apiURL: "https://api.example.test", want: "saved Hako login is invalid"},
+		{name: "missing setup login", args: []string{"setup", "--tenant", "tenant_cli", "--integration", "gint_cli"}, apiURL: "https://api.example.test", want: "saved Hako login is invalid"},
+		{name: "missing setup API URL", args: []string{"setup", "--tenant", "tenant_cli", "--integration", "gint_cli"}, credentials: validCredentials, want: "HAKO_API_URL"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HAKO_API_URL", test.apiURL)
+			cliCredentialGetter = repositoryCLICredentials(test.credentials)
+			if _, _, err := manageGitHubAppCLI(test.args); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("manageGitHubAppCLI error = %v, want %q", err, test.want)
+			}
+		})
+	}
+
+	denied := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/tenants/tenant_cli/github/apps" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		http.Error(w, "private denial details", http.StatusForbidden)
+	}))
+	t.Setenv("HAKO_API_URL", denied.URL)
+	cliCredentialGetter = repositoryCLICredentials(validCredentials)
+	if _, _, err := manageGitHubAppCLI([]string{"list", "--tenant", "tenant_cli"}); err == nil || strings.Contains(err.Error(), "private denial details") {
+		t.Fatalf("GitHub App API denial was not safely propagated: %v", err)
+	}
+	denied.Close()
+
+	setup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/tenants/tenant_cli/github/apps/gint_cli/setup" {
+			t.Errorf("unexpected setup request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = fmt.Fprint(w, `{"setup_url":"https://github.com/apps/acme-app/installations/new?state=opaque-state","expires_at":"2026-10-24T13:00:00Z"}`)
+	}))
+	defer setup.Close()
+	t.Setenv("HAKO_API_URL", setup.URL)
+	cliBrowserOpener = func(string) error { return errors.New("browser unavailable") }
+	if _, _, err := manageGitHubAppCLI([]string{"setup", "--tenant", "tenant_cli", "--integration", "gint_cli"}); err == nil || !strings.Contains(err.Error(), "browser unavailable") {
+		t.Fatalf("browser failure = %v, want opener error", err)
 	}
 }

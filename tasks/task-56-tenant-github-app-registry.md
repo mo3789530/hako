@@ -53,3 +53,12 @@ Member and an Owner from another Tenant receive the hidden `404`, pending
 Installations remain unavailable, and zero or malformed Installation IDs are
 rejected with `400`. This uses local database fixtures only; it does not call
 GitHub or AWS.
+
+## GitHub App CLI action coverage (2026-10-25)
+
+The HTTP-backed CLI contract test now exercises `show` and revision-fenced
+`verify` in addition to the existing actions. New failure cases cover malformed
+actions, missing login/API URL, API authorization denial, and browser launch
+failure without exposing the API response body. `manageGitHubAppCLI` now has
+100% statement coverage and the `cmd/hako` package reports 72.2%; all requests
+use a local HTTP server and synthetic credentials.
