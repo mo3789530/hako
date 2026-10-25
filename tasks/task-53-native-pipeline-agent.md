@@ -237,6 +237,14 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   host Podman acceptance passed with the expected 1 GiB, 0.75 CPU, and 256 PID
   limits. This verifies local cgroup v2 application, not the pinned ARM64
   nerdctl runtime or Lambda MicroVM kernel.
+- Extended the explicit Podman acceptance to check external egress from the
+  running Service container whenever the host can reach the same fixed
+  `1.1.1.1:443` baseline. The Service uses the engine's labeled internal
+  network; a successful container connection fails the test. The last local
+  run could not reach the host baseline and correctly skipped this assertion;
+  the CI/host test can exercise it when external TCP egress is available. This
+  is intended as host Podman evidence only; it does not prove
+  nftables/iptables, mapped UID, or Lambda MicroVM egress enforcement.
 - The guest resolver admits Service declarations only when image-owned
   configuration explicitly enables the Job Service manager; its default
   constructor and the default image remain disabled. Rootless containerd is

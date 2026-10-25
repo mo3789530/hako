@@ -226,6 +226,19 @@ func TestNerdctlJobServicePodmanRuntimeContract(t *testing.T) {
 	if err != nil || strings.TrimSpace(string(output)) != "127.0.0.1:"+port {
 		t.Fatalf("Job Service port binding escaped loopback: binding=%q err=%v", strings.TrimSpace(string(output)), err)
 	}
+	if hostCanReachEgressProbe(ctx) {
+		probeCtx, probeCancel := context.WithTimeout(ctx, 5*time.Second)
+		probe := exec.CommandContext(probeCtx, podman, "exec", container, "bash", "-c", "exec 3<>/dev/tcp/1.1.1.1/443")
+		probe.Env = podmanIntegrationEnvironment()
+		probeErr := probe.Run()
+		probeCancel()
+		if probeErr == nil {
+			t.Fatal("Job Service internal network reached an external TCP endpoint")
+		}
+		t.Log("host egress baseline was reachable and the Job Service internal network denied the TCP probe")
+	} else {
+		t.Log("external egress denial probe skipped because the host cannot reach its baseline endpoint")
+	}
 	output, err = exec.CommandContext(ctx, podman, "inspect", "--format", `{{.HostConfig.Memory}}|{{.HostConfig.NanoCpus}}|{{.HostConfig.ReadonlyRootfs}}|{{.HostConfig.PidsLimit}}|{{.Config.User}}|{{json .HostConfig.Tmpfs}}|{{index .Config.Labels "hako.job-scope-key"}}`, container).CombinedOutput()
 	inspection := strings.TrimSpace(string(output))
 	if err != nil || !strings.HasPrefix(inspection, "1073741824|750000000|true|256|999:999|") || !strings.HasSuffix(inspection, "|"+owner) ||
@@ -248,4 +261,15 @@ func TestNerdctlJobServicePodmanRuntimeContract(t *testing.T) {
 	if entries, err := os.ReadDir(envDir); err != nil || len(entries) != 0 {
 		t.Fatalf("credential temp directory is not empty after cleanup: entries=%d err=%v", len(entries), err)
 	}
+}
+
+func hostCanReachEgressProbe(ctx context.Context) bool {
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	connection, err := (&net.Dialer{}).DialContext(probeCtx, "tcp", "1.1.1.1:443")
+	if err != nil {
+		return false
+	}
+	_ = connection.Close()
+	return true
 }
