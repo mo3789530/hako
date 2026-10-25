@@ -253,6 +253,14 @@ state, while a success-output failure is reported after the API accepts the
 request. This preserves the asynchronous API contract and does not imply
 runtime completion.
 
+## Tenant membership and placement-policy CLI coverage (2026-10-25)
+
+Added HTTP-backed tests for `tenantMembership` and placement-policy GET/PUT.
+They verify the authenticated Tenant-scoped routes, the policy payload omits a
+caller-supplied Tenant ID and uses the requested Tenant, and missing login or
+API URL fails before a request. `go test ./cmd/hako -count=1` covers this
+local CLI/API boundary; authorization remains enforced by the API.
+
 ## Acceptance criteria
 
 - CLI unit and authenticated integration tests cover happy path, re-login, authorization failure, disconnect, cancellation, and invalid forwards.
