@@ -40,10 +40,16 @@ healthy Services in the Workspace's current Lambda MicroVM allocation.
 - [x] PostgreSQL integration coverage: declared/undeclared port, retired
   generation, unhealthy Service, suspended Workspace, moved Placement, and
   claim mismatch.
+- [x] HTTP authorizer unit coverage for signed identity-bound requests,
+  invalid Session claims/configuration, transport errors, malformed or oversized
+  responses, explicit denial, and nonce failure. The
+  `internal/workspacesession` package is at 86.9% statement coverage; the HTTP
+  client covers 92.3% of `AllowPort` and 78.6% of constructor branches.
 
 ## Verification
 
 - `go test -p=1 ./internal/store/services ./internal/api ./internal/workspacesession ./internal/workspacegateway ./cmd/hako-workspace-gateway -count=1`
+- `go test -p=1 ./internal/workspacesession -cover -count=1`
 - `HAKO_TEST_DATABASE_URL=... go test -p=1 -tags=integration ./internal/api -run '^TestResourcePlaneWorkspacePortAuthorizationUsesHealthyCurrentServices$' -count=1`
 
 No AWS apply, Secret retrieval, DNS change, external cutover, or real MicroVM
