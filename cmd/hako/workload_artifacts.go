@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	"github.com/mo3789530/hako/internal/api"
 	"github.com/mo3789530/hako/internal/auth"
 	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/workloadagent"
 	"github.com/mo3789530/hako/internal/workloadartifactaccess"
 )
 
@@ -82,6 +84,38 @@ func downloadAgentChangesCLI(args []string) error {
 	}
 	_, err = fmt.Fprintf(os.Stdout, "Agent change proposal %s saved to %s; review it as untrusted source before use\n", artifact.ID, outputPath)
 	return err
+}
+
+func inspectAgentChangesCLI(args []string, output io.Writer) error {
+	if len(args) != 1 || strings.TrimSpace(args[0]) == "" || output == nil {
+		return errors.New("usage: hako workload changes inspect <archive.zip>")
+	}
+	info, err := os.Lstat(args[0])
+	if err != nil || !info.Mode().IsRegular() || info.Size() < 1 || info.Size() > 8<<20 {
+		return errors.New("Agent change archive is unavailable or exceeds its size limit")
+	}
+	file, err := os.Open(args[0])
+	if err != nil {
+		return errors.New("Agent change archive is unavailable")
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
+		return errors.New("Agent change archive changed while it was opened")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, (8<<20)+1))
+	if err != nil || int64(len(data)) != info.Size() || len(data) > 8<<20 {
+		return errors.New("Agent change archive could not be read within its size limit")
+	}
+	summary, err := workloadagent.InspectAgentChangeArchive(data)
+	clear(data)
+	if err != nil {
+		return errors.New("Agent change archive failed safety validation")
+	}
+	if err := json.NewEncoder(output).Encode(summary); err != nil {
+		return errors.New("write Agent change archive inspection result")
+	}
+	return nil
 }
 
 func parseArtifactDownloadArgs(name string, args []string, positionalCount int) (string, []string, error) {

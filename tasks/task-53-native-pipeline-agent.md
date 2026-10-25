@@ -216,6 +216,17 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   the local database on 2026-10-25. Production IAM/deployment, MicroVM behavior,
   branch/PR creation, and human-review workflow remain incomplete.
 
+## Agent proposal inspection (2026-10-25)
+
+- Added `hako workload changes inspect <archive.zip>` as a local review aid. It
+  never extracts or applies proposal data and prints only the verified archive
+  SHA-256 plus sorted file paths and sizes. The shared archive validator rejects
+  traversal/absolute/non-canonical paths, duplicate entries, symlinks and other
+  non-regular entries, protected or secret paths, credential-like content,
+  malformed ZIPs, and file/count/archive size violations. Unit and CLI tests
+  cover the rejection boundaries. This does not create a Git branch or Pull
+  Request and does not enable Agent scheduling or GitHub write credentials.
+
 ## Guest process composition (2026-10-25)
 
 - `cmd/hako-agent` now composes the bounded Native Agent model loop and fixed

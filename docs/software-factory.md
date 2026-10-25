@@ -340,6 +340,14 @@ short-lived artifact ticket, verifies the ticket matches Run metadata, checks
 the bytes' SHA-256, and atomically saves the file with mode `0600`. The output
 is labeled as untrusted and is not applied to a checkout automatically.
 
+Before opening or applying a downloaded proposal, run
+`hako workload changes inspect changes.zip`. Inspection does not extract or
+apply files. It checks ZIP paths, entry types, duplicate paths, per-file and
+archive size limits, protected/secret paths, and credential-like content, then
+prints only the archive digest and sorted path/size metadata. The proposal
+remains untrusted; inspection is a validation aid and does not replace code
+review or enable branch/PR writes.
+
 Treat `.hako/factory.yaml`, workflow files, action references, shell steps,
 container images, cache contents, and webhook payloads as untrusted inputs.
 The Native pipeline schema needs a version, strict parser, allowlisted step
