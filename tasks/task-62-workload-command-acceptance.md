@@ -1,6 +1,6 @@
 # Task 62: Durable Resource Plane Command Acceptance
 
-Status: Complete (library; queue wiring and MicroVM launch remain pending). Priority: P0. Depends on: Task 39 journal foundations.
+Status: Complete (acceptance library). Task 40 now locally composes the SQS Worker, Lambda MicroVM runtime, Agent transport, results, and recovery; its Terraform deployment remains default-off and unapplied. Priority: P0. Depends on: Task 39 journal foundations.
 
 ## Result
 
@@ -15,4 +15,4 @@ Status: Complete (library; queue wiring and MicroVM launch remain pending). Prio
 
 ## Integration boundary
 
-Acceptance alone does not execute a Job. Do not deploy a queue consumer that acknowledges here until Task 63 supplies recovery for accepted journals. MicroVM launch, fencing after launch, results, cancellation, and physical cleanup remain incomplete.
+Acceptance alone does not execute a Job. The queue consumer must only acknowledge after the durable journal checkpoint and retry/recovery path. Tasks 40, 63, and 64 now locally compose launch, fencing, results, cancellation, and physical cleanup; AWS deployment and live MicroVM behavior remain unverified.

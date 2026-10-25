@@ -1,6 +1,6 @@
 # Task 64: Workload Cancellation and Physical Cleanup
 
-Status: Implemented (CP Outbox and RP library); production worker/agent deployment pending Tasks 40/45. Priority: P0. Depends on: 62, 63.
+Status: Implemented locally (CP Outbox, RP library, authenticated Agent and Worker composition). Default-off deployment and live AWS worker/agent behavior remain pending Task 40/45. Priority: P0. Depends on: 62, 63.
 
 ## Result
 
@@ -13,4 +13,4 @@ Status: Implemented (CP Outbox and RP library); production worker/agent deployme
 - [x] Replacement waits for exact predecessor generation cleanup confirmation.
 - [x] PostgreSQL tests verify cancellation Outbox rollback and idempotency, and cancel-before-dispatch through RP to CP terminal result.
 
-Production transport, durable recovery scheduling, authenticated agent, and actual AWS race/isolation evidence remain pending. Feature flags remain off. See [controller design](../docs/lambda-microvm-workloads.md).
+The transport, bounded recovery handler, and authenticated Agent are locally composed; Terraform models their default-off deployment. AWS deployment, live recovery, and actual MicroVM race/isolation evidence remain pending. Feature flags remain off. See [controller design](../docs/lambda-microvm-workloads.md).

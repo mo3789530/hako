@@ -45,5 +45,7 @@ The Resource Plane must not connect directly to Control Plane DSQL.
 - [Journal storage/IAM contract](../docs/workspace-runtime-journal.md) records
   the S3 prefix and least-privilege deployment boundary. Real bucket, role, and
   AWS conditional-write behavior are not deployed/verified.
-- Next: Task 82, provider adapter. The S3 store is not yet wired into the
-  Resource Controller Lambda, so production execution remains disabled.
+- Task 82 completed the provider adapter and the Resource Controller Lambda
+  locally composes it with this journal. The optional Terraform deployment
+  configures the `lambda-microvm` runtime and scoped journal/provider IAM but
+  remains default-off and unapplied; production execution is not enabled.

@@ -1,6 +1,6 @@
 # Task 82: Lambda MicroVM Workspace Runtime Adapter
 
-Status: Implemented locally (SDK-injected Lambda MicroVM lifecycle adapter, trusted spec resolver, conditional journal fencing, frozen launch request/retry, state verification, and SDK-stub tests; not wired into production Lambda). Image/network/lifecycle PoC and AWS deployment remain gated. Priority: P1. Parent: Task 43. Depends on: Tasks 80 and 81.
+Status: Implemented locally (SDK-injected Lambda MicroVM lifecycle adapter, trusted spec resolver, conditional journal fencing, frozen launch request/retry, state verification, and SDK-stub tests). The Resource Controller Lambda and default-off Terraform/IAM composition are present; no AWS deployment or runtime enablement has occurred. Image/network/lifecycle PoC remains gated. Priority: P1. Parent: Task 43. Depends on: Tasks 80 and 81.
 
 ## Goal
 
@@ -38,11 +38,13 @@ Implemented in `internal/workspaceruntime` and documented in
 [`docs/workspace-runtime-adapter.md`](../docs/workspace-runtime-adapter.md).
 Exact launch parameters are persisted in the journal so ambiguous retries
 cannot silently change image/network/role settings after a process restart.
-The Resource Controller Lambda now contains an explicit `lambda-microvm`
+The Resource Controller Lambda contains an explicit `lambda-microvm`
 composition of this adapter, the conditional S3 journal, and a strict static
-Resource Plane launch profile. The Terraform deployment remains fixed to
-`fake` and grants no MicroVM/journal permissions, so this is composition
-evidence only and is not deployable as a production runtime. SDK stubs verify
+Resource Plane launch profile. The optional Terraform deployment creates an
+ARM64 controller with the `lambda-microvm` implementation and scoped
+MicroVM/journal permissions when configured; it remains disabled by default
+and has not been applied. This is local composition evidence, not a deployed
+production runtime. SDK stubs verify
 launch, duplicate delivery, ambiguous response recovery, state transitions,
 unsupported runtime class/provider errors, stale-command rejection, and poll
 deadlines; local configuration tests make no AWS call.
