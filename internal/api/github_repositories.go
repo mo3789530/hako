@@ -326,6 +326,41 @@ func SetGitHubRepositoryActionsRunnerWorkflowPolicy(ctx context.Context, baseURL
 	return result, nil
 }
 
+func GetGitHubRepositoryActionsRunnerWorkflowPolicy(ctx context.Context, baseURL, accessToken, tenantID string, installationID, repositoryID int64, client *http.Client) (GitHubRepositoryActionsRunnerWorkflowPolicyResult, error) {
+	var result GitHubRepositoryActionsRunnerWorkflowPolicyResult
+	if !validTenantID(tenantID) || strings.TrimSpace(accessToken) == "" || installationID <= 0 || repositoryID <= 0 {
+		return result, errors.New("valid Tenant, Installation, Repository, and access token are required")
+	}
+	path := "/v1/tenants/" + url.PathEscape(tenantID) + "/github/installations/" + strconv.FormatInt(installationID, 10) +
+		"/repositories/" + strconv.FormatInt(repositoryID, 10) + "/actions-runner/workflow-policy"
+	endpoint, err := apiEndpoint(baseURL, path)
+	if err != nil {
+		return result, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return result, errors.New("create GitHub Actions runner workflow policy request")
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	response, err := safeAPIClient(client).Do(req)
+	if err != nil {
+		return result, errors.New("GitHub Actions runner workflow policy request failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return result, readAPIError(response)
+	}
+	decoder := json.NewDecoder(io.LimitReader(response.Body, maxAPIResponseSize))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&result); err != nil || !githubregistry.ValidActionsRunnerWorkflowPolicy(result.Policy) {
+		return GitHubRepositoryActionsRunnerWorkflowPolicyResult{}, errors.New("invalid GitHub Actions runner workflow policy response")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return GitHubRepositoryActionsRunnerWorkflowPolicyResult{}, errors.New("invalid GitHub Actions runner workflow policy response")
+	}
+	return result, nil
+}
+
 func sameRunnerWorkflowPolicy(left, right githubregistry.ActionsRunnerWorkflowPolicy) bool {
 	return left.WorkflowPath == right.WorkflowPath && equalPolicyValues(left.AllowedRefs, right.AllowedRefs) &&
 		equalPolicyValues(left.AllowedEvents, right.AllowedEvents) && equalPolicyValues(left.RequiredLabels, right.RequiredLabels) &&

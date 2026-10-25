@@ -92,6 +92,7 @@ and per-MicroVM payload in [Running and using MicroVMs](https://docs.aws.amazon.
    ```sh
    hako github repository runner enable --tenant acme --installation 123 --repository 456
    hako github repository runner policy --tenant acme --installation 123 --repository 456 --policy-file policy.json
+   hako github repository runner policy show --tenant acme --installation 123 --repository 456
    ```
 
    Use an allowlisted branch/event and only required Hako labels. Fork jobs,

@@ -233,3 +233,20 @@ func TestSetGitHubRepositoryActionsRunnerWorkflowPolicyUsesTenantScopedAPI(t *te
 		t.Fatalf("SetGitHubRepositoryActionsRunnerWorkflowPolicy() = %+v, error = %v", result, err)
 	}
 }
+
+func TestGetGitHubRepositoryActionsRunnerWorkflowPolicyUsesTenantScopedAPI(t *testing.T) {
+	policy := githubregistry.ActionsRunnerWorkflowPolicy{WorkflowPath: ".github/workflows/claude.yml", AllowedRefs: []string{"refs/heads/main"},
+		AllowedEvents: []string{"push"}, RequiredLabels: []string{"self-hosted", "hako"}, AllowedLabels: []string{"self-hosted", "hako"}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/tenants/tenant_factory_api/github/installations/7001/repositories/7002/actions-runner/workflow-policy" ||
+			r.Header.Get("Authorization") != "Bearer test-token" {
+			t.Errorf("unexpected workflow-policy request: %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"workflow_policy": policy})
+	}))
+	defer server.Close()
+	result, err := GetGitHubRepositoryActionsRunnerWorkflowPolicy(context.Background(), server.URL, "test-token", "tenant_factory_api", 7001, 7002, server.Client())
+	if err != nil || !sameRunnerWorkflowPolicy(result.Policy, policy) {
+		t.Fatalf("GetGitHubRepositoryActionsRunnerWorkflowPolicy() = %+v, error = %v", result, err)
+	}
+}

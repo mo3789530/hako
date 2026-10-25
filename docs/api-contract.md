@@ -161,6 +161,12 @@ Tenant Owners/Admins may configure it, changes are audited, and disabling the
 repository runner opt-in clears this policy. Configure it with
 `hako github repository runner policy --tenant <tenant> --installation <id>
 --repository <id> --policy-file policy.json`.
+Tenant members can read the active policy with
+`GET /v1/tenants/{tenant_id}/github/installations/{installation_id}/repositories/{repository_id}/actions-runner/workflow-policy`
+or `hako github repository runner policy show --tenant <tenant>
+--installation <id> --repository <id>`. The endpoint returns the same
+allowlist without exposing credentials; an absent policy or disabled runner
+repository is returned as not found.
 
 The broker launch path uses this allowlist with authoritative GitHub Run/Job
 metadata before consuming a runner claim. Claim consumption rechecks that the

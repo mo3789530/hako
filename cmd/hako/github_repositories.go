@@ -310,6 +310,7 @@ func manageGitHubRepositoryActionsRunnerCLI(args []string) (api.GitHubRepository
 }
 
 type githubRepositoryActionsRunnerWorkflowPolicyCLIInput struct {
+	action         string
 	tenantID       string
 	installationID int64
 	repositoryID   int64
@@ -321,14 +322,21 @@ func parseGitHubRepositoryActionsRunnerWorkflowPolicyCLI(args []string) (githubR
 	if len(args) == 0 || args[0] != "policy" {
 		return input, errors.New("action must be policy")
 	}
+	input.action = "set"
+	flagsStart := 1
+	if len(args) > 1 && (args[1] == "set" || args[1] == "show") {
+		input.action = args[1]
+		flagsStart = 2
+	}
 	flags := flag.NewFlagSet("github repository runner policy", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&input.tenantID, "tenant", "", "Tenant ID")
 	flags.Int64Var(&input.installationID, "installation", 0, "GitHub Installation ID")
 	flags.Int64Var(&input.repositoryID, "repository", 0, "GitHub Repository ID")
 	flags.StringVar(&input.policyFile, "policy-file", "", "Path to JSON workflow policy")
-	if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 || strings.TrimSpace(input.tenantID) == "" || input.installationID <= 0 || input.repositoryID <= 0 || strings.TrimSpace(input.policyFile) == "" {
-		return githubRepositoryActionsRunnerWorkflowPolicyCLIInput{}, errors.New("--tenant, positive --installation, positive --repository, and --policy-file are required")
+	if err := flags.Parse(args[flagsStart:]); err != nil || flags.NArg() != 0 || strings.TrimSpace(input.tenantID) == "" || input.installationID <= 0 || input.repositoryID <= 0 ||
+		(input.action == "set" && strings.TrimSpace(input.policyFile) == "") || (input.action == "show" && strings.TrimSpace(input.policyFile) != "") {
+		return githubRepositoryActionsRunnerWorkflowPolicyCLIInput{}, errors.New("--tenant, positive --installation, and positive --repository are required; set requires --policy-file")
 	}
 	input.tenantID = strings.TrimSpace(input.tenantID)
 	input.policyFile = strings.TrimSpace(input.policyFile)
@@ -339,6 +347,14 @@ func manageGitHubRepositoryActionsRunnerWorkflowPolicyCLI(args []string) (api.Gi
 	input, err := parseGitHubRepositoryActionsRunnerWorkflowPolicyCLI(args)
 	if err != nil {
 		return api.GitHubRepositoryActionsRunnerWorkflowPolicyResult{}, err
+	}
+	token, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
+	if err != nil {
+		return api.GitHubRepositoryActionsRunnerWorkflowPolicyResult{}, err
+	}
+	baseURL := strings.TrimSpace(os.Getenv("HAKO_API_URL"))
+	if input.action == "show" {
+		return api.GetGitHubRepositoryActionsRunnerWorkflowPolicy(context.Background(), baseURL, token, input.tenantID, input.installationID, input.repositoryID, nil)
 	}
 	data, err := os.ReadFile(input.policyFile)
 	if err != nil || len(data) == 0 || len(data) > 16<<10 {
@@ -353,12 +369,7 @@ func manageGitHubRepositoryActionsRunnerWorkflowPolicyCLI(args []string) (api.Gi
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return api.GitHubRepositoryActionsRunnerWorkflowPolicyResult{}, errors.New("workflow policy file must contain one JSON object")
 	}
-	token, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
-	if err != nil {
-		return api.GitHubRepositoryActionsRunnerWorkflowPolicyResult{}, err
-	}
-	return api.SetGitHubRepositoryActionsRunnerWorkflowPolicy(context.Background(), strings.TrimSpace(os.Getenv("HAKO_API_URL")), token,
-		input.tenantID, input.installationID, input.repositoryID, policy, nil)
+	return api.SetGitHubRepositoryActionsRunnerWorkflowPolicy(context.Background(), baseURL, token, input.tenantID, input.installationID, input.repositoryID, policy, nil)
 }
 
 type githubRepositoryAgentWritePolicyCLIInput struct {

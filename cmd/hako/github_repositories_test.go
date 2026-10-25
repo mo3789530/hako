@@ -237,8 +237,12 @@ func TestParseGitHubRepositoryActionsRunnerCLI(t *testing.T) {
 
 func TestParseGitHubRepositoryActionsRunnerWorkflowPolicyCLI(t *testing.T) {
 	got, err := parseGitHubRepositoryActionsRunnerWorkflowPolicyCLI([]string{"policy", "--tenant", " tenant_a ", "--installation", "4", "--repository", "8", "--policy-file", " policy.json "})
-	if err != nil || got.tenantID != "tenant_a" || got.installationID != 4 || got.repositoryID != 8 || got.policyFile != "policy.json" {
+	if err != nil || got.action != "set" || got.tenantID != "tenant_a" || got.installationID != 4 || got.repositoryID != 8 || got.policyFile != "policy.json" {
 		t.Fatalf("parse workflow policy = %+v, %v", got, err)
+	}
+	got, err = parseGitHubRepositoryActionsRunnerWorkflowPolicyCLI([]string{"policy", "show", "--tenant", "tenant_a", "--installation", "4", "--repository", "8"})
+	if err != nil || got.action != "show" || got.tenantID != "tenant_a" || got.policyFile != "" {
+		t.Fatalf("parse workflow policy show = %+v, %v", got, err)
 	}
 	for _, args := range [][]string{
 		{}, {"set", "--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--policy-file", "p.json"},
@@ -246,6 +250,8 @@ func TestParseGitHubRepositoryActionsRunnerWorkflowPolicyCLI(t *testing.T) {
 		{"policy", "--tenant", "tenant_a", "--installation", "0", "--repository", "8", "--policy-file", "p.json"},
 		{"policy", "--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--policy-file", " "},
 		{"policy", "--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--policy-file", "p.json", "extra"},
+		{"policy", "show", "--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--policy-file", "p.json"},
+		{"policy", "set", "--tenant", "tenant_a", "--installation", "4", "--repository", "8"},
 	} {
 		if _, err := parseGitHubRepositoryActionsRunnerWorkflowPolicyCLI(args); err == nil {
 			t.Errorf("workflow policy parser accepted invalid args %q", args)
@@ -304,6 +310,10 @@ func TestManageGitHubRepositoryCLIsCallTenantScopedAPI(t *testing.T) {
 			}
 			_, _ = fmt.Fprint(w, `{"repository":{"tenant_id":"tenant_cli","installation_id":42,"github_repository_id":7,"actions_runner_enabled":true}}`)
 		case "/v1/tenants/tenant_cli/github/installations/42/repositories/7/actions-runner/workflow-policy":
+			if r.Method == http.MethodGet {
+				_, _ = fmt.Fprintf(w, `{"workflow_policy":%s}`, policy)
+				return
+			}
 			var body map[string]any
 			if json.NewDecoder(r.Body).Decode(&body) != nil || body["workflow_path"] != ".github/workflows/verify.yml" {
 				t.Error("workflow policy body was invalid")
@@ -340,6 +350,9 @@ func TestManageGitHubRepositoryCLIsCallTenantScopedAPI(t *testing.T) {
 	}
 	if _, err := manageGitHubRepositoryActionsRunnerWorkflowPolicyCLI([]string{"policy", "--tenant", "tenant_cli", "--installation", "42", "--repository", "7", "--policy-file", policyFile}); err != nil {
 		t.Fatalf("workflow policy CLI request failed: %v", err)
+	}
+	if _, err := manageGitHubRepositoryActionsRunnerWorkflowPolicyCLI([]string{"policy", "show", "--tenant", "tenant_cli", "--installation", "42", "--repository", "7"}); err != nil {
+		t.Fatalf("workflow policy show CLI request failed: %v", err)
 	}
 }
 
