@@ -2,6 +2,10 @@
 
 このディレクトリは、次の実装担当（Lunnaを含む）が一つずつ着手できる粒度にしたタスクの実行台帳です。設計上のSystem of Recordは引き続き[README](../README.md)、コンポーネント仕様は各`docs/`です。ここでは未完了項目を依存関係・境界・受入条件に整理します。
 
+## 全ローカル統合テストの再確認（2026-10-25）
+
+`make test-integration-local`を実行し、`go test -tags=integration -p=1 ./... -count=1`が全パッケージで成功した。既に起動中のローカルPostgreSQLを使用し、テスト後も停止操作はしていない。これはfake/local providerとPodmanを含むローカル統合受入の証拠であり、AWS配備、Lambda MicroVM上の実行、Secrets取得やGitHub/AWS外部接続の証拠ではない。
+
 ## 着手ルール
 
 1. `P0`から順に、依存タスクが完了しているものを一件だけ選ぶ。
