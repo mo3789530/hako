@@ -8,6 +8,14 @@
 
 Task 84 host-network smoke is repeatable with `make test-workspace-podman-network` (pinned x86_64 Alpine, positive TCP egress control, and `--internal` denial). It validates Podman bridge behavior only; it does not replace nerdctl/CNI ARM64 image or Lambda MicroVM verification.
 
+Local suite refresh (2026-10-25): `make test-integration-local` passed across
+all packages against the already-running PostgreSQL. `make
+test-software-factory-e2e` passed with Podman required, including the composed
+Worker success/cancellation paths; `make test-workspace-podman-network`
+confirmed positive egress on the ordinary bridge and blocked egress on an
+internal bridge. These are local/fake/host-Podman acceptances, not proof of
+ARM64 nerdctl or Lambda MicroVM behavior. PostgreSQL remained running.
+
 Task 52 workflow policy read API was added on 2026-10-25. Tenant members can
 inspect the active repository allowlist through the authenticated API/CLI;
 configuration remains Owner/Admin-only. API/CLI and PostgreSQL integration
