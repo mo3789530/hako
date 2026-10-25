@@ -322,6 +322,7 @@ func TestParseWorkspaceActionOptions(t *testing.T) {
 		args      []string
 		wantKey   string
 		wantWait  bool
+		wantYes   bool
 		wantError bool
 	}{
 		{name: "default asynchronous resume", action: "resume"},
@@ -330,6 +331,9 @@ func TestParseWorkspaceActionOptions(t *testing.T) {
 		{name: "wait and retry key", action: "resume", args: []string{"--wait", "--idempotency-key", "retry-2"}, wantKey: "retry-2", wantWait: true},
 		{name: "wait rejected for suspend", action: "suspend", args: []string{"--wait"}, wantError: true},
 		{name: "wait rejected for delete", action: "delete", args: []string{"--wait"}, wantError: true},
+		{name: "delete can be explicitly confirmed", action: "delete", args: []string{"--yes"}, wantYes: true},
+		{name: "yes rejected for suspend", action: "suspend", args: []string{"--yes"}, wantError: true},
+		{name: "yes rejected for resume", action: "resume", args: []string{"--yes"}, wantError: true},
 		{name: "unknown argument rejected", action: "resume", args: []string{"extra"}, wantError: true},
 	}
 	for _, test := range tests {
@@ -338,8 +342,8 @@ func TestParseWorkspaceActionOptions(t *testing.T) {
 			if (err != nil) != test.wantError {
 				t.Fatalf("parseWorkspaceActionOptions(%q, %q) error=%v, want error=%t", test.action, test.args, err, test.wantError)
 			}
-			if err == nil && (got.idempotencyKey != test.wantKey || got.wait != test.wantWait) {
-				t.Fatalf("options=%+v, want key=%q wait=%t", got, test.wantKey, test.wantWait)
+			if err == nil && (got.idempotencyKey != test.wantKey || got.wait != test.wantWait || got.yes != test.wantYes) {
+				t.Fatalf("options=%+v, want key=%q wait=%t yes=%t", got, test.wantKey, test.wantWait, test.wantYes)
 			}
 		})
 	}

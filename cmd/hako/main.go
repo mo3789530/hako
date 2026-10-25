@@ -462,8 +462,19 @@ func main() {
 		action, tenantID, workspaceID := os.Args[1], os.Args[2], os.Args[3]
 		options, err := parseWorkspaceActionOptions(action, os.Args[4:])
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "hako %s: %v\nusage: hako %s <tenant-id> <workspace-id> [--idempotency-key <key>] [--wait]\n", action, err, action)
+			fmt.Fprintf(os.Stderr, "hako %s: %v\nusage: hako %s <tenant-id> <workspace-id> [--idempotency-key <key>] [--wait] [--yes]\n", action, err, action)
 			os.Exit(2)
+		}
+		if action == "delete" {
+			confirmed, err := authorizeWorkspaceDeletion(options.yes, os.Stdin, os.Stderr, tenantID, workspaceID)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "hako delete: %v\n", err)
+				os.Exit(1)
+			}
+			if !confirmed {
+				fmt.Fprintln(os.Stderr, "Workspace deletion cancelled.")
+				return
+			}
 		}
 		idempotencyKey := options.idempotencyKey
 		if idempotencyKey == "" {
@@ -511,7 +522,8 @@ Workspace:
   hako cp <tenant-id> <workspace-id> <local-path> <workspace-path>
   hako cp --from <tenant-id> <workspace-id> <workspace-path> <local-path>
   hako forward <tenant-id> <workspace-id> <remote-port> [local-port]
-  hako suspend|resume|delete <tenant-id> <workspace-id> [options]
+  hako suspend|resume <tenant-id> <workspace-id> [--idempotency-key <key>] [--wait]
+  hako delete <tenant-id> <workspace-id> [--idempotency-key <key>] [--yes]
 
 Workspace Services:
   hako add <tenant-id> <workspace-id> postgres|redis [instance-name]

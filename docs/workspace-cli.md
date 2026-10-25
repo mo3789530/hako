@@ -83,6 +83,15 @@ return as soon as the asynchronous resume Operation is accepted. Retrying the
 resume request with `--idempotency-key <key>` preserves the same operation.
 Shell and IDE commands never resume a Workspace implicitly.
 
+`hako delete <tenant-id> <workspace-id>` asks the operator to type the exact
+Workspace ID before sending the irreversible delete request. EOF, an empty
+answer, or any other text cancels without contacting the API. Automation can
+use `--yes`; this bypass is accepted only for `delete`, not `suspend` or
+`resume`. An accepted delete remains asynchronous, so use
+`hako wait <tenant-id> <workspace-id> --state deleted` to confirm the observed
+terminal state. The delete request supports `--idempotency-key <key>` for safe
+retries after an ambiguous network result.
+
 Configure OpenSSH or VS Code Remote SSH to use Hako as a ProxyCommand:
 
 ```sshconfig

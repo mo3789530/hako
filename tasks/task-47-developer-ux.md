@@ -12,6 +12,16 @@ with `HAKO_E2E_REQUIRE_PODMAN=1`, confirming the required Podman-backed test
 did not skip. These checks verify the local/fake paths, not a deployed Lambda
 MicroVM.
 
+## Workspace delete confirmation (2026-10-25)
+
+`hako delete` now requires typing the exact Workspace ID before it sends the
+irreversible delete request. Empty input, EOF, a generic `yes`, or a different
+ID cancels; non-interactive automation can pass `--yes`. The flag is accepted
+only for `delete`. The request remains asynchronous and can be confirmed with
+`hako wait ... --state deleted`; `--idempotency-key` remains available for
+retries. Unit tests cover parsing, exact confirmation, cancellation, bounded
+input, and the non-interactive bypass. See [Workspace CLI](../docs/workspace-cli.md).
+
 ## Goal
 
 Complete the basic interactive development flow and reproducible local-service templates.
