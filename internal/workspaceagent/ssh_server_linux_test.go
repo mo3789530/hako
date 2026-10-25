@@ -4,6 +4,7 @@ package workspaceagent
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -35,9 +36,13 @@ func (s *sshServerCommandStub) Run(_ context.Context, binary string, args ...str
 	return s.err
 }
 
-type sshServerProcessStub struct{ stopped int }
+type sshServerProcessStub struct {
+	stopped int
+	alive   bool
+}
 
 func (p *sshServerProcessStub) Stop(context.Context) error { p.stopped++; return nil }
+func (p *sshServerProcessStub) Alive() bool                { return p.alive }
 
 func workspaceSSHMountSpec() WorkspaceMountSpec {
 	return WorkspaceMountSpec{TenantID: "tenant_ssh", WorkspaceID: "workspace_ssh", ResourcePlaneID: "rp_ssh",
@@ -60,6 +65,7 @@ func TestWorkspaceSSHServerUsesLoopbackAndStableWorkspaceHostKey(t *testing.T) {
 			return process, nil
 		},
 		writeFile: os.WriteFile, mkdirAll: os.MkdirAll, stat: os.Lstat,
+		waitReady: func(context.Context, WorkspaceSSHServerProcess) error { return nil },
 		ensureIdentity: func(uid, gid uint32) error {
 			identityCalls++
 			if uid != 145678 || gid != 145678 {
@@ -142,7 +148,9 @@ func TestWorkspaceSSHServerRejectsPartialKeysAndInvalidIdentity(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			starter := &linuxWorkspaceSSHServerStarter{root: t.TempDir(), runner: &sshServerCommandStub{},
 				processStarter: func(string, ...string) (WorkspaceSSHServerProcess, error) { return &sshServerProcessStub{}, nil },
-				writeFile:      os.WriteFile, mkdirAll: os.MkdirAll, stat: os.Lstat, ensureIdentity: func(uint32, uint32) error { return nil }}
+				writeFile:      os.WriteFile, mkdirAll: os.MkdirAll, stat: os.Lstat,
+				waitReady:      func(context.Context, WorkspaceSSHServerProcess) error { return nil },
+				ensureIdentity: func(uint32, uint32) error { return nil }}
 			if test.setup != nil {
 				test.setup(t, starter)
 			}
@@ -161,7 +169,9 @@ func TestWorkspaceSSHServerRejectsCanceledContextAndUnsafeKeyMode(t *testing.T) 
 	cancel()
 	starter := &linuxWorkspaceSSHServerStarter{root: t.TempDir(), runner: &sshServerCommandStub{},
 		processStarter: func(string, ...string) (WorkspaceSSHServerProcess, error) { return &sshServerProcessStub{}, nil },
-		writeFile:      os.WriteFile, mkdirAll: os.MkdirAll, stat: os.Lstat, ensureIdentity: func(uint32, uint32) error { return nil }}
+		writeFile:      os.WriteFile, mkdirAll: os.MkdirAll, stat: os.Lstat,
+		waitReady:      func(context.Context, WorkspaceSSHServerProcess) error { return nil },
+		ensureIdentity: func(uint32, uint32) error { return nil }}
 	if _, err := starter.Start(ctx, workspaceSSHMountSpec()); err == nil {
 		t.Fatal("canceled startup context was accepted")
 	}
@@ -169,7 +179,9 @@ func TestWorkspaceSSHServerRejectsCanceledContextAndUnsafeKeyMode(t *testing.T) 
 	root := t.TempDir()
 	unsafe := &linuxWorkspaceSSHServerStarter{root: root, runner: &sshServerCommandStub{},
 		processStarter: func(string, ...string) (WorkspaceSSHServerProcess, error) { return &sshServerProcessStub{}, nil },
-		writeFile:      os.WriteFile, mkdirAll: os.MkdirAll, stat: os.Lstat, ensureIdentity: func(uint32, uint32) error { return nil }}
+		writeFile:      os.WriteFile, mkdirAll: os.MkdirAll, stat: os.Lstat,
+		waitReady:      func(context.Context, WorkspaceSSHServerProcess) error { return nil },
+		ensureIdentity: func(uint32, uint32) error { return nil }}
 	if err := os.MkdirAll(unsafe.path(workspaceSSHKeyDir), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -181,6 +193,31 @@ func TestWorkspaceSSHServerRejectsCanceledContextAndUnsafeKeyMode(t *testing.T) 
 	}
 	if _, err := unsafe.Start(context.Background(), workspaceSSHMountSpec()); err == nil {
 		t.Fatal("group-readable host private key was accepted")
+	}
+}
+
+func TestWorkspaceSSHServerReadinessFailureStopsProcessAndRemovesRuntimeKey(t *testing.T) {
+	root := t.TempDir()
+	process := &sshServerProcessStub{}
+	starter := &linuxWorkspaceSSHServerStarter{root: root, runner: &sshServerCommandStub{},
+		processStarter: func(string, ...string) (WorkspaceSSHServerProcess, error) { return process, nil },
+		writeFile:      os.WriteFile, mkdirAll: os.MkdirAll, stat: os.Lstat,
+		waitReady:      func(context.Context, WorkspaceSSHServerProcess) error { return errors.New("not ready") },
+		ensureIdentity: func(uint32, uint32) error { return nil }}
+	if _, err := starter.Start(context.Background(), workspaceSSHMountSpec()); err == nil {
+		t.Fatal("SSH server was accepted before readiness")
+	}
+	if process.stopped != 1 {
+		t.Fatalf("SSH process stop count = %d, want 1", process.stopped)
+	}
+	if _, err := os.Lstat(starter.path(workspaceSSHEphemeralKey)); !os.IsNotExist(err) {
+		t.Fatalf("runtime host key remains after readiness failure: %v", err)
+	}
+}
+
+func TestWorkspaceSSHReadinessRejectsExitedProcess(t *testing.T) {
+	if err := waitWorkspaceSSHReady(context.Background(), &sshServerProcessStub{alive: false}); err == nil {
+		t.Fatal("readiness accepted an exited sshd process")
 	}
 }
 

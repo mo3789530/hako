@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -58,13 +59,14 @@ type linuxWorkspaceSSHServerStarter struct {
 	mkdirAll       func(string, os.FileMode) error
 	stat           func(string) (os.FileInfo, error)
 	ensureIdentity func(uint32, uint32) error
+	waitReady      func(context.Context, WorkspaceSSHServerProcess) error
 }
 
 func newLinuxWorkspaceSSHServerStarter() WorkspaceSSHServerStarter {
 	return &linuxWorkspaceSSHServerStarter{
 		runner: execSSHServerCommandRunner{}, processStarter: startWorkspaceSSHD,
 		writeFile: os.WriteFile, mkdirAll: os.MkdirAll, stat: os.Lstat,
-		ensureIdentity: ensureWorkspaceRootlessIdentity,
+		ensureIdentity: ensureWorkspaceRootlessIdentity, waitReady: waitWorkspaceSSHReady,
 	}
 }
 
@@ -115,6 +117,16 @@ func (s *linuxWorkspaceSSHServerStarter) Start(ctx context.Context, spec Workspa
 			cancel()
 		}
 		return nil, errors.New("start Workspace SSH server")
+	}
+	waitReady := s.waitReady
+	if waitReady == nil {
+		waitReady = waitWorkspaceSSHReady
+	}
+	if err := waitReady(ctx, process); err != nil {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = process.Stop(stopCtx)
+		cancel()
+		return nil, errors.New("Workspace SSH server did not become ready")
 	}
 	started = true
 	return &workspaceSSHServerRuntime{process: process, privateKeyPath: ephemeralKeyPath}, nil
@@ -292,6 +304,47 @@ func workspaceSSHDPathsAreFixed() bool {
 type execWorkspaceSSHDProcess struct {
 	command *exec.Cmd
 	done    chan struct{}
+}
+
+type workspaceSSHServerLiveness interface {
+	Alive() bool
+}
+
+func waitWorkspaceSSHReady(ctx context.Context, process WorkspaceSSHServerProcess) error {
+	if ctx == nil || process == nil {
+		return errors.New("Workspace SSH readiness check is invalid")
+	}
+	readyCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if state, ok := process.(workspaceSSHServerLiveness); ok && !state.Alive() {
+			return errors.New("Workspace SSH server exited before readiness")
+		}
+		connection, err := net.DialTimeout("tcp4", "127.0.0.1:22", 100*time.Millisecond)
+		if err == nil {
+			_ = connection.Close()
+			return nil
+		}
+		select {
+		case <-readyCtx.Done():
+			return readyCtx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (p *execWorkspaceSSHDProcess) Alive() bool {
+	if p == nil || p.command == nil {
+		return false
+	}
+	select {
+	case <-p.done:
+		return false
+	default:
+		return true
+	}
 }
 
 func startWorkspaceSSHD(binary string, args ...string) (WorkspaceSSHServerProcess, error) {

@@ -148,7 +148,8 @@ to the fixed Guest `/ssh` WebSocket route, where the unprivileged Agent dials
 only `127.0.0.1:22`; the caller cannot supply a destination. Local tests cover
 the ticket-bound raw-byte bridge and reject arbitrary ports/replay. Workspace
 init starts image-installed `sshd` on loopback with public-key-only
-authentication and no root/password login. An EFS-backed per-Workspace host
+authentication and no root/password login, and waits for its listener before
+reporting the Agent runtime ready. An EFS-backed per-Workspace host
 key is copied to root-only `/run` for sshd and removed at shutdown; retrieve
 its public half with authenticated `hako cp --from` and add it to
 `known_hosts`. This does not verify an ARM64 image build or live MicroVM route.
