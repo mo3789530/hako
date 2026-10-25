@@ -2,8 +2,10 @@
 
 Status: In Progress (proposal materialization, isolated verifier scheduling,
 digest-bound Check persistence, publication evidence resolution, and durable
-publication idempotency state are implemented locally; broker authorization,
-GitHub publication, and API/CLI are still open). Priority: P3.
+publication idempotency state, safe publication status API/CLI, exact-scope
+Tenant App token minting, and a fake-tested GitHub publisher are implemented
+locally; Broker composition, submission API/CLI, and runtime activation are
+still open). Priority: P3.
 Depends on Tasks 39, 40, 53, 57, and 59.
 
 ## Goal
@@ -150,15 +152,18 @@ Repository. The proposal remains untrusted. Hako must never merge or deploy it.
   distinct from read-only and Checks grants. Synthetic-key unit tests verify
   the scope and reject cross-Tenant/non-Agent requests. The token is not
   exposed through an HTTP endpoint and is not yet connected to a publisher.
-- Still open: verifier retry, broker-only exact-scope write credentials,
-  branch/PR create and lost-response recovery, and API/CLI submit/retry UX. AWS
-  IAM and Lambda MicroVM execution remain unverified.
-- Migration `000181` and `BindAgentProposalVerification` persist an immutable
-  relation from the exact successful, cleanup-confirmed Agent attempt and
-  `agent_changes` artifact digest/base commit to a separate untrusted Job Run
-  and attempt. The store verifies same-Tenant Repository/App-generation/base
-  pins, latest attempts, live verifier state, and retry identity inside the
-  transaction. A scoped getter exposes binding metadata without returning the
-  artifact storage reference. The focused PostgreSQL integration test passes;
-  scheduling, source-byte handoff/materialization, required Check evidence,
-  and any publication path remain unimplemented.
+- `AgentProposalGitHubWriter` validates the proposal archive again, verifies
+  that the current default branch still points at the pinned base commit,
+  creates blobs/tree/commit under the deterministic branch, and opens a
+  same-Repository PR only when policy allows. Existing branches are accepted
+  only when the branch commit has the exact expected tree, base parent, and
+  Run/attempt/proposal marker. Existing PRs are queried by same-repository head
+  and accepted only for the pinned base. Lost branch-ref and PR responses are
+  recovered by reading those deterministic identities; unrelated branches,
+  forks, stale base refs, and malformed archives fail closed. Fake GitHub HTTP
+  tests cover normal create, retry, lost responses, stale base, and unrelated
+  branch rejection. The writer is not yet composed into the mTLS Broker, and
+  no live GitHub or real Secret request was made.
+- Still open: verifier retry, mTLS Broker resolver/route composition, wiring
+  the exact-scope credential mint to the writer, and API/CLI submit/retry UX.
+  AWS IAM and Lambda MicroVM execution remain unverified.

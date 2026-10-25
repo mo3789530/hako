@@ -38,6 +38,14 @@ type AgentProposalFile struct {
 	SizeBytes int64  `json:"size_bytes"`
 }
 
+// AgentProposalContent is one validated bounded regular file from an Agent
+// proposal archive. Call ClearAgentProposalContents when the publisher is
+// done using these in-memory bytes.
+type AgentProposalContent struct {
+	Path    string
+	Content []byte
+}
+
 type AgentProposalInspection struct {
 	SHA256 string              `json:"sha256"`
 	Files  []AgentProposalFile `json:"files"`
@@ -67,6 +75,28 @@ func InspectAgentProposalArchive(data []byte) (AgentProposalInspection, error) {
 	}
 	digest := sha256.Sum256(data)
 	return AgentProposalInspection{SHA256: hex.EncodeToString(digest[:]), Files: files}, nil
+}
+
+// ReadAgentProposalContents returns validated file bytes without extracting
+// archive paths to disk. It uses the same path, type, secret, duplicate, and
+// size checks as InspectAgentProposalArchive.
+func ReadAgentProposalContents(data []byte) ([]AgentProposalContent, error) {
+	entries, err := readAgentProposalEntries(data)
+	if err != nil {
+		return nil, ErrProposalArchive
+	}
+	contents := make([]AgentProposalContent, 0, len(entries))
+	for _, entry := range entries {
+		contents = append(contents, AgentProposalContent{Path: entry.path, Content: entry.content})
+	}
+	return contents, nil
+}
+
+func ClearAgentProposalContents(contents []AgentProposalContent) {
+	for i := range contents {
+		clear(contents[i].Content)
+		contents[i].Content = nil
+	}
 }
 
 // ApplyAgentProposalArchive verifies and extracts a base source archive,

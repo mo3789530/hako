@@ -390,16 +390,22 @@ current default branch, and a write-policy digest. The branch is deterministic
 under the first configured prefix. State advances monotonically from
 `requested` to `branch_created` to `pull_request_created`; exact repeats are
 idempotent and conflicting branch commits or PR numbers fail closed. This is
-durable state only: no GitHub write is performed yet. Task 89 remains open:
-safe verifier retry, brokered exact-scope write credentials, branch/PR create
-and lost-response recovery, and API/CLI submit/retry UX. The authenticated
+durable state only; the Broker does not invoke GitHub yet. A standalone
+`AgentProposalGitHubWriter` now revalidates the archive and base ref, creates a
+tree/commit on the deterministic branch, and opens a policy-approved same-repo
+PR. It recovers lost ref/PR responses only after confirming the branch's exact
+tree, base parent, proposal marker, and PR head/base. Fake GitHub HTTP tests
+cover duplicate publication, response loss, stale base, and unrelated branch
+rejection. Task 89 remains open: safe verifier retry, mTLS Broker resolver and
+route composition, wiring the scoped Tenant App token mint to the writer, and
+API/CLI submit/retry UX. The authenticated
 `GET .../agent-publication` endpoint and `hako workload publication show`
 display only safe state, branch, confirmed commit, PR number, and timestamps;
 they omit artifact references, digests, tokens, and verifier internals.
 The Tenant App token client also has a synthetic-test-covered minting primitive
 for a single-Repository `contents:write` + `pull_requests:write` grant, keyed
 separately from other scopes. It is not yet exposed by the Broker or connected
-to GitHub publication.
+to the publisher.
 Terraform IAM and AWS execution have not been verified.
 
 Treat `.hako/factory.yaml`, workflow files, action references, shell steps,
