@@ -242,6 +242,17 @@ no-op behavior for non-terminals and invalid window sizes. The focused
 `enableWorkspaceTerminal` coverage is 93.2%; this exercises the local terminal
 adapter and does not substitute for the separate Guest PTY/Gateway tests.
 
+## Workspace Service action output failures (2026-10-25)
+
+`hako service start|stop|remove` now rejects missing output streams before
+issuing an API call, returns a failure when the accepted-state line cannot be
+written, and stops a confirmed removal if its confirmation prompt cannot be
+displayed. Cancellation output failures also return nonzero. HTTP-backed tests
+verify that missing streams and prompt-write failures do not mutate desired
+state, while a success-output failure is reported after the API accepts the
+request. This preserves the asynchronous API contract and does not imply
+runtime completion.
+
 ## Acceptance criteria
 
 - CLI unit and authenticated integration tests cover happy path, re-login, authorization failure, disconnect, cancellation, and invalid forwards.
