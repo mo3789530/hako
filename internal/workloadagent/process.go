@@ -895,15 +895,6 @@ func runCatalogCommand(ctx context.Context, directory, executable string, args, 
 	return cmd.Wait()
 }
 
-func attachJobProcessScope(attributes *syscall.SysProcAttr, scope JobProcessResourceScope) error {
-	if attributes == nil || scope == nil || scope.FileDescriptor() < 0 {
-		return ErrJobResourceLimitsUnavailable
-	}
-	attributes.UseCgroupFD = true
-	attributes.CgroupFD = scope.FileDescriptor()
-	return nil
-}
-
 func (f GoTestProcessFactory) openResourceScope(ctx context.Context, memoryMB, cpuMillis int) (JobProcessResourceScope, error) {
 	if f.ResourceLimits == nil || memoryMB < 1 || cpuMillis < 1 {
 		return nil, ErrJobResourceLimitsUnavailable

@@ -648,6 +648,10 @@ pipeline budget. Missing controllers, failed writes, or incomplete cleanup
 fail the command closed. The current host does not allow creating cgroups under
 `/sys/fs/cgroup`, and Lambda MicroVM cgroup delegation/effective limits remain
 unverified.
+The process-scope adapter is Linux-specific. Other operating systems can build
+the `workloadagent` package, but attaching a Job resource scope returns the
+fixed unavailable error there, so untrusted Job execution remains fail-closed;
+the Lambda Agent executable itself is still a Linux target.
 
 `make test-job-services-podman` runs the production service engine against a
 local rootless Podman daemon through a test-only CLI adapter. It requires a

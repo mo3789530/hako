@@ -14,6 +14,15 @@ import (
 	"time"
 )
 
+func attachJobProcessScope(attributes *syscall.SysProcAttr, scope JobProcessResourceScope) error {
+	if attributes == nil || scope == nil || scope.FileDescriptor() < 0 {
+		return ErrJobResourceLimitsUnavailable
+	}
+	attributes.UseCgroupFD = true
+	attributes.CgroupFD = scope.FileDescriptor()
+	return nil
+}
+
 var ErrJobResourceLimits = errors.New("Job process resource limits could not be enforced")
 
 // LinuxJobCgroupManager creates a cgroup v2 child under a pre-delegated root.

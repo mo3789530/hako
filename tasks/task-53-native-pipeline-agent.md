@@ -502,7 +502,10 @@ target gates pass.
   cgroups, and Linux non-root command processes receive the pipeline budget
   remaining after those reservations. The selected profile ceiling is checked
   before scheduling. Target Lambda MicroVM cgroup delegation/effective-limit
-  validation remains an operational gate.
+  validation remains an operational gate. The process-scope adapter is now
+  split by OS so `workloadagent` compiles on non-Linux hosts while refusing Job
+  process launch without Linux cgroup placement; the Lambda Agent executable
+  remains Linux-only.
 - [x] Bind catalog service ports only to `127.0.0.1`. Each Job attempt uses an
   internal container network, and service creation uses `--pull=never`, so
   repository-controlled processes and sidecars cannot fetch images at runtime.
