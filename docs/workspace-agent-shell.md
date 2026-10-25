@@ -238,8 +238,14 @@ not a cross-MicroVM durable cleanup ledger.
 An optional Linux `nerdctl` adapter uses the rootless containerd socket provided
 by `HAKO_CONTAINERD_SOCKET` and the image-owned binary at
 `/usr/local/bin/nerdctl`. It uses only fixed catalog image/argv, memory/CPU bounds,
-Workspace-private networking, and guest-loopback port mappings; its process
-environment excludes ambient AWS and other credentials. Persistent catalog
+an internal per-Workspace network (`nerdctl network create --internal`), and
+guest-loopback port mappings; it inspects an existing network and fails closed
+unless `network inspect` confirms `Internal=true`. The pinned nerdctl-full
+bundle must include CNI plugins 1.1.0 or later for network isolation. This
+blocks Service-container external network access when the runtime honors the
+internal-network contract, but it does not establish MicroVM-wide egress
+filtering or prove the deployed Lambda image. The process environment excludes
+ambient AWS and other credentials. Persistent catalog
 volumes are placed below `/workspace/.hako/services/` with symlink escape
 checks. Removing a Service first removes its container and then recursively
 removes only that Service ID's data subtree using descriptor-relative,

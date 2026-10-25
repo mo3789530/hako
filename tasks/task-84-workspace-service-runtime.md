@@ -123,6 +123,13 @@ private Workspace MicroVM executor. Lambda MicroVM is the only execution
 substrate; EC2 is out of scope. No AWS apply or external cutover is included.
 Priority: P1. Parent: Task 47. Depends on: Tasks 40, 43–46, 47, 80–83.
 
+Workspace Service networking now creates its per-Workspace nerdctl network with
+`--internal` and inspects an existing network before reuse. Missing, malformed,
+or externally connected network metadata fails closed before container start.
+The pinned nerdctl-full bundle must provide CNI plugins 1.1.0 or later for the
+isolation behavior. This is container-level Service egress control only; it is
+not proof of Lambda MicroVM network isolation or the production image.
+
 Local verification entrypoint: `make test-workspace-service-runtime-integration`
 runs the Guest/Controller package tests and the PostgreSQL API lifecycle test
 for authorization, desired-state revisions, transactional Outbox delivery,

@@ -5,6 +5,7 @@ package workspaceagent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -309,10 +310,35 @@ func (e *NerdctlServiceEngine) ensureNetwork(ctx context.Context) error {
 	}
 	for _, line := range strings.Split(string(output), "\n") {
 		if strings.TrimSpace(line) == e.config.NetworkName {
+			inspection, err := e.run(ctx, "network", "inspect", "--mode", "dockercompat", "--format", "{{json .}}", e.config.NetworkName)
+			if err != nil {
+				return errors.New("verify Workspace Service network isolation")
+			}
+			type inspectedNetwork struct {
+				Name     string `json:"Name"`
+				Internal bool   `json:"Internal"`
+			}
+			var networks []inspectedNetwork
+			inspection = bytes.TrimSpace(inspection)
+			if len(inspection) > 0 && inspection[0] == '[' {
+				if err := json.Unmarshal(inspection, &networks); err != nil {
+					return errors.New("Workspace Service network is not verified as internal")
+				}
+			} else {
+				var network inspectedNetwork
+				if err := json.Unmarshal(inspection, &network); err != nil {
+					return errors.New("Workspace Service network is not verified as internal")
+				}
+				networks = []inspectedNetwork{network}
+			}
+			if len(networks) != 1 ||
+				networks[0].Name != e.config.NetworkName || !networks[0].Internal {
+				return errors.New("Workspace Service network is not verified as internal")
+			}
 			return nil
 		}
 	}
-	if _, err := e.run(ctx, "network", "create", e.config.NetworkName); err != nil {
+	if _, err := e.run(ctx, "network", "create", "--internal", e.config.NetworkName); err != nil {
 		return errors.New("create Workspace Service network")
 	}
 	return nil

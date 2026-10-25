@@ -7,6 +7,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -21,15 +23,16 @@ type nerdctlCall struct {
 }
 
 type nerdctlRunnerFake struct {
-	calls        []nerdctlCall
-	network      bool
-	exists       bool
-	running      bool
-	failCommand  string
-	ignoreRemove bool
-	envFileData  []byte
-	envFileMode  os.FileMode
-	envFilePath  string
+	calls           []nerdctlCall
+	network         bool
+	exists          bool
+	running         bool
+	failCommand     string
+	ignoreRemove    bool
+	externalNetwork bool
+	envFileData     []byte
+	envFileMode     os.FileMode
+	envFilePath     string
 }
 
 func (r *nerdctlRunnerFake) Run(_ context.Context, _ string, args, env []string) ([]byte, error) {
@@ -43,14 +46,27 @@ func (r *nerdctlRunnerFake) Run(_ context.Context, _ string, args, env []string)
 	}
 	switch args[4] {
 	case "network":
-		if len(args) > 5 && args[5] == "ls" {
-			if r.network {
-				return []byte("hako-ws_1\n"), nil
+		if len(args) > 5 {
+			switch args[5] {
+			case "ls":
+				if r.network {
+					return []byte("hako-ws_1\n"), nil
+				}
+				return nil, nil
+			case "inspect":
+				if !r.network {
+					return nil, errors.New("network not found")
+				}
+				return []byte(`{"Name":"hako-ws_1","Internal":` + strconv.FormatBool(!r.externalNetwork) + `}`), nil
+			case "create":
+				if len(args) < 8 || args[6] != "--internal" || args[7] != "hako-ws_1" {
+					return nil, errors.New("network create must use --internal")
+				}
+				r.network = true
+				return nil, nil
 			}
-			return nil, nil
 		}
-		r.network = true
-		return nil, nil
+		return nil, errors.New("invalid network command")
 	case "ps":
 		if r.exists {
 			state := "exited"
@@ -113,10 +129,10 @@ func TestNerdctlServiceEngineUsesOnlyCatalogInputsAndLoopbackPorts(t *testing.T)
 	if err := engine.Ensure(context.Background(), "svc_1", "redis", template, nil); err != nil {
 		t.Fatal(err)
 	}
-	if len(runner.calls) != 3 {
+	if len(runner.calls) != 4 {
 		t.Fatalf("ensure calls = %+v", runner.calls)
 	}
-	args := strings.Join(runner.calls[2].args, " ")
+	args := strings.Join(runner.calls[3].args, " ")
 	for _, required := range []string{"run --detach --restart=always --name hako-svc_1", "--network hako-ws_1", "hako.workspace-id=ws_1", "hako.service-id=svc_1", "127.0.0.1:6379:6379/tcp", "--memory 268435456", "--cpus 0.250", template.Image} {
 		if !strings.Contains(args, required) {
 			t.Errorf("nerdctl args %q missing %q", args, required)
@@ -130,6 +146,29 @@ func TestNerdctlServiceEngineUsesOnlyCatalogInputsAndLoopbackPorts(t *testing.T)
 	}
 }
 
+func TestNerdctlServiceEngineRequiresInternalWorkspaceNetwork(t *testing.T) {
+	runner := &nerdctlRunnerFake{network: true, externalNetwork: true}
+	engine := newTestNerdctlEngine(t, runner)
+	template, _ := servicecatalog.Resolve("redis")
+	if err := engine.Ensure(context.Background(), "svc_1", "redis", template, nil); err == nil {
+		t.Fatal("existing externally connected network was accepted")
+	}
+	if len(runner.calls) != 2 || runner.calls[1].args[5] != "inspect" {
+		t.Fatalf("Service runtime continued after failing network-isolation verification: %+v", runner.calls)
+	}
+}
+
+func TestNerdctlServiceEngineCreatesInternalWorkspaceNetwork(t *testing.T) {
+	runner := &nerdctlRunnerFake{}
+	engine := newTestNerdctlEngine(t, runner)
+	if err := engine.ensureNetwork(context.Background()); err != nil {
+		t.Fatalf("create isolated Workspace network: %v", err)
+	}
+	if len(runner.calls) != 2 || !reflect.DeepEqual(runner.calls[1].args[4:], []string{"network", "create", "--internal", "hako-ws_1"}) {
+		t.Fatalf("network was not created with external access disabled: %+v", runner.calls)
+	}
+}
+
 func TestNerdctlServiceEngineRestartsStopsRemovesAndChecksHealth(t *testing.T) {
 	runner := &nerdctlRunnerFake{network: true, exists: true}
 	engine := newTestNerdctlEngine(t, runner)
@@ -137,7 +176,7 @@ func TestNerdctlServiceEngineRestartsStopsRemovesAndChecksHealth(t *testing.T) {
 	if err := engine.Ensure(context.Background(), "svc_1", "redis", template, nil); err != nil {
 		t.Fatal(err)
 	}
-	if len(runner.calls) != 3 || !strings.HasPrefix(strings.Join(runner.calls[2].args[4:], " "), "start hako-svc_1") {
+	if len(runner.calls) != 4 || !strings.HasPrefix(strings.Join(runner.calls[3].args[4:], " "), "start hako-svc_1") {
 		t.Fatalf("stopped container was not restarted: %+v", runner.calls)
 	}
 	if healthy, err := engine.Healthy(context.Background(), "svc_1", template.HealthCheck); err != nil || !healthy {
@@ -248,10 +287,10 @@ func TestNerdctlServiceEngineAppliesPostgresCredentialRotationThroughStdin(t *te
 	if err := engine.Ensure(context.Background(), "svc_1", "postgres", postgres, map[string]string{"POSTGRES_PASSWORD": secret}); err != nil {
 		t.Fatal(err)
 	}
-	if len(runner.calls) != 3 {
-		t.Fatalf("existing PostgreSQL service calls = %d, want network lookup, state lookup, credential update: %+v", len(runner.calls), runner.calls)
+	if len(runner.calls) != 4 {
+		t.Fatalf("existing PostgreSQL service calls = %d, want network lookup, isolation inspection, state lookup, credential update: %+v", len(runner.calls), runner.calls)
 	}
-	call := runner.calls[2]
+	call := runner.calls[3]
 	if strings.Join(call.args, " ") != "--address /run/user/100000/containerd/containerd.sock exec --interactive --user postgres hako-svc_1 psql -v ON_ERROR_STOP=1 -U postgres -d postgres" {
 		t.Fatalf("credential update used unexpected command: %q", call.args)
 	}
@@ -270,7 +309,7 @@ func TestNerdctlServiceEngineRejectsSecretFileDirectoryOutsideTmpfs(t *testing.T
 	postgres, _ := servicecatalog.Resolve("postgres")
 	err := engine.Ensure(context.Background(), "svc_1", "postgres", postgres,
 		map[string]string{"POSTGRES_PASSWORD": "0123456789012345678901234567890123456789012"})
-	if err == nil || len(runner.calls) != 2 {
+	if err == nil || len(runner.calls) != 3 {
 		t.Fatalf("secret was allowed outside an ephemeral filesystem: err=%v calls=%+v", err, runner.calls)
 	}
 }
