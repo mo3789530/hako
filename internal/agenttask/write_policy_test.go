@@ -27,6 +27,9 @@ func TestAgentWritePolicyRequiresNarrowBranchAndPassingChecks(t *testing.T) {
 		{name: "default branch", branch: "main", defaultName: "main", isNew: true, checks: passed, wantErr: true},
 		{name: "outside prefix", branch: "feature/issue-17", defaultName: "main", isNew: true, checks: passed, wantErr: true},
 		{name: "traversal branch", branch: "hako/agent/../main", defaultName: "main", isNew: true, checks: passed, wantErr: true},
+		{name: "dot-prefixed interior component", branch: "hako/agent/.hidden", defaultName: "main", isNew: true, checks: passed, wantErr: true},
+		{name: "lock-suffixed interior component", branch: "hako/agent/change.lock/next", defaultName: "main", isNew: true, checks: passed, wantErr: true},
+		{name: "dot-suffixed interior component", branch: "hako/agent/change./next", defaultName: "main", isNew: true, checks: passed, wantErr: true},
 		{name: "required Check missing", branch: "hako/agent/issue-17", defaultName: "main", isNew: true, checks: map[string]bool{"hako/lint": true}, wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -58,6 +61,9 @@ func TestAgentWritePolicyRestrictsPullRequests(t *testing.T) {
 		{name: "non-default base", head: "hako/agent/issue-17", base: "release", defaultRef: "main", sameRepo: true, wantErr: true},
 		{name: "fork head", head: "hako/agent/issue-17", base: "main", defaultRef: "main", wantErr: true},
 		{name: "unapproved head", head: "feature/issue-17", base: "main", defaultRef: "main", sameRepo: true, wantErr: true},
+		{name: "dot-prefixed head component", head: "hako/agent/.hidden", base: "main", defaultRef: "main", sameRepo: true, wantErr: true},
+		{name: "lock-suffixed head component", head: "hako/agent/change.lock", base: "main", defaultRef: "main", sameRepo: true, wantErr: true},
+		{name: "invalid default branch", head: "hako/agent/issue-17", base: "release.lock", defaultRef: "release.lock", sameRepo: true, wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := AuthorizePullRequest(policy, test.head, test.base, test.defaultRef, test.sameRepo, checks)
@@ -76,6 +82,16 @@ func TestAgentWritePolicyRejectsBroadAndUnsortedConfiguration(t *testing.T) {
 	} {
 		if err := policy.Validate(); !errors.Is(err, ErrWritePolicy) {
 			t.Errorf("Validate(%+v) = %v, want ErrWritePolicy", policy, err)
+		}
+	}
+}
+
+func TestAgentWritePolicyRejectsGitInvalidPrefixComponents(t *testing.T) {
+	for _, prefix := range []string{"hako/.hidden/", "hako/branch.lock/", "hako/branch./next/", "hako//agent/"} {
+		policy := WritePolicy{Enabled: true, BranchPrefixes: []string{prefix},
+			RequiredChecks: []string{"hako/test"}, RequireChecksToPass: true}
+		if err := policy.Validate(); !errors.Is(err, ErrWritePolicy) {
+			t.Errorf("Validate() accepted unsafe prefix %q: %v", prefix, err)
 		}
 	}
 }

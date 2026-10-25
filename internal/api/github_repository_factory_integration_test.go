@@ -165,6 +165,7 @@ func TestRepositoryFactorySettingRequiresTenantOwnerAndActiveRegisteredRepositor
 	}{
 		{"factory-owner", "tenant_factory_api", agentPolicyBody, http.StatusOK},
 		{"factory-admin", "tenant_factory_api", `{"enabled":true,"branch_prefixes":["*"],"required_checks":["hako/test"],"require_checks_to_pass":true}`, http.StatusBadRequest},
+		{"factory-admin", "tenant_factory_api", `{"enabled":true,"branch_prefixes":["hako/.hidden/"],"required_checks":["hako/test"],"require_checks_to_pass":true}`, http.StatusBadRequest},
 		{"factory-member", "tenant_factory_api", agentPolicyBody, http.StatusNotFound},
 		{"factory-owner", "tenant_factory_other", agentPolicyBody, http.StatusNotFound},
 		{"factory-owner", "tenant_factory_api", `{"enabled":true,"branch_prefixes":["hako/agent/"],"required_checks":["hako/test"],"require_checks_to_pass":false}`, http.StatusBadRequest},

@@ -364,7 +364,9 @@ with `hako github repository agent-policy set --tenant ... --installation ...
 one or more safe branch prefixes, at least one required `hako/...` Check, and
 require those Checks to pass. Pull-request creation is a separate boolean
 permission and is restricted to the same Repository, a policy-matching Agent
-branch, and the Repository's current default branch. The policy cannot grant
+branch, and the Repository's current default branch. Policy validation rejects
+Git-invalid branch path components, including dot-prefixed, trailing-dot, and
+`.lock`-suffixed components. The policy cannot grant
 merge, deployment, AWS, arbitrary API, or token capabilities; credentials must
 still be short-lived and Repository-scoped at execution time.
 

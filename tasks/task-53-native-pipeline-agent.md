@@ -557,7 +557,9 @@ deployed recovery scheduling and Lambda MicroVM termination remain unverified.
   same-repository PR creation, and required passing Hako Checks. The pure
   `internal/agenttask` authorization functions reject existing-branch updates,
   default/protected branch writes, unsafe branch paths, fork heads, non-default
-  PR bases, missing Checks, and disabled policy.
+  PR bases, missing Checks, and disabled policy. Branch and prefix validation
+  also rejects Git-invalid path components such as dot-prefixed components,
+  trailing dots, `.lock` suffixes, empty components, and traversal sequences.
 - Added Owner/Admin API and `hako github repository agent-policy set` with a
   strict JSON policy file, bounded audit metadata, and a PostgreSQL migration.
   Configuration requires an active, Factory-enabled Tenant Repository; turning

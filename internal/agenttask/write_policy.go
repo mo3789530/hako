@@ -43,7 +43,7 @@ func (p WritePolicy) Validate() error {
 		return ErrWritePolicy
 	}
 	for i, prefix := range p.BranchPrefixes {
-		if !branchPrefixPattern.MatchString(prefix) || strings.Contains(prefix, "..") || strings.Contains(prefix, "//") || strings.HasSuffix(prefix, ".") {
+		if !branchPrefixPattern.MatchString(prefix) || !validBranchComponents(strings.TrimSuffix(prefix, "/")) {
 			return ErrWritePolicy
 		}
 		if i > 0 && p.BranchPrefixes[i-1] >= prefix {
@@ -62,8 +62,7 @@ func (p WritePolicy) Validate() error {
 // configured required Check passed. The caller must separately obtain an
 // installation token scoped to the exact Tenant-bound Repository.
 func AuthorizeBranchPush(policy WritePolicy, branch, defaultBranch string, isNewBranch bool, checks map[string]bool) error {
-	if policy.Validate() != nil || !policy.Enabled || !isNewBranch || !branchNamePattern.MatchString(branch) || branch == defaultBranch ||
-		strings.Contains(branch, "..") || strings.Contains(branch, "//") || strings.HasSuffix(branch, "/") || strings.HasSuffix(branch, ".") ||
+	if policy.Validate() != nil || !policy.Enabled || !isNewBranch || !validBranchName(branch) || branch == defaultBranch ||
 		!branchAllowed(policy, branch) || !allRequiredChecksPassed(policy, checks) {
 		return ErrWritePolicy
 	}
@@ -74,12 +73,31 @@ func AuthorizeBranchPush(policy WritePolicy, branch, defaultBranch string, isNew
 // Agent branch into the current default branch, after required Checks pass.
 func AuthorizePullRequest(policy WritePolicy, headBranch, baseBranch, defaultBranch string, sameRepository bool, checks map[string]bool) error {
 	if policy.Validate() != nil || !policy.Enabled || !policy.AllowPullRequests || !sameRepository ||
-		baseBranch == "" || baseBranch != defaultBranch || !branchNamePattern.MatchString(headBranch) ||
-		strings.Contains(headBranch, "..") || strings.Contains(headBranch, "//") || strings.HasSuffix(headBranch, "/") ||
-		strings.HasSuffix(headBranch, ".") || !branchAllowed(policy, headBranch) || !allRequiredChecksPassed(policy, checks) {
+		!validBranchName(defaultBranch) || baseBranch != defaultBranch || !validBranchName(headBranch) ||
+		!branchAllowed(policy, headBranch) || !allRequiredChecksPassed(policy, checks) {
 		return ErrWritePolicy
 	}
 	return nil
+}
+
+func validBranchName(branch string) bool {
+	return branchNamePattern.MatchString(branch) && validBranchComponents(branch)
+}
+
+// Git refs cannot contain empty components, dot-prefixed components, or
+// components ending in .lock. Validate each component because a full branch
+// name can be well-formed while an interior component violates those rules.
+func validBranchComponents(branch string) bool {
+	if branch == "" || strings.Contains(branch, "..") || strings.Contains(branch, "//") ||
+		strings.HasPrefix(branch, "/") || strings.HasSuffix(branch, "/") || strings.Contains(branch, "@{") {
+		return false
+	}
+	for _, component := range strings.Split(branch, "/") {
+		if component == "" || strings.HasPrefix(component, ".") || strings.HasSuffix(component, ".") || strings.HasSuffix(component, ".lock") {
+			return false
+		}
+	}
+	return true
 }
 
 func branchAllowed(policy WritePolicy, branch string) bool {
