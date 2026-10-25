@@ -148,3 +148,12 @@ for a foreign Tenant with the response for a nonexistent Tenant. Both return
 the same hidden `404`, while an authenticated Tenant member can still read the
 usage summary for their own Tenant. This confirms quota/usage reads do not
 disclose whether another Tenant exists.
+
+## Usage CLI output validation (2026-10-25)
+
+The `hako usage` renderer rejects negative Workspace compute limits alongside
+invalid reservations and quota relationships, and propagates terminal/output
+write failures. Table-driven CLI tests cover invalid Tenant, Workspace,
+Workload, queue, Preview, Artifact, and compute values; invalid responses are
+rejected before usage text is emitted. This is defensive CLI validation;
+authoritative quota enforcement remains in the transactional API/store paths.
