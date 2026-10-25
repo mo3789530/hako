@@ -81,6 +81,10 @@ at the first `RUN` instruction with `exec format error` because this host has no
 ARM64 execution emulation configured. Do not treat an amd64 build, the ZIP
 package check, or the pulled base image as proof of an ARM64 Lambda MicroVM
 image build; use Lambda's image builder or an ARM64 build host for that gate.
+ARM64 Podman image targets now run `make check-arm64-podman-build` first and
+stop with a direct prerequisite message on x86_64 unless an enabled
+`qemu-aarch64` binfmt handler is available. This preflight does not install or
+register an emulator.
 
 This image currently supports the Workload protocol's fixed Go test operation;
 it does not implement the interactive Workspace shell/PTY API. The guest runs

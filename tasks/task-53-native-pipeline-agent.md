@@ -233,6 +233,27 @@ Allow Hako-native verification and bounded coding-agent Jobs without silently re
   scheduling disabled until those target-runtime gates and a reviewed image
   deployment pass.
 
+## ARM64 image build attempt (2026-10-25)
+
+- Reviewed official release assets before building: `nerdctl-full` v2.4.1
+  Linux ARM64 archive SHA-256
+  `2deffe14625f93866f90a8f265d0f59d6fa476c7dc54b98adb327b1b4613efd4` and
+  `slirp4netns` v1.3.6 AArch64 binary SHA-256
+  `045f85dd0bc51a61b99cdfe6bd22282cbc308b73caa64fc8859c11d3775c5817` matched
+  the official GitHub release asset digests. The archive contains the required
+  `nerdctl`, `containerd`, rootless launcher, and RootlessKit binaries. The
+  Go Agent cross-compiles to a static ARM64 executable.
+- `make build-workload-microvm-services-image` reached the Lambda MicroVM base
+  image's first ARM64 `RUN` instruction, then failed with `Exec format error`:
+  this x86_64 host has no `qemu-aarch64`/binfmt handler. The final services
+  image was not built. ARM64 Podman image targets now preflight the host and
+  fail early with this prerequisite instead of pulling layers before surfacing
+  the same limitation. Do not treat artifact digest review or Go cross
+  compilation as image/runtime validation; repeat the build on ARM64 or a
+  configured emulation host, then separately validate inside Lambda MicroVM.
+- Sources: [nerdctl v2.4.1 release](https://github.com/containerd/nerdctl/releases/tag/v2.4.1)
+  and [slirp4netns v1.3.6 release](https://github.com/rootless-containers/slirp4netns/releases/tag/v1.3.6).
+
 ## Local verification refresh (2026-10-24)
 
 - Added a Job/attempt-scoped `CatalogJobServiceManager` contract and connected

@@ -1,4 +1,15 @@
-.PHONY: fmt lint test test-integration test-integration-local test-webhook-lifecycle-integration test-actions-runner-lifecycle-integration test-software-factory-e2e test-workload-runtime test-workload-runtime-integration test-job-services-podman test-artifact-retention-integration test-workspace-idle-lifecycle-integration test-preview-expiry-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-workspace-service-controller-lambda build-health-reporter-lambda build-workspace-idle-reconciler-lambda build-preview-expiry-lambda build-preview-runtime-dispatch-lambda build-preview-result-consumer-lambda build-workload-controller-lambda build-actions-runner-lambda build-actions-runner-microvm-image build-workload-microvm-artifact build-workload-microvm-services-image build-workspace-microvm-image build-github-checks-consumer-image build-workspace-gateway-image terraform-fmt terraform-validate terraform-test
+.PHONY: fmt lint test test-integration test-integration-local test-webhook-lifecycle-integration test-actions-runner-lifecycle-integration test-software-factory-e2e test-workload-runtime test-workload-runtime-integration test-job-services-podman test-artifact-retention-integration test-workspace-idle-lifecycle-integration test-preview-expiry-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-workspace-service-controller-lambda build-health-reporter-lambda build-workspace-idle-reconciler-lambda build-preview-expiry-lambda build-preview-runtime-dispatch-lambda build-preview-result-consumer-lambda build-workload-controller-lambda build-actions-runner-lambda build-actions-runner-microvm-image build-workload-microvm-artifact build-workload-microvm-services-image build-workspace-microvm-image build-github-checks-consumer-image build-workspace-gateway-image check-arm64-podman-build terraform-fmt terraform-validate terraform-test
+
+# ARM64 Podman builds execute RUN commands from the target image. On x86_64,
+# fail early unless a QEMU binfmt_misc handler is already installed.
+check-arm64-podman-build:
+	@host_arch=$$(uname -m); \
+	if [ "$$host_arch" = "aarch64" ]; then exit 0; fi; \
+	for handler in /proc/sys/fs/binfmt_misc/qemu-aarch64 /proc/sys/fs/binfmt_misc/qemu-aarch64-static; do \
+		if [ -r "$$handler" ] && grep -q '^enabled$$' "$$handler"; then exit 0; fi; \
+	done; \
+	echo "ARM64 Podman image builds require an aarch64 host or enabled qemu-aarch64 binfmt_misc handler" >&2; \
+	exit 1
 
 HAKO_WORKSPACE_SERVICES_ENABLED ?= false
 HAKO_PREVIEW_TICKET_KEY_ID ?=
@@ -135,7 +146,7 @@ build-actions-runner-lambda:
 	cd build/actions-runner-lambda && zip -q ../hako-actions-runner.zip bootstrap
 
 # Builds the non-root ARM64 Lambda MicroVM guest image on top of the official, digest-pinned GitHub Runner image. The only caller-provided key is public.
-build-actions-runner-microvm-image:
+build-actions-runner-microvm-image: check-arm64-podman-build
 	@test -n "$(HAKO_ACTIONS_RUNNER_BOOTSTRAP_PUBLIC_KEY_FILE)" || (echo "set HAKO_ACTIONS_RUNNER_BOOTSTRAP_PUBLIC_KEY_FILE to a PUBLIC KEY PEM" >&2; exit 1)
 	@test -s "$(HAKO_ACTIONS_RUNNER_BOOTSTRAP_PUBLIC_KEY_FILE)"
 	@grep -q '^-----BEGIN PUBLIC KEY-----$$' "$(HAKO_ACTIONS_RUNNER_BOOTSTRAP_PUBLIC_KEY_FILE)"
@@ -158,7 +169,7 @@ build-workload-microvm-artifact:
 
 # Builds an opt-in Lambda MicroVM image variant with a separately-owned
 # rootless Job containerd daemon. Services remain disabled in the image.
-build-workload-microvm-services-image: build-workload-microvm-artifact
+build-workload-microvm-services-image: check-arm64-podman-build build-workload-microvm-artifact
 	@test -n "$(HAKO_NERDCTL_FULL_ARCHIVE)" || (echo "set HAKO_NERDCTL_FULL_ARCHIVE to a reviewed nerdctl-full Linux ARM64 archive" >&2; exit 1)
 	@test -n "$(HAKO_NERDCTL_FULL_VERSION)" || (echo "set HAKO_NERDCTL_FULL_VERSION to the exact nerdctl release" >&2; exit 1)
 	@test -n "$(HAKO_NERDCTL_FULL_SHA256)" || (echo "set HAKO_NERDCTL_FULL_SHA256 to the reviewed archive digest" >&2; exit 1)
@@ -178,7 +189,7 @@ build-workload-microvm-services-image: build-workload-microvm-artifact
 	podman build --arch arm64 --build-arg HAKO_WORKLOAD_BASE_IMAGE=hako-workload-agent:local-base --build-arg NERDCTL_FULL_VERSION="$(HAKO_NERDCTL_FULL_VERSION)" --build-arg NERDCTL_FULL_SHA256="$(HAKO_NERDCTL_FULL_SHA256)" --build-arg SLIRP4NETNS_VERSION="$(HAKO_SLIRP4NETNS_VERSION)" --build-arg SLIRP4NETNS_SHA256="$(HAKO_SLIRP4NETNS_SHA256)" --tag hako-workload-agent:services-local -f build/workload-microvm/Dockerfile.services build/workload-microvm
 
 # Builds a distinct root-owned Workspace init image with a separate unprivileged shell Agent. EFS RPM, nerdctl-full artifact, and public verification keys are pinned inputs.
-build-workspace-microvm-image:
+build-workspace-microvm-image: check-arm64-podman-build
 	@test "$(HAKO_WORKSPACE_SERVICES_ENABLED)" = true -o "$(HAKO_WORKSPACE_SERVICES_ENABLED)" = false || (echo "set HAKO_WORKSPACE_SERVICES_ENABLED to true or false" >&2; exit 1)
 	@test -n "$(HAKO_EFS_UTILS_RPM_VERSION)" || (echo "set HAKO_EFS_UTILS_RPM_VERSION to the pinned amazon-efs-utils RPM version" >&2; exit 1)
 	@test -n "$(HAKO_NERDCTL_FULL_ARCHIVE)" || (echo "set HAKO_NERDCTL_FULL_ARCHIVE to a reviewed nerdctl-full Linux ARM64 archive" >&2; exit 1)
@@ -208,11 +219,11 @@ build-workspace-microvm-image:
 	podman build --arch arm64 --build-arg EFS_UTILS_RPM_VERSION="$(HAKO_EFS_UTILS_RPM_VERSION)" --build-arg NERDCTL_FULL_VERSION="$(HAKO_NERDCTL_FULL_VERSION)" --build-arg NERDCTL_FULL_SHA256="$(HAKO_NERDCTL_FULL_SHA256)" --build-arg SLIRP4NETNS_VERSION="$(HAKO_SLIRP4NETNS_VERSION)" --build-arg SLIRP4NETNS_SHA256="$(HAKO_SLIRP4NETNS_SHA256)" --build-arg CODE_SERVER_VERSION="$(HAKO_CODE_SERVER_VERSION)" --build-arg CODE_SERVER_SHA256="$(HAKO_CODE_SERVER_SHA256)" --build-arg HAKO_WORKSPACE_SERVICES_ENABLED="$(HAKO_WORKSPACE_SERVICES_ENABLED)" --tag hako-workspace-init:local -f build/workspace-init/Dockerfile build/workspace-init
 
 # Builds an ARM64 ECS/Fargate image locally; publishing to ECR is a separate authorized step.
-build-github-checks-consumer-image:
+build-github-checks-consumer-image: check-arm64-podman-build
 	podman build --arch arm64 --tag hako-checks-consumer:local -f cmd/hako-checks-consumer/Dockerfile .
 
 # Builds a non-root ARM64 Gateway image locally; publication/deployment remain release operations.
-build-workspace-gateway-image:
+build-workspace-gateway-image: check-arm64-podman-build
 	podman build --arch arm64 --tag hako-workspace-gateway:local -f cmd/hako-workspace-gateway/Dockerfile .
 
 terraform-fmt:
