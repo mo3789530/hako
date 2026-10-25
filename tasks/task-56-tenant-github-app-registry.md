@@ -43,3 +43,13 @@ The API's internal error now describes the actual missing dependency (trusted
 proof verifier unavailable), rather than claiming verification is not
 implemented. A PostgreSQL API integration assertion confirms the Owner-facing
 response remains `409 github_app_not_ready` when no proof broker is configured.
+
+## Repository listing authorization coverage (2026-10-25)
+
+The PostgreSQL API integration test now exercises the successful repository
+listing route for an active, Tenant-bound Installation, including its stable
+ordering and Tenant/Installation identity. It also verifies that a Tenant
+Member and an Owner from another Tenant receive the hidden `404`, pending
+Installations remain unavailable, and zero or malformed Installation IDs are
+rejected with `400`. This uses local database fixtures only; it does not call
+GitHub or AWS.

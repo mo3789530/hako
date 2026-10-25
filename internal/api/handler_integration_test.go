@@ -126,6 +126,70 @@ func TestTenantMembershipRouteResolvesUserAndRejectsNonMembers(t *testing.T) {
 	if repositoryListResponse.Code != http.StatusNotFound {
 		t.Fatalf("pending Installation exposed repositories: HTTP %d %s", repositoryListResponse.Code, repositoryListResponse.Body.String())
 	}
+	// Repository listing is available only after an Installation has an active
+	// Tenant binding. Exercise the successful path and the Tenant/RBAC boundary
+	// through the authenticated HTTP route, not only the store helper.
+	activeInstallationID := int64(12346)
+	if _, err := pool.Exec(ctx, `INSERT INTO tenant_github_installations
+		(tenant_id, installation_id, account_login, status, requested_by, requested_at, updated_at)
+		VALUES ($1, $2, $3, 'active', $4, $5, $5)`, "tenant_member", activeInstallationID, "acme", "usr_owner", joinedAt); err != nil {
+		t.Fatalf("seed active Tenant Installation: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO github_app_installation_bindings (installation_id, tenant_id, bound_at)
+		VALUES ($1, $2, $3)`, activeInstallationID, "tenant_member", joinedAt); err != nil {
+		t.Fatalf("seed active Tenant Installation binding: %v", err)
+	}
+	for _, repository := range []struct {
+		id                  int64
+		owner, name, branch string
+	}{
+		{9002, "acme", "zeta", "main"},
+		{9001, "acme", "alpha", "trunk"},
+	} {
+		if _, err := pool.Exec(ctx, `INSERT INTO tenant_github_repositories
+			(tenant_id, installation_id, github_repository_id, owner_login, repository_name, default_branch, synchronized_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)`, "tenant_member", activeInstallationID, repository.id, repository.owner, repository.name, repository.branch, joinedAt); err != nil {
+			t.Fatalf("seed Tenant GitHub repository: %v", err)
+		}
+	}
+	listTenantRepositories := func(subject, tenantID, installationID string) *httptest.ResponseRecorder {
+		token := signTenantAPIToken(t, privateKey, issuer, subject, "openid hako/api")
+		request := httptest.NewRequest(http.MethodGet, "/v1/tenants/"+tenantID+"/github/installations/"+installationID+"/repositories", nil)
+		request.Header.Set("Authorization", "Bearer "+token)
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		return recorder
+	}
+	for _, subject := range []string{"owner-subject", "admin-subject"} {
+		activeRepositories := listTenantRepositories(subject, "tenant_member", strconv.FormatInt(activeInstallationID, 10))
+		var repositoryList struct {
+			Repositories []struct {
+				TenantID           string `json:"tenant_id"`
+				InstallationID     int64  `json:"installation_id"`
+				GitHubRepositoryID int64  `json:"github_repository_id"`
+				OwnerLogin         string `json:"owner_login"`
+				RepositoryName     string `json:"repository_name"`
+				DefaultBranch      string `json:"default_branch"`
+			} `json:"repositories"`
+		}
+		if activeRepositories.Code != http.StatusOK || json.Unmarshal(activeRepositories.Body.Bytes(), &repositoryList) != nil || len(repositoryList.Repositories) != 2 {
+			t.Fatalf("Tenant Owner/Admin repository list for %s = HTTP %d %s", subject, activeRepositories.Code, activeRepositories.Body.String())
+		}
+		if first := repositoryList.Repositories[0]; first.TenantID != "tenant_member" || first.InstallationID != activeInstallationID || first.GitHubRepositoryID != 9001 || first.RepositoryName != "alpha" || first.DefaultBranch != "trunk" {
+			t.Fatalf("repository list should be Tenant-scoped and deterministically ordered: %+v", repositoryList.Repositories)
+		}
+	}
+	if memberRepositories := listTenantRepositories("member-subject", "tenant_member", strconv.FormatInt(activeInstallationID, 10)); memberRepositories.Code != http.StatusNotFound {
+		t.Fatalf("Tenant member listed GitHub repositories: HTTP %d %s", memberRepositories.Code, memberRepositories.Body.String())
+	}
+	if foreignRepositories := listTenantRepositories("other-subject", "tenant_member", strconv.FormatInt(activeInstallationID, 10)); foreignRepositories.Code != http.StatusNotFound {
+		t.Fatalf("foreign Tenant owner listed GitHub repositories: HTTP %d %s", foreignRepositories.Code, foreignRepositories.Body.String())
+	}
+	for _, invalidInstallationID := range []string{"0", "not-a-number"} {
+		if invalid := listTenantRepositories("owner-subject", "tenant_member", invalidInstallationID); invalid.Code != http.StatusBadRequest {
+			t.Fatalf("invalid Installation ID %q returned HTTP %d: %s", invalidInstallationID, invalid.Code, invalid.Body.String())
+		}
+	}
 	if response := requestInstallation("owner-subject", http.MethodGet, "tenant_other", ""); response.Code != http.StatusNotFound {
 		t.Fatalf("tenant owner read another tenant's GitHub installation: HTTP %d", response.Code)
 	}
