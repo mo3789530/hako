@@ -1,4 +1,4 @@
-.PHONY: fmt lint test test-integration test-integration-local test-webhook-lifecycle-integration test-actions-runner-lifecycle-integration test-software-factory-e2e test-workload-runtime test-workload-runtime-integration test-job-services-podman test-artifact-retention-integration test-workspace-idle-lifecycle-integration test-preview-expiry-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-workspace-service-controller-lambda build-health-reporter-lambda build-workspace-idle-reconciler-lambda build-preview-expiry-lambda build-preview-runtime-dispatch-lambda build-preview-result-consumer-lambda build-workload-controller-lambda build-actions-runner-lambda build-actions-runner-microvm-image build-workload-microvm-artifact build-workload-microvm-services-image build-workspace-microvm-image build-github-checks-consumer-image build-github-broker-image build-workspace-gateway-image check-arm64-podman-build terraform-fmt terraform-validate terraform-test
+.PHONY: fmt lint test test-integration test-integration-local test-webhook-lifecycle-integration test-tenant-app-proof-integration test-actions-runner-lifecycle-integration test-software-factory-e2e test-workload-runtime test-workload-runtime-integration test-job-services-podman test-artifact-retention-integration test-workspace-idle-lifecycle-integration test-preview-expiry-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-workspace-service-controller-lambda build-health-reporter-lambda build-workspace-idle-reconciler-lambda build-preview-expiry-lambda build-preview-runtime-dispatch-lambda build-preview-result-consumer-lambda build-workload-controller-lambda build-actions-runner-lambda build-actions-runner-microvm-image build-workload-microvm-artifact build-workload-microvm-services-image build-workspace-microvm-image build-github-checks-consumer-image build-github-broker-image build-workspace-gateway-image check-arm64-podman-build terraform-fmt terraform-validate terraform-test
 
 TERRAFORM ?= terraform
 
@@ -40,6 +40,10 @@ test-integration-local:
 # Uses an isolated schema in the already-running local PostgreSQL database.
 test-webhook-lifecycle-integration:
 	HAKO_TEST_DATABASE_URL="$${HAKO_TEST_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" go test -tags=integration ./internal/api -run '^TestWebhookLifecycleE2E$$' -count=1
+
+# Synthetic App pins and fake GitHub proof; isolated schemas; leaves PostgreSQL running.
+test-tenant-app-proof-integration:
+	HAKO_TEST_DATABASE_URL="$${HAKO_TEST_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" go test -tags=integration ./internal/api ./internal/githubbroker -run 'TenantAppMetadata|TenantAppVerify|TenantAppProof' -count=1
 
 # Synthetic GitHub/provider credentials; isolated schemas; leaves PostgreSQL running.
 test-actions-runner-lifecycle-integration:

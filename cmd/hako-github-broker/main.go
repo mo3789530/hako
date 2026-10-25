@@ -88,6 +88,19 @@ func run() error {
 	if err != nil {
 		return errors.New("configure OAuth broker service")
 	}
+	appProof, err := githubbroker.NewTenantAppProofService(
+		githubbroker.NewPostgresTenantAppProofResolver(pool, policy),
+		func(ctx context.Context, access githubapp.TenantPrivateKeyAccess) error {
+			client, err := githubapp.NewTenantAppProofClientFromConfig(access, awsConfig, nil)
+			if err != nil {
+				return githubbroker.ErrTenantAppProofDenied
+			}
+			return client.VerifyApp(ctx)
+		},
+	)
+	if err != nil {
+		return errors.New("configure Tenant GitHub App proof service")
+	}
 	resolveRun := githubbroker.NewPostgresCheckoutRunResolver(pool, policy)
 	mintToken, err := githubbroker.NewAWSCheckoutTokenMinter(awsConfig, pool, policy, nil)
 	if err != nil {
@@ -245,6 +258,7 @@ func run() error {
 		addr = defaultListenAddr
 	}
 	handler := githubbroker.HandlerWithActionsRunnerChecksLifecycle(oauth, checkout, checks, checkoutCallers, actionsRunner, runnerCleanup, runnerCleanupCallers, runnerBinding, runnerCleanupCallers, runnerBootstrapToken, runnerCleanupCallers, runnerLaunch, runnerCleanupCallers, runnerStartupFailure, runnerCleanupCallers, runnerModelCredential, runnerChecks)
+	handler = githubbroker.WithTenantAppProof(handler, appProof)
 	handler = githubbroker.WithPreviewCheckout(handler, previewCheckout)
 	handler = githubbroker.WithEnvironmentApproval(handler, environmentApproval)
 	handler = githubbroker.WithAgentIssueContext(handler, agentIssueContext)

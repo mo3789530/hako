@@ -97,6 +97,14 @@ func main() {
 		log.Fatal("Tenant GitHub OAuth broker requires HAKO_GITHUB_APP_MANAGEMENT_ENABLED=true")
 	}
 	createConfig.TenantGitHubSetupResolver = tenantSetupResolver
+	tenantAppProofVerifier, err := tenantAppProofBrokerFromEnv()
+	if err != nil {
+		log.Fatal("configure Tenant GitHub App proof Broker failed (failure_class=broker_configuration)")
+	}
+	if tenantAppProofVerifier != nil && !createConfig.GitHubAppManagementEnabled {
+		log.Fatal("Tenant GitHub App proof Broker requires HAKO_GITHUB_APP_MANAGEMENT_ENABLED=true")
+	}
+	createConfig.GitHubAppProofVerifier = tenantAppProofVerifier
 	environmentApprovalVerifier, err := tenantEnvironmentApprovalBrokerFromEnv()
 	if err != nil {
 		log.Fatal("configure GitHub Environment approval verifier failed (failure_class=broker_configuration)")

@@ -2,7 +2,7 @@
 
 残作業の実行単位：[Task 69](task-69-tenant-checkout-broker.md)。親タスクは集約用に保持し、子タスク完了だけで配備済みとはしない。
 
-Status: In Progress (App proof API, active/draft resolver, exact reader provider, per-use generation authorization/cache partition, durable Run pin, and local mTLS checkout broker implemented in Task 69; production broker process/worker/IAM wiring remains). Priority: P0.
+Status: In Progress (Tenant App proof now has a Control Plane-only mTLS API→Broker path. The Broker re-resolves the draft's exact App/revision/generation and approved Role/Secret/Version from PostgreSQL before invoking the GitHub `GET /app` proof client. Resource references are not sent by the API. API/Broker wiring and a PostgreSQL-backed fake-verifier route test pass locally; production certificate/IAM/network provisioning remains). Priority: P0.
 
 ## Goal
 
@@ -19,6 +19,17 @@ Extend Task 37's internal credential library using [Tenant App design sections 4
 ## Acceptance / tests / docs
 
 Progress: `TokenClient.VerifyApp` signs with the configured App key, calls GitHub `GET /app`, checks the returned App ID, and returns only fixed safe credential errors. Draft and active resolvers return the exact approved binding, reader Role ARN, private-key Secret ARN and immutable Version ID only for the expected Tenant/App/revision/generation. `TenantPrivateKeySecretAPI` assumes only the exact Role with a session policy restricted to `GetSecretValue` on that exact Secret and requests the pinned VersionId. Tenant-scoped `TokenClient` revalidates active identity before cached-token reuse and after remote calls. Task 59 persists the resolved identity on each Run; Task 69 adds the local trusted mTLS checkout broker and strict owned/shared provider routing. The API binary still does not directly read Tenant private keys. Broker process/certificate lifecycle, worker wiring and deployed IAM remain outstanding.
+
+Tenant App draft verification is now wired separately from OAuth setup and
+checkout. When configured, the API sends only Tenant, integration, App ID,
+config revision, and credential generation to the Control Plane mTLS Broker.
+The Broker resolves the approved proof credential from PostgreSQL, rejects a
+stale or mismatched App pin, then uses the exact reader Role, Secret ARN, and
+immutable Secret VersionId to call GitHub `GET /app`. The proof API is optional
+and remains fail-closed when its dedicated mTLS configuration is absent. Unit,
+strict-route, API startup-configuration, and local PostgreSQL composition tests
+use a fake proof callback; they do not contact AWS, Secrets Manager, or GitHub.
+Run the focused acceptance with `make test-tenant-app-proof-integration`.
 
 - Generated RSA keys, fake Secret/STS/GitHub providers test A/B isolation, correct Role/ARN/version, mismatched App proof, rotation, revoked/suspended configuration, concurrent requests and stale client/cache.
 - Tokens/keys cannot appear in DB/messages/errors/artifacts; no public token endpoint is added.

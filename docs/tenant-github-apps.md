@@ -1,6 +1,6 @@
 # Tenant別GitHub App設計
 
-Status: **Tasks 56–59、66–71のlocal実装/E2E済み。Tenant Appのproduction有効化は未完了でdefault-off**。Draft proof、OAuth setup/API/CLI adapter、Webhook resolver/authorization/generation再検証、Installation/Run identity pin、Run-pinned checkout broker、Resource Plane Worker checkout composition、revision/generation-fenced dry-run/backfillとlegacy Run drain guard、二Tenantのsetup→Webhook→Run→checkout E2Eを実装。API binaryはprivate-key reader roleを直接assumeせず、broker未設定時はowned setup/verifyをfail closedにする。Control Plane Terraformはbroker roleにだけexact private-key reader ARNへの`sts:AssumeRole`を付与し、Webhook-purpose Roleとの重複を拒否する。Tenant Webhook routeは専用flagでopt-in可能だが、cross-account Role trust/Secret/KMS provisioningは未実施。broker certificate lifecycleとproduction rolloutは残る。現行共通App方式は維持する。
+Status: **Tasks 56–59、66–71のlocal実装/E2E済み。Tenant Appのproduction有効化は未完了でdefault-off**。Draft proof、OAuth setup/API/CLI adapter、Webhook resolver/authorization/generation再検証、Installation/Run identity pin、Run-pinned checkout broker、Resource Plane Worker checkout composition、revision/generation-fenced dry-run/backfillとlegacy Run drain guard、二Tenantのsetup→Webhook→Run→checkout E2Eを実装。Tenant App `verify`はControl Plane mTLS API→Broker経由で動作し、BrokerがDBから承認済みの正確なRole/Secret/Versionを再解決する。API binaryはprivate-key reader roleを直接assumeせず、proof broker未設定時はverifyをfail closedにする。Control Plane Terraformはbroker roleにだけexact private-key reader ARNへの`sts:AssumeRole`を付与し、Webhook-purpose Roleとの重複を拒否する。Tenant Webhook routeは専用flagでopt-in可能だが、cross-account Role trust/Secret/KMS provisioningは未実施。broker certificate lifecycleとproduction rolloutは残る。現行共通App方式は維持する。
 決定事項は[ADR 0007](adr/0007-tenant-github-apps.md)、既存資格情報実装は
 [GitHub App credentials](github-app-credentials.md)を参照。
 
@@ -58,7 +58,23 @@ Webhookは`POST /v1/integrations/github/apps/{integration_id}/webhook`を別途�
 
 POSTにはidempotency key、更新にはexpected revisionを用い、競合は409。未承認binding、別Tenant/App所有bindingはSecret取得前に拒否する。
 App verificationとdefault選択は別操作であり、GitHub疎通成功だけでRunを起動しない。
-Task 56では`hako github app list/add/show/verify/select-default/disable`からmetadataを操作する。Task 70では`migration-plan --revision <n> --generation <n> --installations <id,...>`でread-only計画を確認し、`migration-backfill`に同じpinと明示的な`--apply`を付けて適用する。API routeは`HAKO_GITHUB_APP_MANAGEMENT_ENABLED=true`で明示的に有効化し、未設定時はrouteを登録しない。`verify`はtrusted broker proof adapterがある場合にdraftからreadyへ進む。標準API binaryはprivate-key accessを持たず、adapter未構成なら409 `github_app_not_ready`、証明失敗なら秘匿された502 `github_app_verification_failed`を返す。Tenant Webhook ingressは`HAKO_TENANT_GITHUB_WEBHOOK_ENABLED=true`とTerraformのexact Webhook-role allowlistで別途opt-inする。Default選択はexpected revision/generation、用途別credential binding、legacy非終端Run drainを満たす場合だけ成功する。CLI/APIにSecret値を入力させない。
+Task 56では`hako github app list/add/show/verify/select-default/disable`からmetadataを操作する。Task 70では`migration-plan --revision <n> --generation <n> --installations <id,...>`でread-only計画を確認し、`migration-backfill`に同じpinと明示的な`--apply`を付けて適用する。API routeは`HAKO_GITHUB_APP_MANAGEMENT_ENABLED=true`で明示的に有効化し、未設定時はrouteを登録しない。`verify`はtrusted Broker proof adapterがある場合にdraftからreadyへ進む。標準API binaryはprivate-key accessを持たず、dedicated proof mTLS設定が未構成なら409 `github_app_not_ready`、証明失敗なら秘匿された502 `github_app_verification_failed`を返す。API→Broker requestにはTenant/integration/App ID/config revision/credential generationのみを含み、BrokerがDBから正確なprivate-key reader Role・Secret ARN・Version IDを解決する。Tenant Webhook ingressは`HAKO_TENANT_GITHUB_WEBHOOK_ENABLED=true`とTerraformのexact Webhook-role allowlistで別途opt-inする。Default選択はexpected revision/generation、用途別credential binding、legacy非終端Run drainを満たす場合だけ成功する。CLI/APIにSecret値を入力させない。
+
+API側のdraft proof adapterは、次の専用設定がすべてある場合だけ有効に
+なる。値が部分的に設定されている場合はAPI起動時に失敗し、全て未設定の
+場合は`verify`がfail closedとなる。
+
+```text
+HAKO_TENANT_GITHUB_APP_PROOF_BROKER_URL
+HAKO_TENANT_GITHUB_APP_PROOF_CLIENT_CERT_FILE
+HAKO_TENANT_GITHUB_APP_PROOF_CLIENT_KEY_FILE
+HAKO_TENANT_GITHUB_APP_PROOF_BROKER_CA_FILE
+```
+
+クライアント証明書は`spiffe://hako/control-plane` identityで発行し、
+TLS 1.3を使う。Brokerはそのidentityを必須とし、APIが送る公開identity
+pinだけからPostgreSQLで承認済みのRole/Secret/Versionを再解決する。実際の
+certificate provisioning/rotationとAWS Secret/IAM設定は未実施。
 
 `add`は`Idempotency-Key`必須で、`disable`/`verify`は`expected_revision`、`select-default`とmigrationは`expected_revision`および`expected_generation`を要求する。migration backfillには明示対象Installationと確認フラグが必要で、dry-runは変更しない。Owner/Admin以外と別Tenantのresourceはhidden 404。詳細なpath、body、response、error codeは[Control Plane API Contract](api-contract.md#tenant-github-app-metadata)を参照。
 

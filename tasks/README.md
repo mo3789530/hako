@@ -77,7 +77,7 @@ lifecycle document.
 | Task | 内容 | Depends on |
 |---|---|---|
 | [56 — Tenant App Registry/API](task-56-tenant-github-app-registry.md) | 完了：metadata、Owner/Admin API/CLI、承認binding、inert draft | 37（完了） |
-| [57 — Tenant資格情報resolver](task-57-tenant-github-credential-resolver.md) | local resolver/Run pin/brokerとWorker checkout compositionは実装済み。production broker process/certificate/IAM deploymentが残る | 56 |
+| [57 — Tenant資格情報resolver](task-57-tenant-github-credential-resolver.md) | local draft proof API→Control Plane mTLS Broker→DB再解決→GitHub App identity verificationも実装・PostgreSQL検証済み。APIはRole/Secret/Versionを送らず、Brokerがexact pinを解決。production certificate/IAM/network deploymentが残る | 56 |
 | [58 — Tenant OAuth/Webhook](task-58-tenant-github-setup-webhooks.md) | local webhook resolver/OAuth callback/API/CLI接続は実装済み。production certificate lifecycle/Role provisioningが残る | 56, 57 |
 | [59 — 移行/IAM](task-59-tenant-github-migration-iam.md) | binding/immutable Run pin、Task 70 migration tooling、Tenant-pinned Worker checkout、broker role限定のexact private-key reader AssumeRole policyとTerraform testsはlocal実装済み。cross-account trust/Secret/KMS provision、production backfill/cutover/rollbackは承認後 | 56–58 |
 | [60 — Tenant App E2E/運用](task-60-tenant-github-app-e2e.md) | Task 71の二Tenant local E2Eは検証済み。production rollout確認と運用runbookが残る | 56–59 |
