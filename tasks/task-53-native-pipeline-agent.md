@@ -549,5 +549,22 @@ network isolation behavior.
   the authorized requester or Tenant Owner/Admin. It omits the internal S3
   storage reference; `hako workload show` decodes the metadata through the
   existing Run endpoint. PostgreSQL integration coverage verifies the
-  metadata and proves the backing storage URI is not exposed. Artifact byte
-  retrieval remains a separate, unimplemented short-lived authorization path.
+  metadata and proves the backing storage URI is not exposed. General artifact
+  byte retrieval is now implemented by [Task 87](task-87-workload-artifact-download.md).
+  Agent-generated change artifacts and PR submission remain unimplemented.
+
+## Native Agent model transport foundation (2026-10-25)
+
+- Added a bounded Anthropic Messages API transport for the future Native Agent
+  executor. It pins requests to `https://api.anthropic.com/v1/messages`, uses
+  TLS 1.2+, disables proxy discovery and redirects, requires an operator-chosen
+  model name, and rejects oversized or malformed messages/tool blocks. Provider
+  response bodies and credentials are omitted from returned errors.
+- Tests use a synthetic key and an in-process HTTP doer to verify the fixed
+  endpoint, authentication/version headers, client-tool response parsing,
+  malformed tool rejection, request-model pinning, and provider-error
+  redaction. No real API request or credential retrieval was performed.
+- This is transport only. No Agent tool loop or process factory consumes it;
+  Agent scheduling remains disabled until the isolated executor, output
+  artifact/PR submission path, and target MicroVM resource/network controls are
+  implemented and validated.

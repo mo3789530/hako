@@ -308,6 +308,19 @@ this capability; no production Native Agent executor is configured and Agent
 execution remains disabled. Local tests use synthetic keys and do not read
 AWS Secrets Manager.
 
+The codebase now also has an unused `AnthropicMessagesClient` transport
+foundation. It sends only to Anthropic's fixed HTTPS Messages endpoint, disables
+proxy discovery and redirects, bounds request/response and tool-input sizes,
+and returns errors without provider response bodies. Its unit tests use a
+synthetic key and an in-process transport; no live API request is made. This
+does not provide a Native Agent tool loop, does not enable model execution, and
+does not create an artifact or Pull Request from Agent changes. Anthropic's
+client-side tool protocol requires the application to execute each returned
+tool call and send a tool result back in a subsequent Messages request; see
+[Anthropic tool use](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/overview).
+Any future tools must be Hako-owned bounded operations, never a generic shell
+or unrestricted network client.
+
 Treat `.hako/factory.yaml`, workflow files, action references, shell steps,
 container images, cache contents, and webhook payloads as untrusted inputs.
 The Native pipeline schema needs a version, strict parser, allowlisted step
