@@ -307,6 +307,42 @@ func TestWorkspaceSSHProxyCLIUsesDedicatedTicketAndRevokes(t *testing.T) {
 	}
 }
 
+func TestWorkspaceSSHProxyRevokesSessionWhenGatewayURLIsInvalid(t *testing.T) {
+	previousGetter := cliCredentialGetter
+	cliCredentialGetter = workspaceShellCredentials(`{"access_token":"ssh-failure-access","token_type":"Bearer","expires_in":3600,"stored_at":"` + time.Now().UTC().Format(time.RFC3339) + `"}`)
+	t.Cleanup(func() { cliCredentialGetter = previousGetter })
+	var created, revoked atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer ssh-failure-access" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if r.Method == http.MethodPost {
+			created.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = fmt.Fprint(w, `{"session_id":"0123456789abcdef0123456789abcdef0123456789abcdef","ticket":"synthetic-ticket","expires_at":"`+time.Now().Add(time.Minute).UTC().Format(time.RFC3339)+`","permissions":["ssh-proxy"]}`)
+			return
+		}
+		if r.Method == http.MethodDelete {
+			revoked.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
+	}))
+	defer server.Close()
+	t.Setenv("HAKO_API_URL", server.URL)
+	t.Setenv("HAKO_GATEWAY_URL", "not-a-gateway-url")
+
+	if err := workspaceSSHProxy(context.Background(), "tenant_cli", "ws_cli", strings.NewReader(""), io.Discard); err == nil {
+		t.Fatal("invalid Gateway URL unexpectedly succeeded")
+	}
+	if created.Load() != 1 || revoked.Load() != 1 {
+		t.Fatalf("SSH session lifecycle created=%d revoked=%d, want 1/1", created.Load(), revoked.Load())
+	}
+}
+
 type allowForwardTestPort struct{}
 
 func (allowForwardTestPort) AllowPort(_ context.Context, _ workspacesession.Claims, port uint16) (bool, error) {

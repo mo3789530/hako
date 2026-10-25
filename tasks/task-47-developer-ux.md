@@ -157,6 +157,17 @@ per-connection Session authorization, byte relay, and revocation. `go test
 coverage is now 88.0% and the CLI package is 62.7%. These tests do not verify a
 deployed Gateway or Lambda MicroVM.
 
+## SSH proxy CLI failure cleanup (2026-10-25)
+
+Added a direct `hako ssh-proxy` entry-path test where Session issuance succeeds
+but the Gateway URL is invalid. The CLI returns an error and revokes the
+short-lived Session, proving cleanup on pre-stream connection failure. The
+existing TLS/WSS E2E continues to cover the dedicated `ssh-proxy` permission,
+byte relay, cancellation, and revocation. `workspaceSSHProxy` entry coverage is
+100%; its injected implementation is 75.8% and total `cmd/hako` coverage is
+62.9%. This does not prove that the Workspace image has a configured `sshd` or
+that production Gateway routing is deployed.
+
 ## Acceptance criteria
 
 - CLI unit and authenticated integration tests cover happy path, re-login, authorization failure, disconnect, cancellation, and invalid forwards.
