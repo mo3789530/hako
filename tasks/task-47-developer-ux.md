@@ -180,6 +180,16 @@ byte relay, cancellation, and revocation. `workspaceSSHProxy` entry coverage is
 62.9%. This does not prove that the Workspace image has a configured `sshd` or
 that production Gateway routing is deployed.
 
+## Workspace Service add/list CLI coverage (2026-10-25)
+
+Added HTTP-backed tests for `addWorkspaceService` and `listWorkspaceServices`.
+They verify the authenticated Tenant/Workspace route, the built-in catalog
+request body, accepted desired-state response, and list result. Missing login
+and missing `HAKO_API_URL` fail before any request. The integration-tagged CLI
+package reports 67.3% statement coverage (up from 66.7% in the previous
+package run). This verifies the CLI/API contract, not deployed Service
+execution in a Lambda MicroVM.
+
 ## Local terminal mode and resize coverage (2026-10-25)
 
 Added Linux PTY tests for `hako shell` local terminal handling. They verify

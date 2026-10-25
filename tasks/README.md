@@ -36,6 +36,12 @@ text that claimed OAuth broker/API/CLI wiring was still missing; Tasks 66/67/72
 contain that local implementation, while production certificate/IAM/network
 provisioning remains open.
 
+Task 47 CLI follow-up (2026-10-25): authenticated HTTP tests now cover
+Workspace Service add/list, request route/body/result, and missing login/API URL
+failure paths. `go test -tags=integration -cover ./cmd/hako -count=1` reports
+67.3% statement coverage. Service runtime remains subject to the Task 84
+ARM64 nerdctl/Lambda MicroVM gate.
+
 Task 52 workflow policy read API was added on 2026-10-25. Tenant members can
 inspect the active repository allowlist through the authenticated API/CLI;
 configuration remains Owner/Admin-only. API/CLI and PostgreSQL integration

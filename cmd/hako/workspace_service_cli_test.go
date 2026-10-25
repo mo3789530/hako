@@ -52,3 +52,75 @@ func TestWorkspaceServiceCredentialRotationCLIUsesTenantScopedAPI(t *testing.T) 
 		t.Fatalf("credential rotation response = %+v", service)
 	}
 }
+
+func TestWorkspaceServiceAddAndListCLIUseTenantScopedAPI(t *testing.T) {
+	const token = "workspace-service-cli-token"
+	service := `{"id":"svc_postgres","tenant_id":"tenant_services","workspace_id":"ws_services","name":"db","catalog_name":"postgres","desired_state":"running","observed_state":"pending","desired_revision":1}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			t.Errorf("Authorization = %q", r.Header.Get("Authorization"))
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if r.URL.Path != "/v1/tenants/tenant_services/workspaces/ws_services/services" {
+			t.Errorf("unexpected path: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		switch r.Method {
+		case http.MethodPost:
+			body, err := io.ReadAll(r.Body)
+			if err != nil || string(body) != `{"catalog_name":"postgres","name":"db"}` {
+				t.Errorf("add request body = %q, err=%v", body, err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = fmt.Fprint(w, service)
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"items":[%s]}`, service)
+		default:
+			t.Errorf("unexpected method: %s", r.Method)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HAKO_API_URL", server.URL)
+	previous := cliCredentialGetter
+	cliCredentialGetter = workspaceServiceCLICredentials(fmt.Sprintf(`{"access_token":%q,"token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+		token, time.Now().UTC().Format(time.RFC3339)))
+	t.Cleanup(func() { cliCredentialGetter = previous })
+
+	added, err := addWorkspaceService("tenant_services", "ws_services", "postgres", "db")
+	if err != nil || added.ID != "svc_postgres" || added.DesiredState != "running" {
+		t.Fatalf("addWorkspaceService() = %+v, %v", added, err)
+	}
+	listed, err := listWorkspaceServices("tenant_services", "ws_services")
+	if err != nil || len(listed.Items) != 1 || listed.Items[0].ID != added.ID {
+		t.Fatalf("listWorkspaceServices() = %+v, %v", listed, err)
+	}
+}
+
+func TestWorkspaceServiceAddAndListCLIRequireLoginAndAPIURL(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		url   string
+		creds string
+	}{
+		{name: "missing login", url: "http://127.0.0.1:1", creds: ""},
+		{name: "missing API URL", url: "", creds: `{"access_token":"service-access","token_type":"Bearer","expires_in":3600,"stored_at":"` + time.Now().UTC().Format(time.RFC3339) + `"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HAKO_API_URL", test.url)
+			previous := cliCredentialGetter
+			cliCredentialGetter = workspaceServiceCLICredentials(test.creds)
+			t.Cleanup(func() { cliCredentialGetter = previous })
+			if _, err := addWorkspaceService("tenant_services", "ws_services", "postgres", "db"); err == nil {
+				t.Fatal("addWorkspaceService accepted missing configuration")
+			}
+			if _, err := listWorkspaceServices("tenant_services", "ws_services"); err == nil {
+				t.Fatal("listWorkspaceServices accepted missing configuration")
+			}
+		})
+	}
+}
