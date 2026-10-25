@@ -42,6 +42,13 @@ failure paths. `go test -tags=integration -cover ./cmd/hako -count=1` reports
 67.3% statement coverage. Service runtime remains subject to the Task 84
 ARM64 nerdctl/Lambda MicroVM gate.
 
+Task 47 follow-up: the `hako service <action>` command handler now has a
+directly testable boundary. Tests verify the authorized `start` API request,
+exact-name `remove` cancellation before network access, and that `--yes` is
+restricted to `remove`. The latest integration-tagged CLI coverage is 68.1%;
+focused CLI race tests pass. This is desired-state/API evidence, not proof of
+the deployed MicroVM Service executor.
+
 Task 52 workflow policy read API was added on 2026-10-25. Tenant members can
 inspect the active repository allowlist through the authenticated API/CLI;
 configuration remains Owner/Admin-only. API/CLI and PostgreSQL integration

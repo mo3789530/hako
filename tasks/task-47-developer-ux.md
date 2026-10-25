@@ -190,6 +190,15 @@ package reports 67.3% statement coverage (up from 66.7% in the previous
 package run). This verifies the CLI/API contract, not deployed Service
 execution in a Lambda MicroVM.
 
+## Workspace Service action command boundary (2026-10-25)
+
+Extracted the `hako service <action>` dispatch into a testable command handler.
+HTTP-backed tests cover the authenticated `start` request and accepted output;
+removal tests prove an incorrect confirmation makes no API request and that
+`--yes` is rejected for `start`. The full integration-tagged `cmd/hako` package
+reports 68.1% statement coverage and the focused race run passes. The command
+still reports desired state acceptance; it does not imply MicroVM execution.
+
 ## Local terminal mode and resize coverage (2026-10-25)
 
 Added Linux PTY tests for `hako shell` local terminal handling. They verify

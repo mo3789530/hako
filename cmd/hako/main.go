@@ -416,38 +416,9 @@ func main() {
 			os.Exit(1)
 		}
 	case len(os.Args) >= 6 && len(os.Args) <= 7 && os.Args[1] == "service":
-		action := os.Args[2]
-		options, err := parseWorkspaceServiceActionOptions(action, os.Args[6:])
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "hako service %s: %v\nusage: hako service %s <tenant-id> <workspace-id> <instance-name> [--yes]\n", action, err, action)
-			os.Exit(2)
+		if code := runWorkspaceServiceActionCLI(os.Args[2:], os.Stdin, os.Stdout, os.Stderr); code != 0 {
+			os.Exit(code)
 		}
-		requestAction := func() (domain.Service, error) {
-			return requestWorkspaceServiceAction(action, os.Args[3], os.Args[4], os.Args[5])
-		}
-		var service domain.Service
-		if action == "remove" {
-			confirmedService, accepted, err := runConfirmedAction(
-				func() (bool, error) {
-					return authorizeWorkspaceServiceRemoval(options.yes, os.Stdin, os.Stderr, os.Args[3], os.Args[4], os.Args[5])
-				}, requestAction)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "hako service remove: %v\n", err)
-				os.Exit(1)
-			}
-			if !accepted {
-				fmt.Fprintln(os.Stderr, "Workspace Service removal cancelled.")
-				return
-			}
-			service = confirmedService
-		} else {
-			service, err = requestAction()
-		}
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "hako service %s: %v\n", action, err)
-			os.Exit(1)
-		}
-		fmt.Fprintf(os.Stdout, "Service %s %s accepted (desired=%s observed=%s)\n", service.Name, action, service.DesiredState, service.ObservedState)
 	case len(os.Args) >= 3 && len(os.Args) <= 5 && os.Args[1] == "list":
 		limit, offset, err := parseCLIPage(os.Args[3:])
 		if err != nil {
