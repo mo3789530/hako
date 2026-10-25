@@ -195,6 +195,24 @@ func TestLambdaRetriesExactRunParameters(t *testing.T) {
 	}
 }
 
+func TestLambdaAcceptsMinimumOneSecondAndMapsAPIValue(t *testing.T) {
+	c, runtime, api, _, _ := setupLambda(t)
+	base := c.resolver
+	c.resolver = resolveFunc(func(ctx context.Context, id workloadjournal.Command) (Specification, error) {
+		spec, err := base.Resolve(ctx, id)
+		spec.Deadline = spec.RequestedAt.Add(time.Second)
+		return spec, err
+	})
+	runtime.resolver = c.resolver
+	if _, err := c.Ensure(context.Background(), envelope(t, nil)); err != nil {
+		t.Fatal("one-second Lambda MicroVM run was rejected:", err)
+	}
+	if len(api.inputs) != 1 || aws.ToInt32(api.inputs[0].MaximumDurationInSeconds) != 1 || api.inputs[0].IdlePolicy == nil ||
+		aws.ToInt32(api.inputs[0].IdlePolicy.MaxIdleDurationSeconds) != 60 {
+		t.Fatalf("one-second request was not mapped to valid bounded API parameters: %+v", api.inputs)
+	}
+}
+
 func TestLambdaRejectsMissingOrMalformedAgentToken(t *testing.T) {
 	for name, token := range map[string]map[string]string{
 		"missing":      nil,
@@ -301,7 +319,7 @@ func TestLambdaCleanupWaitsForConfirmedTermination(t *testing.T) {
 }
 
 func TestLambdaRejectsUnsupportedDurationAndUnsafeNetwork(t *testing.T) {
-	for _, field := range []string{"duration", "default_network", "internet", "mutable_image", "digest"} {
+	for _, field := range []string{"duration", "duration_subsecond", "duration_24h", "default_network", "internet", "mutable_image", "digest"} {
 		t.Run(field, func(t *testing.T) {
 			c, r, api, _, _ := setupLambda(t)
 			old := c.resolver
@@ -310,6 +328,10 @@ func TestLambdaRejectsUnsupportedDurationAndUnsafeNetwork(t *testing.T) {
 				switch field {
 				case "duration":
 					s.Deadline = s.RequestedAt.Add(9 * time.Hour)
+				case "duration_subsecond":
+					s.Deadline = s.RequestedAt.Add(time.Millisecond)
+				case "duration_24h":
+					s.Deadline = s.RequestedAt.Add(24 * time.Hour)
 				case "default_network":
 					s.EgressNetworkConnectors = nil
 				case "internet":

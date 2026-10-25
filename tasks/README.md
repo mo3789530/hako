@@ -23,6 +23,12 @@ The Podman Job Service acceptance now also checks that an internal network
 cannot establish TCP to the link-local instance-metadata listener; it performs
 no metadata HTTP request or credential read.
 
+Task 61's published contract/cost documentation now reflects the explicit
+1–28,800 second `RunMicrovm` API range and separates Dockerfile snapshot builds
+from nested guest containers. Hako pricing meters and a Tokyo-safe estimate
+formula are recorded; live Lambda MicroVM latency, cgroup/network isolation,
+and cost PoC remain open.
+
 ## 着手ルール
 
 1. `P0`から順に、依存タスクが完了しているものを一件だけ選ぶ。

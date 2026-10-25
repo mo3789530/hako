@@ -603,9 +603,11 @@ Lambda MicroVMは最大8時間で終了する可能性があり、suspendは同�
 memory/local diskを保つだけです。終了後の自動置換にはEFS永続化とagent復旧が必要で、
 Task 44/45完了までは有効化しません。詳細は[Workspace Runtime契約](docs/workspace-lambda-microvm.md)。
 
-`small`/`standard`/`large`のCPU・memory値は現時点では目標案であり、Lambda
-MicroVM APIがそのサイズ指定を提供することは確認できていません。Runtime adapterは
-実際に提供できるprofileだけを許可し、未対応classをfail closedにします。
+`small`/`standard`/`large`はHakoのRuntime Class名であり、AWS APIへCPU・memoryを
+MicroVMごとのRun引数として渡すものではありません。各有効profileは固定MicroVM
+image/versionのbaseline sizingに対応付けます。AWSはbaseline CPU/memoryを実行中に課金し、
+超過分は実使用時間、さらにsnapshot read/write/storageとdata transferを別に課金します。
+実profileの費用と起動性能は専用Lambda MicroVM PoCで測定するまで未確定です。
 
 Hako側では、
 
@@ -636,7 +638,7 @@ Disk
 16 GB
 ```
 
-この値はMicroVM Imageのbaseline sizingです（Run APIでMicroVMごとにCPU/RAMを指定する設計ではありません）。AWSの公開サイズ表では4 GiB baseline / 2 vCPUに対して最大16 GiB / 8 vCPUへburstし、disk上限は16 GiBです。1 MicroVMの存続時間は最大8時間、ARM64のみです。Quotaとnested containerの実動作はTask 61のPoC待ちで、Runtime Class名だけでは隔離・capacityを保証しません。[Lambda MicroVM runtime constraints](docs/lambda-microvm-workloads.md)
+この値はMicroVM Imageのbaseline sizingです。AWSの公開サイズ表では4 GiB baseline / 2 vCPUに対して最大16 GiB / 8 vCPUへburstし、disk上限は16 GiBです。`RunMicrovm`のdurationは1–28,800秒で、Hakoの24時間Run要求はLambda起動前に拒否します。Lambda MicroVMはARM64のみです。Quota、cold start、nested container、cgroup、Tenant間network/filesystem隔離の実動作はTask 61のPoC待ちで、Runtime Class名やAWSのVM隔離だけではHakoの各境界を保証しません。[Lambda MicroVM runtime constraints](docs/lambda-microvm-workloads.md)
 
 ## 17. MicroVM内部
 

@@ -10,9 +10,12 @@ Status: API contract identified (AWS Lambda MicroVMs); image/container/network P
 
 - [x] Lambda MicroVM前提にADR・README・Task 40を訂正する。EC2 workerとFargate Workload workerは追加しない。
 - [x] AWS Lambda MicroVMs専用APIと公式SDKを確認。RunMicrovm ClientToken、GetMicrovm、TerminateMicrovm、lambda: IAM prefixを使用する。[具体的な実装契約](../docs/lambda-microvm-workloads.md)。通常のLambda invocationとは別API。
-- [ ] 1秒〜24時間のRun deadline、Docker/containerd/Podman、compose、Tenant隔離、untrusted code、network制限、source/artifact搬送を確認する。
+- [x] Public provider contract: generic Hako Run deadline is 1 second–24 hours; Lambda `maximumDurationInSeconds` accepts 1–28,800 seconds. The adapter rejects sub-second/over-8-hour windows before provider calls, and the 1-second boundary maps exactly to the API. Dockerfile image building creates a MicroVM snapshot; it is distinct from running nested Docker/containerd/Podman/Compose inside the VM. See [runtime contract](../docs/lambda-microvm-workloads.md).
+- [x] Record documented boundaries: Lambda MicroVMs isolate individual workloads and support VPC egress connectors whose Security Groups and NACLs govern outbound traffic; default egress is public Internet. Source/artifact transfer uses Hako's signed Agent protocol and controller-owned S3 path; the MicroVM receives no S3 credentials. Pricing dimensions are recorded without reusing us-east-1 sample rates for Tokyo. Sources: [Lambda MicroVM core concepts](https://docs.aws.amazon.com/lambda/latest/dg/microvms-how-it-works.html), [networking](https://docs.aws.amazon.com/lambda/latest/dg/microvms-networking.html), and [pricing](https://aws.amazon.com/lambda/pricing/).
+- [ ] Prove Hako guest/runtime behavior on the pinned ARM64 Lambda MicroVM: nested rootless containerd/Podman and Compose, effective cgroup/namespace isolation, per-Tenant filesystem/runtime separation, source/artifact transfer, and VPC connector default-deny including AWS endpoints and public Internet. Local Podman tests do not satisfy this acceptance.
 - [x] provider mappingと復旧契約を定義・library実装（Tasks 63–65）。AWSは8時間上限、ARM64のみ、標準Internet egress。24時間Runとの不一致はadapterの起動前拒否で扱う。実AWSのidempotency保持期間・raceはPoCで確認する。
-- [ ] cold start、quota、費用、container実行、停止/cleanupのPoCを記録する。Workspace向け能力はTask 43と共有する。
+- [x] Document published account/Region quotas, API rate limits, size tiers, 8-hour cap, baseline/peak billing, snapshot read/write/storage, and data-transfer billing in the runtime contract. Check live Service Quotas and prices only in the approved deployment account/Region.
+- [ ] Measure actual Hako image build/cold start, idle suspend/resume, run/cancel/cleanup, quota/throttling, and cost in a dedicated approved Lambda MicroVM environment. Do not treat host Podman or QEMU smoke tests as the provider PoC.
 
 ## Acceptance criteria
 
@@ -102,3 +105,16 @@ individual ARM64 binaries. Continue this acceptance on an ARM64 builder or a
 host where binfmt registration is available, then repeat it inside the actual
 Lambda MicroVM before treating Task 61 as complete. No AWS API/resource was
 used or changed.
+
+## Provider contract and cost refresh (2026-10-25)
+
+Rechecked the AWS primary API and guide: `RunMicrovm.maximumDurationInSeconds`
+has an explicit 1–28,800 second range; the adapter now has a regression test
+for the 1-second request and rejects 24 hours before the provider call. The
+image guide describes Dockerfile execution followed by a snapshot, while
+nested container runtime support remains a separate guest capability test.
+Recorded the published pricing dimensions and a Hako usage formula without
+copying us-east-1 example rates into a Tokyo estimate. Local contract and
+documentation acceptance is complete; image/runtime/network/quota/cost PoC
+still requires an approved target MicroVM and remains open. No AWS API or
+resource was used.
