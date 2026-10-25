@@ -1,5 +1,7 @@
 .PHONY: fmt lint test test-integration test-integration-local test-webhook-lifecycle-integration test-actions-runner-lifecycle-integration test-software-factory-e2e test-workload-runtime test-workload-runtime-integration test-job-services-podman test-artifact-retention-integration test-workspace-idle-lifecycle-integration test-preview-expiry-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-workspace-service-controller-lambda build-health-reporter-lambda build-workspace-idle-reconciler-lambda build-preview-expiry-lambda build-preview-runtime-dispatch-lambda build-preview-result-consumer-lambda build-workload-controller-lambda build-actions-runner-lambda build-actions-runner-microvm-image build-workload-microvm-artifact build-workload-microvm-services-image build-workspace-microvm-image build-github-checks-consumer-image build-workspace-gateway-image check-arm64-podman-build terraform-fmt terraform-validate terraform-test
 
+TERRAFORM ?= terraform
+
 # ARM64 Podman builds execute RUN commands from the target image. On x86_64,
 # fail early unless a QEMU binfmt_misc handler is already installed.
 check-arm64-podman-build:
@@ -227,21 +229,21 @@ build-workspace-gateway-image: check-arm64-podman-build
 	podman build --arch arm64 --tag hako-workspace-gateway:local -f cmd/hako-workspace-gateway/Dockerfile .
 
 terraform-fmt:
-	terraform fmt -check -recursive infra/terraform
+	$(TERRAFORM) fmt -check -recursive infra/terraform
 
 terraform-validate:
 	@set -e; \
 	for root in infra/terraform/environments/dev/control-plane infra/terraform/environments/dev/resource-plane; do \
-		terraform -chdir=$$root init -backend=false -input=false; \
-		terraform -chdir=$$root validate; \
+		$(TERRAFORM) -chdir=$$root init -backend=false -input=false; \
+		$(TERRAFORM) -chdir=$$root validate; \
 	done
 
 terraform-test:
-	terraform -chdir=infra/terraform/modules/resource-plane init -backend=false -input=false
-	terraform -chdir=infra/terraform/modules/resource-plane test
-	terraform -chdir=infra/terraform/modules/workspace-storage init -backend=false -input=false
-	terraform -chdir=infra/terraform/modules/workspace-storage test
-	terraform -chdir=infra/terraform/modules/github-broker-tenant-iam init -backend=false -input=false
-	terraform -chdir=infra/terraform/modules/github-broker-tenant-iam test
-	terraform -chdir=infra/terraform/modules/tenant-model-credential-reader-role init -backend=false -input=false
-	terraform -chdir=infra/terraform/modules/tenant-model-credential-reader-role test
+	$(TERRAFORM) -chdir=infra/terraform/modules/resource-plane init -backend=false -input=false
+	$(TERRAFORM) -chdir=infra/terraform/modules/resource-plane test
+	$(TERRAFORM) -chdir=infra/terraform/modules/workspace-storage init -backend=false -input=false
+	$(TERRAFORM) -chdir=infra/terraform/modules/workspace-storage test
+	$(TERRAFORM) -chdir=infra/terraform/modules/github-broker-tenant-iam init -backend=false -input=false
+	$(TERRAFORM) -chdir=infra/terraform/modules/github-broker-tenant-iam test
+	$(TERRAFORM) -chdir=infra/terraform/modules/tenant-model-credential-reader-role init -backend=false -input=false
+	$(TERRAFORM) -chdir=infra/terraform/modules/tenant-model-credential-reader-role test
