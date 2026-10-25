@@ -223,6 +223,16 @@ readiness is not confirmed. Invalid options and a missing wait adapter fail
 before an API request. The process entry point supplies the signal-aware
 Workspace wait implementation.
 
+## Workspace basic CLI failure-path coverage (2026-10-25)
+
+Added HTTP-backed failure tests for `create`, `list`, and `get`: service
+unavailability returns a nonzero status without success output, and failed
+create output preserves the same idempotency key for a safe retry. Tests also
+cover nil output streams failing before network access and output-writer
+failure for list/get. The `runWorkspaceBasicCLI` handler now has 77.2%
+statement coverage in its focused test selection. This verifies CLI behavior
+against a local HTTP server, not a deployed API or Lambda MicroVM.
+
 ## Local terminal mode and resize coverage (2026-10-25)
 
 Added Linux PTY tests for `hako shell` local terminal handling. They verify

@@ -203,6 +203,102 @@ func TestWorkspaceBasicCLIDispatchRejectsInvalidArgumentsAndOutputFailure(t *tes
 	}
 }
 
+func TestWorkspaceBasicCLIDispatchFailurePaths(t *testing.T) {
+	t.Run("nil output streams fail before making a request", func(t *testing.T) {
+		requests := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			requests++
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer server.Close()
+		t.Setenv("HAKO_API_URL", server.URL)
+		setWorkspaceBasicCLICredentials(t, "workspace-basic-cli-token")
+
+		var stderr bytes.Buffer
+		if code := runWorkspaceBasicCLI("list", []string{"tenant_cli"}, nil, &stderr); code != 2 {
+			t.Fatalf("nil stdout exit code = %d", code)
+		}
+		if code := runWorkspaceBasicCLI("list", []string{"tenant_cli"}, &bytes.Buffer{}, nil); code != 2 {
+			t.Fatalf("nil stderr exit code = %d", code)
+		}
+		if requests != 0 {
+			t.Fatalf("nil stream requests = %d, want 0", requests)
+		}
+	})
+
+	t.Run("API failures are reported for create list and get", func(t *testing.T) {
+		requests := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests++
+			if r.Header.Get("Authorization") != "Bearer workspace-basic-cli-token" {
+				t.Errorf("Authorization = %q", r.Header.Get("Authorization"))
+			}
+			http.Error(w, `{"error":"synthetic API failure"}`, http.StatusServiceUnavailable)
+		}))
+		defer server.Close()
+		t.Setenv("HAKO_API_URL", server.URL)
+		setWorkspaceBasicCLICredentials(t, "workspace-basic-cli-token")
+
+		cases := []struct {
+			command string
+			args    []string
+			want    string
+		}{
+			{command: "create", args: []string{"tenant_cli", "api-dev", "--idempotency-key", "request-retry-1"}, want: "Retry the same request with --idempotency-key request-retry-1"},
+			{command: "list", args: []string{"tenant_cli"}, want: "hako list:"},
+			{command: "get", args: []string{"tenant_cli", "ws_cli"}, want: "hako get:"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.command, func(t *testing.T) {
+				var stdout, stderr bytes.Buffer
+				if code := runWorkspaceBasicCLI(tc.command, tc.args, &stdout, &stderr); code != 1 {
+					t.Fatalf("exit code = %d, stderr=%q", code, stderr.String())
+				}
+				if stdout.Len() != 0 || !strings.Contains(stderr.String(), tc.want) {
+					t.Fatalf("stdout=%q stderr=%q, want error containing %q", stdout.String(), stderr.String(), tc.want)
+				}
+			})
+		}
+		if requests != len(cases) {
+			t.Fatalf("API requests = %d, want %d", requests, len(cases))
+		}
+	})
+
+	t.Run("list and get output failures are reported", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/v1/tenants/tenant_cli/workspaces":
+				_, _ = fmt.Fprint(w, `{"items":[{"workspace":{"id":"ws_cli","name":"api-dev"},"status":{"desired_state":"running","observed_state":"running"}}],"total":1,"limit":10,"offset":0}`)
+			case "/v1/tenants/tenant_cli/workspaces/ws_cli":
+				_, _ = fmt.Fprint(w, `{"workspace":{"id":"ws_cli","name":"api-dev"},"status":{"desired_state":"running","observed_state":"running"}}`)
+			default:
+				t.Errorf("unexpected request path %q", r.URL.Path)
+				http.NotFound(w, r)
+			}
+		}))
+		defer server.Close()
+		t.Setenv("HAKO_API_URL", server.URL)
+		setWorkspaceBasicCLICredentials(t, "workspace-basic-cli-token")
+
+		for _, command := range []string{"list", "get"} {
+			t.Run(command, func(t *testing.T) {
+				args := []string{"tenant_cli"}
+				if command == "get" {
+					args = append(args, "ws_cli")
+				}
+				var stderr bytes.Buffer
+				if code := runWorkspaceBasicCLI(command, args, workspaceBasicCLIWriterError{}, &stderr); code != 1 {
+					t.Fatalf("exit code = %d, stderr=%q", code, stderr.String())
+				}
+				if !strings.Contains(stderr.String(), "write output:") {
+					t.Fatalf("stderr = %q, want output write failure", stderr.String())
+				}
+			})
+		}
+	})
+}
+
 func assertWorkspaceBasicCLIConfigurationFails(t *testing.T) {
 	t.Helper()
 	if _, err := createWorkspace("tenant_cli", "api-dev", "request-create-1"); err == nil {
