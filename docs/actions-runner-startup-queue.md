@@ -137,13 +137,19 @@ Example `policy.json`:
 The workflow remains authored and maintained in the repository; Hako never
 creates commands from issue/PR text or rewrites `.github/workflows`. See
 [`claude-code-action.md`](claude-code-action.md) for the runner labels, event
-limits, and Action pinning contract. Local launch provenance is implemented;
-Task 75 credential isolation and Task 76/77 actual Action execution and full
-runtime E2E are still required before claiming a supported end-to-end product.
+limits, and Action pinning contract. The broker launch composition fetches
+authoritative GitHub run/job/workflow metadata and verifies it against the
+Tenant-owned policy before consuming the startup claim. Claim consumption then
+rechecks the exact policy snapshot transactionally, so a policy change between
+preflight and launch fails closed.
 
-The verifier and metadata lookup are not yet invoked by the queue consumer or
-launcher. Therefore Claude Action workflows must not be considered eligible
-for production runner admission until those checks are integrated.
+Tasks 74–77 provide local provenance, credential-isolation, fake-provider
+execution, and PostgreSQL end-to-end evidence. This does not certify the
+official ARM64 image on Lambda MicroVMs or a live GitHub/AWS deployment. Claude
+Action execution remains a deployment-gated capability: keep its policy and
+runner admission disabled until the pinned image, restricted network, broker
+certificates/IAM, and cleanup path have been reviewed and verified in the
+target Resource Plane. No queue consumer bypasses the broker launch gate.
 
 ## Local verification
 
