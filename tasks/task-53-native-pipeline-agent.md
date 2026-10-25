@@ -731,3 +731,14 @@ default-off and is not deployed; Native Agent dispatch remains disabled.
   Lambda MicroVM, GitHub API, or a real model request. Production Agent
   scheduling remains disabled pending the target runtime/network/resource
   gates described above.
+
+## Repository model-access CLI failure coverage (2026-10-25)
+
+The Tenant-scoped Repository model-access CLI now has regression coverage for
+invalid arguments, absent login/API URL, and a `403` authorization response.
+The successful local HTTP test still asserts `execution_enabled=false` and
+checks the exact Tenant/Installation/Repository route and request body.
+`parseGitHubRepositoryAgentModelAccessCLI` and
+`manageGitHubRepositoryAgentModelAccessCLI` each have 100% statement coverage;
+`cmd/hako` reports 72.5%. No Native Agent scheduling or external service was
+enabled.

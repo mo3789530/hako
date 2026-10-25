@@ -871,3 +871,51 @@ func TestManageNativeAgentPolicyCLIsKeepExecutionDisabled(t *testing.T) {
 		t.Fatalf("invalid policy file reached API; request count=%d", calls)
 	}
 }
+
+func TestManageGitHubRepositoryAgentModelAccessCLIFailsClosed(t *testing.T) {
+	validCredentials := fmt.Sprintf(`{"access_token":"cli-agent-policy-test","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+		time.Now().UTC().Format(time.RFC3339))
+	previous := cliCredentialGetter
+	t.Cleanup(func() { cliCredentialGetter = previous })
+	args := []string{"set", "--tenant", "tenant_agent_cli", "--installation", "42", "--repository", "7", "--enabled", "true"}
+
+	for _, test := range []struct {
+		name        string
+		args        []string
+		credentials string
+		apiURL      string
+		want        string
+	}{
+		{name: "invalid arguments", args: []string{"set", "--tenant", "tenant_agent_cli"}, credentials: validCredentials, apiURL: "https://api.example.test", want: "--tenant"},
+		{name: "missing login", args: args, apiURL: "https://api.example.test", want: "saved Hako login is invalid"},
+		{name: "missing API URL", args: args, credentials: validCredentials, want: "HAKO_API_URL"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HAKO_API_URL", test.apiURL)
+			cliCredentialGetter = repositoryCLICredentials(test.credentials)
+			if _, err := manageGitHubRepositoryAgentModelAccessCLI(test.args); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("manageGitHubRepositoryAgentModelAccessCLI error = %v, want %q", err, test.want)
+			}
+		})
+	}
+
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Method != http.MethodPut || r.URL.Path != "/v1/tenants/tenant_agent_cli/github/installations/42/repositories/7/agent-model-access" {
+			t.Errorf("model access API request = %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = fmt.Fprint(w, `{"error":{"code":"tenant_forbidden","message":"Tenant Owner or Admin required"}}`)
+	}))
+	defer server.Close()
+	t.Setenv("HAKO_API_URL", server.URL)
+	cliCredentialGetter = repositoryCLICredentials(validCredentials)
+	if _, err := manageGitHubRepositoryAgentModelAccessCLI(args); err == nil || !strings.Contains(err.Error(), "tenant_forbidden") || strings.Contains(err.Error(), "sk-ant-test-secret") {
+		t.Fatalf("model access denial = %v, want authorization error without credential material", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("model access API calls = %d, want 1", calls.Load())
+	}
+}
