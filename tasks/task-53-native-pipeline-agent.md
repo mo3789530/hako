@@ -716,3 +716,18 @@ default-off and is not deployed; Native Agent dispatch remains disabled.
   attempt-scoped proposal bundle and local branch/PR submission path are
   implemented in [Task 89](task-89-agent-proposal-publishing.md); deployment
   and live Lambda MicroVM execution remain unavailable.
+
+## Issue-to-proposal local composition (2026-10-25)
+
+- Added a PostgreSQL integration test that records a verified `/hako implement`
+  Issue-comment delivery, processes it into one immutable Agent Run and bounded
+  task, reloads the persisted task pins, and passes that exact context to the
+  Native Agent process factory. A scripted model writes a repository file,
+  invokes the fixed test verifier, and produces a proposal archive. The test
+  asserts the Issue text is sourced from the persisted task and checks the
+  commit, delivery, context digest, and synthetic model credential boundaries.
+- Run it with `make test-native-agent-e2e`. The test uses local PostgreSQL and
+  synthetic provider data only; it does not execute the Resource Plane Worker,
+  Lambda MicroVM, GitHub API, or a real model request. Production Agent
+  scheduling remains disabled pending the target runtime/network/resource
+  gates described above.

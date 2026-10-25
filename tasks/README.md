@@ -94,6 +94,13 @@ The Podman Job Service acceptance now also checks that an internal network
 cannot establish TCP to the link-local instance-metadata listener; it performs
 no metadata HTTP request or credential read.
 
+Task 53 follow-up: `make test-native-agent-e2e` composes a signed Issue command
+delivery, PostgreSQL-backed immutable Agent task, and scripted Native Agent
+proposal generation. It verifies the executor receives persisted, bounded
+task context and creates a proposal only after the fixed test tool passes.
+This remains local/fake evidence; Resource Plane Worker-to-MicroVM execution
+and production Agent admission are not enabled.
+
 Task 61's published contract/cost documentation now reflects the explicit
 1–28,800 second `RunMicrovm` API range and separates Dockerfile snapshot builds
 from nested guest containers. Hako pricing meters and a Tokyo-safe estimate
