@@ -228,8 +228,9 @@ host cannot execute the ARM64 AL2023 RPM-install layer, and the MicroVM base
 image has no amd64 manifest. No final image was produced; use an ARM64 or
 explicitly configured binfmt/QEMU builder. The real Lambda `/run` hook remains
 unverified. Live EFS IAM policy and mount validation, orderly/forced shutdown
-behavior, orphan reconciliation, and backup/restore, retention, and quota
-verification remain open.
+behavior, running the read-only orphan reconciliation against the target
+Resource Plane, and backup/restore, retention, and quota verification remain
+open.
 Live AWS validation remains subject to explicit approval.
 
 Authoritative references: [EFS Access Point IAM condition key](https://docs.aws.amazon.com/efs/latest/ug/access-points-iam-policy.html), [EFS resource policy example](https://docs.aws.amazon.com/efs/latest/ug/security_iam_resource-based-policy-examples.html), [AWS Backup for EFS](https://docs.aws.amazon.com/efs/latest/ug/awsbackup.html), and [EFS lifecycle management](https://docs.aws.amazon.com/efs/latest/ug/enable-lifecycle-management.html).
