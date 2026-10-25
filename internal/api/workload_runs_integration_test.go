@@ -266,6 +266,11 @@ func TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility(t *testing.T) {
 		!strings.Contains(usage.Body.String(), `"queued_workload_runs_used":0`) || !strings.Contains(usage.Body.String(), `"queued_workload_runs_limit":3`) {
 		t.Fatalf("Tenant usage should include five active Workload reservations: HTTP %d %s", usage.Code, usage.Body.String())
 	}
+	foreignUsage := request("runs-other", http.MethodGet, "/v1/tenants/tenant_runs_a/usage")
+	missingTenantUsage := request("runs-other", http.MethodGet, "/v1/tenants/tenant_runs_missing/usage")
+	if foreignUsage.Code != http.StatusNotFound || missingTenantUsage.Code != http.StatusNotFound || foreignUsage.Body.String() != missingTenantUsage.Body.String() {
+		t.Fatalf("Tenant usage must hide foreign Tenant existence: foreign=%d %s missing=%d %s", foreignUsage.Code, foreignUsage.Body.String(), missingTenantUsage.Code, missingTenantUsage.Body.String())
+	}
 	if badPage := request("runs-owner", http.MethodGet, "/v1/tenants/tenant_runs_a/workload-runs?limit=101"); badPage.Code != http.StatusBadRequest {
 		t.Fatalf("invalid pagination returned HTTP %d", badPage.Code)
 	}

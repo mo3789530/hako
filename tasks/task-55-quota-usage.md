@@ -140,3 +140,11 @@ reading the answer. Both failures abort before the mutation callback; only an
 explicit confirmation or the existing `--yes` path can update the Tenant
 limits. This supplements the existing decline/EOF checks and does not change
 the quota API or its configured-reservation semantics.
+
+## Tenant usage existence-hiding coverage (2026-10-25)
+
+The PostgreSQL API integration test now compares the Workload usage response
+for a foreign Tenant with the response for a nonexistent Tenant. Both return
+the same hidden `404`, while an authenticated Tenant member can still read the
+usage summary for their own Tenant. This confirms quota/usage reads do not
+disclose whether another Tenant exists.
