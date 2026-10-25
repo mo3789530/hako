@@ -202,6 +202,13 @@ sidecar, generated credential authentication, cgroup checks, loopback access,
 and denied external TCP probe. PostgreSQL remained running. These are local
 host-Podman/fake-provider checks, not ARM64 nerdctl or Lambda MicroVM evidence.
 
+Task 47 CLI follow-up (2026-10-25): Workspace Shell reconnect tests now cover
+revoking an expired Session before a failed reconnect, cancellation during
+retry backoff, stale-stream race handling, and EOF after terminal input ends.
+`workspaceShellReconnect` coverage rose from 59.3% to 85.2%, and `cmd/hako`
+coverage rose from 71.6% to 71.9%. `go test -race ./cmd/hako -count=1` and
+`go test ./...` passed.
+
 ## 着手ルール
 
 1. `P0`から順に、依存タスクが完了しているものを一件だけ選ぶ。

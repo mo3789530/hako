@@ -261,6 +261,16 @@ caller-supplied Tenant ID and uses the requested Tenant, and missing login or
 API URL fails before a request. `go test ./cmd/hako -count=1` covers this
 local CLI/API boundary; authorization remains enforced by the API.
 
+## Workspace shell reconnect failure and race coverage (2026-10-25)
+
+Added tests for cancellation while reconnecting after a transient Session API
+failure, revocation of the expired Session before retry, stale-stream races
+where another reader already reconnected, and EOF after terminal input closes.
+`workspaceShellReconnect` coverage increased from 59.3% to 85.2%, and total
+`cmd/hako` statement coverage increased from 71.6% to 71.9%. These tests use a
+local HTTPS/API test server or in-memory state; they do not depend on AWS or a
+deployed Gateway.
+
 ## Acceptance criteria
 
 - CLI unit and authenticated integration tests cover happy path, re-login, authorization failure, disconnect, cancellation, and invalid forwards.
