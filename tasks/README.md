@@ -29,6 +29,13 @@ from nested guest containers. Hako pricing meters and a Tokyo-safe estimate
 formula are recorded; live Lambda MicroVM latency, cgroup/network isolation,
 and cost PoC remain open.
 
+Task 61 artifact inspection (2026-10-25): rebuilt/inspected the workload
+Agent package and Controller Lambda bootstrap. Both binaries are statically
+linked ELF64/AArch64; the Agent ZIP contains only its Dockerfile, binary, and
+synthetic test public key. This confirms build/package architecture, not a
+Lambda MicroVM image build or guest execution. The test key is not production
+usable; runtime/network/isolation PoC remains open.
+
 ## 着手ルール
 
 1. `P0`から順に、依存タスクが完了しているものを一件だけ選ぶ。

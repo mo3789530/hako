@@ -118,3 +118,15 @@ copying us-east-1 example rates into a Tokyo estimate. Local contract and
 documentation acceptance is complete; image/runtime/network/quota/cost PoC
 still requires an approved target MicroVM and remains open. No AWS API or
 resource was used.
+
+## ARM64 Lambda artifact inspection (2026-10-25)
+
+Inspected the current `make build-workload-microvm-artifact` output: the ZIP
+contains only the Agent Dockerfile, statically linked AArch64 `hako-agent`,
+and the supplied synthetic test public key. `readelf` confirms ELF64/AArch64
+for the Agent. Also inspected `make build-workload-controller-lambda`; its
+`provided.al2023` bootstrap is a statically linked ELF64/AArch64 executable.
+This verifies cross-compilation and package contents only. The test key cannot
+authenticate production traffic, and neither artifact was executed inside a
+Lambda MicroVM. Container runtime, network/isolation, and lifecycle/cost PoC
+remain open. No AWS API/resource was used.
