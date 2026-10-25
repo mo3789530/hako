@@ -496,3 +496,13 @@ Add optional repository-level preview environments and service metadata/deploy p
   non-application ports. This still does not verify public URL lifecycle,
   actual Lambda MicroVM networking, or production cleanup. No AWS resources or
   Secrets were applied/read.
+
+## Preview runtime cleanup unit coverage (2026-10-25)
+
+Added table-driven unit coverage for the generation-scoped cleanup worker's
+invalid context/dependency, lease, timeout, batch, and claim-ID configuration
+paths. `go test ./internal/previewcleanup -cover` now reports 31.1% statement
+coverage (previously 18.2%); `RuntimeWorker.RunOnce` is covered at 27.4% for
+the local validation paths. The focused PostgreSQL cleanup E2E still passes
+for lease recovery, retry, generation fencing, and quota release. This does
+not replace the real Resource Plane/Lambda MicroVM cleanup verification.

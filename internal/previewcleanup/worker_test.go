@@ -22,6 +22,12 @@ func (f cleanupExecutorFunc) Cleanup(ctx context.Context, job previews.CleanupJo
 	return f(ctx, job)
 }
 
+type runtimeCleanupExecutorFunc func(context.Context, previews.RuntimeCleanupJob) error
+
+func (f runtimeCleanupExecutorFunc) CleanupGeneration(ctx context.Context, job previews.RuntimeCleanupJob) error {
+	return f(ctx, job)
+}
+
 func TestClassifyUsesOnlyBoundedCleanupCategories(t *testing.T) {
 	for _, test := range []struct {
 		err  error
@@ -80,6 +86,52 @@ func withCleanupConfig(worker Worker, lease, timeout time.Duration, batch int) W
 }
 
 func withCleanupClaim(worker Worker, claim string, err error) Worker {
+	worker.NewClaimID = func() (string, error) { return claim, err }
+	return worker
+}
+
+func TestRuntimeWorkerRejectsInvalidConfiguration(t *testing.T) {
+	valid := RuntimeWorker{Pool: cleanupNeverBeginPool{}, Executor: runtimeCleanupExecutorFunc(func(context.Context, previews.RuntimeCleanupJob) error { return nil }),
+		Lease: 10 * time.Second, Timeout: time.Second, BatchSize: 1, NewClaimID: func() (string, error) { return "claim-runtime-cleanup-1234", nil }}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	tests := []struct {
+		name   string
+		worker RuntimeWorker
+		ctx    context.Context
+	}{
+		{name: "nil context", worker: valid},
+		{name: "cancelled context", worker: valid, ctx: canceled},
+		{name: "missing pool", worker: RuntimeWorker{Executor: valid.Executor}, ctx: context.Background()},
+		{name: "missing executor", worker: RuntimeWorker{Pool: valid.Pool}, ctx: context.Background()},
+		{name: "lease below minimum", worker: withRuntimeCleanupConfig(valid, 4*time.Second, time.Second, 1), ctx: context.Background()},
+		{name: "lease above maximum", worker: withRuntimeCleanupConfig(valid, 11*time.Minute, time.Second, 1), ctx: context.Background()},
+		{name: "timeout below minimum", worker: withRuntimeCleanupConfig(valid, 10*time.Second, 500*time.Millisecond, 1), ctx: context.Background()},
+		{name: "timeout reaches lease", worker: withRuntimeCleanupConfig(valid, 10*time.Second, 10*time.Second, 1), ctx: context.Background()},
+		{name: "batch above maximum", worker: withRuntimeCleanupConfig(valid, 10*time.Minute, time.Second, 101), ctx: context.Background()},
+		{name: "batch timeout exceeds lease", worker: withRuntimeCleanupConfig(valid, 10*time.Second, 5*time.Second, 2), ctx: context.Background()},
+		{name: "claim id generation failed", worker: withRuntimeCleanupClaim(valid, "", errors.New("entropy unavailable")), ctx: context.Background()},
+		{name: "claim id too short", worker: withRuntimeCleanupClaim(valid, "short", nil), ctx: context.Background()},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			stats, err := test.worker.RunOnce(test.ctx)
+			if !errors.Is(err, ErrWorkerConfiguration) {
+				t.Fatalf("RunOnce() error = %v, want ErrWorkerConfiguration", err)
+			}
+			if stats != (Stats{}) {
+				t.Fatalf("RunOnce() stats = %+v, want empty stats", stats)
+			}
+		})
+	}
+}
+
+func withRuntimeCleanupConfig(worker RuntimeWorker, lease, timeout time.Duration, batch int) RuntimeWorker {
+	worker.Lease, worker.Timeout, worker.BatchSize = lease, timeout, batch
+	return worker
+}
+
+func withRuntimeCleanupClaim(worker RuntimeWorker, claim string, err error) RuntimeWorker {
 	worker.NewClaimID = func() (string, error) { return claim, err }
 	return worker
 }
