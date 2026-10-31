@@ -217,8 +217,8 @@ func TestS3StoreListsOnlyValidRecoverableJournalsWithinPrefix(t *testing.T) {
 func TestS3StoreRecoveryListingRejectsUnsafeOrUnboundedRequests(t *testing.T) {
 	client := &s3Stub{listOut: &s3.ListObjectsV2Output{Contents: []types.Object{{Key: aws.String("prefix/../escape/run/attempt.json")}}}}
 	store, _ := NewS3Store(client, "bucket", "prefix")
-	if _, _, err := store.ListRecoveryPage(context.Background(), "", 10); err == nil {
-		t.Fatal("unsafe recovery key was accepted")
+	if page, _, err := store.ListRecoveryPage(context.Background(), "", 10); err != nil || len(page) != 0 {
+		t.Fatalf("unsafe recovery key was not skipped: page=%v error=%v", page, err)
 	}
 	if _, _, err := store.ListRecoveryPage(context.Background(), "", 1001); err == nil {
 		t.Fatal("unbounded recovery page was accepted")
@@ -226,6 +226,24 @@ func TestS3StoreRecoveryListingRejectsUnsafeOrUnboundedRequests(t *testing.T) {
 	withoutPrefix, _ := NewS3Store(client, "bucket", "")
 	if _, _, err := withoutPrefix.ListRecoveryPage(context.Background(), "", 10); err == nil {
 		t.Fatal("recovery scan without an explicit prefix was accepted")
+	}
+}
+
+func TestS3RecoverySkipsCorruptJournalAndContinues(t *testing.T) {
+	journal, err := New(Command{TenantID: "tenant_1", WorkloadRunID: "run_1", AttemptID: "attempt_1", Generation: 1, ResourcePlaneID: "rp_1", IdempotencyToken: "token_1"}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := Encode(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad, good := "prefix/tenant_1/run_1/bad.json", "prefix/tenant_1/run_1/attempt_1.json"
+	client := &s3Stub{objects: map[string][]byte{bad: []byte("invalid"), good: data}, listOut: &s3.ListObjectsV2Output{Contents: []types.Object{{Key: &bad}, {Key: &good}}}}
+	store, _ := NewS3Store(client, "bucket", "prefix")
+	page, _, err := store.ListRecoveryPage(context.Background(), "", 10)
+	if err != nil || len(page) != 1 || page[0].Journal.AttemptID != "attempt_1" {
+		t.Fatalf("page=%v error=%v", page, err)
 	}
 }
 

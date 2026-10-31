@@ -5,12 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
 )
+
+var errCorruptJournal = errors.New("invalid Workload journal object")
 
 type s3API interface {
 	GetObject(context.Context, *s3.GetObjectInput, ...func(*s3.Options)) (*s3.GetObjectOutput, error)
@@ -87,10 +90,10 @@ func (s *S3Store) Get(ctx context.Context, tenantID, runID, attemptID string) (S
 	}
 	journal, err := Decode(data)
 	if err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, fmt.Errorf("%w: %v", errCorruptJournal, err)
 	}
 	if journal.TenantID != tenantID || journal.WorkloadRunID != runID || journal.AttemptID != attemptID {
-		return Snapshot{}, errors.New("S3 Workload journal key does not match its payload")
+		return Snapshot{}, fmt.Errorf("%w: key does not match payload", errCorruptJournal)
 	}
 	return Snapshot{Journal: journal, ETag: *output.ETag}, nil
 }
@@ -143,14 +146,20 @@ func (s *S3Store) ListRecoveryPage(ctx context.Context, continuationToken string
 	items := make([]Snapshot, 0, len(output.Contents))
 	for _, object := range output.Contents {
 		if object.Key == nil {
-			return nil, "", errors.New("S3 returned a Workload journal without a key")
+			slog.WarnContext(ctx, "skipping Workload recovery object without a key")
+			continue
 		}
 		tenantID, runID, attemptID, err := s.identityFromKey(*object.Key)
 		if err != nil {
-			return nil, "", err
+			slog.WarnContext(ctx, "skipping malformed Workload recovery key")
+			continue
 		}
 		snapshot, err := s.Get(ctx, tenantID, runID, attemptID)
 		if err != nil {
+			if errors.Is(err, errCorruptJournal) || errors.Is(err, ErrNotFound) {
+				slog.WarnContext(ctx, "skipping invalid or missing Workload recovery journal", "tenant_id", tenantID, "workload_run_id", runID, "attempt_id", attemptID)
+				continue
+			}
 			return nil, "", err
 		}
 		if recoverable(snapshot.Journal) {

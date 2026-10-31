@@ -223,7 +223,7 @@ func (b *ProcessBackend) Start(ctx context.Context, claims TicketClaims, req Sta
 		plan.AgentModelCredential = req.AgentModelCredential
 	}
 	modelCredentialForRedaction := append([]byte(nil), req.AgentModelCredential...)
-	processCtx, cancel := context.WithDeadline(b.root, plan.Deadline)
+	processCtx, cancel := context.WithTimeout(b.root, deadlineIn)
 	output := &boundedOutput{limit: b.config.MaxOutput}
 	process, err := b.config.Factory.Start(processCtx, plan, output)
 	clear(plan.AgentModelCredential)
