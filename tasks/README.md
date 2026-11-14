@@ -2,6 +2,9 @@
 
 このディレクトリは、次の実装担当（Lunnaを含む）が一つずつ着手できる粒度にしたタスクの実行台帳です。設計上のSystem of Recordは引き続き[README](../README.md)、コンポーネント仕様は各`docs/`です。ここでは未完了項目を依存関係・境界・受入条件に整理します。
 
+- [Task 90 — AgentCore Runtime Coding Agent](task-90-agentcore-coding-agent.md): AgentCoreをAgent Runの追加実行バックエンドとして実装し、既存の変更提案・独立検証・PR公開フローに接続する。default-off、AWS上の隔離・資格情報・cleanup検証は本番有効化の条件。[基盤の現状とマイルストーン](../docs/coding-agent-platform.md)。
+- Task 90 の未決定事項と実装順： [91 — Runtime・作業領域](task-91-agent-runtime-and-workspace.md) → [92 — ハーネス・モデル](task-92-coding-agent-harness-model.md)、[93 — ソース・変更提案](task-93-agent-source-proposal-contract.md) → [94 — 言語検証・Terraform](task-94-coding-agent-verification-terraform.md)、[95 — 隔離・資格情報](task-95-agent-isolation-and-credentials.md) → [96 — AgentCore運用・E2E](task-96-agentcore-lifecycle-operations.md)。92と93、94と95は依存を満たした後に並行可能。
+
 ## 全ローカル統合テストの再確認（2026-10-25）
 
 `make test-integration-local`を2026-10-25に再実行し、`go test -tags=integration -p=1 ./... -count=1`が全パッケージで成功した。既に起動中のローカルPostgreSQLを使用し、テスト後も`hako-dev-postgres`が稼働中であることを確認した。直近の対象コードにはloopback-only OpenSSH/Workspace host-key実装と、sshd listener readiness待機・起動失敗時cleanupを含む。その後のfocused SSH testでは、ローカルOpenSSH 10.2p1がWorkspaceのsshd設定を`sshd -t`で受理することを確認済み。これはローカル統合受入の証拠であり、AWS配備、Lambda MicroVM上の実行、Secrets取得やGitHub/AWS外部接続の証拠ではない。
