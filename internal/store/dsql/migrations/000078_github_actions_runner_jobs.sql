@@ -1,0 +1,20 @@
+CREATE TABLE IF NOT EXISTS github_actions_runner_jobs (
+    integration_id TEXT NOT NULL,
+    delivery_id TEXT NOT NULL,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    installation_id BIGINT NOT NULL CHECK (installation_id > 0),
+    repository_id BIGINT NOT NULL CHECK (repository_id > 0),
+    workflow_job_id BIGINT NOT NULL CHECK (workflow_job_id > 0),
+    workflow_run_id BIGINT NOT NULL CHECK (workflow_run_id > 0),
+    run_attempt BIGINT NOT NULL CHECK (run_attempt >= 0),
+    workflow_name TEXT NOT NULL,
+    job_name TEXT NOT NULL,
+    head_branch TEXT NOT NULL,
+    head_sha TEXT NOT NULL,
+    labels JSONB NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('admitted', 'starting', 'assigned', 'running', 'completed', 'failed', 'cancelled')),
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (integration_id, workflow_job_id, run_attempt),
+    UNIQUE (integration_id, delivery_id)
+);

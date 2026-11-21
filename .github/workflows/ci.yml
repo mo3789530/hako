@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go checks
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_DB: hako
+          POSTGRES_USER: hako
+          POSTGRES_PASSWORD: local-dev-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hako -d hako"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check formatting
+        run: test -z "$(gofmt -l $(git ls-files '*.go'))"
+      - name: Vet
+        run: go vet ./...
+      - name: Check reachable Go vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+      - name: Test
+        run: go test ./...
+      - name: Package Lambda MicroVM Agent artifact (test key only)
+        run: make build-workload-microvm-artifact HAKO_AGENT_TRUSTED_KEYS_FILE=images/workload-agent/trusted-keys.example.json
+      - name: Focused GitHub Webhook lifecycle E2E
+        env:
+          HAKO_TEST_DATABASE_URL: postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable
+        run: make test-webhook-lifecycle-integration
+      - name: Actions Runner lifecycle and cleanup recovery
+        env:
+          HAKO_TEST_DATABASE_URL: postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable
+        run: make test-actions-runner-lifecycle-integration
+      - name: Install Podman and pull isolated Go test image
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes podman
+          podman pull docker.io/library/golang:1.27.3-alpine
+          podman pull docker.io/library/postgres:18
+      - name: PostgreSQL integration tests and coverage
+        env:
+          HAKO_TEST_DATABASE_URL: postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable
+          HAKO_E2E_REQUIRE_PODMAN: "1"
+          HAKO_JOB_SERVICES_PODMAN_TEST: "1"
+        run: go test -tags=integration -p=1 -coverpkg=./... -coverprofile=coverage.out ./... -count=1
+
+  terraform:
+    name: Terraform checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.12.1
+      - name: Check formatting
+        run: terraform fmt -check -recursive infra/terraform
+      - name: Validate dev roots
+        shell: bash
+        run: |
+          set -euo pipefail
+          for root in infra/terraform/environments/dev/control-plane infra/terraform/environments/dev/resource-plane; do
+            terraform -chdir="$root" init -backend=false -input=false
+            terraform -chdir="$root" validate
+          done
+      - name: Test Resource Plane Worker deployment contract
+        run: |
+          terraform -chdir=infra/terraform/modules/resource-plane init -backend=false -input=false
+          terraform -chdir=infra/terraform/modules/resource-plane test

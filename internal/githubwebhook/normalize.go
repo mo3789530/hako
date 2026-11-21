@@ -1,0 +1,385 @@
+package githubwebhook
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"regexp"
+	"strings"
+	"time"
+)
+
+const RepositoryEventSchemaVersion = 1
+
+var commitSHAPattern = regexp.MustCompile(`^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$`)
+
+// RepositoryEvent is the versioned, GitHub-independent subset Hako stores for
+// routing and future processing. Raw provider payloads are not copied here.
+type RepositoryEvent struct {
+	SchemaVersion       int              `json:"schema_version"`
+	DeliveryID          string           `json:"delivery_id"`
+	Type                string           `json:"type"`
+	GitHubEvent         string           `json:"github_event"`
+	Action              string           `json:"action,omitempty"`
+	InstallationID      int64            `json:"installation_id,omitempty"`
+	GitHubAppID         *int64           `json:"github_app_id,omitempty"`
+	Repository          *RepositoryRef   `json:"repository,omitempty"`
+	RepositoriesAdded   []RepositoryRef  `json:"repositories_added,omitempty"`
+	RepositoriesRemoved []RepositoryRef  `json:"repositories_removed,omitempty"`
+	Ref                 string           `json:"ref,omitempty"`
+	CommitSHA           string           `json:"commit_sha,omitempty"`
+	Deleted             bool             `json:"deleted,omitempty"`
+	Actor               string           `json:"actor,omitempty"`
+	ActorGitHubID       int64            `json:"actor_github_id,omitempty"`
+	PullRequest         *PullRequestRef  `json:"pull_request,omitempty"`
+	WorkflowJob         *WorkflowJobRef  `json:"workflow_job,omitempty"`
+	IssueComment        *IssueCommentRef `json:"issue_comment,omitempty"`
+}
+
+type RepositoryRef struct {
+	GitHubID      int64  `json:"github_id"`
+	Owner         string `json:"owner"`
+	Name          string `json:"name"`
+	DefaultBranch string `json:"default_branch,omitempty"`
+}
+
+type PullRequestRef struct {
+	Number    int64     `json:"number"`
+	State     string    `json:"state"`
+	HeadRef   string    `json:"head_ref"`
+	HeadSHA   string    `json:"head_sha"`
+	BaseRef   string    `json:"base_ref"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
+
+type WorkflowJobRef struct {
+	ID              int64    `json:"id"`
+	RunID           int64    `json:"run_id"`
+	RunAttempt      int64    `json:"run_attempt,omitempty"`
+	Name            string   `json:"name"`
+	WorkflowName    string   `json:"workflow_name,omitempty"`
+	HeadBranch      string   `json:"head_branch"`
+	HeadSHA         string   `json:"head_sha"`
+	Status          string   `json:"status"`
+	Conclusion      string   `json:"conclusion,omitempty"`
+	Labels          []string `json:"labels,omitempty"`
+	RunnerID        *int64   `json:"runner_id,omitempty"`
+	RunnerName      string   `json:"runner_name,omitempty"`
+	RunnerGroupID   *int64   `json:"runner_group_id,omitempty"`
+	RunnerGroupName string   `json:"runner_group_name,omitempty"`
+}
+
+// IssueCommentRef intentionally contains no comment body. Commands are
+// extracted into a closed enum and are only hints; tenant authorization and
+// immutable commit resolution are required before any Agent Run is created.
+type IssueCommentRef struct {
+	IssueNumber       int64        `json:"issue_number"`
+	CommentID         int64        `json:"comment_id"`
+	IsPullRequest     bool         `json:"is_pull_request,omitempty"`
+	AuthorAssociation string       `json:"author_association,omitempty"`
+	AgentCommand      AgentCommand `json:"agent_command,omitempty"`
+}
+
+// AgentCommand is a closed set of commands recognized from collaborator
+// comments. It never carries free-form user text.
+type AgentCommand string
+
+const AgentCommandImplement AgentCommand = "implement"
+
+type githubPayload struct {
+	Action       string `json:"action"`
+	Ref          string `json:"ref"`
+	After        string `json:"after"`
+	Deleted      bool   `json:"deleted"`
+	Installation struct {
+		ID      int64  `json:"id"`
+		AppID   *int64 `json:"app_id"`
+		Account struct {
+			Login string `json:"login"`
+		} `json:"account"`
+	} `json:"installation"`
+	Repository          *githubRepository  `json:"repository"`
+	RepositoriesAdded   []githubRepository `json:"repositories_added"`
+	RepositoriesRemoved []githubRepository `json:"repositories_removed"`
+	Sender              struct {
+		Login string `json:"login"`
+		ID    int64  `json:"id"`
+	} `json:"sender"`
+	PullRequest struct {
+		Number    int64     `json:"number"`
+		State     string    `json:"state"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Head      struct {
+			Ref string `json:"ref"`
+			SHA string `json:"sha"`
+		} `json:"head"`
+		Base struct {
+			Ref string `json:"ref"`
+		} `json:"base"`
+	} `json:"pull_request"`
+	WorkflowJob struct {
+		ID              int64    `json:"id"`
+		RunID           int64    `json:"run_id"`
+		RunAttempt      *int64   `json:"run_attempt"`
+		Name            string   `json:"name"`
+		WorkflowName    *string  `json:"workflow_name"`
+		HeadBranch      string   `json:"head_branch"`
+		HeadSHA         string   `json:"head_sha"`
+		Status          string   `json:"status"`
+		Conclusion      string   `json:"conclusion"`
+		Labels          []string `json:"labels"`
+		RunnerID        *int64   `json:"runner_id"`
+		RunnerName      *string  `json:"runner_name"`
+		RunnerGroupID   *int64   `json:"runner_group_id"`
+		RunnerGroupName *string  `json:"runner_group_name"`
+	} `json:"workflow_job"`
+	Issue struct {
+		Number      int64 `json:"number"`
+		PullRequest *struct {
+			URL string `json:"url"`
+		} `json:"pull_request"`
+	} `json:"issue"`
+	Comment struct {
+		ID                int64  `json:"id"`
+		Body              string `json:"body"`
+		AuthorAssociation string `json:"author_association"`
+	} `json:"comment"`
+}
+
+type githubRepository struct {
+	ID            int64  `json:"id"`
+	Name          string `json:"name"`
+	DefaultBranch string `json:"default_branch"`
+	Owner         struct {
+		Login string `json:"login"`
+	} `json:"owner"`
+}
+
+// Normalize converts an authenticated GitHub delivery into the stable Hako
+// event schema and validates identifiers needed by later tenant resolution.
+func Normalize(delivery VerifiedDelivery) (RepositoryEvent, error) {
+	if !validDeliveryID(delivery.DeliveryID) || len(delivery.Payload) == 0 || !supportedEventAction(delivery.Event, delivery.Action) {
+		return RepositoryEvent{}, fmt.Errorf("%w: incomplete or unsupported verified delivery", ErrInvalidDelivery)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(delivery.Payload))
+	var payload githubPayload
+	if err := decoder.Decode(&payload); err != nil || payload.Action != delivery.Action {
+		return RepositoryEvent{}, fmt.Errorf("%w: decode GitHub event payload", ErrInvalidDelivery)
+	}
+	if payload.Installation.AppID != nil && *payload.Installation.AppID <= 0 {
+		return RepositoryEvent{}, fmt.Errorf("%w: installation App ID must be positive when present", ErrInvalidDelivery)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return RepositoryEvent{}, fmt.Errorf("%w: payload must contain exactly one JSON object", ErrInvalidDelivery)
+	}
+	event := RepositoryEvent{
+		SchemaVersion: RepositoryEventSchemaVersion,
+		DeliveryID:    delivery.DeliveryID,
+		GitHubEvent:   delivery.Event,
+		Action:        delivery.Action,
+		Actor:         boundedText(payload.Sender.Login, 100),
+		ActorGitHubID: payload.Sender.ID,
+		GitHubAppID:   payload.Installation.AppID,
+	}
+	switch delivery.Event {
+	case "push":
+		repository, err := normalizeRepository(payload.Repository)
+		if err != nil || payload.Installation.ID <= 0 || !validRef(payload.Ref) || !validSHA(payload.After) {
+			return RepositoryEvent{}, fmt.Errorf("%w: push requires installation, repository, ref, and commit SHA", ErrInvalidDelivery)
+		}
+		event.Type = "repository.push"
+		event.Repository, event.Ref, event.CommitSHA, event.Deleted = repository, payload.Ref, strings.ToLower(payload.After), payload.Deleted
+		event.InstallationID = payload.Installation.ID
+	case "pull_request":
+		repository, err := normalizeRepository(payload.Repository)
+		pr := payload.PullRequest
+		if err != nil || payload.Installation.ID <= 0 || pr.Number <= 0 || !validRef(pr.Head.Ref) || !validSHA(pr.Head.SHA) || !validRef(pr.Base.Ref) || (pr.State != "open" && pr.State != "closed") {
+			return RepositoryEvent{}, fmt.Errorf("%w: pull request requires installation, repository, and valid pull request metadata", ErrInvalidDelivery)
+		}
+		event.Type = "repository.pull_request." + delivery.Action
+		event.Repository, event.InstallationID = repository, payload.Installation.ID
+		event.Ref, event.CommitSHA = pr.Head.Ref, strings.ToLower(pr.Head.SHA)
+		event.PullRequest = &PullRequestRef{Number: pr.Number, State: pr.State, HeadRef: pr.Head.Ref, HeadSHA: strings.ToLower(pr.Head.SHA), BaseRef: pr.Base.Ref, UpdatedAt: pr.UpdatedAt.UTC()}
+	case "workflow_job":
+		repository, err := normalizeRepository(payload.Repository)
+		job := payload.WorkflowJob
+		labels, labelErr := normalizeWorkflowJobLabels(job.Labels)
+		if err != nil || payload.Installation.ID <= 0 || job.ID <= 0 || job.RunID <= 0 ||
+			(job.RunAttempt != nil && *job.RunAttempt <= 0) ||
+			(job.RunnerID != nil && *job.RunnerID <= 0) || (job.RunnerGroupID != nil && *job.RunnerGroupID <= 0) ||
+			!validOptionalWorkflowText(job.WorkflowName, 200) || !validOptionalWorkflowText(job.RunnerName, 200) || !validOptionalWorkflowText(job.RunnerGroupName, 200) || labelErr != nil ||
+			boundedText(job.Name, 200) == "" || !validRef(job.HeadBranch) || !validSHA(job.HeadSHA) ||
+			!oneOf(job.Status, "queued", "in_progress", "completed") || !workflowJobActionMatchesStatus(delivery.Action, job.Status) {
+			return RepositoryEvent{}, fmt.Errorf("%w: workflow job requires installation, repository, and valid job metadata", ErrInvalidDelivery)
+		}
+		event.Type = "repository.workflow_job." + delivery.Action
+		event.Repository, event.InstallationID = repository, payload.Installation.ID
+		event.Ref, event.CommitSHA = job.HeadBranch, strings.ToLower(job.HeadSHA)
+		var runAttempt int64
+		if job.RunAttempt != nil {
+			runAttempt = *job.RunAttempt
+		}
+		event.WorkflowJob = &WorkflowJobRef{ID: job.ID, RunID: job.RunID, RunAttempt: runAttempt, Name: boundedText(job.Name, 200),
+			WorkflowName: optionalWorkflowText(job.WorkflowName, 200), HeadBranch: job.HeadBranch, HeadSHA: strings.ToLower(job.HeadSHA),
+			Status: job.Status, Conclusion: boundedText(job.Conclusion, 100), Labels: labels, RunnerID: job.RunnerID,
+			RunnerName: optionalWorkflowText(job.RunnerName, 200), RunnerGroupID: job.RunnerGroupID,
+			RunnerGroupName: optionalWorkflowText(job.RunnerGroupName, 200)}
+	case "issue_comment":
+		repository, err := normalizeRepository(payload.Repository)
+		if err != nil || payload.Installation.ID <= 0 || payload.Issue.Number <= 0 || payload.Comment.ID <= 0 || payload.Sender.ID <= 0 {
+			return RepositoryEvent{}, fmt.Errorf("%w: issue comment requires installation, repository, issue, comment, and actor identifiers", ErrInvalidDelivery)
+		}
+		authorAssociation := normalizeAuthorAssociation(payload.Comment.AuthorAssociation)
+		command := AgentCommand("")
+		if isAgentCommandAuthorAssociation(authorAssociation) {
+			command, _ = ParseAgentCommand(payload.Comment.Body)
+		}
+		event.Type = "repository.issue_comment.created"
+		event.Repository, event.InstallationID = repository, payload.Installation.ID
+		event.IssueComment = &IssueCommentRef{IssueNumber: payload.Issue.Number, CommentID: payload.Comment.ID,
+			IsPullRequest: payload.Issue.PullRequest != nil, AuthorAssociation: authorAssociation, AgentCommand: command}
+	case "installation":
+		if payload.Installation.ID <= 0 {
+			return RepositoryEvent{}, fmt.Errorf("%w: installation event requires installation ID", ErrInvalidDelivery)
+		}
+		event.Type, event.InstallationID = "github.installation."+delivery.Action, payload.Installation.ID
+		event.Actor = boundedText(payload.Installation.Account.Login, 100)
+	case "installation_repositories":
+		if payload.Installation.ID <= 0 {
+			return RepositoryEvent{}, fmt.Errorf("%w: repository installation event requires installation ID", ErrInvalidDelivery)
+		}
+		added, err := normalizeRepositories(payload.RepositoriesAdded)
+		if err != nil {
+			return RepositoryEvent{}, err
+		}
+		removed, err := normalizeRepositories(payload.RepositoriesRemoved)
+		if err != nil {
+			return RepositoryEvent{}, err
+		}
+		if (delivery.Action == "added" && len(added) == 0) || (delivery.Action == "removed" && len(removed) == 0) {
+			return RepositoryEvent{}, fmt.Errorf("%w: installation repository event is missing changed repositories", ErrInvalidDelivery)
+		}
+		event.Type = "github.installation_repositories." + delivery.Action
+		event.InstallationID, event.RepositoriesAdded, event.RepositoriesRemoved = payload.Installation.ID, added, removed
+	default:
+		return RepositoryEvent{}, fmt.Errorf("%w: unsupported event %q", ErrInvalidDelivery, delivery.Event)
+	}
+	return event, nil
+}
+
+// ParseAgentCommand recognizes only one exact, bounded comment command.
+// Surrounding whitespace is ignored; arbitrary or appended instructions are
+// never passed through as Agent prompts.
+func ParseAgentCommand(comment string) (AgentCommand, bool) {
+	if len(comment) > 128 {
+		return "", false
+	}
+	if strings.TrimSpace(comment) == "/hako implement" {
+		return AgentCommandImplement, true
+	}
+	return "", false
+}
+
+func isAgentCommandAuthorAssociation(value string) bool {
+	return oneOf(value, "OWNER", "MEMBER", "COLLABORATOR")
+}
+
+func normalizeAuthorAssociation(value string) string {
+	if oneOf(value, "OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR", "FIRST_TIMER", "FIRST_TIME_CONTRIBUTOR", "MANNEQUIN", "NONE") {
+		return value
+	}
+	return ""
+}
+
+func workflowJobActionMatchesStatus(action, status string) bool {
+	return (action == "queued" && status == "queued") ||
+		(action == "in_progress" && status == "in_progress") ||
+		(action == "completed" && status == "completed")
+}
+
+func normalizeWorkflowJobLabels(labels []string) ([]string, error) {
+	if len(labels) > 100 {
+		return nil, fmt.Errorf("%w: too many workflow job labels", ErrInvalidDelivery)
+	}
+	result := make([]string, len(labels))
+	for index, label := range labels {
+		if !validWorkflowLabel(label) {
+			return nil, fmt.Errorf("%w: invalid workflow job label", ErrInvalidDelivery)
+		}
+		result[index] = label
+	}
+	return result, nil
+}
+
+func validWorkflowLabel(value string) bool {
+	if value == "" || len(value) > 200 || strings.TrimSpace(value) != value {
+		return false
+	}
+	for _, char := range value {
+		if char < 0x20 || char == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+func validOptionalWorkflowText(value *string, max int) bool {
+	if value == nil || *value == "" {
+		return true
+	}
+	return boundedText(*value, max) != ""
+}
+
+func optionalWorkflowText(value *string, max int) string {
+	if value == nil {
+		return ""
+	}
+	return boundedText(*value, max)
+}
+
+func normalizeRepository(repository *githubRepository) (*RepositoryRef, error) {
+	if repository == nil || repository.ID <= 0 {
+		return nil, fmt.Errorf("%w: repository ID is required", ErrInvalidDelivery)
+	}
+	owner, name := boundedText(repository.Owner.Login, 100), boundedText(repository.Name, 100)
+	if owner == "" || name == "" {
+		return nil, fmt.Errorf("%w: repository owner and name are required", ErrInvalidDelivery)
+	}
+	return &RepositoryRef{GitHubID: repository.ID, Owner: owner, Name: name, DefaultBranch: boundedText(repository.DefaultBranch, 255)}, nil
+}
+
+func normalizeRepositories(repositories []githubRepository) ([]RepositoryRef, error) {
+	if len(repositories) > 1000 {
+		return nil, fmt.Errorf("%w: too many repositories in installation event", ErrInvalidDelivery)
+	}
+	result := make([]RepositoryRef, 0, len(repositories))
+	for index := range repositories {
+		repository, err := normalizeRepository(&repositories[index])
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, *repository)
+	}
+	return result, nil
+}
+
+func boundedText(value string, max int) string {
+	value = strings.TrimSpace(value)
+	if len(value) > max {
+		return ""
+	}
+	for _, char := range value {
+		if char < 0x20 || char == 0x7f {
+			return ""
+		}
+	}
+	return value
+}
+
+func validRef(value string) bool {
+	return boundedText(value, 1024) != "" && !strings.Contains(value, "..")
+}
+
+func validSHA(value string) bool { return commitSHAPattern.MatchString(value) }

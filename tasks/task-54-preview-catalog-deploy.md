@@ -1,0 +1,604 @@
+# Task 54: Preview Workspaces, Software Catalog, and OIDC Deploy Policy
+
+Status: In Progress. The Tenant-scoped Software Catalog metadata API/CLI and
+PostgreSQL RBAC/reference integration coverage are implemented. OIDC deploy
+policy API/CLI and fixed-GitHub-issuer RS256/JWKS claim verification are now
+implemented locally; no STS exchange or deployment execution is enabled.
+Tenant-scoped Preview opt-in and transactional PR desired-state tracking are
+implemented locally, including stale GitHub `updated_at` fencing, fixed
+Tenant-quota-based expiry metadata, and a bounded idempotent expiry-to-cleanup
+transition. A default-off scheduled Lambda now invokes this metadata sweep;
+production IAM wiring and enabled invocation remain unverified. Preview
+provision/cleanup commands now have a Resource Plane Lambda MicroVM controller
+composition, brokered immutable SHA checkout, S3 archive staging, verified
+Guest source installation, and default-off queue/source IAM Terraform. Preview
+deployment requires a matching Workspace Gateway image, journal, origin, and
+Agent-ticket signing key. Guest Preview application startup, authenticated
+loopback forwarding, and a Preview-only production Gateway port policy are
+implemented locally. No AWS resources or DSQL grants have been applied.
+Schedule/queue deployment and real MicroVM E2E remain incomplete; cleanup retry
+metadata and attempt-fenced leases are tracked separately. Ordinary Workspace
+Service port authorization is implemented locally under Task 86; production
+Gateway rollout remains unverified.
+The dormant approval verifier checks
+the live Actions run attempt against signed repository, owner, ref, SHA,
+workflow and event claims, checks pending deployments and approval history,
+and requires Environment reviewers with self-review disabled. Priority: P3.
+
+## Goal
+
+Add optional repository-level preview environments and service metadata/deploy policy after the Workspace Runtime and Gateway are production-ready.
+
+## Work
+
+- Create one isolated Preview Run/Workspace per authorized PR commit; expose only through Gateway with expiring Tenant-scoped routing; tear down on PR close/merge/timeout.
+- Add a Tenant-scoped Software Catalog mapping service, owner/team, repository, runtime/language, dependencies, and production URL without duplicating secret data.
+- Add GitHub OIDC cloud identity only for trusted release/deploy Workloads; constrain cloud trust by Repository, ref/environment, and verified workflow claims. Local dormant policy verification is implemented; STS exchange and cloud identity are not.
+- Require explicit human approval and policy checks for production; untrusted forks and agents receive no deploy role. Local verification checks the exact live run and approval state but does not authorize deployment.
+
+## Software Catalog metadata slice (2026-10-24)
+
+- Added Tenant-scoped `GET /v1/tenants/{tenant_id}/software-catalog` and
+  `PUT /v1/tenants/{tenant_id}/software-catalog/{service_id}`. Tenant members
+  may read; only Owners/Admins may write. Writes require a Repository already
+  registered to that same Tenant and dependencies already present in that
+  Tenant. Catalog mutation and audit append share one transaction.
+- Added `hako catalog list` and `hako catalog set`. Input is bounded strict
+  JSON; it supports only the `lambda-microvm` runtime, validated language and
+  service identifiers, bounded sorted dependencies, and optional HTTPS
+  production URL metadata. No credentials or Secret references are accepted.
+- Added DSQL migration 000138 and explicit `hako_api` table grants. Local
+  unit/client/CLI and PostgreSQL integration tests cover RBAC, cross-Tenant
+  hiding, Repository ownership, dependency validation, EC2 rejection, and
+  unknown secret fields. See [`Software Catalog`](../docs/software-catalog.md).
+- Added migration 000139 and Tenant RBAC APIs/CLI for a dormant OIDC policy.
+  The allowlist requires an exact AWS STS audience, refs, environments and
+  workflow refs. `POST .../deploy-policy/verify` validates the GitHub issuer's
+  RS256 signature and exact Repository/Owner ID, ref/environment/workflow/event
+  claims, including legacy and immutable-ID `sub` formats. Tokens are not
+  stored; no AWS credentials are exchanged and every response keeps
+  `execution_enabled=false`. Verification now fails closed unless a
+  Tenant/Installation/Repository-scoped GitHub Environment approval verifier
+  confirms an exact Environment `required_reviewers` rule. A reusable GitHub
+  App client verifies a non-empty User/Team reviewer set with a short-lived
+  `actions:read` token. The production API calls the Control Plane-only
+  mTLS GitHub Credential Broker, which resolves Tenant App credentials and
+  rechecks the policy pin after GitHub I/O. The broker receives read-only
+  Software Catalog DSQL access. Unit/API integration coverage checks configured
+  approval verification and missing-verifier failure; broker service and
+  transport tests cover caller, pin, and denial behavior. Configured protection
+  is not proof that a specific run was approved.
+- Preview allocation/routing and PR lifecycle cleanup remain blocked by the
+  listed runtime/deployment prerequisites. Production approval validation,
+  IAM trust/exchange and deployment execution remain disabled.
+
+## Preview lifecycle metadata slice (2026-10-24)
+
+- Added default-off Tenant Repository Preview opt-in and Owner/Admin API at
+  `PUT /v1/tenants/{tenant_id}/github/installations/{installation_id}/repositories/{repository_id}/preview`.
+- The durable inbox processor now applies PR opened/reopened/synchronize/closed
+  events in the same transaction as delivery acknowledgement. State is keyed
+  by Tenant, Installation, Repository, and PR; `updated_at` fences delayed old
+  GitHub events, while duplicate Delivery IDs remain idempotent.
+- Open PRs become `awaiting_runtime`; closed PRs become `cleanup_pending`.
+  Migration 000140 adds the opt-in, and 000141 adds the lifecycle table.
+  Runtime allocation is explicitly reported disabled; this change does not
+  create a MicroVM, Workspace, or Gateway route.
+- Migrations 000142–000146 record the fixed quota-based `expires_at` (24-hour
+  fallback), and bounded `previews.ExpireDue` moves expired present records to
+  `cleanup_pending` without claiming physical deletion. Reopen starts a new
+  lifetime; synchronize does not extend it. PostgreSQL E2E verifies expiry and
+  duplicate sweep idempotency. A default-off ARM64 Lambda and EventBridge
+  schedule invoke the transactional bounded sweep; it has only a dedicated
+  DSQL role and can update Preview cleanup metadata. At this stage the sweep
+  did not execute physical cleanup. Later entries below add the generation
+  cleanup worker and Resource Plane command path; no AWS infrastructure was
+  applied.
+- Added a direct Preview store PostgreSQL test for cleanup claim exclusion,
+  fixed backoff, expired-lease recovery, stale claimant rejection, confirmed
+  completion, and duplicate acknowledgement. `make test-preview-expiry-integration`
+  now runs it with the webhook lifecycle E2E; integration statement coverage
+  for `internal/store/previews` is 37.4% (unit-only coverage is 21.2%). This
+  remains metadata-store coverage, not a provider cleanup test.
+- Added `internal/previewcleanup.Worker`, which claims bounded cleanup batches,
+  invokes an injected idempotent executor with a deadline capped by the lease,
+  records only fixed provider failure categories with retry/backoff, and marks a
+  Preview cleaned only after executor confirmation. Its PostgreSQL integration
+  test verifies that a failed MicroVM termination keeps the quota slot reserved,
+  the retry uses a new claim/attempt, a later confirmed cleanup releases the
+  slot, and a repeated sweep is idempotent. This initial check covers worker
+  orchestration with a fake executor; later entries add generation binding, the
+  Resource Plane Lambda MicroVM delete command, and local end-to-end fake-provider
+  coverage. AWS deployment and live MicroVM/Gateway deletion remain unverified.
+- Added PostgreSQL integration coverage for bounded Tenant/Installation/
+  Repository-scoped Preview listing, list limits and ordering, foreign-scope
+  isolation, expiry batch transitions, and repeated-sweep idempotency. Before
+  quota admission additions, the focused suite reported 59.6% statement
+  coverage for `internal/store/previews`; the current suite reports 45.4% after
+  adding more store behavior. Runtime allocation and physical cleanup remain
+  outside this coverage.
+- Migration 000159 now records a private runtime-allocation row per admitted
+  PR-head generation. Webhook head changes/close and expiry mark old generations
+  cleanup-pending atomically; reopen creates a new generation without
+  overwriting old rows. Confirmed PR-level cleanup marks all absent generations
+  cleaned. A PostgreSQL lifecycle test covers close/reopen/expiry and confirms
+  the Tenant API still does not expose provider identifiers. This was generation
+  metadata only at this migration step. Later entries document the provision
+  claims, Lambda MicroVM allocation, Gateway routing, and provider-backed
+  per-generation cleanup implemented in the local Resource Plane composition.
+- Migration 000160 adds provisioning lease/claim metadata, attempt tracking,
+  fixed error classes with retry deadlines, and a store API that binds provider
+  IDs only for the current unexpired Preview generation and exact claim/attempt.
+  Claims carry a deterministic private runtime Workspace ID derived from the
+  Tenant/Installation/Repository/PR/generation identity, and binding rejects a
+  different provider-returned Workspace ID.
+  `internal/previewprovision.Worker` now runs the claim/provision/bind/retry
+  loop through an injected provisioner, compensating partial or unbound
+  provider resources by immutable generation identity after a failed attempt
+  and stale results after a generation race.
+  Local PostgreSQL integration covers partial MicroVM creation followed by
+  route-publish failure and cleanup, retry, binding, and compensation after a
+  PR head changes during provisioning, plus failed-compensation lease recovery;
+  unit tests cover bounded config and fixed error classification. The local
+  Resource Plane command now uses the durable Lambda MicroVM journal and a
+  logical Gateway route identity. AWS deployment, DSQL grants, matching Guest
+  image, and live Gateway/MicroVM verification remain incomplete.
+- Migrations 000161–000162 add claim/lease/retry state and a bounded due index
+  for each retired runtime generation. `previewcleanup.RuntimeWorker` sends
+  exact persisted bindings to an injected generation cleanup executor and
+  acknowledges the parent Preview only when all generations are cleaned. The
+  legacy PR-wide cleanup worker skips Previews with generation rows. PostgreSQL
+  integration verifies expired-lease recovery, active-lease exclusion, retry,
+  stale-claim rejection, cleanup of a bound generation, cleanup identity for an
+  interrupted unbound attempt, and quota release. A generation with no provision
+  attempt is safely retired without provider I/O; an unbound attempted
+  generation is now delivered to the executor with its deterministic runtime
+  Workspace ID and pinned Resource Plane ID so it can recover the durable
+  Resource Plane journal. Lambda MicroVM does not provide verified per-VM tags
+  or tag-based discovery; an unjournaled VM must never be adopted or deleted by
+  scanning. Migrations 000165–000168 add, index, and constrain the Resource Plane pin.
+  The first provision claim persists its Plane and retries cannot move the
+  generation. Dynamic placement now applies Tenant policy, active/healthy Plane
+  eligibility, the `microvm` capability, and configured Workspace/CPU/RAM
+  capacity in the same claim transaction. Migration 000169 tracks private
+  Preview capacity reservations and releases them only after confirmed cleanup;
+  a lost conditional claim reverses its provisional reservation. PostgreSQL
+  integration covers capacity filtering and release. The manifest/Dispatcher
+  now defines a dedicated strict Preview provision/cleanup route with no
+  Workspace queue fallback. `internal/previewdispatch.Worker` now atomically
+  claims eligible generations, pins/reserves placement, and inserts strict
+  provision/cleanup commands into the DSQL/PostgreSQL Outbox. Cleanup for a
+  generation with no provider attempt is confirmed locally; other retired
+  generations go to their pinned Plane. PostgreSQL E2E follows provision and
+  cleanup through the Dispatcher, fake Resource Plane controller, and fenced
+  result Lambda handler; duplicate producer/result delivery is idempotent, and
+  a mixed SQS batch verifies that only the message with mismatched routing
+  attributes is returned in `BatchItemFailures`. The
+  Resource Plane has a strict SQS Lambda handler core, bounded execution
+  deadline, fixed failure classes, partial-success compensation, and SQS result
+  sink. This paragraph records the state before the later Resource Controller
+  composition documented below. That later implementation connects the strict
+  Preview command to the durable Lambda MicroVM journal and default-off queue
+  infrastructure; AWS deployment and live provider verification remain open.
+- Migrations 000163–000164 add a separate Preview Gateway session registry
+  because deterministic Preview runtime Workspace IDs are intentionally absent
+  from the public Workspace table. Tenant members can request/revoke scoped
+  tickets for a provider-bound current generation. Resource Plane active-ticket
+  lookup rechecks current generation, desired state, and expiry so PR close,
+  head change, and expiry immediately invalidate old tickets. Ticket expiry is
+  capped at Preview expiry, audit events are appended, and provider MicroVM and
+  Gateway route IDs are never returned. The scheduled expiry batch removes
+  expired session rows in bounded batches. API, CLI, client, and PostgreSQL E2E
+  coverage are implemented. The ticket API remains unavailable until a concrete
+  Resource Plane provisioner binds a running generation and deployment enables
+  GitHub Repository APIs with the session issuer. The DSQL bootstrap grants API
+  read/issue/revoke access and gives the default-off expiry reconciler only
+  `id`/`expires_at` reads plus
+  session-row deletion; this SQL role update has not been applied to AWS.
+- `go test ./...` passed. PostgreSQL Preview lifecycle E2E passed against the
+  local `hako-dev-postgres`, including stale delivery, close/reopen, Tenant
+  scoping, and duplicate replay.
+- The implementation below supersedes this earlier lifecycle snapshot:
+  durable Preview generation claims, placement reservation, Resource Plane
+  command/result routing, Lambda MicroVM journal adapter, brokered immutable
+  checkout, S3 source staging, Guest one-use install, app startup, Gateway
+  sessions, and the loopback `hako github repository previews open|forward`
+  flows are now locally composed and tested. See the current status at the top
+  of this task and [`Preview lifecycle`](../docs/preview-lifecycle.md).
+- Remaining: build and execute the matching ARM64 Guest image, deploy and
+  verify the default-off queue/schedule/DSQL/IAM configuration, and run the
+  provision→connect→cleanup path on a real Lambda MicroVM/Gateway. These are
+  AWS runtime/deployment gates and have not been performed. OIDC STS exchange
+  and deployment execution remain deliberately disabled.
+
+## Preview result Lambda composition (2026-10-25)
+
+- Added the Control Plane `hako-preview-result-consumer-lambda` entry point.
+  It opens local PostgreSQL or IAM-authenticated Aurora DSQL, passes SQS batches
+  to the generation-fenced result handler, and preserves per-message partial
+  failures for retry. The ARM64 ZIP target is
+  `make build-preview-result-consumer-lambda`.
+- Unit tests cover partial-batch response forwarding, handler errors, missing
+  dependencies, and canceled invocation. The PostgreSQL end-to-end test drives
+  provisioning and cleanup acknowledgements through the same result Lambda
+  handler.
+- Added default-off Control Plane Terraform for one `ReportBatchItemFailures`
+  SQS mapping per configured same-Region Resource Plane result queue, SQS
+  receive IAM scoped to those exact queue ARNs, a stable consumer role output,
+  and a DSQL IAM connection policy. Added a dedicated DSQL bootstrap role with
+  column-scoped Preview result and confirmed-capacity-release grants. No queue mapping,
+  database grant, or AWS resource was applied.
+
+## Preview `open` CLI Gateway E2E (2026-10-25)
+
+- Added a local authenticated API + TLS/WSS Gateway test for
+  `hako github repository previews open`. It verifies Tenant/Installation/
+  Repository/PR-scoped Session creation with only `vscode`, uses the logical
+  generation Workspace ID returned by the API for Gateway routing, relays
+  browser bytes through a loopback listener to a fake Guest, revokes the
+  Session, and shuts down on cancellation. Endpoint configuration fails
+  closed when either API or Gateway URL is absent.
+- `go test ./cmd/hako -count=1 -coverprofile=...` reports 60.2% package
+  statement coverage; `openGitHubRepositoryPreview` is 100% and the injected
+  implementation path is 79.3%. This verifies CLI routing/session behavior
+  only. Preview provision/cleanup now also has a local Resource Plane Lambda
+  MicroVM composition, broker-pinned source staging, Guest archive install and
+  application startup, plus an authenticated Gateway route fixed to port 3000.
+  The externally reachable route, matching ARM64 Guest image, deployed queues
+  and schedules, and live Lambda MicroVM/Gateway behavior remain unverified;
+  see the follow-up sections below.
+
+## Preview-to-Workspace MicroVM adapter (2026-10-25)
+
+- Added `previewcontroller.WorkspaceRuntimeAdapter` to map a Preview generation
+  onto the existing durable Workspace Runtime journal. Each generation uses
+  its deterministic runtime Workspace ID, stable ensure revision 1 and delete
+  revision 2; MicroVM identity is read through the existing
+  `ResourceBindingReporter`. Compensation replays the same ensure operation to
+  recover an ambiguous `RunMicrovm` response before deleting the exact
+  journaled runtime. No provider scan or adoption is used.
+- The returned Gateway route ID is a deterministic logical identifier. The
+  Gateway resolves the actual MicroVM by the same runtime Workspace ID and
+  journal; no independent route is published by this adapter. Focused
+  `previewcontroller` tests exercise the adapter through the controller's
+  provision/cleanup result path and cover retry identity, operation fencing,
+  compensation, foreign Plane rejection, and provider-binding validation.
+- `hako-resource-controller-lambda` can optionally compose the adapter over its
+  configured Lambda MicroVM runtime and publish Preview results to a dedicated
+  result queue. Preview records are routed by exact configured SQS
+  `EventSourceARN`, with unrecognized Preview queue deliveries returned as
+  per-record failures. Both environment variables are unset by default.
+- Resource Plane Preview queue, IAM, and event-source Terraform wiring are
+  implemented as default-off `enable_preview_runtime` configuration with
+  distinct command/result queues, exact CP role policies, scoped controller
+  permissions, DLQ/age alarms, and outputs. A Control Plane deployment must
+  register the command queue URL in the Resource Plane manifest and map the
+  result ARN into the Preview result consumer. No AWS apply or DSQL grant was
+  performed. PR SHA checkout into the generation's `/workspace`, app startup,
+  scheduled producer/result consumer deployment, and a deployed Gateway route
+  remain necessary before enabling Preview sessions.
+
+## Preview lifecycle read API/CLI (2026-10-24)
+
+- Added a bounded Tenant-member read endpoint and `hako github repository
+  previews list` command for PR Preview lifecycle metadata. The response is
+  scoped to the active registered Tenant Repository and exposes the immutable
+  PR head, expiry, cleanup retry state, and timestamps; it does not expose
+  provider identifiers and reports `runtime_enabled: false`.
+- Added client/parser tests and PostgreSQL API integration coverage for member
+  access, cross-Tenant hiding, and limit bounds. This improves visibility while
+  Preview runtime allocation and physical cleanup remain unavailable.
+- See [`Preview lifecycle`](../docs/preview-lifecycle.md) for endpoint and CLI
+  usage.
+
+## Preview cleanup retry state (2026-10-24)
+
+- Added store transitions that record only fixed cleanup error categories and
+  schedule exponential retries from 5 seconds up to 1 hour. Failures arriving
+  before the stored retry deadline are ignored; attempts are guarded against
+  stale concurrent writes.
+- `MarkCleaned` is idempotent and changes metadata only after its caller has
+  confirmed MicroVM and Gateway route deletion. Migrations 000145–000146 add a
+  bounded cleanup claim lease; claim ID, attempt, and exact expiry fence completion and
+  retry, while expired leases can be reclaimed after worker restart. Unit and
+  PostgreSQL lifecycle tests cover backoff, premature retry rejection, stale
+  claim rejection, lease recovery, repeated failure, and duplicate completion.
+- Migration 000147 adds a monotonic Preview lifecycle generation. Accepted PR
+  head/desired-state changes and expiry advance it; cleanup retry and completion
+  require the generation captured by the claim. The bounded list API exposes
+  the generation, and PostgreSQL integration coverage checks stale generation
+  fencing across PR update, close/reopen, expiry, retry, and cleanup.
+- The generic cleanup worker executes the claim/retry/confirmation state
+  machine. Later generation-specific work adds Preview-to-runtime binding and
+  an idempotent Resource Plane delete command; no delete is inferred from the
+  metadata transition. The local command/result path is covered with a fake
+  provider, while AWS provider behavior remains unverified.
+- The default worker test now covers invalid configuration, canceled input,
+  missing dependencies, lease/timeout/batch bounds, and claim-ID failure before
+  opening a database transaction. `go test ./internal/previewcleanup -cover`
+  reports 34.3% statement coverage; the focused PostgreSQL integration target
+  reports 70.0% for the package. These package coverage numbers predate the
+  Resource Plane command integration; they do not measure live AWS provider or
+  Gateway deletion behavior.
+
+## Preview concurrency admission (2026-10-24)
+
+- PR Preview open/reopen now advances the shared Tenant quota OCC guard and
+  checks capacity in the webhook transaction. The same configured limit is
+  shared with Workload Preview Runs. A full quota persists a
+  `desired_state=absent,state=quota_exceeded` record and does not create a
+  cleanup job or runtime allocation. A later `reopened` event retries admission.
+- Active and cleanup-pending PR Preview records count against usage and block
+  quota reductions until cleanup is confirmed. A rejected PR consumes no slot;
+  closing it records `cleaned` directly. The Usage API reads the combined
+  reservation count. Migration 000156 extends the lifecycle-state constraint.
+- PostgreSQL integration covers an active cleanup reservation rejecting a
+  second PR and a Workload Preview, followed by successful admission after the
+  first Preview is cleanup-confirmed. This test specifically covers quota
+  metadata; runtime allocation, Gateway routing, and provider-backed deletion
+  are covered by the later Resource Plane tests and remain unverified in AWS.
+
+## Software Catalog CLI/API wiring refresh (2026-10-24)
+
+- Added HTTP-backed tests around `hako catalog list` and `hako catalog set`.
+  They verify authenticated Tenant-scoped routes, the built-in
+  `lambda-microvm` metadata payload, repository identity in the returned item,
+  and rejection of EC2 runtime or unknown secret-bearing fields before an API
+  request. These tests cover the metadata surface only; they do not claim
+  Preview runtime allocation or production deployment.
+- Added the same local HTTP coverage for deploy-policy `show`, `set`, and
+  `verify`: Tenant route and Bearer auth, valid allowlist payload, short-lived
+  synthetic OIDC-token handoff, and response checks that deployment remains
+  disabled and the token is not echoed to CLI output. No STS exchange or
+  deployment execution is enabled.
+
+## Acceptance criteria
+
+- Tests cover PR update/reopen/close races, stale commit preview, cross-Tenant route access, expiry, cleanup retries, and duplicate webhooks.
+- Catalog reads/writes enforce Tenant RBAC and validate dependency references.
+- OIDC token validation rejects wrong issuer/audience/repository/ref/environment/workflow; enabled policies require configured Environment reviewer verification and fail closed when that verifier is unavailable. No cloud credentials are stored or STS exchange enabled.
+- Document cost/quota, preview data isolation, cleanup, and production approval policy.
+
+## Dynamic Preview placement (2026-10-25)
+
+- `previewprovision.Worker` can now select a Plane per unpinned PR generation
+  from active/healthy Resource Planes. Selection applies the Tenant placement
+  policy, requires `microvm`, and reserves configured Runtime Class capacity
+  before the provider call. An explicit operator Plane also reserves configured
+  capacity. The chosen Plane remains pinned across retries.
+- Added migration 000169 for private Preview capacity reservations. A confirmed
+  physical cleanup releases the Plane reservation; failed or stale cleanup
+  keeps it. Conditional claim races undo their provisional charge. The claim
+  uses optimistic conditional writes and does not depend on `FOR UPDATE`, which
+  Aurora DSQL does not support.
+- PostgreSQL integration verifies Tenant Plane/region restrictions, skipping a
+  full Plane, reserving on the selected Plane, and releasing capacity only after
+  cleanup confirmation. `make test-preview-expiry-integration` includes this
+  coverage.
+- This does not provision a MicroVM or Gateway route. Resource Plane command
+  production, the provider adapter, and scheduled worker/deployment composition
+  remain open. The Dispatcher route is a local transport contract only.
+
+## Scheduled Preview command producer (2026-10-25)
+
+- Added `cmd/hako-preview-runtime-dispatch-lambda`, which runs the existing
+  transactional provision and cleanup producers on a bounded EventBridge
+  invocation. It commits only placement/capacity reservations, claim leases,
+  and generation-fenced commands to the Control Plane Outbox. The ordinary
+  Dispatcher remains responsible for publishing the commands to the pinned
+  Plane queue; the producer does not call AWS or a Resource Plane.
+- Added an independent default-off ARM64 Lambda/EventBridge Terraform contract
+  and a dedicated `hako_preview_runtime_dispatcher` database role. Grants
+  constrain the role to Preview claim/cleanup metadata, placement/capacity
+  selection, reservation accounting, and Outbox insertion; provider binding
+  fields are not updateable by this role. The development root exposes the
+  role ARN for DSQL IAM mapping. No resources or DSQL grants were applied.
+- Unit coverage verifies both sweep paths run, cleanup is attempted when the
+  provision sweep fails, configuration bounds, and fixed/redacted errors.
+  PostgreSQL capacity/placement/Outbox behavior remains covered by the existing
+  Preview integration suite. Resource Plane queue deployment, provider
+  operations, Gateway route publication, and real Preview runtime remain open.
+
+## Tenant GitHub App pin per Preview generation (2026-10-25)
+
+- Migrations 000172–000175 add nullable integration ID, config revision, and
+  credential generation fields to the immutable Preview runtime generation.
+  New generations snapshot only an active, approved Tenant-owned App that is
+  bound to the repository; conflict retries preserve the original identity.
+- Generations without an eligible Tenant App remain unpinned. There is no
+  shared-credential fallback and existing rows are not auto-backfilled; source
+  checkout must fail closed until an explicitly supported pin exists.
+- PostgreSQL integration coverage verifies the initial pin, pin stability
+  after credential rotation, and use of the newer identity for the next PR
+  head generation. `make test-preview-expiry-integration` includes the test.
+- This change provides identity pinning only. Broker checkout, archive transfer
+  into the Guest, MicroVM startup, and production migration/application are
+  still open. No AWS resources or migrations were applied.
+- Added the broker's mTLS-only Preview token endpoint. Its PostgreSQL resolver
+  checks the exact current generation/head, active claim and attempt, lease,
+  selected Plane, active Installation, and immutable Tenant App credential
+  pin both before and after minting a Contents-read token. Unit and PostgreSQL
+  tests cover stale/cross-Plane claims and rotation during exchange. The
+  endpoint is composed only when Resource Plane checkout callers are
+  configured and returns the verified Repository owner/name. A bounded
+  Resource Plane HTTPS client validates the no-store response before exposing
+  the grant. `previewcontroller.PreviewSourceMaterializer` now uses that grant
+  with the immutable Git checkout and existing S3 archive stager, tied to the
+  exact PR head SHA, runtime Workspace, generation, and claim. It removes the
+  temporary checkout and executes no repository code. Unit tests cover its
+  pinning, archive identity, failure cleanup, and malformed results.
+
+## Preview source installation in Lambda MicroVM (2026-10-25)
+
+- `WorkspaceRuntimeAdapter.Ensure` now resolves the durable Lambda MicroVM
+  binding, materializes the exact generation/claim-pinned repository source,
+  and calls an injected installer. Compensation only recovers/deletes the
+  deterministic runtime binding; it does not need a fresh checkout credential.
+- Added a Preview installer using the Resource Plane S3 archive reader, exact
+  MicroVM lookup, short-lived `CreateMicrovmAuthToken`, a one-use Ed25519
+  Guest file-transfer ticket, and the bounded WSS file channel. The Guest
+  protocol accepts `install_archive` only for `/workspace/src`; it verifies
+  SHA-256, rejects unsafe archive entries, installs atomically without
+  overwriting existing content, and accepts retries only when the installed
+  tree digest matches. Tests cover WSS transfer, atomic install, same-content
+  retry, conflicting content, invalid digest, and runtime adapter sequencing.
+- The Resource Controller Lambda now fails startup if Preview commands are
+  enabled without broker/S3/Gateway/ticket configuration. Its source
+  composition reads four distinct, bounded Secret Manager values, uses the
+  existing Resource Plane mTLS checkout broker, and stages/reads only the
+  configured S3 prefix. Terraform's default-off `preview_runtime_source`
+  contract injects those settings and grants exact-prefix S3 and exact-ARN
+  Secret access plus configured MicroVM auth-token and optional KMS actions.
+- Local Go tests pass. OpenTofu validation passes for the dev Resource Plane
+  root. No AWS apply or real Secret retrieval occurred. Remaining: provision
+  the matching Guest ticket public key in the immutable MicroVM image, then
+  validate the configured Resource Plane/Gateway path and physical cleanup in
+  an approved AWS/MicroVM end-to-end acceptance. The logical Gateway route
+  resolves from the shared journal; Terraform now requires the matching
+  Gateway identity.
+
+## Guest Preview ticket trust check (2026-10-25)
+
+- Added `workloadagent.ValidateTrustedKeySet` and the
+  `cmd/hako-workspace-keycheck` build helper. The Workspace MicroVM image
+  target validates the full Ed25519 public-key JSON and, when
+  `HAKO_PREVIEW_TICKET_KEY_ID` is set, requires that signer ID to be present.
+- Resource Plane Terraform requires Preview and Workspace Gateway to use the
+  same ticket key ID and exact private-key Secret ARN, along with a shared
+  MicroVM image, runtime journal bucket/prefix, and Gateway origin. Terraform
+  tests verify the enabled queue, exact source IAM prefix, and Secret set.
+- This checks key-ID/configuration agreement only; it does not retrieve a real
+  private key or prove its cryptographic pair matches the public key baked into
+  an image. No AWS resources or Secrets were applied/read.
+
+## Authenticated Preview application port forward CLI (2026-10-25)
+
+- Added `hako github repository previews forward`, which binds its local
+  listener to loopback, targets only application port 3000, and obtains a
+  new Tenant/Repository/PR-scoped Preview Session with only `port-forward` for
+  each connection. The CLI uses the shared Gateway WSS route and revokes the
+  Session when that stream closes. It never accepts a destination host or
+  creates a public application route.
+- Parser tests cover required identity and enforce the fixed application port. A local
+  API + TLS/WSS Gateway test verifies permission scoping, port authorization,
+  byte relay, cancellation, and Session revocation.
+- Guest application startup/health checking and the Preview-only Gateway
+  authorizer are implemented in the following sections. Public Preview URL
+  handling, queue/schedule deployment, and real Lambda MicroVM E2E remain
+  incomplete. See [Preview lifecycle](../docs/preview-lifecycle.md). No AWS
+  resources or Secrets were applied/read.
+
+## Guest Preview application startup and port isolation (2026-10-25)
+
+- The immutable Guest Agent accepts a fixed `start_preview` file-channel
+  operation only for `/workspace/src/.hako/preview.yaml`. The strict version-1
+  YAML manifest provides an argv array; the Guest starts it as the
+  unprivileged Agent user with a minimal environment and fixed `PORT=3000`,
+  `HOST=127.0.0.1`. The process is group-managed, killed if its Agent parent
+  exits, and stopped when the Agent closes. Provisioning is acknowledged only
+  after loopback TCP readiness succeeds; failure is returned to the existing
+  generation compensation path.
+- The Resource Plane installer now transfers the exact pinned source, opens a
+  second one-use file-transfer capability, and starts the app before reporting
+  provision success. The shared Gateway denies every Preview runtime port
+  except 3000, even if a general Workspace policy would allow another port;
+  Preview forwarding also defaults to and accepts only 3000. The production
+  Gateway Lambda composes `PreviewPortAuthorizer` with the signed Control
+  Plane Service authorizer: Preview remains fixed to port 3000, while ordinary
+  Workspaces require a healthy current-generation Catalog Service port. See
+  Task 86 for PostgreSQL fencing and denial coverage.
+- Unit and local integration tests cover strict manifest decoding, process
+  start/idempotence/stop, file-channel authorization, API-to-Gateway Preview
+  forwarding, the production authorizer policy, and denial of
+  non-application ports. This still does not verify public URL lifecycle,
+  actual Lambda MicroVM networking, or production cleanup. No AWS resources or
+  Secrets were applied/read.
+
+## Preview runtime cleanup unit coverage (2026-10-25)
+
+Added table-driven unit coverage for the generation-scoped cleanup worker's
+invalid context/dependency, lease, timeout, batch, and claim-ID configuration
+paths. `go test ./internal/previewcleanup -cover` now reports 31.1% statement
+coverage (previously 18.2%); `RuntimeWorker.RunOnce` is covered at 27.4% for
+the local validation paths. The focused PostgreSQL cleanup E2E still passes
+for lease recovery, retry, generation fencing, and quota release. This does
+not replace the real Resource Plane/Lambda MicroVM cleanup verification.
+
+## Preview result consumer coverage (2026-10-25)
+
+Added unit coverage for invalid consumer configuration, malformed result JSON,
+SQS claim/action/Plane attribute mismatches, future completion timestamps,
+Lambda batch retry responses, and payload-free failure logging. The
+`internal/previewresult` package now has 84.6% unit statement coverage;
+`go test -race ./internal/previewresult` passes. The existing PostgreSQL
+Preview producer/dispatcher/result E2E also passes. Valid results still rely
+on the database-backed generation/claim fencing exercised by that integration
+path; this does not verify a deployed SQS/Lambda consumer.
+
+The Preview Result Consumer Lambda command now has a pure backend-selection
+config parser. Unit tests cover trimmed local PostgreSQL URLs, DSQL host/region/
+user/database defaults and overrides, missing/conflicting backends, and
+malformed PostgreSQL URLs without echoing embedded credentials. The command
+package coverage is 66.7%; no AWS DSQL connection was attempted.
+
+## Preview source authorization coverage (2026-10-25)
+
+Added tests for the exact immutable Run credential pin (Tenant, Installation,
+Repository, commit, App integration/config revision, and credential generation),
+Tenant/Repository authorization, invalid GitHub path components, and rejecting
+an invalid commit before network checkout. The Preview controller package is
+77.1% covered under `go test -race`; source materialization remains bound to the
+generation claim and its temporary checkout cleanup. PostgreSQL provision and
+dispatch integration tests pass. Tests use synthetic credentials and do not
+contact GitHub or read a real Secret.
+
+## Preview Dispatcher IAM routing fix (2026-10-25)
+
+The Control Plane Terraform previously derived Dispatcher send permissions for
+the general, Workload, and Actions Runner queues, but omitted the dedicated
+`preview_runtime_command_queue_url` present in the Resource Plane manifest.
+The Go Dispatcher could route Preview Outbox events correctly, but its Lambda
+role would be denied by IAM at publish time. The Control Plane now derives the
+Preview queue ARN from the manifest and grants `sqs:SendMessage` only to those
+exact ARNs. Terraform input validation also checks the Preview queue URL's
+Region and account against its registered Resource Plane. `docs/resource-plane-registration.md`
+records the producer/dispatcher boundary. A new Control Plane Terraform plan
+test checks the exact IAM resource and rejects a queue URL for a different
+account/Region; `make terraform-test` now runs it. No AWS policy was applied.
+
+## Local lifecycle verification refresh (2026-10-25)
+
+`make test-preview-expiry-integration` passed against the already-running local
+PostgreSQL. It exercised selected store, cleanup/provision workers, dispatcher,
+Resource Controller, Workload Run, API, and GitHub Broker lifecycle cases.
+The target reports focused statement coverage of 70.5% for `previewcleanup`,
+77.0% for `previewprovision`, and 69.6% for `previewdispatch`; these are the
+selected tests in this target, not full-package coverage. This validates local
+orchestration and database fences only. Queue and schedule deployment, the
+matching ARM64 Guest image, and live Lambda MicroVM/Gateway behavior remain
+unverified.
+
+## Preview CLI authorization failure coverage (2026-10-25)
+
+The Tenant-scoped Preview listing and Preview Session create/revoke CLI paths
+now have tests for API `403` responses; listing/session creation also reject
+missing login, and listing rejects a missing API URL. The tests verify
+configuration errors do not reach the API and authorization denial is
+propagated for each operation. Focused statement coverage is 85.7%
+for Preview listing and Session creation; the revoke path's request/response
+contract is additionally covered by the existing successful lifecycle test.
+No live GitHub, AWS, or Resource Plane endpoint is contacted.
+
+The Software Catalog CLI now also has failure-path tests for invalid action or
+Tenant input, nil output, missing login/API origin, Tenant API denial, and an
+output Writer failure. Invalid metadata remains rejected before API access.
+`parseSoftwareCatalogCLI` is 100% and `runSoftwareCatalogCLI` is 89.7% statement
+covered; focused tests pass against local HTTP only.
+
+Preview log streaming now also has failure-path coverage for an inactive
+Gateway Session: after the CLI creates a Preview-only log Session, a Gateway
+authorization failure causes the CLI to revoke that Session. Nil context,
+nil output, and incomplete Preview identity are rejected before network access.
+The log CLI integration tests pass under the race detector; coverage for
+`readGitHubRepositoryPreviewLogsWith` is 82.4%. No live Preview or AWS service
+is contacted.

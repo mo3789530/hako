@@ -1,0 +1,1 @@
+ALTER TABLE services ADD COLUMN IF NOT EXISTS credential_generation BIGINT NOT NULL DEFAULT 1;

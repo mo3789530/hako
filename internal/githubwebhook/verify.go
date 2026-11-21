@@ -1,0 +1,258 @@
+// Package githubwebhook validates the untrusted HTTP boundary for GitHub App
+// webhook deliveries. Call Verify before parsing or persisting the payload.
+package githubwebhook
+
+import (
+	"bytes"
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"mime"
+	"net/http"
+	"strings"
+	"time"
+)
+
+const DefaultMaxBodyBytes int64 = 1 << 20
+
+var ErrInvalidDelivery = errors.New("invalid GitHub webhook delivery")
+var ErrDeliveryIDConflict = errors.New("GitHub Delivery ID was reused with a different payload")
+
+type VerifiedDelivery struct {
+	DeliveryID string
+	// CorrelationID is set by the trusted API wrapper from its generated
+	// request context; it is never read from a caller-controlled header.
+	CorrelationID string
+	// IntegrationID is empty for the legacy shared-App route. Tenant-owned
+	// ingress sets it only after the route-specific HMAC has been verified.
+	IntegrationID        string
+	CredentialGeneration int64
+	Event                string
+	Action               string
+	Payload              json.RawMessage
+}
+
+type Inbox interface {
+	Record(context.Context, VerifiedDelivery, time.Time) (bool, error)
+}
+
+type HTTPHandler struct {
+	secret       []byte
+	inbox        Inbox
+	maxBodyBytes int64
+	now          func() time.Time
+}
+
+func NewHTTPHandler(secret []byte, inbox Inbox, maxBodyBytes int64) (*HTTPHandler, error) {
+	if len(secret) == 0 {
+		return nil, errors.New("GitHub webhook secret is required")
+	}
+	if inbox == nil {
+		return nil, errors.New("GitHub webhook inbox is required")
+	}
+	if maxBodyBytes <= 0 {
+		maxBodyBytes = DefaultMaxBodyBytes
+	}
+	return &HTTPHandler{secret: append([]byte(nil), secret...), inbox: inbox, maxBodyBytes: maxBodyBytes, now: time.Now}, nil
+}
+
+func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		http.Error(w, "content type must be application/json", http.StatusUnsupportedMediaType)
+		return
+	}
+	body, err := ReadBounded(r, h.maxBodyBytes)
+	if err != nil {
+		http.Error(w, "invalid webhook request", http.StatusBadRequest)
+		return
+	}
+	delivery, err := Verify(r.Header, body, h.secret, h.maxBodyBytes)
+	if err != nil {
+		http.Error(w, "invalid webhook request", http.StatusUnauthorized)
+		return
+	}
+	delivery.CorrelationID = CorrelationIDFromContext(r.Context())
+	if _, err := Normalize(delivery); err != nil {
+		http.Error(w, "unsupported or incomplete webhook event", http.StatusUnprocessableEntity)
+		return
+	}
+	inserted, err := h.inbox.Record(r.Context(), delivery, h.now().UTC())
+	if errors.Is(err, ErrDeliveryIDConflict) {
+		http.Error(w, "delivery ID conflict", http.StatusConflict)
+		return
+	}
+	if err != nil {
+		http.Error(w, "webhook temporarily unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	duplicate := !inserted
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(struct {
+		DeliveryID string `json:"delivery_id"`
+		Duplicate  bool   `json:"duplicate"`
+	}{DeliveryID: delivery.DeliveryID, Duplicate: duplicate})
+}
+
+// Verify authenticates the exact raw request bytes before JSON decoding. It
+// returns only allowlisted event/action pairs; callers must still authorize
+// installation and repository ownership before creating work.
+func Verify(headers http.Header, body []byte, secret []byte, maxBodyBytes int64) (VerifiedDelivery, error) {
+	if len(secret) == 0 {
+		return VerifiedDelivery{}, fmt.Errorf("%w: webhook secret is not configured", ErrInvalidDelivery)
+	}
+	if maxBodyBytes <= 0 {
+		maxBodyBytes = DefaultMaxBodyBytes
+	}
+	if int64(len(body)) > maxBodyBytes {
+		return VerifiedDelivery{}, fmt.Errorf("%w: body exceeds %d bytes", ErrInvalidDelivery, maxBodyBytes)
+	}
+	if err := verifySignature(secret, body, headers.Get("X-Hub-Signature-256")); err != nil {
+		return VerifiedDelivery{}, err
+	}
+	deliveryID := strings.TrimSpace(headers.Get("X-GitHub-Delivery"))
+	if !validDeliveryID(deliveryID) {
+		return VerifiedDelivery{}, fmt.Errorf("%w: X-GitHub-Delivery must be a UUID", ErrInvalidDelivery)
+	}
+	event := strings.TrimSpace(headers.Get("X-GitHub-Event"))
+	if event == "" {
+		return VerifiedDelivery{}, fmt.Errorf("%w: X-GitHub-Event is required", ErrInvalidDelivery)
+	}
+	var payload map[string]json.RawMessage
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	if err := decoder.Decode(&payload); err != nil || payload == nil {
+		return VerifiedDelivery{}, fmt.Errorf("%w: body must be one JSON object", ErrInvalidDelivery)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return VerifiedDelivery{}, fmt.Errorf("%w: body must contain exactly one JSON object", ErrInvalidDelivery)
+	}
+	action := ""
+	if rawAction, exists := payload["action"]; exists {
+		if err := json.Unmarshal(rawAction, &action); err != nil {
+			return VerifiedDelivery{}, fmt.Errorf("%w: action must be a string", ErrInvalidDelivery)
+		}
+		action = strings.TrimSpace(action)
+	}
+	if !supportedEventAction(event, action) {
+		return VerifiedDelivery{}, fmt.Errorf("%w: unsupported event/action %q/%q", ErrInvalidDelivery, event, action)
+	}
+	return VerifiedDelivery{DeliveryID: deliveryID, Event: event, Action: action, Payload: append(json.RawMessage(nil), body...)}, nil
+}
+
+// ValidateWebhookHeaders rejects malformed/duplicated transport identity
+// before the Tenant credential resolver performs STS or Secrets Manager IO.
+func ValidateWebhookHeaders(headers http.Header) error {
+	one := func(name string) (string, bool) {
+		values := headers.Values(name)
+		if len(values) != 1 || values[0] == "" || strings.TrimSpace(values[0]) != values[0] {
+			return "", false
+		}
+		return values[0], true
+	}
+	event, okEvent := one("X-GitHub-Event")
+	delivery, okDelivery := one("X-GitHub-Delivery")
+	signature, okSignature := one("X-Hub-Signature-256")
+	if !okEvent || len(event) > 100 || !validEventName(event) || !okDelivery || !validDeliveryID(delivery) || !okSignature || len(signature) != len("sha256=")+sha256.Size*2 || !strings.HasPrefix(signature, "sha256=") {
+		return ErrInvalidDelivery
+	}
+	if _, err := hex.DecodeString(strings.TrimPrefix(signature, "sha256=")); err != nil {
+		return ErrInvalidDelivery
+	}
+	return nil
+}
+
+func validEventName(event string) bool {
+	return oneOf(event, "push", "installation", "installation_repositories", "pull_request", "workflow_job", "issue_comment")
+}
+
+func verifySignature(secret, body []byte, supplied string) error {
+	if !strings.HasPrefix(supplied, "sha256=") || len(supplied) != len("sha256=")+sha256.Size*2 {
+		return fmt.Errorf("%w: X-Hub-Signature-256 is missing or malformed", ErrInvalidDelivery)
+	}
+	signature, err := hex.DecodeString(strings.TrimPrefix(supplied, "sha256="))
+	if err != nil {
+		return fmt.Errorf("%w: X-Hub-Signature-256 is not valid hex", ErrInvalidDelivery)
+	}
+	mac := hmac.New(sha256.New, secret)
+	_, _ = mac.Write(body)
+	if !hmac.Equal(signature, mac.Sum(nil)) {
+		return fmt.Errorf("%w: webhook signature does not match raw body", ErrInvalidDelivery)
+	}
+	return nil
+}
+
+func validDeliveryID(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	for i, char := range value {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if char != '-' {
+				return false
+			}
+			continue
+		}
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+func supportedEventAction(event, action string) bool {
+	switch event {
+	case "push":
+		return action == ""
+	case "installation":
+		return oneOf(action, "created", "deleted", "suspend", "unsuspend")
+	case "installation_repositories":
+		return oneOf(action, "added", "removed")
+	case "pull_request":
+		return oneOf(action, "opened", "reopened", "synchronize", "closed")
+	case "workflow_job":
+		return oneOf(action, "queued", "in_progress", "completed")
+	case "issue_comment":
+		return action == "created"
+	default:
+		return false
+	}
+}
+
+func oneOf(value string, choices ...string) bool {
+	for _, choice := range choices {
+		if value == choice {
+			return true
+		}
+	}
+	return false
+}
+
+// ReadBounded reads an HTTP body while enforcing the same limit as Verify. It
+// must be called before handing the bytes to a JSON decoder.
+func ReadBounded(request *http.Request, maxBodyBytes int64) ([]byte, error) {
+	if request == nil || request.Body == nil {
+		return nil, fmt.Errorf("%w: request body is required", ErrInvalidDelivery)
+	}
+	if maxBodyBytes <= 0 {
+		maxBodyBytes = DefaultMaxBodyBytes
+	}
+	body, err := io.ReadAll(io.LimitReader(request.Body, maxBodyBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read GitHub webhook body: %w", err)
+	}
+	if int64(len(body)) > maxBodyBytes {
+		return nil, fmt.Errorf("%w: body exceeds %d bytes", ErrInvalidDelivery, maxBodyBytes)
+	}
+	return body, nil
+}

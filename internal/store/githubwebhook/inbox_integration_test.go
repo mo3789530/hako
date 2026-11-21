@@ -1,0 +1,961 @@
+//go:build integration
+
+package githubwebhook
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/githubwebhook"
+	"github.com/mo3789530/hako/internal/store/dsql"
+	"github.com/mo3789530/hako/internal/store/githubregistry"
+	"github.com/mo3789530/hako/internal/store/transaction"
+	"github.com/mo3789530/hako/internal/testutil"
+)
+
+func TestInboxRecordIsDurableAndIdempotent(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	inbox := Inbox{Pool: pool, Policy: transaction.DefaultPolicy()}
+	now := time.Now().UTC()
+	delivery := githubwebhook.VerifiedDelivery{
+		DeliveryID: "a1b2c3d4-e5f6-4789-8abc-def012345678",
+		Event:      "pull_request", Action: "opened", Payload: []byte(`{"action":"opened","installation":{"id":12},"repository":{"id":42,"name":"api","owner":{"login":"acme"}},"pull_request":{"number":17,"state":"open","head":{"ref":"feature/example","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"base":{"ref":"main"}}}`),
+	}
+	inserted, err := inbox.Record(ctx, delivery, now)
+	if err != nil || !inserted {
+		t.Fatalf("first record = inserted %v, err %v", inserted, err)
+	}
+	inserted, err = inbox.Record(ctx, delivery, now.Add(time.Second))
+	if err != nil || inserted {
+		t.Fatalf("replay = inserted %v, err %v", inserted, err)
+	}
+	otherIntegration := delivery
+	otherIntegration.IntegrationID = "integration_other"
+	otherIntegration.CredentialGeneration = 7
+	if inserted, err = inbox.Record(ctx, otherIntegration, now); err != nil || !inserted {
+		t.Fatalf("same Delivery ID in another integration = inserted %v, err %v", inserted, err)
+	}
+	conflicting := delivery
+	conflicting.Payload = []byte(strings.Replace(string(delivery.Payload), `"action":"opened"`, `"action":"opened","changed":true`, 1))
+	if _, err := inbox.Record(ctx, conflicting, now); !errors.Is(err, ErrDeliveryIDConflict) {
+		t.Fatalf("delivery ID collision error = %v, want %v", err, ErrDeliveryIDConflict)
+	}
+	var count int
+	var payload string
+	var schemaVersion int
+	var eventJSON string
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*), MIN(payload_json), MAX(event_schema_version), MIN(normalized_event_json) FROM github_webhook_deliveries WHERE delivery_id = $1`, delivery.DeliveryID).Scan(&count, &payload, &schemaVersion, &eventJSON); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 || payload != string(delivery.Payload) || schemaVersion != githubwebhook.RepositoryEventSchemaVersion {
+		t.Fatalf("persisted rows = %d schema=%d payload=%s; want one row per integration and normalized schema", count, schemaVersion, payload)
+	}
+	var normalized githubwebhook.RepositoryEvent
+	if err := json.Unmarshal([]byte(eventJSON), &normalized); err != nil || normalized.Type != "repository.pull_request.opened" || normalized.Repository == nil || normalized.Repository.GitHubID != 42 || normalized.PullRequest == nil || normalized.PullRequest.Number != 17 {
+		t.Fatalf("persisted normalized event = %+v; decode error=%v", normalized, err)
+	}
+}
+
+func TestInboxRedactsIssueCommentBodyButKeepsCommandProjection(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	inbox := Inbox{Pool: pool, Policy: transaction.DefaultPolicy()}
+	const body = `{"action":"created","installation":{"id":7701},"repository":{"id":7702,"name":"api","owner":{"login":"acme"}},"issue":{"number":7},"comment":{"id":8,"body":"/hako implement","author_association":"MEMBER"},"sender":{"id":7771,"login":"author"}}`
+	delivery := githubwebhook.VerifiedDelivery{DeliveryID: "77777777-7777-4777-8777-777777777777", Event: "issue_comment", Action: "created", Payload: []byte(body)}
+	if inserted, err := inbox.Record(ctx, delivery, time.Now().UTC()); err != nil || !inserted {
+		t.Fatalf("record issue comment = inserted %v error %v", inserted, err)
+	}
+	var storedPayload, payloadHash, eventJSON string
+	if err := pool.QueryRow(ctx, `SELECT payload_json, payload_sha256, normalized_event_json FROM github_webhook_deliveries WHERE delivery_id=$1`, delivery.DeliveryID).Scan(&storedPayload, &payloadHash, &eventJSON); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(storedPayload, "/hako implement") {
+		t.Fatalf("raw payload retained comment body: %s", storedPayload)
+	}
+	originalDigest := sha256.Sum256(delivery.Payload)
+	if payloadHash != hex.EncodeToString(originalDigest[:]) {
+		t.Fatalf("payload hash = %q, want hash of original signed bytes", payloadHash)
+	}
+	var event githubwebhook.RepositoryEvent
+	if err := json.Unmarshal([]byte(eventJSON), &event); err != nil {
+		t.Fatal(err)
+	}
+	if event.IssueComment == nil || event.IssueComment.AgentCommand != githubwebhook.AgentCommandImplement || strings.Contains(eventJSON, "/hako implement") {
+		t.Fatalf("normalized event = %s", eventJSON)
+	}
+}
+
+func TestIssueCommentCommandIsNotScheduledAsRepositoryTrigger(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	inbox := Inbox{Pool: pool, Policy: transaction.DefaultPolicy()}
+	delivery := githubwebhook.VerifiedDelivery{DeliveryID: "88888888-8888-4888-8888-888888888888", Event: "issue_comment", Action: "created",
+		Payload: []byte(`{"action":"created","installation":{"id":7801},"repository":{"id":7802,"name":"api","owner":{"login":"acme"}},"issue":{"number":7},"comment":{"id":9,"body":"/hako implement","author_association":"OWNER"},"sender":{"id":7810,"login":"owner"}}`)}
+	if inserted, err := inbox.Record(ctx, delivery, time.Now().UTC()); err != nil || !inserted {
+		t.Fatalf("record issue command = inserted %v error %v", inserted, err)
+	}
+	creatorCalled := false
+	stats, err := ProcessBatchWithRepositoryTriggers(ctx, pool, transaction.DefaultPolicy(), 10, time.Now().UTC(),
+		func(context.Context, pgx.Tx, domain.TenantID, string, string, string, time.Time) (bool, error) {
+			creatorCalled = true
+			return true, nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if creatorCalled || stats.WorkloadRunsCreated != 0 || stats.Claimed != 0 || stats.Processed != 0 {
+		t.Fatalf("Issue command entered the repository trigger scheduler: callback=%v stats=%+v", creatorCalled, stats)
+	}
+	var state string
+	if err := pool.QueryRow(ctx, `SELECT processing_status FROM github_webhook_deliveries WHERE delivery_id=$1`, delivery.DeliveryID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "received" {
+		t.Fatalf("unsupported Issue command state = %q, want received until the dedicated authorized processor is enabled", state)
+	}
+}
+
+func TestIssueCommentAgentAuthorizationRequiresVerifiedTenantMemberAndOptIn(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	for _, query := range []string{
+		`INSERT INTO tenants(id,name,created_at) VALUES ('tenant_agent_auth','Agent auth',now()),('tenant_agent_other','Other Tenant',now())`,
+		`INSERT INTO users(id,cognito_subject,email,created_at,github_user_id,github_login) VALUES ('usr_agent_member','agent-member','',now(),7001,'member'),('usr_agent_other','agent-other','',now(),7002,'other')`,
+		`INSERT INTO tenant_members(tenant_id,user_id,role,joined_at) VALUES ('tenant_agent_auth','usr_agent_member','member',now()),('tenant_agent_other','usr_agent_other','owner',now())`,
+		`INSERT INTO tenant_github_installations(tenant_id,installation_id,account_login,status,requested_by,requested_at,updated_at) VALUES ('tenant_agent_auth',8001,'acme','active','usr_agent_member',now(),now())`,
+		`INSERT INTO github_app_installation_bindings(installation_id,tenant_id,bound_at) VALUES (8001,'tenant_agent_auth',now())`,
+		`INSERT INTO tenant_github_repositories(tenant_id,installation_id,github_repository_id,owner_login,repository_name,default_branch,synchronized_at,factory_enabled,factory_enabled_at) VALUES ('tenant_agent_auth',8001,8002,'acme','api','main',now(),true,now()-interval '1 minute')`,
+	} {
+		if _, err := pool.Exec(ctx, query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inbox := Inbox{Pool: pool, Policy: transaction.DefaultPolicy()}
+	makeDelivery := func(id string, actorID int, isPR bool) githubwebhook.VerifiedDelivery {
+		pullRequest := "null"
+		if isPR {
+			pullRequest = `{"url":"https://api.github.test/pulls/17"}`
+		}
+		payload := fmt.Sprintf(`{"action":"created","installation":{"id":8001},"repository":{"id":8002,"name":"api","owner":{"login":"acme"}},"issue":{"number":17,"pull_request":%s},"comment":{"id":%d,"body":"/hako implement","author_association":"MEMBER"},"sender":{"id":%d,"login":"member"}}`, pullRequest, actorID+10, actorID)
+		return githubwebhook.VerifiedDelivery{DeliveryID: id, Event: "issue_comment", Action: "created", Payload: []byte(payload)}
+	}
+	valid := makeDelivery("a4b2c3d4-e5f6-4789-8abc-def012345678", 7001, false)
+	otherTenantMember := makeDelivery("b4b2c3d4-e5f6-4789-8abc-def012345678", 7002, false)
+	pullRequestComment := makeDelivery("c4b2c3d4-e5f6-4789-8abc-def012345678", 7001, true)
+	for _, delivery := range []githubwebhook.VerifiedDelivery{valid, otherTenantMember, pullRequestComment} {
+		if inserted, err := inbox.Record(ctx, delivery, now); err != nil || !inserted {
+			t.Fatalf("record %s: inserted=%v error=%v", delivery.DeliveryID, inserted, err)
+		}
+	}
+	for _, tc := range []struct {
+		delivery githubwebhook.VerifiedDelivery
+		want     bool
+	}{{valid, true}, {otherTenantMember, false}, {pullRequestComment, false}} {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, ok, err := AuthorizeIssueCommentAgentCommand(ctx, tx, "shared", tc.delivery.DeliveryID)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatalf("authorize %s: %v", tc.delivery.DeliveryID, err)
+		}
+		if err := tx.Rollback(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if ok != tc.want {
+			t.Fatalf("authorization for %s = %+v, %v; want allowed=%v", tc.delivery.DeliveryID, got, ok, tc.want)
+		}
+		if tc.want && (got.TenantID != "tenant_agent_auth" || got.UserID != "usr_agent_member" || got.Repository.GitHubID != 8002 || got.IssueNumber != 17 || got.CommentID != 7011) {
+			t.Fatalf("authorized identity projection = %+v", got)
+		}
+	}
+}
+
+func TestRawWebhookPayloadExpiresWithoutLosingNormalizedEventOrIdempotency(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	inbox := Inbox{Pool: pool, Policy: transaction.DefaultPolicy()}
+	delivery := githubwebhook.VerifiedDelivery{
+		DeliveryID: "a2b2c3d4-e5f6-4789-8abc-def012345678", Event: "push", Action: "",
+		Payload: []byte(`{"ref":"refs/heads/main","after":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","installation":{"id":44},"repository":{"id":45,"name":"api","owner":{"login":"acme"}},"sender":{"login":"octocat"}}`),
+	}
+	if inserted, err := inbox.Record(ctx, delivery, now); err != nil || !inserted {
+		t.Fatalf("record webhook delivery = inserted %v err=%v", inserted, err)
+	}
+	beforeExpiry, err := PurgeExpiredRawPayloads(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(RawPayloadRetention-time.Second))
+	if err != nil || beforeExpiry != 0 {
+		t.Fatalf("premature raw payload cleanup = %d err=%v", beforeExpiry, err)
+	}
+	purged, err := PurgeExpiredRawPayloads(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(RawPayloadRetention))
+	if err != nil || purged != 1 {
+		t.Fatalf("expired raw payload cleanup = %d err=%v", purged, err)
+	}
+	var payload, payloadHash, normalizedJSON, actor string
+	var purgedAt *time.Time
+	if err := pool.QueryRow(ctx, `SELECT payload_json,payload_sha256,normalized_event_json,actor_login,payload_purged_at
+		FROM github_webhook_deliveries WHERE integration_id='shared' AND delivery_id=$1`, delivery.DeliveryID).
+		Scan(&payload, &payloadHash, &normalizedJSON, &actor, &purgedAt); err != nil {
+		t.Fatal(err)
+	}
+	if payload != "" || payloadHash == "" || purgedAt == nil || actor != "octocat" {
+		t.Fatalf("retained webhook metadata = payload=%q hash=%q actor=%q purged=%v", payload, payloadHash, actor, purgedAt)
+	}
+	var event githubwebhook.RepositoryEvent
+	if err := json.Unmarshal([]byte(normalizedJSON), &event); err != nil || event.Type != "repository.push" || event.Actor != "octocat" || event.CommitSHA != strings.Repeat("a", 40) {
+		t.Fatalf("normalized event was not retained: %+v err=%v", event, err)
+	}
+	if inserted, err := inbox.Record(ctx, delivery, now.Add(RawPayloadRetention+time.Second)); err != nil || inserted {
+		t.Fatalf("duplicate after raw payload purge = inserted %v err=%v", inserted, err)
+	}
+	conflicting := delivery
+	conflicting.Payload = []byte(strings.Replace(string(delivery.Payload), "octocat", "another-user", 1))
+	if _, err := inbox.Record(ctx, conflicting, now.Add(RawPayloadRetention+2*time.Second)); !errors.Is(err, ErrDeliveryIDConflict) {
+		t.Fatalf("purged delivery ID was reused with new content: %v", err)
+	}
+	if again, err := PurgeExpiredRawPayloads(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(2*RawPayloadRetention)); err != nil || again != 0 {
+		t.Fatalf("raw payload purge was not idempotent: count=%d err=%v", again, err)
+	}
+}
+
+func TestProcessInstallationRepositoryDeliveryIsAtomicAndRetryable(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	now := time.Now().UTC()
+	if _, err := pool.Exec(ctx, `INSERT INTO tenants (id, name, created_at) VALUES ('tenant_hook_process', 'Webhook processing', $1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO users (id, cognito_subject, email, created_at) VALUES ('usr_hook_process', 'hook-process-sub', '', $1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"action":"added","installation":{"id":701},"repositories_added":[{"id":702,"name":"api","default_branch":"main","owner":{"login":"acme"}}]}`)
+	delivery := githubwebhook.VerifiedDelivery{
+		DeliveryID: "b1b2c3d4-e5f6-4789-8abc-def012345678",
+		Event:      "installation_repositories", Action: "added", Payload: body,
+	}
+	inbox := Inbox{Pool: pool, Policy: transaction.DefaultPolicy()}
+	if _, err := inbox.Record(ctx, delivery, now); err != nil {
+		t.Fatalf("record delivery: %v", err)
+	}
+	if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (bool, error) {
+		return ProcessInstallationRepositoryDelivery(ctx, tx, delivery.DeliveryID, now)
+	}); !errors.Is(err, githubregistry.ErrInstallationNotActive) {
+		t.Fatalf("process without active binding error = %v", err)
+	}
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT processing_status FROM github_webhook_deliveries WHERE delivery_id = $1`, delivery.DeliveryID).Scan(&status); err != nil || status != "received" {
+		t.Fatalf("inactive delivery state = %q, err=%v; want received", status, err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO tenant_github_installations (tenant_id, installation_id, account_login, status, requested_by, requested_at, updated_at)
+		VALUES ('tenant_hook_process', 701, 'acme', 'active', 'usr_hook_process', $1, $1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO github_app_installation_bindings (installation_id, tenant_id, bound_at) VALUES (701, 'tenant_hook_process', $1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	firstTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer firstTx.Rollback(ctx)
+	processed, err := ProcessInstallationRepositoryDelivery(ctx, firstTx, delivery.DeliveryID, now)
+	if err != nil || !processed {
+		t.Fatalf("process delivery = %v, err=%v", processed, err)
+	}
+	secondDone := make(chan struct {
+		processed bool
+		err       error
+	}, 1)
+	var started sync.WaitGroup
+	started.Add(1)
+	go func() {
+		started.Done()
+		processed, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (bool, error) {
+			return ProcessInstallationRepositoryDelivery(ctx, tx, delivery.DeliveryID, now)
+		})
+		secondDone <- struct {
+			processed bool
+			err       error
+		}{processed, err}
+	}()
+	started.Wait()
+	select {
+	case result := <-secondDone:
+		t.Fatalf("concurrent duplicate finished before first delivery transaction committed: %+v", result)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := firstTx.Commit(ctx); err != nil {
+		t.Fatalf("commit first delivery processor: %v", err)
+	}
+	second := <-secondDone
+	if second.err != nil || second.processed {
+		t.Fatalf("concurrent duplicate result = processed %v err=%v; want a fenced no-op", second.processed, second.err)
+	}
+	processed, err = transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) (bool, error) {
+		return ProcessInstallationRepositoryDelivery(ctx, tx, delivery.DeliveryID, now)
+	})
+	if err != nil || processed {
+		t.Fatalf("reprocess delivery = %v, err=%v", processed, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT processing_status FROM github_webhook_deliveries WHERE delivery_id = $1`, delivery.DeliveryID).Scan(&status); err != nil || status != "processed" {
+		t.Fatalf("processed delivery state = %q, err=%v", status, err)
+	}
+	var repositoryCount int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM tenant_github_repositories WHERE tenant_id = 'tenant_hook_process' AND installation_id = 701 AND github_repository_id = 702`).Scan(&repositoryCount); err != nil {
+		t.Fatalf("read synced Repository: %v", err)
+	}
+	if repositoryCount != 1 {
+		t.Fatalf("synced Repository count = %d, want 1", repositoryCount)
+	}
+}
+
+func TestProcessBatchDrainsOnlyActiveInstallationRepositoryEvents(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	now := time.Now().UTC()
+	if _, err := pool.Exec(ctx, `INSERT INTO tenants (id, name, created_at) VALUES ('tenant_hook_batch', 'Webhook batch', $1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO users (id, cognito_subject, email, created_at) VALUES ('usr_hook_batch', 'hook-batch-sub', '', $1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO tenant_github_installations (tenant_id, installation_id, account_login, status, requested_by, requested_at, updated_at)
+		VALUES ('tenant_hook_batch', 801, 'acme', 'active', 'usr_hook_batch', $1, $1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO github_app_installation_bindings (installation_id, tenant_id, bound_at) VALUES (801, 'tenant_hook_batch', $1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	inbox := Inbox{Pool: pool, Policy: transaction.DefaultPolicy()}
+	active := githubwebhook.VerifiedDelivery{DeliveryID: "c1b2c3d4-e5f6-4789-8abc-def012345678", Event: "installation_repositories", Action: "added", Payload: []byte(`{"action":"added","installation":{"id":801},"repositories_added":[{"id":802,"name":"api","default_branch":"main","owner":{"login":"acme"}}]}`)}
+	inactive := githubwebhook.VerifiedDelivery{DeliveryID: "d1b2c3d4-e5f6-4789-8abc-def012345678", Event: "installation_repositories", Action: "added", Payload: []byte(`{"action":"added","installation":{"id":803},"repositories_added":[{"id":804,"name":"worker","default_branch":"main","owner":{"login":"acme"}}]}`)}
+	otherEvent := githubwebhook.VerifiedDelivery{DeliveryID: "e1b2c3d4-e5f6-4789-8abc-def012345678", Event: "pull_request", Action: "opened", Payload: []byte(`{"action":"opened","installation":{"id":801},"repository":{"id":805,"name":"api","owner":{"login":"acme"}},"pull_request":{"number":1,"state":"open","head":{"ref":"feature/test","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"base":{"ref":"main"}}}`)}
+	for _, delivery := range []githubwebhook.VerifiedDelivery{active, inactive, otherEvent} {
+		if _, err := inbox.Record(ctx, delivery, now); err != nil {
+			t.Fatalf("record %s: %v", delivery.Event, err)
+		}
+	}
+	stats, err := ProcessBatch(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("process batch: %v", err)
+	}
+	if stats != (BatchStats{Claimed: 1, Processed: 1}) {
+		t.Fatalf("batch stats = %+v, want one eligible processed event", stats)
+	}
+	stats, err = ProcessBatch(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(2*time.Second))
+	if err != nil || stats != (BatchStats{}) {
+		t.Fatalf("empty batch stats = %+v, err=%v", stats, err)
+	}
+	var activeStatus, inactiveStatus, otherStatus string
+	for id, target := range map[string]*string{active.DeliveryID: &activeStatus, inactive.DeliveryID: &inactiveStatus, otherEvent.DeliveryID: &otherStatus} {
+		if err := pool.QueryRow(ctx, `SELECT processing_status FROM github_webhook_deliveries WHERE delivery_id = $1`, id).Scan(target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if activeStatus != "processed" || inactiveStatus != "received" || otherStatus != "received" {
+		t.Fatalf("statuses active=%s inactive=%s other=%s", activeStatus, inactiveStatus, otherStatus)
+	}
+}
+
+func TestActionsRunnerAdmissionRequiresSeparateRepositoryOptInAndDeduplicatesJob(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	for _, query := range []string{
+		`INSERT INTO tenants (id,name,created_at) VALUES ('tenant_actions_admission','Actions admission',now())`,
+		`INSERT INTO users (id,cognito_subject,email,created_at) VALUES ('usr_actions_admission','actions-admission','',now())`,
+		`INSERT INTO tenant_github_installations (tenant_id,installation_id,account_login,status,requested_by,requested_at,updated_at) VALUES ('tenant_actions_admission',8801,'acme','active','usr_actions_admission',now(),now())`,
+		`INSERT INTO github_app_installation_bindings (installation_id,tenant_id,bound_at) VALUES (8801,'tenant_actions_admission',now())`,
+		`INSERT INTO tenant_github_repositories (tenant_id,installation_id,github_repository_id,owner_login,repository_name,default_branch,synchronized_at,actions_runner_enabled,actions_runner_enabled_at) VALUES ('tenant_actions_admission',8801,8802,'acme','enabled','main',now(),true,now()-interval '1 minute'),('tenant_actions_admission',8801,8803,'acme','disabled','main',now(),false,NULL)`,
+	} {
+		if _, err := pool.Exec(ctx, query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inbox := Inbox{Pool: pool, Policy: transaction.DefaultPolicy()}
+	makeDelivery := func(id string, repositoryID int, name string) githubwebhook.VerifiedDelivery {
+		return githubwebhook.VerifiedDelivery{DeliveryID: id, Event: "workflow_job", Action: "queued", Payload: []byte(fmt.Sprintf(`{"action":"queued","installation":{"id":8801},"repository":{"id":%d,"name":%q,"owner":{"login":"acme"}},"workflow_job":{"id":9901,"run_id":9902,"run_attempt":1,"workflow_name":"CI","name":"test","head_branch":"feature/task","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"queued","labels":["self-hosted","hako"]}}`, repositoryID, name))}
+	}
+	accepted := makeDelivery("a3b2c3d4-e5f6-4789-8abc-def012345678", 8802, "enabled")
+	accepted.CorrelationID = "req_12345678-1234-4234-8234-123456789abc"
+	duplicate := makeDelivery("b3b2c3d4-e5f6-4789-8abc-def012345678", 8802, "enabled")
+	optedOut := makeDelivery("c3b2c3d4-e5f6-4789-8abc-def012345678", 8803, "disabled")
+	preOptIn := makeDelivery("d3b2c3d4-e5f6-4789-8abc-def012345678", 8802, "enabled")
+	missingAttempt := makeDelivery("343b2c3d-e5f6-4789-8abc-def012345678", 8802, "enabled")
+	missingAttempt.Payload = []byte(strings.Replace(string(missingAttempt.Payload), `,"run_attempt":1`, "", 1))
+	for _, item := range []struct {
+		delivery githubwebhook.VerifiedDelivery
+		received time.Time
+	}{{accepted, now}, {duplicate, now}, {optedOut, now}, {preOptIn, now.Add(-2 * time.Minute)}, {missingAttempt, now}} {
+		if inserted, err := inbox.Record(ctx, item.delivery, item.received); err != nil || !inserted {
+			t.Fatalf("record %s: inserted=%v error=%v", item.delivery.DeliveryID, inserted, err)
+		}
+	}
+	stats, err := ProcessBatchWithActionsRunnerAdmissions(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(time.Second), nil)
+	if err != nil || stats.Claimed != 5 || stats.Processed != 5 || stats.ActionsRunnerJobsAdmitted != 1 {
+		t.Fatalf("Actions runner admission batch = %+v, error=%v", stats, err)
+	}
+	var jobs int
+	var tenantID string
+	var labels []byte
+	var state string
+	if err := pool.QueryRow(ctx, `SELECT count(*),min(tenant_id),min(labels::text),min(state) FROM github_actions_runner_jobs`).Scan(&jobs, &tenantID, &labels, &state); err != nil {
+		t.Fatal(err)
+	}
+	if jobs != 1 || tenantID != "tenant_actions_admission" || string(labels) != `["self-hosted", "hako"]` || state != "admitted" {
+		t.Fatalf("admitted Actions job count=%d tenant=%q labels=%s state=%q", jobs, tenantID, labels, state)
+	}
+	var checkStatus, checkName, checkSHA, checkCorrelationID string
+	var checkRevision int64
+	var checkOutboxCount int
+	if err := pool.QueryRow(ctx, `SELECT status,check_name,commit_sha,revision,COALESCE(correlation_id,'') FROM github_actions_runner_checks
+		WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`).Scan(&checkStatus, &checkName, &checkSHA, &checkRevision, &checkCorrelationID); err != nil ||
+		checkStatus != "queued" || checkName != "Hako Actions Runner" || checkSHA != strings.Repeat("a", 40) || checkRevision != 1 || checkCorrelationID != accepted.CorrelationID {
+		t.Fatalf("initial Actions Runner Check status=%q name=%q SHA=%q revision=%d correlation=%q error=%v", checkStatus, checkName, checkSHA, checkRevision, checkCorrelationID, err)
+	}
+	var checkOutboxPayload string
+	if err := pool.QueryRow(ctx, `SELECT payload_json FROM outbox_events WHERE aggregate_type='github_actions_runner_job'
+		AND aggregate_id='shared:9901:1' AND event_type='github_actions_runner_job.github_check_requested'`).Scan(&checkOutboxPayload); err != nil ||
+		!strings.Contains(checkOutboxPayload, `"correlation_id":"`+accepted.CorrelationID+`"`) {
+		t.Fatalf("Actions Runner Check outbox correlation ID not propagated: payload=%s error=%v", checkOutboxPayload, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox_events WHERE aggregate_type='github_actions_runner_job'
+		AND event_type='github_actions_runner_job.github_check_requested' AND aggregate_id='shared:9901:1'`).Scan(&checkOutboxCount); err != nil || checkOutboxCount != 1 {
+		t.Fatalf("initial Runner Check outbox count=%d error=%v", checkOutboxCount, err)
+	}
+	for _, rejected := range []githubwebhook.VerifiedDelivery{optedOut, preOptIn, missingAttempt} {
+		var status string
+		if err := pool.QueryRow(ctx, `SELECT processing_status FROM github_webhook_deliveries WHERE delivery_id=$1`, rejected.DeliveryID).Scan(&status); err != nil || status != "failed" {
+			t.Fatalf("ineligible repository delivery %s status=%q error=%v", rejected.DeliveryID, status, err)
+		}
+	}
+	var uncorrelatableJobs int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM github_actions_runner_jobs WHERE run_attempt=0`).Scan(&uncorrelatableJobs); err != nil || uncorrelatableJobs != 0 {
+		t.Fatalf("admitted uncorrelatable zero-attempt runner jobs: count=%d error=%v", uncorrelatableJobs, err)
+	}
+	var queuedWorkloadRuns int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM workload_runs`).Scan(&queuedWorkloadRuns); err != nil || queuedWorkloadRuns != 0 {
+		t.Fatalf("admission unexpectedly created Workload/MicroVM request: count=%d error=%v", queuedWorkloadRuns, err)
+	}
+	claimTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := ClaimNextActionsRunnerJob(ctx, claimTx, "controller-one", now.Add(2*time.Second), 30*time.Second)
+	if err != nil || !ok || claimed.State != "claimed" || claimed.ClaimID != "controller-one" || claimed.ClaimAttempts != 1 || claimed.JobID != 9901 || len(claimed.Labels) != 2 {
+		_ = claimTx.Rollback(ctx)
+		t.Fatalf("claim admitted job=%+v ok=%v error=%v", claimed, ok, err)
+	}
+	if err := claimTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	secondClaimTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := ClaimNextActionsRunnerJob(ctx, secondClaimTx, "controller-two", now.Add(3*time.Second), 30*time.Second); err != nil || ok {
+		_ = secondClaimTx.Rollback(ctx)
+		t.Fatalf("live job lease was claimed twice: ok=%v error=%v", ok, err)
+	}
+	if err := secondClaimTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	recovered, ok, err := (ActionsRunnerJobClaimer{Pool: pool, Policy: transaction.DefaultPolicy()}).ClaimNext(ctx, "controller-recovery", now.Add(40*time.Second), 30*time.Second)
+	if err != nil || !ok || recovered.ClaimID != "controller-recovery" || recovered.ClaimAttempts != 2 {
+		t.Fatalf("expired lease recovery=%+v ok=%v error=%v", recovered, ok, err)
+	}
+	stats, err = ProcessBatchWithActionsRunnerAdmissions(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(2*time.Second), nil)
+	if err != nil || stats != (BatchStats{}) {
+		t.Fatalf("replayed admission batch = %+v, error=%v", stats, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE github_actions_runner_jobs SET state='starting',claim_id='runner-controller',lease_expires_at=$2,updated_at=$1
+		WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`, now.Add(41*time.Second), now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	bindTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, err := BindActionsRunnerMicroVM(ctx, bindTx, "shared", 9901, 1, "runner-controller", "rp-tokyo-01", "lambda-microvm-test-01", now.Add(41*time.Second))
+	if err != nil || !bound {
+		_ = bindTx.Rollback(ctx)
+		t.Fatalf("bind Actions runner MicroVM: bound=%v error=%v", bound, err)
+	}
+	repeatedBinding, err := BindActionsRunnerMicroVM(ctx, bindTx, "shared", 9901, 1, "runner-controller", "rp-tokyo-01", "lambda-microvm-test-01", now.Add(41*time.Second))
+	if err != nil || !repeatedBinding {
+		_ = bindTx.Rollback(ctx)
+		t.Fatalf("repeat Actions runner MicroVM binding: bound=%v error=%v", repeatedBinding, err)
+	}
+	replacedBinding, err := BindActionsRunnerMicroVM(ctx, bindTx, "shared", 9901, 1, "runner-controller", "rp-tokyo-01", "lambda-microvm-test-02", now.Add(41*time.Second))
+	if err != nil || replacedBinding {
+		_ = bindTx.Rollback(ctx)
+		t.Fatalf("different MicroVM replaced pinned runner allocation: bound=%v error=%v", replacedBinding, err)
+	}
+	if err := bindTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	makeStatusDelivery := func(id, action, status, conclusion, sha string) githubwebhook.VerifiedDelivery {
+		payload := fmt.Sprintf(`{"action":%q,"installation":{"id":8801},"repository":{"id":8802,"name":"enabled","owner":{"login":"acme"}},"workflow_job":{"id":9901,"run_id":9902,"run_attempt":1,"workflow_name":"CI","name":"test","head_branch":"feature/task","head_sha":%q,"status":%q,"conclusion":%q,"labels":["self-hosted","hako"],"runner_id":9810,"runner_name":"hako-runner-1"}}`, action, sha, status, conclusion)
+		return githubwebhook.VerifiedDelivery{DeliveryID: id, Event: "workflow_job", Action: action, Payload: []byte(payload)}
+	}
+	wrongSHA := makeStatusDelivery("e3b2c3d4-e5f6-4789-8abc-def012345678", "in_progress", "in_progress", "", strings.Repeat("b", 40))
+	if inserted, err := inbox.Record(ctx, wrongSHA, now.Add(42*time.Second)); err != nil || !inserted {
+		t.Fatalf("record mismatched Actions assignment: inserted=%v error=%v", inserted, err)
+	}
+	stats, err = ProcessBatchWithActionsRunnerAdmissions(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(43*time.Second), nil)
+	if err != nil || stats.Processed != 1 {
+		t.Fatalf("process mismatched Actions assignment = %+v error=%v", stats, err)
+	}
+	var runnerState string
+	var runnerID *int64
+	if err := pool.QueryRow(ctx, `SELECT state,runner_id FROM github_actions_runner_jobs WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`).Scan(&runnerState, &runnerID); err != nil || runnerState != "starting" || runnerID != nil {
+		t.Fatalf("mismatched SHA changed Actions assignment: state=%q runner=%v error=%v", runnerState, runnerID, err)
+	}
+	inProgress := makeStatusDelivery("f3b2c3d4-e5f6-4789-8abc-def012345678", "in_progress", "in_progress", "", strings.Repeat("a", 40))
+	if inserted, err := inbox.Record(ctx, inProgress, now.Add(44*time.Second)); err != nil || !inserted {
+		t.Fatalf("record Actions in_progress: inserted=%v error=%v", inserted, err)
+	}
+	stats, err = ProcessBatchWithActionsRunnerAdmissions(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(45*time.Second), nil)
+	if err != nil || stats.Processed != 1 {
+		t.Fatalf("process Actions in_progress = %+v error=%v", stats, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT state,runner_id FROM github_actions_runner_jobs WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`).Scan(&runnerState, &runnerID); err != nil || runnerState != "running" || runnerID == nil || *runnerID != 9810 {
+		t.Fatalf("Actions runner assignment = state=%q runner=%v error=%v", runnerState, runnerID, err)
+	}
+	completed := makeStatusDelivery("043b2c3d-4e5f-4789-8abc-def012345678", "completed", "completed", "success", strings.Repeat("a", 40))
+	if inserted, err := inbox.Record(ctx, completed, now.Add(46*time.Second)); err != nil || !inserted {
+		t.Fatalf("record Actions completed: inserted=%v error=%v", inserted, err)
+	}
+	stats, err = ProcessBatchWithActionsRunnerAdmissions(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(47*time.Second), nil)
+	if err != nil || stats.Processed != 1 {
+		t.Fatalf("process Actions completed = %+v error=%v", stats, err)
+	}
+	var conclusion string
+	var completedAt *time.Time
+	if err := pool.QueryRow(ctx, `SELECT state,runner_id,conclusion,completed_at FROM github_actions_runner_jobs WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`).Scan(&runnerState, &runnerID, &conclusion, &completedAt); err != nil || runnerState != "completed" || runnerID == nil || *runnerID != 9810 || conclusion != "success" || completedAt == nil {
+		t.Fatalf("Actions completion = state=%q runner=%v conclusion=%q at=%v error=%v", runnerState, runnerID, conclusion, completedAt, err)
+	}
+	var runnerCheckConclusion string
+	if err := pool.QueryRow(ctx, `SELECT status,conclusion,revision FROM github_actions_runner_checks
+		WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`).Scan(&checkStatus, &runnerCheckConclusion, &checkRevision); err != nil ||
+		checkStatus != "completed" || runnerCheckConclusion != "success" || checkRevision != 3 {
+		t.Fatalf("terminal Actions Runner Check status=%q conclusion=%q revision=%d error=%v", checkStatus, runnerCheckConclusion, checkRevision, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox_events WHERE aggregate_type='github_actions_runner_job'
+		AND event_type='github_actions_runner_job.github_check_requested' AND aggregate_id='shared:9901:1'`).Scan(&checkOutboxCount); err != nil || checkOutboxCount != 3 {
+		t.Fatalf("terminal Runner Check outbox count=%d error=%v", checkOutboxCount, err)
+	}
+	staleBindTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleBinding, err := BindActionsRunnerMicroVM(ctx, staleBindTx, "shared", 9901, 1, "runner-controller", "rp-tokyo-01", "lambda-microvm-replacement", now.Add(47*time.Second))
+	if err != nil || staleBinding {
+		_ = staleBindTx.Rollback(ctx)
+		t.Fatalf("terminal Runner claim accepted a late MicroVM binding: bound=%v error=%v", staleBinding, err)
+	}
+	if err := staleBindTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var cleanupCount int
+	var cleanupState string
+	var cleanupReason string
+	var cleanupMicroVM *string
+	var cleanupResourcePlane *string
+	if err := pool.QueryRow(ctx, `SELECT count(*),min(state),min(reason),min(resource_plane_id),min(lambda_microvm_id) FROM github_actions_runner_cleanup_outbox
+		WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`).Scan(&cleanupCount, &cleanupState, &cleanupReason, &cleanupResourcePlane, &cleanupMicroVM); err != nil || cleanupCount != 1 || cleanupState != "pending" || cleanupReason != "completed" || cleanupResourcePlane == nil || *cleanupResourcePlane != "rp-tokyo-01" || cleanupMicroVM == nil || *cleanupMicroVM != "lambda-microvm-test-01" {
+		t.Fatalf("terminal Runner cleanup outbox count=%d state=%q reason=%q ResourcePlane=%v MicroVM=%v error=%v", cleanupCount, cleanupState, cleanupReason, cleanupResourcePlane, cleanupMicroVM, err)
+	}
+	foreignCleanupTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := ClaimNextActionsRunnerCleanup(ctx, foreignCleanupTx, "rp-us-01", "cleanup-worker-foreign", now.Add(48*time.Second), 30*time.Second); err != nil || ok {
+		_ = foreignCleanupTx.Rollback(ctx)
+		t.Fatalf("foreign Resource Plane claimed runner cleanup: ok=%v error=%v", ok, err)
+	}
+	if err := foreignCleanupTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cleanupTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanup, ok, err := ClaimNextActionsRunnerCleanup(ctx, cleanupTx, "rp-tokyo-01", "cleanup-worker-one", now.Add(48*time.Second), 30*time.Second)
+	if err != nil || !ok || cleanup.State != "claimed" || cleanup.ClaimID != "cleanup-worker-one" || cleanup.ResourcePlaneID == nil || *cleanup.ResourcePlaneID != "rp-tokyo-01" || cleanup.AttemptCount != 1 || cleanup.RunnerID == nil || *cleanup.RunnerID != 9810 || cleanup.LambdaMicroVMID == nil || *cleanup.LambdaMicroVMID != "lambda-microvm-test-01" {
+		_ = cleanupTx.Rollback(ctx)
+		t.Fatalf("claim runner cleanup=%+v ok=%v error=%v", cleanup, ok, err)
+	}
+	if err := cleanupTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cleanupRetryTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := ClaimNextActionsRunnerCleanup(ctx, cleanupRetryTx, "rp-tokyo-01", "cleanup-worker-two", now.Add(49*time.Second), 30*time.Second); err != nil || ok {
+		_ = cleanupRetryTx.Rollback(ctx)
+		t.Fatalf("live cleanup lease was claimed twice: ok=%v error=%v", ok, err)
+	}
+	if released, err := RetryActionsRunnerCleanup(ctx, cleanupRetryTx, cleanup, now.Add(50*time.Second), now.Add(60*time.Second), "microvm_terminate_failed"); err != nil || !released {
+		_ = cleanupRetryTx.Rollback(ctx)
+		t.Fatalf("schedule runner cleanup retry: released=%v error=%v", released, err)
+	}
+	if err := cleanupRetryTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	staleCleanupTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed, err := CompleteActionsRunnerCleanup(ctx, staleCleanupTx, cleanup, now.Add(55*time.Second)); err != nil || completed {
+		_ = staleCleanupTx.Rollback(ctx)
+		t.Fatalf("stale cleanup worker acknowledged released lease: completed=%v error=%v", completed, err)
+	}
+	if err := staleCleanupTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cleanupRecoveryTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A restarted worker may have the same name. Its new lease must still be
+	// protected from acknowledgements and retries belonging to the old attempt.
+	recoveredCleanup, ok, err := ClaimNextActionsRunnerCleanup(ctx, cleanupRecoveryTx, "rp-tokyo-01", "cleanup-worker-one", now.Add(60*time.Second), 30*time.Second)
+	if err != nil || !ok || recoveredCleanup.AttemptCount != 2 || recoveredCleanup.ClaimID != "cleanup-worker-one" {
+		_ = cleanupRecoveryTx.Rollback(ctx)
+		t.Fatalf("recover retried runner cleanup=%+v ok=%v error=%v", recoveredCleanup, ok, err)
+	}
+	if completed, err := CompleteActionsRunnerCleanup(ctx, cleanupRecoveryTx, cleanup, now.Add(61*time.Second)); err != nil || completed {
+		_ = cleanupRecoveryTx.Rollback(ctx)
+		t.Fatalf("old cleanup generation acknowledged a recovered lease: completed=%v error=%v", completed, err)
+	}
+	if released, err := RetryActionsRunnerCleanup(ctx, cleanupRecoveryTx, cleanup, now.Add(61*time.Second), now.Add(70*time.Second), "microvm_terminate_failed"); err != nil || released {
+		_ = cleanupRecoveryTx.Rollback(ctx)
+		t.Fatalf("old cleanup generation released a recovered lease: released=%v error=%v", released, err)
+	}
+	if completed, err := CompleteActionsRunnerCleanup(ctx, cleanupRecoveryTx, recoveredCleanup, now.Add(61*time.Second)); err != nil || !completed {
+		_ = cleanupRecoveryTx.Rollback(ctx)
+		t.Fatalf("complete recovered runner cleanup: completed=%v error=%v", completed, err)
+	}
+	if err := cleanupRecoveryTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	reordered := makeStatusDelivery("143b2c3d-4e5f-4789-8abc-def012345678", "in_progress", "in_progress", "", strings.Repeat("a", 40))
+	if inserted, err := inbox.Record(ctx, reordered, now.Add(48*time.Second)); err != nil || !inserted {
+		t.Fatalf("record reordered Actions in_progress: inserted=%v error=%v", inserted, err)
+	}
+	stats, err = ProcessBatchWithActionsRunnerAdmissions(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(49*time.Second), nil)
+	if err != nil || stats.Processed != 1 {
+		t.Fatalf("process reordered Actions in_progress = %+v error=%v", stats, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT state,runner_id,conclusion FROM github_actions_runner_jobs WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`).Scan(&runnerState, &runnerID, &conclusion); err != nil || runnerState != "completed" || runnerID == nil || *runnerID != 9810 || conclusion != "success" {
+		t.Fatalf("reordered status reopened completed job: state=%q runner=%v conclusion=%q error=%v", runnerState, runnerID, conclusion, err)
+	}
+	missingStatusAttempt := makeStatusDelivery("243b2c3d-4e5f-4789-8abc-def012345678", "in_progress", "in_progress", "", strings.Repeat("a", 40))
+	missingStatusAttempt.Payload = []byte(strings.Replace(string(missingStatusAttempt.Payload), `,"run_attempt":1`, "", 1))
+	if inserted, err := inbox.Record(ctx, missingStatusAttempt, now.Add(50*time.Second)); err != nil || !inserted {
+		t.Fatalf("record Actions status without attempt: inserted=%v error=%v", inserted, err)
+	}
+	stats, err = ProcessBatchWithActionsRunnerAdmissions(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(51*time.Second), nil)
+	if err != nil || stats.Processed != 1 {
+		t.Fatalf("process uncorrelatable Actions status = %+v error=%v", stats, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT state,runner_id,conclusion FROM github_actions_runner_jobs WHERE integration_id='shared' AND workflow_job_id=9901 AND run_attempt=1`).Scan(&runnerState, &runnerID, &conclusion); err != nil || runnerState != "completed" || runnerID == nil || *runnerID != 9810 || conclusion != "success" {
+		t.Fatalf("uncorrelatable status changed completed job: state=%q runner=%v conclusion=%q error=%v", runnerState, runnerID, conclusion, err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO github_actions_runner_jobs
+		(integration_id,delivery_id,tenant_id,installation_id,repository_id,workflow_job_id,workflow_run_id,run_attempt,workflow_name,job_name,head_branch,head_sha,labels,state,created_at,updated_at,claim_id,lease_expires_at,claim_attempts)
+		VALUES ('shared','443b2c3d-4e5f-4789-8abc-def012345678','tenant_actions_admission',8801,8802,9911,9912,1,'CI','other-test','feature/task',repeat('a',40),'["self-hosted","hako"]','starting',$1,$1,'runner-controller-2',$2,1)`, now.Add(52*time.Second), now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	duplicateRunner := githubwebhook.VerifiedDelivery{DeliveryID: "543b2c3d-4e5f-4789-8abc-def012345678", Event: "workflow_job", Action: "in_progress",
+		Payload: []byte(`{"action":"in_progress","installation":{"id":8801},"repository":{"id":8802,"name":"enabled","owner":{"login":"acme"}},"workflow_job":{"id":9911,"run_id":9912,"run_attempt":1,"workflow_name":"CI","name":"other-test","head_branch":"feature/task","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"in_progress","labels":["self-hosted","hako"],"runner_id":9810,"runner_name":"hako-runner-1"}}`)}
+	if inserted, err := inbox.Record(ctx, duplicateRunner, now.Add(53*time.Second)); err != nil || !inserted {
+		t.Fatalf("record reused Runner ID for second job: inserted=%v error=%v", inserted, err)
+	}
+	stats, err = ProcessBatchWithActionsRunnerAdmissions(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(54*time.Second), nil)
+	if err != nil || stats.Processed != 1 {
+		t.Fatalf("process reused Runner ID = %+v error=%v", stats, err)
+	}
+	var secondJobState string
+	var secondJobRunnerID *int64
+	if err := pool.QueryRow(ctx, `SELECT state,runner_id FROM github_actions_runner_jobs WHERE integration_id='shared' AND workflow_job_id=9911 AND run_attempt=1`).Scan(&secondJobState, &secondJobRunnerID); err != nil || secondJobState != "starting" || secondJobRunnerID != nil {
+		t.Fatalf("Runner ID was reused for a second job: state=%q runner=%v error=%v", secondJobState, secondJobRunnerID, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE github_actions_runner_jobs SET runner_id=9810 WHERE integration_id='shared' AND workflow_job_id=9911 AND run_attempt=1`); err == nil {
+		t.Fatal("database uniqueness constraint allowed one GitHub Runner ID to be pinned to two jobs")
+	}
+}
+
+func TestProcessBatchAppliesInstallationSuspendUnsuspendAndDeleteLifecycle(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	now := time.Now().UTC()
+	if _, err := pool.Exec(ctx, `INSERT INTO tenants (id, name, created_at) VALUES ('tenant_hook_lifecycle', 'Webhook lifecycle', $1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO users (id, cognito_subject, email, created_at) VALUES ('usr_hook_lifecycle', 'hook-lifecycle-sub', '', $1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO tenant_github_installations (tenant_id, installation_id, account_login, status, requested_by, requested_at, updated_at)
+		VALUES ('tenant_hook_lifecycle', 901, 'acme', 'active', 'usr_hook_lifecycle', $1, $1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO github_app_installation_bindings (installation_id, tenant_id, bound_at) VALUES (901, 'tenant_hook_lifecycle', $1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO tenant_github_repositories (tenant_id, installation_id, github_repository_id, owner_login, repository_name, default_branch, synchronized_at)
+		VALUES ('tenant_hook_lifecycle', 901, 902, 'acme', 'api', 'main', $1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	inbox := Inbox{Pool: pool, Policy: transaction.DefaultPolicy()}
+	makeDelivery := func(id, action string) githubwebhook.VerifiedDelivery {
+		return githubwebhook.VerifiedDelivery{DeliveryID: id, Event: "installation", Action: action, Payload: []byte(`{"action":"` + action + `","installation":{"id":901}}`)}
+	}
+	suspended := makeDelivery("f1b2c3d4-e5f6-4789-8abc-def012345678", "suspend")
+	unsuspended := makeDelivery("f2b2c3d4-e5f6-4789-8abc-def012345678", "unsuspend")
+	deleted := makeDelivery("f3b2c3d4-e5f6-4789-8abc-def012345678", "deleted")
+	process := func(delivery githubwebhook.VerifiedDelivery, timestamp time.Time) {
+		t.Helper()
+		if inserted, err := inbox.Record(ctx, delivery, timestamp); err != nil || !inserted {
+			t.Fatalf("record %s event: inserted=%v err=%v", delivery.Action, inserted, err)
+		}
+		stats, err := ProcessBatch(ctx, pool, transaction.DefaultPolicy(), 10, timestamp.Add(time.Second))
+		if err != nil || stats != (BatchStats{Claimed: 1, Processed: 1}) {
+			t.Fatalf("process %s event = %+v, err=%v", delivery.Action, stats, err)
+		}
+	}
+	process(suspended, now)
+	installations, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) ([]githubregistry.Installation, error) {
+		return githubregistry.List(ctx, tx, "tenant_hook_lifecycle")
+	})
+	if err != nil || len(installations) != 1 || installations[0].Status != "active" || !installations[0].Suspended {
+		t.Fatalf("suspended Tenant Installation = %+v, err=%v", installations, err)
+	}
+	if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) ([]githubregistry.Repository, error) {
+		return githubregistry.ListRepositories(ctx, tx, "tenant_hook_lifecycle", 901)
+	}); !errors.Is(err, githubregistry.ErrInstallationNotActive) {
+		t.Fatalf("suspended Installation Repository access error = %v, want inactive", err)
+	}
+	process(unsuspended, now.Add(2*time.Second))
+	repositories, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) ([]githubregistry.Repository, error) {
+		return githubregistry.ListRepositories(ctx, tx, "tenant_hook_lifecycle", 901)
+	})
+	if err != nil || len(repositories) != 1 {
+		t.Fatalf("unsuspended Installation repositories = %+v, err=%v", repositories, err)
+	}
+	process(deleted, now.Add(4*time.Second))
+	var status string
+	var suspendedAt *time.Time
+	if err := pool.QueryRow(ctx, `SELECT status, suspended_at FROM tenant_github_installations WHERE tenant_id = 'tenant_hook_lifecycle' AND installation_id = 901`).Scan(&status, &suspendedAt); err != nil {
+		t.Fatal(err)
+	}
+	if status != "revoked" || suspendedAt != nil {
+		t.Fatalf("deleted Installation state = status %q suspended_at %v", status, suspendedAt)
+	}
+	var repositoryCount int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM tenant_github_repositories WHERE tenant_id = 'tenant_hook_lifecycle' AND installation_id = 901`).Scan(&repositoryCount); err != nil || repositoryCount != 0 {
+		t.Fatalf("deleted Installation repositories = %d, err=%v", repositoryCount, err)
+	}
+	installations, err = transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) ([]githubregistry.Installation, error) {
+		return githubregistry.List(ctx, tx, "tenant_hook_lifecycle")
+	})
+	if err != nil || len(installations) != 1 || installations[0].Status != "revoked" || installations[0].Suspended {
+		t.Fatalf("Tenant Installation record = %+v, err=%v", installations, err)
+	}
+	if _, err := transaction.Within(ctx, pool, transaction.DefaultPolicy(), func(ctx context.Context, tx pgx.Tx) ([]githubregistry.Repository, error) {
+		return githubregistry.ListRepositories(ctx, tx, "tenant_hook_lifecycle", 901)
+	}); !errors.Is(err, githubregistry.ErrInstallationNotActive) {
+		t.Fatalf("deleted Installation Repository access error = %v, want inactive", err)
+	}
+}
+
+func TestTenantWebhookDeliveryGenerationIsRevalidatedBeforeQueueProcessing(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	statements := []string{
+		`INSERT INTO tenants (id,name,created_at) VALUES ('tenant_hook_generation','Webhook generation',now())`,
+		`INSERT INTO users (id,cognito_subject,email,created_at) VALUES ('usr_hook_generation','hook-generation-sub','',now())`,
+		`INSERT INTO tenant_github_installations (tenant_id,installation_id,account_login,status,requested_by,requested_at,updated_at) VALUES ('tenant_hook_generation',9401,'acme','active','usr_hook_generation',now(),now())`,
+		`INSERT INTO github_app_installation_bindings (installation_id,tenant_id,bound_at) VALUES (9401,'tenant_hook_generation',now())`,
+		`INSERT INTO github_app_registrations (id,github_app_id,mode,owner_tenant_id,slug,client_id,created_at) VALUES ('registration_hook_generation',9402,'tenant_owned','tenant_hook_generation','hook-generation','client',now())`,
+		`INSERT INTO github_credential_bindings (id,tenant_id,github_app_id,status,private_key_secret_ref,oauth_secret_ref,webhook_secret_ref,approved_at) VALUES ('binding_hook_generation','tenant_hook_generation',9402,'approved','private-ref','oauth-ref','webhook-ref',now())`,
+		`INSERT INTO tenant_github_integrations (id,tenant_id,app_registration_id,github_app_id,credential_binding_id,status,config_revision,credential_generation,idempotency_key,request_sha256,created_by,created_at,updated_at) VALUES ('integration_hook_generation','tenant_hook_generation','registration_hook_generation',9402,'binding_hook_generation','active',2,6,'hook-generation-key','hook-generation-hash','usr_hook_generation',now(),now())`,
+		`INSERT INTO tenant_github_app_installation_bindings (tenant_id,integration_id,installation_id,bound_at) VALUES ('tenant_hook_generation','integration_hook_generation',9401,now())`,
+	}
+	for _, statement := range statements {
+		if _, err := pool.Exec(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inbox := Inbox{Pool: pool, Policy: transaction.DefaultPolicy()}
+	makeDelivery := func(id string, generation int64, repositoryID int64) githubwebhook.VerifiedDelivery {
+		payload := []byte(fmt.Sprintf(`{"action":"added","installation":{"id":9401},"repositories_added":[{"id":%d,"name":"repo-%d","default_branch":"main","owner":{"login":"acme"}}]}`, repositoryID, repositoryID))
+		return githubwebhook.VerifiedDelivery{IntegrationID: "integration_hook_generation", CredentialGeneration: generation, DeliveryID: id, Event: "installation_repositories", Action: "added", Payload: payload}
+	}
+	stale := makeDelivery("f1b2c3d4-e5f6-4789-8abc-def012345678", 5, 9403)
+	current := makeDelivery("f2b2c3d4-e5f6-4789-8abc-def012345678", 6, 9404)
+	wrongApp := makeDelivery("f3b2c3d4-e5f6-4789-8abc-def012345678", 6, 9405)
+	wrongApp.Payload = []byte(`{"action":"added","installation":{"id":9401,"app_id":9999},"repositories_added":[{"id":9405,"name":"wrong-app","owner":{"login":"acme"}}]}`)
+	if inserted, err := inbox.Record(ctx, wrongApp, now); err != nil || !inserted {
+		t.Fatalf("record wrong-App delivery: inserted=%t err=%v", inserted, err)
+	}
+	if inserted, err := inbox.Record(ctx, stale, now); err != nil || !inserted {
+		t.Fatalf("record stale delivery: inserted=%t err=%v", inserted, err)
+	}
+	if inserted, err := inbox.Record(ctx, current, now); err != nil || !inserted {
+		t.Fatalf("record current delivery: inserted=%t err=%v", inserted, err)
+	}
+	stats, err := ProcessBatch(ctx, pool, transaction.DefaultPolicy(), 10, now.Add(time.Second))
+	if err != nil || stats.Processed != 1 {
+		t.Fatalf("process Tenant webhook batch: %+v err=%v", stats, err)
+	}
+	var staleStatus, currentStatus string
+	if err := pool.QueryRow(ctx, `SELECT processing_status FROM github_webhook_deliveries WHERE integration_id='integration_hook_generation' AND delivery_id=$1`, stale.DeliveryID).Scan(&staleStatus); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT processing_status FROM github_webhook_deliveries WHERE integration_id='integration_hook_generation' AND delivery_id=$1`, current.DeliveryID).Scan(&currentStatus); err != nil {
+		t.Fatal(err)
+	}
+	if staleStatus != "failed" || currentStatus != "processed" {
+		t.Fatalf("generation fencing statuses stale=%s current=%s", staleStatus, currentStatus)
+	}
+	var wrongAppStatus string
+	if err := pool.QueryRow(ctx, `SELECT processing_status FROM github_webhook_deliveries WHERE integration_id='integration_hook_generation' AND delivery_id=$1`, wrongApp.DeliveryID).Scan(&wrongAppStatus); err != nil {
+		t.Fatal(err)
+	}
+	var wrongAppRepos int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM tenant_github_repositories WHERE tenant_id='tenant_hook_generation' AND github_repository_id=9405`).Scan(&wrongAppRepos); err != nil {
+		t.Fatal(err)
+	}
+	if wrongAppStatus != "failed" || wrongAppRepos != 0 {
+		t.Fatalf("wrong-App delivery mutated state: status=%s repositories=%d", wrongAppStatus, wrongAppRepos)
+	}
+	var staleRepo, currentRepo int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM tenant_github_repositories WHERE tenant_id='tenant_hook_generation' AND github_repository_id=9403`).Scan(&staleRepo); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM tenant_github_repositories WHERE tenant_id='tenant_hook_generation' AND github_repository_id=9404`).Scan(&currentRepo); err != nil {
+		t.Fatal(err)
+	}
+	if staleRepo != 0 || currentRepo != 1 {
+		t.Fatalf("stale/current repository mutation counts = %d/%d", staleRepo, currentRepo)
+	}
+	if err := pool.QueryRow(ctx, `UPDATE github_webhook_deliveries SET processing_status='failed'
+		WHERE integration_id=$1 AND delivery_id=$2 RETURNING processing_status`, stale.IntegrationID, stale.DeliveryID).Scan(&staleStatus); err != nil {
+		t.Fatal(err)
+	}
+	if err := RequestTenantDeliveryReplay(ctx, pool, transaction.DefaultPolicy(), "tenant_hook_generation", stale.IntegrationID,
+		stale.DeliveryID, "usr_hook_generation", "retry stale signed event after review", now.Add(2*time.Second)); !errors.Is(err, ErrStaleTenantWebhook) {
+		t.Fatalf("stale-generation delivery replay error = %v", err)
+	}
+	var currentReplayCount int
+	for index := 0; index < MaxWebhookReplaysPerHour; index++ {
+		if _, err := pool.Exec(ctx, `UPDATE github_webhook_deliveries SET processing_status='failed'
+			WHERE integration_id=$1 AND delivery_id=$2`, current.IntegrationID, current.DeliveryID); err != nil {
+			t.Fatal(err)
+		}
+		if err := RequestTenantDeliveryReplay(ctx, pool, transaction.DefaultPolicy(), "tenant_hook_generation", current.IntegrationID,
+			current.DeliveryID, "usr_hook_generation", "retry reviewed transient delivery failure", now.Add(time.Duration(index+3)*time.Second)); err != nil {
+			t.Fatalf("eligible Tenant delivery replay %d: %v", index+1, err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `UPDATE github_webhook_deliveries SET processing_status='failed'
+		WHERE integration_id=$1 AND delivery_id=$2`, current.IntegrationID, current.DeliveryID); err != nil {
+		t.Fatal(err)
+	}
+	if err := RequestTenantDeliveryReplay(ctx, pool, transaction.DefaultPolicy(), "tenant_hook_generation", current.IntegrationID,
+		current.DeliveryID, "usr_hook_generation", "retry reviewed transient delivery failure", now.Add(10*time.Second)); !errors.Is(err, ErrDeliveryReplayRateLimited) {
+		t.Fatalf("Tenant delivery replay rate limit error = %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT replay_count FROM github_webhook_deliveries WHERE integration_id=$1 AND delivery_id=$2`, current.IntegrationID, current.DeliveryID).Scan(&currentReplayCount); err != nil || currentReplayCount != MaxWebhookReplaysPerHour {
+		t.Fatalf("Tenant delivery replay count = %d err=%v", currentReplayCount, err)
+	}
+	var replayAuditCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE tenant_id='tenant_hook_generation' AND actor_user_id='usr_hook_generation'
+		AND action='github.webhook.replay_requested' AND target_id=$1`, current.DeliveryID).Scan(&replayAuditCount); err != nil || replayAuditCount != MaxWebhookReplaysPerHour {
+		t.Fatalf("Tenant delivery replay audit count = %d err=%v", replayAuditCount, err)
+	}
+	// A database failure must leave the delivery retryable, not quarantine it
+	// as if the integration had been revoked.
+	retryable := makeDelivery("f4b2c3d4-e5f6-4789-8abc-def012345678", 6, 9406)
+	if _, err := inbox.Record(ctx, retryable, now); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `ALTER TABLE github_credential_bindings RENAME TO unavailable_credential_bindings`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ProcessInstallationRepositoryDeliveryForIntegration(ctx, tx, retryable.IntegrationID, retryable.DeliveryID, now); err == nil {
+		t.Fatal("integration lookup database failure was treated as revoked authorization")
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var retryableStatus string
+	if err := pool.QueryRow(ctx, `SELECT processing_status FROM github_webhook_deliveries WHERE integration_id=$1 AND delivery_id=$2`, retryable.IntegrationID, retryable.DeliveryID).Scan(&retryableStatus); err != nil {
+		t.Fatal(err)
+	}
+	if retryableStatus != "received" {
+		t.Fatalf("database failure quarantined retryable event: %s", retryableStatus)
+	}
+}

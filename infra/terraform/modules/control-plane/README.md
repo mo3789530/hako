@@ -1,0 +1,125 @@
+# Control Plane Terraform module
+
+Creates a Cognito-protected HTTP API, an arm64 API Lambda, an encrypted Aurora DSQL cluster, scoped IAM permissions, and a separate migration-admin policy. It also creates a stable least-privilege Outbox Dispatcher role by default, with an optional scheduled arm64 Dispatcher Lambda.
+
+It does not create the Cognito User Pool, run SQL migrations, create Resource Plane messaging/compute, or deploy the Workload Scheduler. The Dispatcher publishes directly to Resource Plane command queues; the optional Checks queue is a separate Control Plane result-delivery queue. The optional `enable_github_checks_delivery` (default `false`) creates a dedicated encrypted Checks queue/DLQ, a send-only Dispatcher grant, an ECS/Fargate task role with receive-only queue and DSQL-connect permissions, and queue age/depth/DLQ alarms. Optional `github_checks_alarm_actions` SNS topics receive alarm/OK actions. The separate `enable_github_checks_consumer_service` (default `false`) optionally deploys the ARM64 Fargate service/task definition, private-subnet network attachment, restricted execution/task roles, and exact Secrets Manager references for broker mTLS. It requires a pre-created ECS cluster, network/security groups, a digest-pinned ECR image whose account/Region/repository must match the exact repository ARN allowed by the task execution role, broker URL, and operator-provisioned Secrets.
+
+The `enable_github_broker_service` option (default `false`) creates the ARM64
+private ECS/Fargate Broker service, its task and execution roles, exact DSQL
+`DbConnect`, exact ECR/log/three server-TLS-Secret permissions, and a task
+definition that contains Secret ARNs but no PEM contents. It also configures
+the API Lambda for VPC access and grants it only the three exact client-TLS
+Secret reads (plus VPC ENI lifecycle permissions required by Lambda). Build the
+image with `make build-github-broker-image`, publish it separately, and pin its
+digest through `github_broker_image_uri`; no image push or AWS apply is done
+here. Provide a pre-created ECS cluster, private NLB TCP target group, private
+task/API subnets and security groups, private Broker URL, callback URL, and
+operator-created server/client TLS Secrets. The API Lambda subnets must route
+to DSQL and Secrets Manager and to the private NLB. Broker task subnets must
+reach DSQL, Secrets Manager/STS, and GitHub API via the approved egress path.
+Map output `github_broker_task_role_arn` to `hako_github_broker` using the
+bootstrap SQL, then apply migrations and grants before enabling the service.
+The API reads its mTLS client material from the configured Secret ARNs at
+startup; rotate by replacing the Lambda execution generation after updating
+those Secrets. Proposal S3 access is activated only when
+`github_broker_agent_proposal_bucket` is non-empty and exact matching
+`tenant_agent_proposal_artifact_object_arns` are configured. The managed
+Resource Plane bucket must independently grant that Broker role access.
+
+Build the API package with `make build-api-lambda` before planning/applying. If enabling the scheduled Dispatcher, also run `make build-dispatcher-lambda`, configure `enable_outbox_dispatcher` and the versioned Resource Plane manifest. Checks delivery additionally requires `enable_github_checks_delivery=true`, which is validated to require the Dispatcher; the module creates a dedicated ECS task role and exports `github_checks_consumer_task_role_arn`. Configure optional SNS notifications through `github_checks_alarm_actions`. If enabling the GitHub Webhook Processor, run `make build-webhook-processor-lambda` and set `enable_github_webhook_processor`. Automatic Workspace idle suspension is independently opt-in through `enable_workspace_idle_reconciler` (default `false`); build `make build-workspace-idle-reconciler-lambda` before enabling it. The stable `workspace_idle_reconciler_role_arn` exists while disabled so an operator can map the dedicated `hako_workspace_idle_reconciler` DSQL role and apply its table grants before activating the one-minute default schedule. The Lambda only creates normal suspend Operations and never calls Resource Plane/provider APIs. Tenant policy is separately disabled by default. To enable tenant GitHub App setup, configure the App slug/ID/client ID, HTTPS OAuth callback URL, and client-secret ARN, then set `github_app_setup_enabled=true`; see [`docs/github-installation-setup.md`](../../../../docs/github-installation-setup.md). Follow [`docs/control-plane-terraform.md`](../../../../docs/control-plane-terraform.md) for the safe deployment order. SQL role bootstrap and migrations are operator-run. The API Lambda uses `dsql:DbConnect` only; the API role must not receive the separate `dsql:DbConnectAdmin` migration policy. The Dispatcher, Webhook Processor, idle reconciler, Checks consumer, and Preview result consumer have separate least-privilege DSQL roles. The Preview result consumer is column-scoped and receives only configured same-Region result queues. The Dispatcher also sends to manifest-listed command queues and, when enabled, the Checks queue.
+
+The Dispatcher IAM test in `dispatcher-preview-queue.tftest.hcl` verifies that a manifest-listed Preview queue gets only `sqs:SendMessage` on its exact ARN and that a URL from a different account/Region is rejected. `make terraform-test` runs this Control Plane plan test with the other Terraform contract tests.
+
+The module also creates a private ECR repository for API images. Setting `api_lambda_image_uri` to a digest creates a distinct image Lambda candidate but leaves ZIP active. After candidate validation, set `api_lambda_image_active=true` to switch API Gateway; set it back to `false` to roll back while retaining the candidate. Build with `make build-api-lambda-image`, but publish only from an authorized release environment. The image uses AWS Lambda Web Adapter; see [`docs/api-gateway-lambda.md`](../../../../docs/api-gateway-lambda.md) for local HTTP smoke testing, deployment, and rollback.
+
+The dev environment expects Cognito User Pool inputs managed outside this module. DSQL deletion protection is enabled by default. No AWS apply is run as part of local development or CI validation.
+
+Preview expiry metadata reconciliation is independently opt-in through `enable_preview_expiry_reconciler` (default `false`). The stable `preview_expiry_reconciler_role_arn` allows mapping the dedicated `hako_preview_reconciler` DSQL role before enabling it. When enabled, the module requires the ARM64 ZIP from `make build-preview-expiry-lambda`, grants only DSQL `DbConnect` and scoped log writes, and creates an EventBridge schedule (default `rate(1 minute)`) plus a Lambda Errors alarm. The batch is bounded to 1–500. Its SQL grants allow expiry-key reads, cleanup metadata updates, and deletion of expired Preview Session rows only; it cannot read provider bindings or operate MicroVMs, EFS, or Gateway routes. The feature remains disabled by default and has not been applied.
+
+Preview runtime command production is separately opt-in through
+`enable_preview_runtime_dispatcher` (default `false`). Its ARM64 ZIP is built
+with `make build-preview-runtime-dispatch-lambda`. The dedicated
+`hako_preview_runtime_dispatcher` DSQL role can select and claim Preview
+generations, reserve placement capacity, update claim/retry metadata, and
+insert fenced provision/cleanup commands into the Outbox. It cannot bind
+provider IDs or call Resource Plane/AWS APIs. The Lambda and EventBridge
+schedule create Outbox work only; the existing Dispatcher publishes commands
+to the configured Plane queue. The stable role ARN is exported for DSQL IAM
+mapping. This schedule is independent from expiry reconciliation and remains
+disabled by default; infrastructure has not been applied.
+
+Preview result consumption is separately opt-in through
+`enable_preview_result_consumer` (default `false`). Build
+`make build-preview-result-consumer-lambda`, configure
+`preview_result_queue_arns` as a map from stable Resource Plane IDs to exact
+same-Region Resource Plane result queue ARNs, and allow the stable
+`preview_result_consumer_role_arn` in each Resource Plane result queue policy.
+The module creates one partial-batch SQS event-source mapping per configured
+Plane, restricts SQS receive permissions to those ARNs, and attaches DSQL
+`DbConnect` only to its dedicated role. Map that role to
+`hako_preview_result_consumer` using the bootstrap SQL; its column grants can
+apply fenced Preview results and release reserved capacity only after confirmed
+cleanup. Set the opt-in only after migrations, role mapping, grants, and
+Resource Plane queue policies are ready. This infrastructure is default-off and
+has not been applied.
+
+Preview result consumption is separately opt-in through
+`enable_preview_result_consumer` (default `false`). Build
+`make build-preview-result-consumer-lambda`, configure
+`preview_result_queue_arns` as a map from stable Resource Plane IDs to exact
+Resource Plane result queue ARNs, and allow the stable
+`preview_result_consumer_role_arn` in each Resource Plane result queue policy.
+The module creates one partial-batch SQS event-source mapping per configured
+Plane, restricts SQS receive permissions to those ARNs, and attaches DSQL
+`DbConnect` only to its dedicated role. Map that role to
+`hako_preview_result_consumer` using the bootstrap SQL; its column grants can
+apply fenced Preview results and release reserved capacity only after confirmed
+cleanup. Set the opt-in only after migrations, role mapping, grants, and
+Resource Plane queue policies are ready. This infrastructure is default-off and
+has not been applied.
+
+The optional `resource_plane_artifact_cleanup_secret_arns` map enables the
+HMAC-authenticated artifact cleanup API for exact Resource Plane IDs. Each
+entry references the same dedicated cleanup HMAC Secret configured on that
+Resource Plane's Workload Controller; its value must not be reused for health
+reports or execution metadata. The API role receives `GetSecretValue` only for
+the listed ARNs. For cross-account Secrets, an operator-managed resource
+policy must grant this exact API role access; this module does not create or
+retrieve the Secret.
+
+Tenant-owned GitHub App private keys use a different identity boundary from
+Webhook secrets. Set `github_broker_role_name` and the exact
+`tenant_github_private_key_reader_role_arns` allowlist to attach a policy that
+grants only `sts:AssumeRole` on those Tenant reader Roles to the existing
+`hako-github-broker*` role. The API Lambda's Webhook-reader allowlist is kept
+separate, and Terraform validation rejects overlap between the two sets. Empty
+private-key reader input creates no broker policy. The module does not create
+cross-account reader-role trust policies, Tenant Secrets, or KMS grants; those
+must be provisioned and reviewed separately. See the
+[`github-broker-tenant-iam` module](../github-broker-tenant-iam/README.md).
+
+For Agent proposal publishing, `tenant_agent_proposal_artifact_object_arns`
+adds only `s3:GetObject` for exact Resource Plane patterns shaped like
+`arn:aws:s3:::bucket/prefix/*/*/*/agent-changes/*.zip` to that same Broker role.
+`tenant_agent_proposal_artifact_kms_key_arns` is optional for SSE-KMS and
+grants decrypt only on listed key ARNs. Both default empty. The Resource Plane
+managed bucket must independently allow the exact Broker role; SSE-KMS key
+policies remain externally managed. See the module README for the paired
+Resource Plane configuration.
+
+Tenant model credentials use the separate optional
+`tenant_model_credential_reader_role_arns` allowlist under
+`role/hako/tenant-model-credential-reader/`. The Broker receives only
+`sts:AssumeRole` on those exact ARNs through a separate inline policy.
+Terraform rejects wildcard ARNs and reuse across model credential, GitHub
+private-key, and Webhook purposes. The model credential provider further
+scopes the assumed session to the pinned Secret ARN/version. Target-role trust
+and identity policies, Secrets, KMS grants, and Broker certificates remain
+operator-managed; no Secret is read or provisioned by Terraform.
+The separate [`tenant-model-credential-reader-role` module](../tenant-model-credential-reader-role/README.md)
+can create a target-account reader Role with exact Broker trust and Secret/KMS
+scope. Review and apply that module in the account owning each Secret, then add
+its `role_arn` output to the Control Plane allowlist. Secret creation and
+cross-account Secret resource policies remain a separate operator step.
+
+See [`docs/terraform-modules.md`](../../../../docs/terraform-modules.md) for the complete input/output inventory, resource tags, IAM boundaries, and dev environment differences.

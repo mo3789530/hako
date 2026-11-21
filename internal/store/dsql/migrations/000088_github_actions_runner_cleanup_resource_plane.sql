@@ -1,0 +1,1 @@
+ALTER TABLE github_actions_runner_cleanup_outbox ADD COLUMN resource_plane_id TEXT;

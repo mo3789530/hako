@@ -1,0 +1,91 @@
+package main
+
+import (
+	"context"
+	"testing"
+	"time"
+)
+
+func TestConfiguredQueueURLs(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{name: "missing", wantErr: true},
+		{name: "malformed", value: "{", wantErr: true},
+		{name: "empty object", value: "{}", wantErr: true},
+		{name: "null", value: "null", wantErr: true},
+		{name: "empty plane ID", value: `{"":"https://sqs.example/commands"}`, wantErr: true},
+		{name: "empty queue URL", value: `{"rp_tokyo":" "}`, wantErr: true},
+		{name: "normalized duplicate", value: `{"rp_tokyo":"url-a"," rp_tokyo ":"url-b"}`, wantErr: true},
+		{name: "valid", value: `{"rp_tokyo":"https://sqs.example/commands"}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HAKO_RESOURCE_PLANE_MANIFEST", "")
+			t.Setenv("HAKO_RESOURCE_PLANE_MANIFEST_JSON", "")
+			t.Setenv("HAKO_RESOURCE_PLANE_QUEUE_URLS", test.value)
+			got, err := configuredQueueURLs()
+			if (err != nil) != test.wantErr {
+				t.Fatalf("configuredQueueURLs error = %v, want error=%t", err, test.wantErr)
+			}
+			if err == nil && got["rp_tokyo"] != "https://sqs.example/commands" {
+				t.Fatalf("unexpected queue URL mapping: %#v", got)
+			}
+		})
+	}
+}
+
+func TestConfiguredQueueURLsReadsManifest(t *testing.T) {
+	t.Setenv("HAKO_RESOURCE_PLANE_QUEUE_URLS", "")
+	t.Setenv("HAKO_RESOURCE_PLANE_MANIFEST_JSON", "")
+	t.Setenv("HAKO_RESOURCE_PLANE_MANIFEST", "../../config/resource-planes.example.json")
+	got, err := configuredQueueURLs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["rp-tokyo-01"] != "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-commands" {
+		t.Fatalf("manifest command queue mapping = %#v", got)
+	}
+	queues, err := configuredQueues()
+	if err != nil || queues["rp-tokyo-01"].Region != "ap-northeast-1" || queues["rp-tokyo-01"].WorkloadURL != "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-workload-commands" {
+		t.Fatalf("manifest queue region = %+v, %v", queues, err)
+	}
+	t.Setenv("HAKO_RESOURCE_PLANE_QUEUE_URLS", `{"rp-other":"https://sqs.example/commands"}`)
+	if _, err := configuredQueueURLs(); err == nil {
+		t.Fatal("manifest and legacy queue map should not be used together")
+	}
+}
+
+func TestConfiguredQueueURLsReadsManifestJSON(t *testing.T) {
+	t.Setenv("HAKO_RESOURCE_PLANE_MANIFEST", "")
+	t.Setenv("HAKO_RESOURCE_PLANE_QUEUE_URLS", "")
+	t.Setenv("HAKO_RESOURCE_PLANE_MANIFEST_JSON", `{"schema_version":1,"resource_planes":[{"id":"rp-tokyo-01","provider":"aws","account_id":"123456789012","region":"ap-northeast-1","capabilities":["microvm"],"command_queue_url":"https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-commands","result_queue_url":"https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-results"}]}`)
+	queues, err := configuredQueues()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := queues["rp-tokyo-01"]; got.Region != "ap-northeast-1" || got.URL != "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-commands" {
+		t.Fatalf("manifest JSON queue configuration = %+v", got)
+	}
+}
+
+func TestDurationEnvDefaultsAndParses(t *testing.T) {
+	t.Setenv("HAKO_DISPATCHER_INTERVAL", "")
+	if got := durationEnv("HAKO_DISPATCHER_INTERVAL", 3*time.Second); got != 3*time.Second {
+		t.Fatalf("empty duration env = %s, want fallback", got)
+	}
+	t.Setenv("HAKO_DISPATCHER_INTERVAL", " 5s ")
+	if got := durationEnv("HAKO_DISPATCHER_INTERVAL", time.Second); got != 5*time.Second {
+		t.Fatalf("parsed duration = %s, want 5s", got)
+	}
+}
+
+func TestOpenDatabaseRejectsMixedModes(t *testing.T) {
+	t.Setenv("HAKO_DATABASE_URL", "postgres://local/db")
+	t.Setenv("HAKO_DSQL_HOST", "cluster.dsql.us-east-1.on.aws")
+	if _, err := openDatabase(context.Background()); err == nil {
+		t.Fatal("both database modes should be rejected")
+	}
+}

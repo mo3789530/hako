@@ -1,0 +1,12 @@
+.git
+.terraform
+.terraform.lock.hcl
+build
+coverage.out
+.env
+.env.*
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+test-results

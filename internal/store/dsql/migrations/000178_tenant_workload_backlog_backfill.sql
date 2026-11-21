@@ -1,0 +1,3 @@
+UPDATE tenant_quota_limits
+SET queued_workload_run_limit = concurrent_workload_run_limit
+WHERE queued_workload_run_limit > concurrent_workload_run_limit;

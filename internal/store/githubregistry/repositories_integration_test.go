@@ -1,0 +1,179 @@
+//go:build integration
+
+package githubregistry
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/githubwebhook"
+	"github.com/mo3789530/hako/internal/store/dsql"
+	"github.com/mo3789530/hako/internal/testutil"
+)
+
+func TestRepositorySyncRequiresActiveTenantBindingAndAppliesMembershipEvents(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	now := time.Now().UTC()
+	if _, err := pool.Exec(ctx, `INSERT INTO tenants (id, name, created_at) VALUES ('tenant_registry', 'Registry', $1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO users (id, cognito_subject, email, created_at) VALUES ('usr_registry', 'registry-sub', '', $1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	requestTx := mustBegin(t, pool, ctx)
+	if _, _, err := Request(ctx, requestTx, Installation{TenantID: "tenant_registry", InstallationID: 4401, AccountLogin: "acme", RequestedBy: "usr_registry"}, now); err != nil {
+		_ = requestTx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if err := requestTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// A pending claim must not be sufficient to sync repositories.
+	pendingTx := mustBegin(t, pool, ctx)
+	if err := SyncInstallationRepositories(ctx, pendingTx, "tenant_registry", addedRepositoriesEvent(), now); !errors.Is(err, ErrInstallationNotActive) {
+		_ = pendingTx.Rollback(ctx)
+		t.Fatalf("sync pending Installation error = %v", err)
+	}
+	_ = pendingTx.Rollback(ctx)
+
+	tx := mustBegin(t, pool, ctx)
+	if _, err := tx.Exec(ctx, `UPDATE tenant_github_installations SET status = 'active', updated_at = $3 WHERE tenant_id = $1 AND installation_id = $2`, "tenant_registry", int64(4401), now); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO github_app_installation_bindings (installation_id, tenant_id, bound_at) VALUES ($1, $2, $3)`, int64(4401), "tenant_registry", now); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if err := SyncInstallationRepositories(ctx, tx, "tenant_registry", addedRepositoriesEvent(), now); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("sync added repositories: %v", err)
+	}
+	if err := SyncInstallationRepositories(ctx, tx, "tenant_registry", addedRepositoriesEvent(), now.Add(time.Second)); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("idempotent repository sync: %v", err)
+	}
+	repositories, err := ListRepositories(ctx, tx, "tenant_registry", 4401)
+	if err != nil || len(repositories) != 1 || repositories[0].GitHubRepositoryID != 8842 || repositories[0].RepositoryName != "api" || repositories[0].FactoryEnabled {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("list synced repositories = %+v, err %v", repositories, err)
+	}
+	enabled, err := SetRepositoryFactoryEnabled(ctx, tx, "tenant_registry", 4401, 8842, true, now)
+	if err != nil || !enabled.FactoryEnabled || enabled.FactoryEnabledAt == nil || enabled.FactoryEnabledAt.Before(now.Add(-time.Microsecond)) || enabled.FactoryEnabledAt.After(now.Add(time.Microsecond)) {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("enable repository factory = %+v, err %v", enabled, err)
+	}
+	repositories, err = ListRepositories(ctx, tx, "tenant_registry", 4401)
+	if err != nil || len(repositories) != 1 || !repositories[0].FactoryEnabled {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("list after enabling repository factory = %+v, err %v", repositories, err)
+	}
+	disabled, err := SetRepositoryFactoryEnabled(ctx, tx, "tenant_registry", 4401, 8842, false, now.Add(time.Second))
+	if err != nil || disabled.FactoryEnabled || disabled.FactoryEnabledAt != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("disable repository factory = %+v, err %v", disabled, err)
+	}
+	reenabled, err := SetRepositoryFactoryEnabled(ctx, tx, "tenant_registry", 4401, 8842, true, now.Add(2*time.Second))
+	reenabledAt := now.Add(2 * time.Second)
+	if err != nil || !reenabled.FactoryEnabled || reenabled.FactoryEnabledAt == nil || reenabled.FactoryEnabledAt.Before(reenabledAt.Add(-time.Microsecond)) || reenabled.FactoryEnabledAt.After(reenabledAt.Add(time.Microsecond)) {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("re-enable repository factory = %+v, err %v", reenabled, err)
+	}
+	runnerEnabledAt := now.Add(3 * time.Second)
+	runnerEnabled, err := SetRepositoryActionsRunnerEnabled(ctx, tx, "tenant_registry", 4401, 8842, true, runnerEnabledAt)
+	if err != nil || !runnerEnabled.ActionsRunnerEnabled || runnerEnabled.FactoryEnabled != reenabled.FactoryEnabled || runnerEnabled.ActionsRunnerEnabledAt == nil || runnerEnabled.ActionsRunnerEnabledAt.Before(runnerEnabledAt.Add(-time.Microsecond)) || runnerEnabled.ActionsRunnerEnabledAt.After(runnerEnabledAt.Add(time.Microsecond)) {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("enable repository Actions runner = %+v, err %v", runnerEnabled, err)
+	}
+	policy := ActionsRunnerWorkflowPolicy{WorkflowPath: ".github/workflows/claude.yml", AllowedRefs: []string{"refs/heads/main"},
+		AllowedEvents: []string{"push", "workflow_dispatch"}, RequiredLabels: []string{"self-hosted", "hako"},
+		AllowedLabels: []string{"self-hosted", "hako", "arm64"}}
+	storedPolicy, err := SetRepositoryActionsRunnerWorkflowPolicy(ctx, tx, "tenant_registry", 4401, 8842, policy, runnerEnabledAt)
+	if err != nil || storedPolicy.WorkflowPath != policy.WorkflowPath || len(storedPolicy.AllowedRefs) != 1 {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("store Tenant runner workflow policy = %+v, err %v", storedPolicy, err)
+	}
+	loadedPolicy, err := GetRepositoryActionsRunnerWorkflowPolicy(ctx, tx, "tenant_registry", 4401, 8842)
+	if err != nil || loadedPolicy.WorkflowPath != policy.WorkflowPath || len(loadedPolicy.AllowedEvents) != 2 {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("load Tenant runner workflow policy = %+v, err %v", loadedPolicy, err)
+	}
+	if _, err := SetRepositoryActionsRunnerWorkflowPolicy(ctx, tx, "tenant_registry", 4401, 8842,
+		ActionsRunnerWorkflowPolicy{WorkflowPath: "../../untrusted.yml"}, runnerEnabledAt); !errors.Is(err, ErrRepositoryNotFound) {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("invalid runner workflow policy error = %v", err)
+	}
+	runnerEnabledAgain, err := SetRepositoryActionsRunnerEnabled(ctx, tx, "tenant_registry", 4401, 8842, true, now.Add(4*time.Second))
+	if err != nil || runnerEnabledAgain.ActionsRunnerEnabledAt == nil || !runnerEnabledAgain.ActionsRunnerEnabledAt.Equal(*runnerEnabled.ActionsRunnerEnabledAt) {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("repeated enable changed Actions runner timestamp: first=%+v second=%+v err=%v", runnerEnabled, runnerEnabledAgain, err)
+	}
+	runnerDisabled, err := SetRepositoryActionsRunnerEnabled(ctx, tx, "tenant_registry", 4401, 8842, false, now.Add(5*time.Second))
+	if err != nil || runnerDisabled.ActionsRunnerEnabled || runnerDisabled.ActionsRunnerEnabledAt != nil || !runnerDisabled.FactoryEnabled {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("disable repository Actions runner = %+v, err %v", runnerDisabled, err)
+	}
+	if _, err := GetRepositoryActionsRunnerWorkflowPolicy(ctx, tx, "tenant_registry", 4401, 8842); !errors.Is(err, ErrRepositoryNotFound) {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("workflow policy remained after runner opt-out: %v", err)
+	}
+	runnerReenabledAt := now.Add(6 * time.Second)
+	runnerReenabled, err := SetRepositoryActionsRunnerEnabled(ctx, tx, "tenant_registry", 4401, 8842, true, runnerReenabledAt)
+	if err != nil || !runnerReenabled.ActionsRunnerEnabled || runnerReenabled.ActionsRunnerEnabledAt == nil || runnerReenabled.ActionsRunnerEnabledAt.Before(runnerReenabledAt.Add(-time.Microsecond)) || runnerReenabled.ActionsRunnerEnabledAt.After(runnerReenabledAt.Add(time.Microsecond)) {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("re-enable repository Actions runner = %+v, err %v", runnerReenabled, err)
+	}
+	removedEvent := addedRepositoriesEvent()
+	removedEvent.Type = "github.installation_repositories.removed"
+	removedEvent.RepositoriesAdded = nil
+	removedEvent.RepositoriesRemoved = []githubwebhook.RepositoryRef{{GitHubID: 8842, Owner: "acme", Name: "api"}}
+	if err := SyncInstallationRepositories(ctx, tx, "tenant_registry", removedEvent, now.Add(2*time.Second)); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("sync removed repository: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	readTx := mustBegin(t, pool, ctx)
+	defer readTx.Rollback(ctx)
+	repositories, err = ListRepositories(ctx, readTx, "tenant_registry", 4401)
+	if err != nil || len(repositories) != 0 {
+		t.Fatalf("repositories after removal = %+v, err %v", repositories, err)
+	}
+	if _, err := ListRepositories(ctx, readTx, domain.TenantID("tenant_other"), 4401); !errors.Is(err, ErrInstallationNotActive) {
+		t.Fatalf("cross-Tenant repository list error = %v", err)
+	}
+	if _, err := SetRepositoryFactoryEnabled(ctx, readTx, "tenant_registry", 4401, 99999, true, now); !errors.Is(err, ErrRepositoryNotFound) {
+		t.Fatalf("enable unregistered Repository error = %v", err)
+	}
+}
+
+func addedRepositoriesEvent() githubwebhook.RepositoryEvent {
+	return githubwebhook.RepositoryEvent{
+		SchemaVersion: githubwebhook.RepositoryEventSchemaVersion,
+		Type:          "github.installation_repositories.added", GitHubEvent: "installation_repositories",
+		Action: "added", InstallationID: 4401,
+		RepositoriesAdded: []githubwebhook.RepositoryRef{{GitHubID: 8842, Owner: "acme", Name: "api", DefaultBranch: "main"}},
+	}
+}
+
+func mustBegin(t *testing.T, pool interface {
+	Begin(context.Context) (pgx.Tx, error)
+}, ctx context.Context) pgx.Tx {
+	t.Helper()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tx
+}

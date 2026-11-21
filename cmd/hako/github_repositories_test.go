@@ -1,0 +1,999 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/tls"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/mo3789530/hako/internal/api"
+	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/workspacegateway"
+	"github.com/mo3789530/hako/internal/workspaceprotocol"
+	"github.com/mo3789530/hako/internal/workspacesession"
+)
+
+type previewLogsCLIDialer struct {
+	vscodeTestDialer
+	logs []byte
+}
+
+func (d previewLogsCLIDialer) OpenFileTransfer(_ context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
+	client, runtime := net.Pipe()
+	go func() {
+		defer runtime.Close()
+		request, err := workspaceprotocol.ReadFileRequest(runtime)
+		if err != nil || request.Operation != "preview_logs" || len(claims.Permissions) != 1 || claims.Permissions[0] != workspacesession.PermissionFileTransfer {
+			return
+		}
+		if workspaceprotocol.WriteFileResponse(runtime, workspaceprotocol.FileResponse{OK: true, Size: int64(len(d.logs))}) != nil {
+			return
+		}
+		_, _ = runtime.Write(d.logs)
+	}()
+	return client, nil
+}
+
+func TestParseGitHubRepositoryAgentWritePolicyCLI(t *testing.T) {
+	got, err := parseGitHubRepositoryAgentWritePolicyCLI([]string{"set", "--tenant", " tenant_a ", "--installation", "4", "--repository", "8", "--policy-file", "policy.json"})
+	if err != nil || got.tenantID != "tenant_a" || got.installationID != 4 || got.repositoryID != 8 || got.policyFile != "policy.json" {
+		t.Fatalf("parse Agent write policy CLI = %+v error=%v", got, err)
+	}
+	for _, args := range [][]string{
+		{}, {"enable", "--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--policy-file", "p.json"},
+		{"set", "--tenant", "tenant_a", "--installation", "0", "--repository", "8", "--policy-file", "p.json"},
+		{"set", "--tenant", "tenant_a", "--installation", "4", "--repository", "8"},
+	} {
+		if _, err := parseGitHubRepositoryAgentWritePolicyCLI(args); err == nil {
+			t.Errorf("accepted invalid Agent write policy CLI args %q", args)
+		}
+	}
+}
+
+func TestParseGitHubRepositoryAgentModelAccessCLI(t *testing.T) {
+	got, err := parseGitHubRepositoryAgentModelAccessCLI([]string{"set", "--tenant", " tenant_a ", "--installation", "4", "--repository", "8", "--enabled", "true"})
+	if err != nil || got.tenantID != "tenant_a" || got.installationID != 4 || got.repositoryID != 8 || !got.enabled {
+		t.Fatalf("parse Agent model access CLI = %+v error=%v", got, err)
+	}
+	disabled, err := parseGitHubRepositoryAgentModelAccessCLI([]string{"set", "--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--enabled", "false"})
+	if err != nil || disabled.enabled {
+		t.Fatalf("parse disabled Agent model access CLI = %+v error=%v", disabled, err)
+	}
+	for _, args := range [][]string{
+		{}, {"enable", "--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--enabled", "true"},
+		{"set", "--tenant", "tenant_a", "--installation", "0", "--repository", "8", "--enabled", "true"},
+		{"set", "--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--enabled", "yes"},
+	} {
+		if _, err := parseGitHubRepositoryAgentModelAccessCLI(args); err == nil {
+			t.Errorf("accepted invalid Agent model access CLI args %q", args)
+		}
+	}
+}
+
+func TestParseGitHubRepositoryPreviewsCLI(t *testing.T) {
+	got, err := parseGitHubRepositoryPreviewsCLI([]string{"list", "--tenant", " tenant_a ", "--installation", "4", "--repository", "8", "--limit", "25"})
+	if err != nil || got.tenantID != "tenant_a" || got.installationID != 4 || got.repositoryID != 8 || got.limit != 25 {
+		t.Fatalf("parse Preview list CLI = %+v error=%v", got, err)
+	}
+	defaults, err := parseGitHubRepositoryPreviewsCLI([]string{"list", "--tenant", "tenant_a", "--installation", "4", "--repository", "8"})
+	if err != nil || defaults.limit != 50 {
+		t.Fatalf("parse Preview list defaults = %+v error=%v", defaults, err)
+	}
+	for _, args := range [][]string{
+		{}, {"enable", "--tenant", "tenant_a", "--installation", "4", "--repository", "8"},
+		{"list", "--tenant", "tenant_a", "--installation", "0", "--repository", "8"},
+		{"list", "--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--limit", "101"},
+	} {
+		if _, err := parseGitHubRepositoryPreviewsCLI(args); err == nil {
+			t.Errorf("accepted invalid Preview list CLI args %q", args)
+		}
+	}
+}
+
+func TestParseGitHubRepositoryPreviewSessionCLI(t *testing.T) {
+	got, err := parseGitHubRepositoryPreviewSessionCLI([]string{"create", "--tenant", " tenant_a ", "--installation", "4", "--repository", "8", "--pull-request", "19", "--permissions", "vscode,shell"}, "create")
+	if err != nil || got.tenantID != "tenant_a" || got.installationID != 4 || got.repositoryID != 8 || got.pullRequest != 19 || len(got.permissions) != 2 {
+		t.Fatalf("parse Preview session create = %+v error=%v", got, err)
+	}
+	revoke, err := parseGitHubRepositoryPreviewSessionCLI([]string{"revoke", "--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "--session", strings.Repeat("a", 48)}, "revoke")
+	if err != nil || revoke.sessionID != strings.Repeat("a", 48) {
+		t.Fatalf("parse Preview session revoke = %+v error=%v", revoke, err)
+	}
+	for _, test := range []struct {
+		action string
+		args   []string
+	}{
+		{"create", []string{"create", "--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "--permissions", "vscode,,shell"}},
+		{"create", []string{"create", "--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "--permissions", "admin"}},
+		{"revoke", []string{"revoke", "--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19"}},
+	} {
+		if _, err := parseGitHubRepositoryPreviewSessionCLI(test.args, test.action); err == nil {
+			t.Errorf("Preview session parser accepted %q", test.args)
+		}
+	}
+}
+
+func TestParseGitHubRepositoryPreviewOpenCLI(t *testing.T) {
+	got, err := parseGitHubRepositoryPreviewOpenCLI([]string{"--tenant", " tenant_a ", "--installation", "4", "--repository", "8", "--pull-request", "19"})
+	if err != nil || got.tenantID != "tenant_a" || got.installationID != 4 || got.repositoryID != 8 || got.pullRequest != 19 || got.localPort != "0" {
+		t.Fatalf("parse Preview open = %+v error=%v", got, err)
+	}
+	custom, err := parseGitHubRepositoryPreviewOpenCLI([]string{"--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "--local-port", "8123"})
+	if err != nil || custom.localPort != "8123" {
+		t.Fatalf("parse Preview open local port = %+v error=%v", custom, err)
+	}
+	for _, args := range [][]string{
+		{}, {"--tenant", "tenant_a", "--installation", "0", "--repository", "8", "--pull-request", "19"},
+		{"--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "--local-port", "65536"},
+		{"--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "extra"},
+	} {
+		if _, err := parseGitHubRepositoryPreviewOpenCLI(args); err == nil {
+			t.Errorf("Preview open parser accepted %q", args)
+		}
+	}
+}
+
+func TestParseGitHubRepositoryPreviewForwardCLI(t *testing.T) {
+	got, err := parseGitHubRepositoryPreviewForwardCLI([]string{"--tenant", " tenant_a ", "--installation", "4", "--repository", "8", "--pull-request", "19", "--remote-port", "3000"})
+	if err != nil || got.tenantID != "tenant_a" || got.installationID != 4 || got.repositoryID != 8 || got.pullRequest != 19 || got.remotePort != 3000 || got.localPort != "0" {
+		t.Fatalf("parse Preview forward = %+v error=%v", got, err)
+	}
+	custom, err := parseGitHubRepositoryPreviewForwardCLI([]string{"--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "--remote-port", "3000", "--local-port", "8123"})
+	if err != nil || custom.remotePort != 3000 || custom.localPort != "8123" {
+		t.Fatalf("parse Preview forward custom ports = %+v error=%v", custom, err)
+	}
+	for _, args := range [][]string{
+		{},
+		{"--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "--remote-port", "0"},
+		{"--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "--remote-port", "5432"},
+		{"--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "--remote-port", "3000", "--local-port", "65536"},
+		{"--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--pull-request", "19", "--remote-port", "3000", "extra"},
+	} {
+		if _, err := parseGitHubRepositoryPreviewForwardCLI(args); err == nil {
+			t.Errorf("Preview forward parser accepted %q", args)
+		}
+	}
+}
+
+func TestParseGitHubRepositoryFactoryAndPreviewActions(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "factory enable trims tenant", args: []string{"enable", "--tenant", " tenant_a ", "--installation", "4", "--repository", "8"}, want: true},
+		{name: "factory disable", args: []string{"disable", "--tenant", "tenant_a", "--installation", "4", "--repository", "8"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := parseGitHubRepositoryFactoryCLI(test.args)
+			if err != nil || got.tenantID != "tenant_a" || got.installationID != 4 || got.repositoryID != 8 || got.enabled != test.want {
+				t.Fatalf("parse factory action = %+v, %v", got, err)
+			}
+		})
+	}
+	for _, args := range [][]string{
+		{}, {"list", "--tenant", "tenant_a", "--installation", "4", "--repository", "8"},
+		{"enable", "--tenant", " ", "--installation", "4", "--repository", "8"},
+		{"enable", "--tenant", "tenant_a", "--installation", "0", "--repository", "8"},
+		{"enable", "--tenant", "tenant_a", "--installation", "4", "--repository", "-1"},
+		{"enable", "--tenant", "tenant_a", "--installation", "4", "--repository", "8", "extra"},
+	} {
+		if _, err := parseGitHubRepositoryFactoryCLI(args); err == nil {
+			t.Errorf("factory parser accepted invalid args %q", args)
+		}
+	}
+	if _, err := manageGitHubRepositoryPreviewCLI(nil); err == nil {
+		t.Fatal("Preview management accepted a missing action")
+	}
+	if _, err := manageGitHubRepositoryFactoryCLI(nil); err == nil {
+		t.Fatal("factory management accepted a missing action")
+	}
+}
+
+func TestParseGitHubRepositoryActionsRunnerCLI(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "enable", args: []string{"enable", "--tenant", " tenant_a ", "--installation", "4", "--repository", "8"}, want: true},
+		{name: "disable", args: []string{"disable", "--tenant", "tenant_a", "--installation", "4", "--repository", "8"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := parseGitHubRepositoryActionsRunnerCLI(test.args)
+			if err != nil || got.tenantID != "tenant_a" || got.installationID != 4 || got.repositoryID != 8 || got.enabled != test.want {
+				t.Fatalf("parse Actions Runner action = %+v, %v", got, err)
+			}
+		})
+	}
+	for _, args := range [][]string{
+		{}, {"policy", "--tenant", "tenant_a", "--installation", "4", "--repository", "8"},
+		{"enable", "--tenant", "tenant_a", "--installation", "0", "--repository", "8"},
+		{"disable", "--tenant", "tenant_a", "--installation", "4", "--repository", "0"},
+		{"enable", "--tenant", "tenant_a", "--installation", "4", "--repository", "8", "extra"},
+	} {
+		if _, err := parseGitHubRepositoryActionsRunnerCLI(args); err == nil {
+			t.Errorf("Actions Runner parser accepted invalid args %q", args)
+		}
+	}
+	if _, err := manageGitHubRepositoryActionsRunnerCLI(nil); err == nil {
+		t.Fatal("Actions Runner management accepted a missing action")
+	}
+}
+
+func TestParseGitHubRepositoryActionsRunnerWorkflowPolicyCLI(t *testing.T) {
+	got, err := parseGitHubRepositoryActionsRunnerWorkflowPolicyCLI([]string{"policy", "--tenant", " tenant_a ", "--installation", "4", "--repository", "8", "--policy-file", " policy.json "})
+	if err != nil || got.action != "set" || got.tenantID != "tenant_a" || got.installationID != 4 || got.repositoryID != 8 || got.policyFile != "policy.json" {
+		t.Fatalf("parse workflow policy = %+v, %v", got, err)
+	}
+	got, err = parseGitHubRepositoryActionsRunnerWorkflowPolicyCLI([]string{"policy", "show", "--tenant", "tenant_a", "--installation", "4", "--repository", "8"})
+	if err != nil || got.action != "show" || got.tenantID != "tenant_a" || got.policyFile != "" {
+		t.Fatalf("parse workflow policy show = %+v, %v", got, err)
+	}
+	for _, args := range [][]string{
+		{}, {"set", "--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--policy-file", "p.json"},
+		{"policy", "--tenant", " ", "--installation", "4", "--repository", "8", "--policy-file", "p.json"},
+		{"policy", "--tenant", "tenant_a", "--installation", "0", "--repository", "8", "--policy-file", "p.json"},
+		{"policy", "--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--policy-file", " "},
+		{"policy", "--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--policy-file", "p.json", "extra"},
+		{"policy", "show", "--tenant", "tenant_a", "--installation", "4", "--repository", "8", "--policy-file", "p.json"},
+		{"policy", "set", "--tenant", "tenant_a", "--installation", "4", "--repository", "8"},
+	} {
+		if _, err := parseGitHubRepositoryActionsRunnerWorkflowPolicyCLI(args); err == nil {
+			t.Errorf("workflow policy parser accepted invalid args %q", args)
+		}
+	}
+	if _, err := manageGitHubRepositoryActionsRunnerWorkflowPolicyCLI(nil); err == nil {
+		t.Fatal("workflow policy management accepted a missing action")
+	}
+}
+
+type repositoryCLICredentials string
+
+func (c repositoryCLICredentials) Get(string, string) (string, error) { return string(c), nil }
+
+func TestManageGitHubRepositoryCLIsCallTenantScopedAPI(t *testing.T) {
+	policy := `{"workflow_path":".github/workflows/verify.yml","allowed_refs":["refs/heads/main"],"allowed_events":["push"],"required_labels":["self-hosted"],"allowed_labels":["self-hosted","hako"]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer cli-repository-test" ||
+			(r.Method == http.MethodPut && r.Header.Get("Content-Type") != "application/json") ||
+			(r.Method != http.MethodPut && r.Method != http.MethodGet) {
+			t.Errorf("request method/auth/content-type = %s/%q/%q", r.Method, r.Header.Get("Authorization"), r.Header.Get("Content-Type"))
+		}
+		if !strings.HasPrefix(r.URL.Path, "/v1/tenants/tenant_cli/github/installations/42/repositories/7/") {
+			t.Errorf("request escaped Tenant/repository scope: %s", r.URL.Path)
+		}
+		if r.URL.Path == "/v1/tenants/tenant_cli/github/installations/42/repositories/7/previews" {
+			if r.Method != http.MethodGet || r.URL.Query().Get("limit") != "25" {
+				t.Errorf("Preview list method/limit = %s/%s", r.Method, r.URL.Query().Get("limit"))
+			}
+			_, _ = fmt.Fprint(w, `{"previews":[],"runtime_enabled":false}`)
+			return
+		}
+		switch r.URL.Path {
+		case "/v1/tenants/tenant_cli/github/installations/42/repositories/7/factory":
+			var body struct {
+				Enabled bool `json:"enabled"`
+			}
+			if json.NewDecoder(r.Body).Decode(&body) != nil || !body.Enabled {
+				t.Error("Factory enable request body was invalid")
+			}
+			_, _ = fmt.Fprint(w, `{"repository":{"tenant_id":"tenant_cli","installation_id":42,"github_repository_id":7,"factory_enabled":true}}`)
+		case "/v1/tenants/tenant_cli/github/installations/42/repositories/7/preview":
+			var body struct {
+				Enabled bool `json:"enabled"`
+			}
+			if json.NewDecoder(r.Body).Decode(&body) != nil || body.Enabled {
+				t.Error("Preview disable request body was invalid")
+			}
+			_, _ = fmt.Fprint(w, `{"repository":{"tenant_id":"tenant_cli","installation_id":42,"github_repository_id":7,"preview_enabled":false},"runtime_enabled":false}`)
+		case "/v1/tenants/tenant_cli/github/installations/42/repositories/7/actions-runner":
+			var body struct {
+				Enabled bool `json:"enabled"`
+			}
+			if json.NewDecoder(r.Body).Decode(&body) != nil || !body.Enabled {
+				t.Error("Actions Runner enable request body was invalid")
+			}
+			_, _ = fmt.Fprint(w, `{"repository":{"tenant_id":"tenant_cli","installation_id":42,"github_repository_id":7,"actions_runner_enabled":true}}`)
+		case "/v1/tenants/tenant_cli/github/installations/42/repositories/7/actions-runner/workflow-policy":
+			if r.Method == http.MethodGet {
+				_, _ = fmt.Fprintf(w, `{"workflow_policy":%s}`, policy)
+				return
+			}
+			var body map[string]any
+			if json.NewDecoder(r.Body).Decode(&body) != nil || body["workflow_path"] != ".github/workflows/verify.yml" {
+				t.Error("workflow policy body was invalid")
+			}
+			_, _ = fmt.Fprintf(w, `{"workflow_policy":%s}`, policy)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HAKO_API_URL", server.URL)
+	previous := cliCredentialGetter
+	cliCredentialGetter = repositoryCLICredentials(fmt.Sprintf(`{"access_token":"cli-repository-test","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+		time.Now().UTC().Format(time.RFC3339)))
+	t.Cleanup(func() { cliCredentialGetter = previous })
+
+	if _, err := manageGitHubRepositoryFactoryCLI([]string{"enable", "--tenant", "tenant_cli", "--installation", "42", "--repository", "7"}); err != nil {
+		t.Fatalf("Factory CLI request failed: %v", err)
+	}
+	preview, err := manageGitHubRepositoryPreviewCLI([]string{"disable", "--tenant", "tenant_cli", "--installation", "42", "--repository", "7"})
+	if err != nil || preview.RuntimeEnabled || preview.Repository.PreviewEnabled {
+		t.Fatalf("Preview CLI result = %+v, %v", preview, err)
+	}
+	previews, err := listGitHubRepositoryPreviewsCLI([]string{"list", "--tenant", "tenant_cli", "--installation", "42", "--repository", "7", "--limit", "25"})
+	if err != nil || previews.RuntimeEnabled || len(previews.Previews) != 0 {
+		t.Fatalf("Preview list CLI result = %+v, %v", previews, err)
+	}
+	if _, err := manageGitHubRepositoryActionsRunnerCLI([]string{"enable", "--tenant", "tenant_cli", "--installation", "42", "--repository", "7"}); err != nil {
+		t.Fatalf("Actions Runner CLI request failed: %v", err)
+	}
+	policyFile := filepath.Join(t.TempDir(), "policy.json")
+	if err := os.WriteFile(policyFile, []byte(policy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manageGitHubRepositoryActionsRunnerWorkflowPolicyCLI([]string{"policy", "--tenant", "tenant_cli", "--installation", "42", "--repository", "7", "--policy-file", policyFile}); err != nil {
+		t.Fatalf("workflow policy CLI request failed: %v", err)
+	}
+	if _, err := manageGitHubRepositoryActionsRunnerWorkflowPolicyCLI([]string{"policy", "show", "--tenant", "tenant_cli", "--installation", "42", "--repository", "7"}); err != nil {
+		t.Fatalf("workflow policy show CLI request failed: %v", err)
+	}
+}
+
+func TestGitHubRepositoryPreviewSessionCLIsCallTenantScopedAPI(t *testing.T) {
+	var created, revoked bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer preview-session-cli" {
+			t.Errorf("Authorization = %q", r.Header.Get("Authorization"))
+		}
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/tenants/tenant_cli/github/installations/42/repositories/7/previews/19/sessions":
+			created = true
+			w.WriteHeader(http.StatusCreated)
+			_, _ = fmt.Fprintf(w, `{"session_id":"0123456789abcdef0123456789abcdef0123456789abcdef","workspace_id":"prvws_0123456789abcdef0123456789abcdef","ticket":"ticket-secret","expires_at":%q,"permissions":["vscode"]}`,
+				time.Now().Add(time.Minute).UTC().Format(time.RFC3339))
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/tenants/tenant_cli/github/installations/42/repositories/7/previews/19/sessions/0123456789abcdef0123456789abcdef0123456789abcdef":
+			revoked = true
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected Preview session request %s %s", r.Method, r.URL)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HAKO_API_URL", server.URL)
+	previous := cliCredentialGetter
+	cliCredentialGetter = repositoryCLICredentials(fmt.Sprintf(`{"access_token":"preview-session-cli","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+		time.Now().UTC().Format(time.RFC3339)))
+	t.Cleanup(func() { cliCredentialGetter = previous })
+	args := []string{"--tenant", "tenant_cli", "--installation", "42", "--repository", "7", "--pull-request", "19"}
+	createdSession, err := createGitHubRepositoryPreviewSessionCLI(append([]string{"create"}, append(args, "--permissions", "vscode")...))
+	if err != nil || !created || createdSession.WorkspaceID != "prvws_0123456789abcdef0123456789abcdef" || createdSession.Ticket != "ticket-secret" {
+		t.Fatalf("Preview session create = %+v, created=%v, error=%v", createdSession, created, err)
+	}
+	if err := revokeGitHubRepositoryPreviewSessionCLI(append(args, "--session", string(createdSession.SessionID))); err != nil || !revoked {
+		t.Fatalf("Preview session revoke revoked=%v, error=%v", revoked, err)
+	}
+}
+
+func TestGitHubRepositoryPreviewCLIsFailClosedOnMissingLoginOrAPIURL(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	previous := cliCredentialGetter
+	t.Cleanup(func() { cliCredentialGetter = previous })
+	args := []string{"list", "--tenant", "tenant_cli", "--installation", "42", "--repository", "7"}
+
+	t.Run("missing login", func(t *testing.T) {
+		t.Setenv("HAKO_API_URL", server.URL)
+		cliCredentialGetter = repositoryCLICredentials("")
+		if _, err := listGitHubRepositoryPreviewsCLI(args); err == nil {
+			t.Fatal("Preview list accepted missing login")
+		}
+		if _, err := createGitHubRepositoryPreviewSessionCLI([]string{"create", "--tenant", "tenant_cli", "--installation", "42", "--repository", "7", "--pull-request", "19"}); err == nil {
+			t.Fatal("Preview session creation accepted missing login")
+		}
+	})
+	t.Run("missing API URL", func(t *testing.T) {
+		t.Setenv("HAKO_API_URL", "")
+		cliCredentialGetter = repositoryCLICredentials(fmt.Sprintf(`{"access_token":"preview-token","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+			time.Now().UTC().Format(time.RFC3339)))
+		if _, err := listGitHubRepositoryPreviewsCLI(args); err == nil {
+			t.Fatal("Preview list accepted missing API URL")
+		}
+	})
+	if requests != 0 {
+		t.Fatalf("configuration failures reached API %d times", requests)
+	}
+}
+
+func TestGitHubRepositoryPreviewCLIsPropagateAPIRejections(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Header.Get("Authorization") != "Bearer preview-token" {
+			t.Errorf("Authorization = %q", r.Header.Get("Authorization"))
+		}
+		http.Error(w, `{"error":"Tenant access denied"}`, http.StatusForbidden)
+	}))
+	defer server.Close()
+	t.Setenv("HAKO_API_URL", server.URL)
+	previous := cliCredentialGetter
+	cliCredentialGetter = repositoryCLICredentials(fmt.Sprintf(`{"access_token":"preview-token","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+		time.Now().UTC().Format(time.RFC3339)))
+	t.Cleanup(func() { cliCredentialGetter = previous })
+
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{name: "list", call: func() error {
+			_, err := listGitHubRepositoryPreviewsCLI([]string{"list", "--tenant", "tenant_cli", "--installation", "42", "--repository", "7"})
+			return err
+		}},
+		{name: "create session", call: func() error {
+			_, err := createGitHubRepositoryPreviewSessionCLI([]string{"create", "--tenant", "tenant_cli", "--installation", "42", "--repository", "7", "--pull-request", "19"})
+			return err
+		}},
+		{name: "revoke session", call: func() error {
+			return revokeGitHubRepositoryPreviewSessionCLI([]string{"--tenant", "tenant_cli", "--installation", "42", "--repository", "7", "--pull-request", "19", "--session", "0123456789abcdef0123456789abcdef0123456789abcdef"})
+		}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.call(); err == nil {
+				t.Fatal("Preview CLI accepted a forbidden API response")
+			}
+		})
+	}
+	if requests != len(cases) {
+		t.Fatalf("API requests = %d, want %d", requests, len(cases))
+	}
+}
+
+func TestOpenGitHubRepositoryPreviewUsesSessionAndTLSGateway(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuer := &workspacesession.Ed25519Issuer{KeyID: "preview-open-test", PrivateKey: privateKey, TTL: time.Minute}
+	workspaceID := domain.WorkspaceID("prvws_0123456789abcdef0123456789abcdef")
+	ticket, claims, err := issuer.Issue(workspacesession.Claims{UserID: "usr_cli", TenantID: "tenant_cli", WorkspaceID: workspaceID,
+		ResourcePlane: "rp_cli", Permissions: []workspacesession.Permission{workspacesession.PermissionVSCode}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created, revoked atomic.Int32
+	apiServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer preview-open-access" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		const createPath = "/v1/tenants/tenant_cli/github/installations/42/repositories/7/previews/19/sessions"
+		if r.Method == http.MethodPost && r.URL.Path == createPath {
+			var request struct {
+				Permissions []workspacesession.Permission `json:"permissions"`
+			}
+			if json.NewDecoder(r.Body).Decode(&request) != nil || len(request.Permissions) != 1 || request.Permissions[0] != workspacesession.PermissionVSCode {
+				http.Error(w, "unexpected Preview permissions", http.StatusBadRequest)
+				return
+			}
+			created.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(api.RepositoryPreviewSession{SessionID: domain.SessionID(claims.TicketID), WorkspaceID: workspaceID,
+				Ticket: ticket, ExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC(), Permissions: []workspacesession.Permission{workspacesession.PermissionVSCode}})
+			return
+		}
+		if r.Method == http.MethodDelete && r.URL.Path == createPath+"/"+claims.TicketID {
+			revoked.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer apiServer.Close()
+	gateway, err := workspacegateway.New(workspacegateway.Config{ResourcePlaneID: "rp_cli",
+		Verifier: &workspacesession.Verifier{Keys: map[string]ed25519.PublicKey{"preview-open-test": publicKey}, Audience: workspacesession.AudienceGateway, Lookup: activeWorkspaceSession{}},
+		Dialer:   vscodeTestDialer{}, MaxConnections: 2, MaxConnectionsPerWorkspace: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatewayServer := httptest.NewTLSServer(gateway.Handler())
+	defer gatewayServer.Close()
+	gatewayTLS := gatewayServer.Client().Transport.(*http.Transport).TLSClientConfig
+	previousGetter := cliCredentialGetter
+	cliCredentialGetter = workspaceShellCredentials(fmt.Sprintf(`{"access_token":"preview-open-access","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+		time.Now().UTC().Format(time.RFC3339)))
+	t.Cleanup(func() { cliCredentialGetter = previousGetter })
+	t.Setenv("HAKO_API_URL", apiServer.URL)
+	t.Setenv("HAKO_GATEWAY_URL", gatewayServer.URL)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	openedURL := make(chan string, 1)
+	serverDone := make(chan error, 1)
+	args := []string{"--tenant", "tenant_cli", "--installation", "42", "--repository", "7", "--pull-request", "19", "--local-port", "0"}
+	go func() {
+		serverDone <- openGitHubRepositoryPreviewWith(ctx, args, io.Discard, apiServer.Client(),
+			&tls.Config{RootCAs: gatewayTLS.RootCAs}, func(value string) error {
+				openedURL <- value
+				return nil
+			})
+	}()
+	localURL := ""
+	select {
+	case localURL = <-openedURL:
+	case err := <-serverDone:
+		cancel()
+		t.Fatalf("Preview tunnel exited before opening: %v", err)
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("Preview browser tunnel did not start")
+	}
+	address := strings.TrimPrefix(strings.TrimPrefix(localURL, "http://"), "https://")
+	conn, err := net.DialTimeout("tcp", address[:strings.IndexByte(address, '/')], time.Second)
+	if err != nil {
+		cancel()
+		t.Fatalf("connect to loopback Preview tunnel: %v", err)
+	}
+	if _, err := conn.Write([]byte("preview-browser-stream")); err != nil {
+		cancel()
+		_ = conn.Close()
+		t.Fatalf("write browser stream: %v", err)
+	}
+	response := make([]byte, len("preview-browser-stream"))
+	_ = conn.SetDeadline(time.Now().Add(time.Second))
+	if _, err := io.ReadFull(conn, response); err != nil || string(response) != "preview-browser-stream" {
+		cancel()
+		_ = conn.Close()
+		t.Fatalf("Preview stream response = %q, error=%v", response, err)
+	}
+	_ = conn.Close()
+	cancel()
+	select {
+	case err := <-serverDone:
+		if err != nil {
+			t.Fatalf("Preview tunnel returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Preview tunnel did not stop after cancellation")
+	}
+	if created.Load() != 1 || revoked.Load() != 1 {
+		t.Fatalf("Preview session create=%d revoke=%d", created.Load(), revoked.Load())
+	}
+}
+
+func TestReadGitHubRepositoryPreviewLogsUsesReadOnlySessionAndRevokes(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceID := domain.WorkspaceID("prvws_0123456789abcdef0123456789abcdef")
+	issuer := &workspacesession.Ed25519Issuer{KeyID: "preview-logs-test", PrivateKey: privateKey, TTL: time.Minute}
+	ticket, claims, err := issuer.Issue(workspacesession.Claims{UserID: "usr_cli", TenantID: "tenant_cli", WorkspaceID: workspaceID,
+		ResourcePlane: "rp_cli", Permissions: []workspacesession.Permission{workspacesession.PermissionPreviewLogs}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created, revoked atomic.Int32
+	apiServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer preview-logs-access" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		const createPath = "/v1/tenants/tenant_cli/github/installations/42/repositories/7/previews/19/sessions"
+		if r.Method == http.MethodPost && r.URL.Path == createPath {
+			var request struct {
+				Permissions []workspacesession.Permission `json:"permissions"`
+			}
+			if json.NewDecoder(r.Body).Decode(&request) != nil || len(request.Permissions) != 1 || request.Permissions[0] != workspacesession.PermissionPreviewLogs {
+				http.Error(w, "unexpected Preview permissions", http.StatusBadRequest)
+				return
+			}
+			created.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(api.RepositoryPreviewSession{SessionID: domain.SessionID(claims.TicketID), WorkspaceID: workspaceID,
+				Ticket: ticket, ExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC(), Permissions: []workspacesession.Permission{workspacesession.PermissionPreviewLogs}})
+			return
+		}
+		if r.Method == http.MethodDelete && r.URL.Path == createPath+"/"+claims.TicketID {
+			revoked.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer apiServer.Close()
+	logs := []byte("preview app started\nrequest failed: synthetic\n")
+	gateway, err := workspacegateway.New(workspacegateway.Config{ResourcePlaneID: "rp_cli",
+		Verifier: &workspacesession.Verifier{Keys: map[string]ed25519.PublicKey{"preview-logs-test": publicKey}, Audience: workspacesession.AudienceGateway, Lookup: activeWorkspaceSession{}},
+		Dialer:   previewLogsCLIDialer{logs: logs}, MaxConnections: 2, MaxConnectionsPerWorkspace: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatewayServer := httptest.NewTLSServer(gateway.Handler())
+	defer gatewayServer.Close()
+	gatewayTLS := gatewayServer.Client().Transport.(*http.Transport).TLSClientConfig
+	previous := cliCredentialGetter
+	cliCredentialGetter = workspaceShellCredentials(fmt.Sprintf(`{"access_token":"preview-logs-access","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+		time.Now().UTC().Format(time.RFC3339)))
+	t.Cleanup(func() { cliCredentialGetter = previous })
+	t.Setenv("HAKO_API_URL", apiServer.URL)
+	t.Setenv("HAKO_GATEWAY_URL", gatewayServer.URL)
+	var output bytes.Buffer
+	err = readGitHubRepositoryPreviewLogsWith(context.Background(), []string{"--tenant", "tenant_cli", "--installation", "42", "--repository", "7", "--pull-request", "19"},
+		&output, apiServer.Client(), &tls.Config{RootCAs: gatewayTLS.RootCAs})
+	if err != nil || output.String() != string(logs) || created.Load() != 1 || revoked.Load() != 1 {
+		t.Fatalf("Preview logs output=%q created=%d revoked=%d error=%v", output.String(), created.Load(), revoked.Load(), err)
+	}
+}
+
+type inactivePreviewLogSession struct{}
+
+func (inactivePreviewLogSession) IsActive(context.Context, workspacesession.Claims) (bool, error) {
+	return false, nil
+}
+
+func TestReadGitHubRepositoryPreviewLogsRevokesWhenGatewayRejectsSession(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceID := domain.WorkspaceID("prvws_0123456789abcdef0123456789abcdef")
+	issuer := &workspacesession.Ed25519Issuer{KeyID: "preview-logs-failure-test", PrivateKey: privateKey, TTL: time.Minute}
+	ticket, claims, err := issuer.Issue(workspacesession.Claims{UserID: "usr_cli", TenantID: "tenant_cli", WorkspaceID: workspaceID,
+		ResourcePlane: "rp_cli", Permissions: []workspacesession.Permission{workspacesession.PermissionPreviewLogs}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created, revoked atomic.Int32
+	const sessionPath = "/v1/tenants/tenant_cli/github/installations/42/repositories/7/previews/19/sessions"
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer preview-logs-failure-access" {
+			t.Errorf("Preview API authorization = %q", r.Header.Get("Authorization"))
+		}
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == sessionPath:
+			created.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(api.RepositoryPreviewSession{SessionID: domain.SessionID(claims.TicketID), WorkspaceID: workspaceID,
+				Ticket: ticket, ExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC(), Permissions: []workspacesession.Permission{workspacesession.PermissionPreviewLogs}})
+		case r.Method == http.MethodDelete && r.URL.Path == sessionPath+"/"+claims.TicketID:
+			revoked.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected Preview API request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer apiServer.Close()
+	gateway, err := workspacegateway.New(workspacegateway.Config{ResourcePlaneID: "rp_cli",
+		Verifier: &workspacesession.Verifier{Keys: map[string]ed25519.PublicKey{"preview-logs-failure-test": publicKey}, Audience: workspacesession.AudienceGateway, Lookup: inactivePreviewLogSession{}},
+		Dialer:   previewLogsCLIDialer{logs: []byte("must not be read")}, MaxConnections: 2, MaxConnectionsPerWorkspace: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatewayServer := httptest.NewTLSServer(gateway.Handler())
+	defer gatewayServer.Close()
+	gatewayTLS := gatewayServer.Client().Transport.(*http.Transport).TLSClientConfig
+	previous := cliCredentialGetter
+	cliCredentialGetter = workspaceShellCredentials(fmt.Sprintf(`{"access_token":"preview-logs-failure-access","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+		time.Now().UTC().Format(time.RFC3339)))
+	t.Cleanup(func() { cliCredentialGetter = previous })
+	t.Setenv("HAKO_API_URL", apiServer.URL)
+	t.Setenv("HAKO_GATEWAY_URL", gatewayServer.URL)
+	err = readGitHubRepositoryPreviewLogsWith(context.Background(), []string{"--tenant", "tenant_cli", "--installation", "42", "--repository", "7", "--pull-request", "19"},
+		io.Discard, apiServer.Client(), &tls.Config{RootCAs: gatewayTLS.RootCAs})
+	if err == nil {
+		t.Fatal("inactive Preview Session unexpectedly opened a log stream")
+	}
+	if created.Load() != 1 || revoked.Load() != 1 {
+		t.Fatalf("Preview Session create=%d revoke=%d after Gateway denial, want one each", created.Load(), revoked.Load())
+	}
+}
+
+func TestReadGitHubRepositoryPreviewLogsRejectsMissingInputsBeforeNetwork(t *testing.T) {
+	validArgs := []string{"--tenant", "tenant_cli", "--installation", "42", "--repository", "7", "--pull-request", "19"}
+	if err := readGitHubRepositoryPreviewLogsWith(nil, validArgs, io.Discard, nil, nil); err == nil {
+		t.Fatal("nil context was accepted")
+	}
+	if err := readGitHubRepositoryPreviewLogsWith(context.Background(), validArgs, nil, nil, nil); err == nil {
+		t.Fatal("nil output was accepted")
+	}
+	if err := readGitHubRepositoryPreviewLogsWith(context.Background(), []string{"--tenant", "tenant_cli"}, io.Discard, nil, nil); err == nil {
+		t.Fatal("incomplete Preview identity was accepted")
+	}
+}
+
+type previewLogShortWriter struct{}
+
+func (previewLogShortWriter) Write(data []byte) (int, error) {
+	if len(data) == 0 {
+		return 0, nil
+	}
+	return len(data) - 1, nil
+}
+
+func TestWritePreviewLogsRejectsShortWrite(t *testing.T) {
+	if err := writePreviewLogs(previewLogShortWriter{}, []byte("preview output")); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("short Preview log write error=%v", err)
+	}
+}
+
+func TestOpenGitHubRepositoryPreviewRequiresBothEndpoints(t *testing.T) {
+	previousGetter := cliCredentialGetter
+	cliCredentialGetter = repositoryCLICredentials(fmt.Sprintf(`{"access_token":"preview-open-access","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+		time.Now().UTC().Format(time.RFC3339)))
+	t.Cleanup(func() { cliCredentialGetter = previousGetter })
+	args := []string{"--tenant", "tenant_cli", "--installation", "42", "--repository", "7", "--pull-request", "19"}
+	for _, endpoints := range []struct {
+		api, gateway string
+	}{
+		{api: "", gateway: "https://gateway.example.test"},
+		{api: "https://api.example.test", gateway: ""},
+	} {
+		t.Setenv("HAKO_API_URL", endpoints.api)
+		t.Setenv("HAKO_GATEWAY_URL", endpoints.gateway)
+		if err := openGitHubRepositoryPreview(context.Background(), args, io.Discard); err == nil {
+			t.Errorf("accepted incomplete endpoints: api=%q gateway=%q", endpoints.api, endpoints.gateway)
+		}
+	}
+}
+
+type previewForwardTestDialer struct {
+	vscodeTestDialer
+	port atomic.Uint32
+}
+
+func (d *previewForwardTestDialer) OpenPort(_ context.Context, _ workspacesession.Claims, _ workspacesession.Permission, port uint16) (io.ReadWriteCloser, error) {
+	d.port.Store(uint32(port))
+	client, runtime := net.Pipe()
+	go func() {
+		defer runtime.Close()
+		_, _ = io.Copy(runtime, runtime)
+	}()
+	return client, nil
+}
+
+func TestForwardGitHubRepositoryPreviewUsesPortScopedSessionAndTLSGateway(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceID := domain.WorkspaceID("prvws_0123456789abcdef0123456789abcdef")
+	issuer := &workspacesession.Ed25519Issuer{KeyID: "preview-forward-test", PrivateKey: privateKey, TTL: time.Minute}
+	ticket, claims, err := issuer.Issue(workspacesession.Claims{UserID: "usr_cli", TenantID: "tenant_cli", WorkspaceID: workspaceID,
+		ResourcePlane: "rp_cli", Permissions: []workspacesession.Permission{workspacesession.PermissionPortForward}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created, revoked atomic.Int32
+	apiServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer preview-forward-access" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		const createPath = "/v1/tenants/tenant_cli/github/installations/42/repositories/7/previews/19/sessions"
+		if r.Method == http.MethodPost && r.URL.Path == createPath {
+			var request struct {
+				Permissions []workspacesession.Permission `json:"permissions"`
+			}
+			if json.NewDecoder(r.Body).Decode(&request) != nil || len(request.Permissions) != 1 || request.Permissions[0] != workspacesession.PermissionPortForward {
+				http.Error(w, "unexpected Preview permissions", http.StatusBadRequest)
+				return
+			}
+			created.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(api.RepositoryPreviewSession{SessionID: domain.SessionID(claims.TicketID), WorkspaceID: workspaceID,
+				Ticket: ticket, ExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC(), Permissions: []workspacesession.Permission{workspacesession.PermissionPortForward}})
+			return
+		}
+		if r.Method == http.MethodDelete && r.URL.Path == createPath+"/"+claims.TicketID {
+			revoked.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer apiServer.Close()
+	dialer := &previewForwardTestDialer{}
+	gateway, err := workspacegateway.New(workspacegateway.Config{ResourcePlaneID: "rp_cli",
+		Verifier: &workspacesession.Verifier{Keys: map[string]ed25519.PublicKey{"preview-forward-test": publicKey}, Audience: workspacesession.AudienceGateway, Lookup: activeWorkspaceSession{}},
+		Dialer:   dialer, PortAuthorizer: workspacegateway.PreviewPortAuthorizer{}, MaxConnections: 2, MaxConnectionsPerWorkspace: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatewayServer := httptest.NewTLSServer(gateway.Handler())
+	defer gatewayServer.Close()
+	gatewayTLS := gatewayServer.Client().Transport.(*http.Transport).TLSClientConfig
+	previousGetter := cliCredentialGetter
+	cliCredentialGetter = workspaceShellCredentials(fmt.Sprintf(`{"access_token":"preview-forward-access","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+		time.Now().UTC().Format(time.RFC3339)))
+	t.Cleanup(func() { cliCredentialGetter = previousGetter })
+	t.Setenv("HAKO_API_URL", apiServer.URL)
+	t.Setenv("HAKO_GATEWAY_URL", gatewayServer.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	openedURL := make(chan string, 1)
+	serverDone := make(chan error, 1)
+	args := []string{"--tenant", "tenant_cli", "--installation", "42", "--repository", "7", "--pull-request", "19", "--remote-port", "3000", "--local-port", "0"}
+	go func() {
+		serverDone <- forwardGitHubRepositoryPreviewWith(ctx, args, io.Discard, apiServer.Client(),
+			&tls.Config{RootCAs: gatewayTLS.RootCAs}, func(value string) error { openedURL <- value; return nil })
+	}()
+	var localURL string
+	select {
+	case localURL = <-openedURL:
+	case err := <-serverDone:
+		cancel()
+		t.Fatalf("Preview forward exited before opening: %v", err)
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("Preview forward did not start")
+	}
+	address := strings.TrimPrefix(localURL, "http://")
+	address = address[:strings.IndexByte(address, '/')]
+	conn, err := net.DialTimeout("tcp", address, time.Second)
+	if err != nil {
+		cancel()
+		t.Fatalf("connect to Preview forward listener: %v", err)
+	}
+	payload := []byte("preview-app-http")
+	if _, err := conn.Write(payload); err != nil {
+		cancel()
+		_ = conn.Close()
+		t.Fatalf("write forwarded Preview bytes: %v", err)
+	}
+	response := make([]byte, len(payload))
+	_ = conn.SetDeadline(time.Now().Add(time.Second))
+	if _, err := io.ReadFull(conn, response); err != nil || string(response) != string(payload) {
+		cancel()
+		_ = conn.Close()
+		t.Fatalf("forwarded Preview response=%q err=%v", response, err)
+	}
+	_ = conn.Close()
+	cancel()
+	select {
+	case err := <-serverDone:
+		if err != nil {
+			t.Fatalf("Preview forward returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Preview forward did not stop after cancellation")
+	}
+	if created.Load() != 1 || revoked.Load() != 1 || dialer.port.Load() != 3000 {
+		t.Fatalf("Preview create=%d revoke=%d remote port=%d", created.Load(), revoked.Load(), dialer.port.Load())
+	}
+}
+
+func TestManageNativeAgentPolicyCLIsKeepExecutionDisabled(t *testing.T) {
+	const writePolicy = `{"enabled":true,"branch_prefixes":["hako/"],"allow_pull_requests":true,"required_checks":["hako/test"],"require_checks_to_pass":true}`
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Method != http.MethodPut || r.Header.Get("Authorization") != "Bearer cli-agent-policy-test" ||
+			r.Header.Get("Content-Type") != "application/json" ||
+			!strings.HasPrefix(r.URL.Path, "/v1/tenants/tenant_agent_cli/github/installations/42/repositories/7/") {
+			t.Errorf("Agent policy request was outside expected Tenant/API scope: %s %s", r.Method, r.URL.String())
+		}
+		switch r.URL.Path {
+		case "/v1/tenants/tenant_agent_cli/github/installations/42/repositories/7/agent-write-policy":
+			var got map[string]any
+			if json.NewDecoder(r.Body).Decode(&got) != nil || got["enabled"] != true {
+				t.Error("Agent write policy request body was invalid")
+			}
+			_, _ = fmt.Fprintf(w, `{"write_policy":%s,"execution_enabled":false}`, writePolicy)
+		case "/v1/tenants/tenant_agent_cli/github/installations/42/repositories/7/agent-model-access":
+			var got struct {
+				Enabled *bool `json:"enabled"`
+			}
+			if json.NewDecoder(r.Body).Decode(&got) != nil || got.Enabled == nil || !*got.Enabled {
+				t.Error("Agent model access request body was invalid")
+			}
+			_, _ = fmt.Fprint(w, `{"agent_model_access":{"enabled":true,"enabled_at":"2026-10-24T12:00:00Z"},"execution_enabled":false}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("HAKO_API_URL", server.URL)
+	previous := cliCredentialGetter
+	cliCredentialGetter = repositoryCLICredentials(fmt.Sprintf(`{"access_token":"cli-agent-policy-test","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+		time.Now().UTC().Format(time.RFC3339)))
+	t.Cleanup(func() { cliCredentialGetter = previous })
+
+	policyFile := filepath.Join(t.TempDir(), "write-policy.json")
+	if err := os.WriteFile(policyFile, []byte(writePolicy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeResult, err := manageGitHubRepositoryAgentWritePolicyCLI([]string{"set", "--tenant", "tenant_agent_cli", "--installation", "42", "--repository", "7", "--policy-file", policyFile})
+	if err != nil || writeResult.ExecutionEnabled || !writeResult.Policy.Enabled {
+		t.Fatalf("Agent write policy result = %+v, %v", writeResult, err)
+	}
+	modelResult, err := manageGitHubRepositoryAgentModelAccessCLI([]string{"set", "--tenant", "tenant_agent_cli", "--installation", "42", "--repository", "7", "--enabled", "true"})
+	if err != nil || modelResult.ExecutionEnabled || !modelResult.Access.Enabled || modelResult.Access.EnabledAt == nil {
+		t.Fatalf("Agent model access result = %+v, %v", modelResult, err)
+	}
+	if calls != 2 {
+		t.Fatalf("expected exactly two Tenant-scoped configuration requests, got %d", calls)
+	}
+
+	if err := os.WriteFile(policyFile, []byte(`{"enabled":false,"unexpected":"field"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manageGitHubRepositoryAgentWritePolicyCLI([]string{"set", "--tenant", "tenant_agent_cli", "--installation", "42", "--repository", "7", "--policy-file", policyFile}); err == nil {
+		t.Fatal("unknown Agent write policy field was accepted")
+	}
+	if calls != 2 {
+		t.Fatalf("invalid policy file reached API; request count=%d", calls)
+	}
+}
+
+func TestManageGitHubRepositoryAgentModelAccessCLIFailsClosed(t *testing.T) {
+	validCredentials := fmt.Sprintf(`{"access_token":"cli-agent-policy-test","token_type":"Bearer","expires_in":3600,"stored_at":%q}`,
+		time.Now().UTC().Format(time.RFC3339))
+	previous := cliCredentialGetter
+	t.Cleanup(func() { cliCredentialGetter = previous })
+	args := []string{"set", "--tenant", "tenant_agent_cli", "--installation", "42", "--repository", "7", "--enabled", "true"}
+
+	for _, test := range []struct {
+		name        string
+		args        []string
+		credentials string
+		apiURL      string
+		want        string
+	}{
+		{name: "invalid arguments", args: []string{"set", "--tenant", "tenant_agent_cli"}, credentials: validCredentials, apiURL: "https://api.example.test", want: "--tenant"},
+		{name: "missing login", args: args, apiURL: "https://api.example.test", want: "saved Hako login is invalid"},
+		{name: "missing API URL", args: args, credentials: validCredentials, want: "HAKO_API_URL"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HAKO_API_URL", test.apiURL)
+			cliCredentialGetter = repositoryCLICredentials(test.credentials)
+			if _, err := manageGitHubRepositoryAgentModelAccessCLI(test.args); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("manageGitHubRepositoryAgentModelAccessCLI error = %v, want %q", err, test.want)
+			}
+		})
+	}
+
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Method != http.MethodPut || r.URL.Path != "/v1/tenants/tenant_agent_cli/github/installations/42/repositories/7/agent-model-access" {
+			t.Errorf("model access API request = %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = fmt.Fprint(w, `{"error":{"code":"tenant_forbidden","message":"Tenant Owner or Admin required"}}`)
+	}))
+	defer server.Close()
+	t.Setenv("HAKO_API_URL", server.URL)
+	cliCredentialGetter = repositoryCLICredentials(validCredentials)
+	if _, err := manageGitHubRepositoryAgentModelAccessCLI(args); err == nil || !strings.Contains(err.Error(), "tenant_forbidden") || strings.Contains(err.Error(), "sk-ant-test-secret") {
+		t.Fatalf("model access denial = %v, want authorization error without credential material", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("model access API calls = %d, want 1", calls.Load())
+	}
+}

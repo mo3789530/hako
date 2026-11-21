@@ -1,0 +1,456 @@
+package main
+
+import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/mo3789530/hako/internal/domain"
+	"github.com/mo3789530/hako/internal/githubapp"
+	"github.com/mo3789530/hako/internal/githubbroker"
+	"github.com/mo3789530/hako/internal/modelcredentialbroker"
+	"github.com/mo3789530/hako/internal/store/dsql"
+	"github.com/mo3789530/hako/internal/store/githubregistry"
+	"github.com/mo3789530/hako/internal/store/transaction"
+	"github.com/mo3789530/hako/internal/workloadsource"
+)
+
+const defaultListenAddr = ":8443"
+
+func main() {
+	if err := run(); err != nil {
+		log.Fatal("Hako GitHub broker stopped (failure_class=process_exit)")
+	}
+}
+
+func run() error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	pool, err := openDatabase(ctx)
+	if err != nil {
+		return errors.New("open GitHub broker database")
+	}
+	defer pool.Close()
+
+	awsConfig, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
+		return errors.New("load broker AWS configuration")
+	}
+	callbackURL := strings.TrimSpace(os.Getenv("HAKO_GITHUB_BROKER_CALLBACK_URL"))
+	if callbackURL == "" {
+		return errors.New("HAKO_GITHUB_BROKER_CALLBACK_URL is required")
+	}
+	checkoutCallers, err := configuredCheckoutCallers(os.Getenv("HAKO_GITHUB_BROKER_CHECKOUT_RESOURCE_PLANE_IDS"))
+	if err != nil {
+		return err
+	}
+	allowedCheckoutCallers := make(map[string]struct{}, len(checkoutCallers)+1)
+	allowedCheckoutCallers["spiffe://hako/control-plane"] = struct{}{}
+	for _, caller := range checkoutCallers {
+		allowedCheckoutCallers[caller] = struct{}{}
+	}
+	policy := transaction.DefaultPolicy()
+	oauth, err := githubbroker.NewOAuthService(func(ctx context.Context, pin githubregistry.SetupAppPin) error {
+		caller, ok := githubbroker.CallerFromContext(ctx)
+		if !ok || caller != "spiffe://hako/control-plane" {
+			return githubbroker.ErrUnavailable
+		}
+		return nil
+	}, func(ctx context.Context, pin githubregistry.SetupAppPin) (githubregistry.SetupCredential, error) {
+		return transaction.Within(ctx, pool, policy, func(ctx context.Context, tx pgx.Tx) (githubregistry.SetupCredential, error) {
+			return githubregistry.ResolveSetupCredential(ctx, tx, pin)
+		})
+	}, func(ctx context.Context, credential githubregistry.SetupCredential) (string, error) {
+		access := githubapp.TenantOAuthAccess{TenantID: string(credential.Pin.TenantID), IntegrationID: credential.Pin.IntegrationID,
+			AppID: credential.Pin.GitHubAppID, ConfigRevision: credential.Pin.ConfigRevision,
+			CredentialGeneration: credential.Pin.CredentialGeneration, ReaderRoleARN: credential.ReaderRoleARN,
+			SecretARN: credential.SecretARN, VersionID: credential.VersionID}
+		reader, err := githubapp.NewTenantOAuthSecretReaderFromConfig(access, awsConfig)
+		if err != nil {
+			return "", githubbroker.ErrUnavailable
+		}
+		return reader.Read(ctx)
+	}, callbackURL)
+	if err != nil {
+		return errors.New("configure OAuth broker service")
+	}
+	appProof, err := githubbroker.NewTenantAppProofService(
+		githubbroker.NewPostgresTenantAppProofResolver(pool, policy),
+		func(ctx context.Context, access githubapp.TenantPrivateKeyAccess) error {
+			client, err := githubapp.NewTenantAppProofClientFromConfig(access, awsConfig, nil)
+			if err != nil {
+				return githubbroker.ErrTenantAppProofDenied
+			}
+			return client.VerifyApp(ctx)
+		},
+	)
+	if err != nil {
+		return errors.New("configure Tenant GitHub App proof service")
+	}
+	resolveRun := githubbroker.NewPostgresCheckoutRunResolver(pool, policy)
+	mintToken, err := githubbroker.NewAWSCheckoutTokenMinter(awsConfig, pool, policy, nil)
+	if err != nil {
+		return errors.New("configure checkout broker token minter")
+	}
+	checkout, err := githubbroker.NewCheckoutService(func(_ context.Context, caller string, _ domain.TenantID, _ domain.WorkloadRunID) error {
+		if _, ok := allowedCheckoutCallers[caller]; !ok {
+			return githubbroker.ErrUnavailable
+		}
+		return nil
+	}, resolveRun, mintToken)
+	if err != nil {
+		return errors.New("configure checkout broker service")
+	}
+	previewPlaneIDs := make([]string, 0, len(checkoutCallers))
+	for _, caller := range checkoutCallers {
+		previewPlaneIDs = append(previewPlaneIDs, strings.TrimPrefix(caller, "spiffe://hako/resource-plane/"))
+	}
+	var previewCheckout *githubbroker.PreviewCheckoutService
+	if len(previewPlaneIDs) > 0 {
+		previewCheckoutMinter, minterErr := githubbroker.NewAWSPreviewCheckoutTokenMinter(awsConfig, pool, policy, nil)
+		if minterErr != nil {
+			return errors.New("configure Preview checkout token minter")
+		}
+		previewCheckout, err = githubbroker.NewPreviewCheckoutService(previewPlaneIDs,
+			githubbroker.NewPostgresPreviewCheckoutResolver(pool, policy, nil), previewCheckoutMinter)
+		if err != nil {
+			return errors.New("configure Preview checkout broker service")
+		}
+	}
+	resolveChecksRun := githubbroker.NewPostgresChecksRunResolver(pool, policy)
+	mintChecksToken, err := githubbroker.NewAWSChecksTokenMinter(awsConfig, pool, policy, nil)
+	if err != nil {
+		return errors.New("configure GitHub Checks token minter")
+	}
+	checks, err := githubbroker.NewChecksService(func(_ context.Context, caller string, _ domain.TenantID, _ domain.WorkloadRunID) error {
+		if caller != "spiffe://hako/control-plane" {
+			return githubbroker.ErrUnavailable
+		}
+		return nil
+	}, resolveChecksRun, mintChecksToken)
+	if err != nil {
+		return errors.New("configure GitHub Checks broker service")
+	}
+	environmentApprovalReader, err := githubbroker.NewAWSEnvironmentApprovalReader(awsConfig, pool, policy, nil)
+	if err != nil {
+		return errors.New("configure GitHub Environment approval reader")
+	}
+	environmentApproval, err := githubbroker.NewEnvironmentApprovalService(
+		githubbroker.NewPostgresEnvironmentApprovalResolver(pool, policy), environmentApprovalReader)
+	if err != nil {
+		return errors.New("configure GitHub Environment approval service")
+	}
+	runnerChecksTokenMinter, err := githubbroker.NewAWSActionsRunnerChecksTokenMinter(awsConfig, pool, policy, nil)
+	if err != nil {
+		return errors.New("configure GitHub Actions Runner Checks token minter")
+	}
+	runnerChecks, err := githubbroker.NewActionsRunnerChecksService(githubbroker.NewPostgresActionsRunnerChecksResolver(pool, policy), runnerChecksTokenMinter)
+	if err != nil {
+		return errors.New("configure GitHub Actions Runner Checks broker service")
+	}
+	actionsRunnerMinter, err := githubbroker.NewAWSActionsRunnerRegistrationTokenMinter(awsConfig, pool, policy, nil)
+	if err != nil {
+		return errors.New("configure GitHub Actions runner token minter")
+	}
+	actionsRunner, err := githubbroker.NewActionsRunnerRegistrationService(
+		githubbroker.NewPostgresActionsRunnerJobStarter(pool, policy),
+		githubbroker.NewPostgresActionsRunnerJobFailure(pool, policy),
+		actionsRunnerMinter,
+	)
+	if err != nil {
+		return errors.New("configure GitHub Actions runner broker service")
+	}
+	runnerCleanupCallers, err := configuredRunnerCleanupCallers(os.Getenv("HAKO_GITHUB_BROKER_ACTIONS_RUNNER_RESOURCE_PLANE_IDS"))
+	if err != nil {
+		return err
+	}
+	agentTaskCallers, err := configuredResourcePlaneCallers(os.Getenv("HAKO_GITHUB_BROKER_AGENT_TASK_RESOURCE_PLANE_IDS"), "HAKO_GITHUB_BROKER_AGENT_TASK_RESOURCE_PLANE_IDS")
+	if err != nil {
+		return err
+	}
+	runnerDeregistrator, err := githubbroker.NewAWSActionsRunnerDeregistrator(awsConfig, pool, policy, nil)
+	if err != nil {
+		return errors.New("configure GitHub Actions runner deregistration broker")
+	}
+	runnerCleanup, err := githubbroker.NewActionsRunnerCleanupService(githubbroker.NewPostgresActionsRunnerCleanupResolver(pool, policy), runnerDeregistrator)
+	if err != nil {
+		return errors.New("configure GitHub Actions runner cleanup broker")
+	}
+	runnerBindingIDs := make([]string, 0, len(runnerCleanupCallers))
+	for _, caller := range runnerCleanupCallers {
+		runnerBindingIDs = append(runnerBindingIDs, strings.TrimPrefix(caller, "spiffe://hako/resource-plane/"))
+	}
+	var runnerBinding *githubbroker.ActionsRunnerBindingService
+	if len(runnerBindingIDs) > 0 {
+		runnerBinding, err = githubbroker.NewActionsRunnerBindingService(runnerBindingIDs, githubbroker.NewPostgresActionsRunnerBinder(pool, policy))
+		if err != nil {
+			return errors.New("configure GitHub Actions runner claim binding service")
+		}
+	}
+	var runnerBootstrapToken *githubbroker.ActionsRunnerBootstrapTokenService
+	if len(runnerBindingIDs) > 0 {
+		runnerBootstrapToken, err = githubbroker.NewActionsRunnerBootstrapTokenService(runnerBindingIDs,
+			githubbroker.NewPostgresActionsRunnerBootstrapTokenStarter(pool, policy),
+			githubbroker.NewPostgresActionsRunnerJobFailure(pool, policy), actionsRunnerMinter)
+		if err != nil {
+			return errors.New("configure GitHub Actions runner bootstrap token broker")
+		}
+	}
+	var runnerLaunch *githubbroker.ActionsRunnerLaunchService
+	if len(runnerBindingIDs) > 0 {
+		preflight, preflightErr := githubbroker.NewPostgresActionsRunnerLaunchPreflight(pool, policy, awsConfig, nil)
+		if preflightErr != nil {
+			return errors.New("configure GitHub Actions runner provenance preflight")
+		}
+		runnerLaunch, err = githubbroker.NewVerifiedActionsRunnerLaunchService(runnerBindingIDs, preflight,
+			githubbroker.NewPostgresVerifiedActionsRunnerLaunchStarter(pool, policy))
+		if err != nil {
+			return errors.New("configure GitHub Actions runner launch broker")
+		}
+	}
+	var runnerStartupFailure *githubbroker.ActionsRunnerStartupFailureService
+	if len(runnerBindingIDs) > 0 {
+		runnerStartupFailure, err = githubbroker.NewActionsRunnerStartupFailureService(runnerBindingIDs,
+			githubbroker.NewPostgresActionsRunnerStartupFailureRecorder(pool, policy))
+		if err != nil {
+			return errors.New("configure GitHub Actions runner startup-failure recorder")
+		}
+	}
+	var runnerModelCredential githubbroker.ActionsRunnerModelCredentialIssuer
+	if len(runnerBindingIDs) > 0 {
+		modelSecretReader, readerErr := modelcredentialbroker.NewAWSSecretReader(awsConfig)
+		if readerErr != nil {
+			return errors.New("configure Tenant model credential Secret reader")
+		}
+		runnerModelCredential, err = githubbroker.NewPostgresActionsRunnerModelCredentialService(runnerBindingIDs, pool, policy, modelSecretReader)
+		if err != nil {
+			return errors.New("configure Tenant model credential broker")
+		}
+	}
+	agentIssueReader, err := githubbroker.NewAWSAgentIssueContextReader(awsConfig, pool, policy, nil)
+	if err != nil {
+		return errors.New("configure GitHub Agent Issue context reader")
+	}
+	agentIssueContext, err := githubbroker.NewAgentIssueContextService(githubbroker.NewPostgresAgentIssueContextResolver(pool, policy), agentIssueReader)
+	if err != nil {
+		return errors.New("configure GitHub Agent Issue context service")
+	}
+	tlsConfig, err := serverTLSConfigFromEnv()
+	if err != nil {
+		return err
+	}
+	addr := strings.TrimSpace(os.Getenv("HAKO_GITHUB_BROKER_LISTEN_ADDR"))
+	if addr == "" {
+		addr = defaultListenAddr
+	}
+	handler := githubbroker.HandlerWithActionsRunnerChecksLifecycle(oauth, checkout, checks, checkoutCallers, actionsRunner, runnerCleanup, runnerCleanupCallers, runnerBinding, runnerCleanupCallers, runnerBootstrapToken, runnerCleanupCallers, runnerLaunch, runnerCleanupCallers, runnerStartupFailure, runnerCleanupCallers, runnerModelCredential, runnerChecks)
+	handler = githubbroker.WithTenantAppProof(handler, appProof)
+	handler = githubbroker.WithPreviewCheckout(handler, previewCheckout)
+	handler = githubbroker.WithEnvironmentApproval(handler, environmentApproval)
+	handler = githubbroker.WithAgentIssueContext(handler, agentIssueContext)
+	proposalBucket := strings.TrimSpace(os.Getenv("HAKO_GITHUB_BROKER_AGENT_PROPOSAL_BUCKET"))
+	if proposalBucket != "" {
+		proposalReader, readerErr := workloadsource.NewS3AgentProposalArchiveReader(s3.NewFromConfig(awsConfig), proposalBucket,
+			strings.TrimSpace(os.Getenv("HAKO_GITHUB_BROKER_AGENT_PROPOSAL_PREFIX")))
+		if readerErr != nil {
+			return errors.New("configure Agent proposal archive reader")
+		}
+		proposalWriter, writerErr := githubbroker.NewAgentProposalGitHubWriter("https://api.github.com", nil)
+		if writerErr != nil {
+			return errors.New("configure Agent proposal GitHub writer")
+		}
+		mintProposalToken := func(ctx context.Context, identity githubbroker.AgentProposalPublicationIdentity) (githubbroker.AgentProposalWriteToken, githubapp.RepositoryAccess, error) {
+			client, clientErr := githubapp.NewTenantAppTokenClientFromConfig(identity.AppAccess, awsConfig,
+				githubregistry.CredentialAuthorizer{Pool: pool, Policy: policy}, nil)
+			if clientErr != nil {
+				return nil, githubapp.RepositoryAccess{}, githubbroker.ErrUnavailable
+			}
+			token, repository, tokenErr := client.AgentProposalPublishToken(ctx, identity.Run)
+			if tokenErr != nil {
+				return nil, githubapp.RepositoryAccess{}, githubbroker.ErrUnavailable
+			}
+			return token, repository, nil
+		}
+		proposalService, serviceErr := githubbroker.NewAgentProposalPublicationService(
+			githubbroker.NewPostgresAgentProposalPublicationResolver(pool, policy),
+			githubbroker.NewPostgresAgentProposalPublicationRecorder(pool, policy), proposalReader, mintProposalToken, proposalWriter)
+		if serviceErr != nil {
+			return errors.New("configure Agent proposal publication service")
+		}
+		handler = githubbroker.WithAgentProposalPublication(handler, proposalService)
+	}
+	if len(agentTaskCallers) > 0 {
+		planeIDs := make([]string, 0, len(agentTaskCallers))
+		for _, caller := range agentTaskCallers {
+			planeIDs = append(planeIDs, strings.TrimPrefix(caller, "spiffe://hako/resource-plane/"))
+		}
+		service, serviceErr := githubbroker.NewAgentTaskService(planeIDs, githubbroker.NewPostgresAgentTaskResolver(pool, policy, nil))
+		if serviceErr != nil {
+			return errors.New("configure Agent task resolver")
+		}
+		handler = githubbroker.WithAgentTask(handler, service)
+		modelSecretReader, readerErr := modelcredentialbroker.NewAWSSecretReader(awsConfig)
+		if readerErr != nil {
+			return errors.New("configure Native Agent model credential Secret reader")
+		}
+		modelCredentialService, serviceErr := githubbroker.NewPostgresAgentModelCredentialService(planeIDs, pool, policy, modelSecretReader)
+		if serviceErr != nil {
+			return errors.New("configure Native Agent model credential broker")
+		}
+		handler = githubbroker.WithAgentModelCredential(handler, modelCredentialService)
+	}
+	if len(runnerBindingIDs) > 0 {
+		cleanupQueue, err := githubbroker.NewActionsRunnerCleanupQueueService(pool, policy, runnerBindingIDs)
+		if err != nil {
+			return errors.New("configure Actions runner cleanup queue broker")
+		}
+		handler = githubbroker.WithActionsRunnerCleanupQueue(handler, cleanupQueue)
+	}
+	server := &http.Server{Addr: addr, Handler: handler, TLSConfig: tlsConfig,
+		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 60 * time.Second,
+		IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	}()
+	if err := server.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return fmt.Errorf("serve GitHub broker: %w", err)
+	}
+	return nil
+}
+
+func configuredRunnerCleanupCallers(raw string) ([]string, error) {
+	return configuredResourcePlaneCallers(raw, "HAKO_GITHUB_BROKER_ACTIONS_RUNNER_RESOURCE_PLANE_IDS")
+}
+
+func configuredResourcePlaneCallers(raw, variable string) ([]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	seen := make(map[string]struct{})
+	callers := make([]string, 0)
+	for _, rawID := range strings.Split(raw, ",") {
+		id := strings.TrimSpace(rawID)
+		caller, err := githubbroker.ResourcePlaneCallerID(id)
+		if err != nil {
+			return nil, fmt.Errorf("%s contains an invalid Resource Plane ID", variable)
+		}
+		if _, exists := seen[caller]; exists {
+			return nil, fmt.Errorf("%s contains duplicates", variable)
+		}
+		seen[caller] = struct{}{}
+		callers = append(callers, caller)
+	}
+	return callers, nil
+}
+
+func configuredCheckoutCallers(raw string) ([]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	seen := make(map[string]struct{})
+	callers := make([]string, 0)
+	for _, rawID := range strings.Split(raw, ",") {
+		id := strings.TrimSpace(rawID)
+		caller, err := githubbroker.ResourcePlaneCallerID(id)
+		if err != nil {
+			return nil, errors.New("HAKO_GITHUB_BROKER_CHECKOUT_RESOURCE_PLANE_IDS contains an invalid Resource Plane ID")
+		}
+		if _, exists := seen[caller]; exists {
+			return nil, errors.New("HAKO_GITHUB_BROKER_CHECKOUT_RESOURCE_PLANE_IDS contains duplicates")
+		}
+		seen[caller] = struct{}{}
+		callers = append(callers, caller)
+	}
+	return callers, nil
+}
+
+func openDatabase(ctx context.Context) (*pgxpool.Pool, error) {
+	postgresURL := strings.TrimSpace(os.Getenv("HAKO_DATABASE_URL"))
+	dsqlHost := strings.TrimSpace(os.Getenv("HAKO_DSQL_HOST"))
+	if postgresURL != "" && dsqlHost != "" {
+		return nil, errors.New("set either HAKO_DATABASE_URL or HAKO_DSQL_HOST, not both")
+	}
+	if postgresURL != "" {
+		return dsql.OpenPostgres(ctx, postgresURL)
+	}
+	cfg := dsql.Config{Host: dsqlHost, Region: os.Getenv("AWS_REGION"), User: strings.TrimSpace(os.Getenv("HAKO_DSQL_USER")), Database: os.Getenv("HAKO_DSQL_DATABASE")}
+	if cfg.User == "" {
+		cfg.User = "admin"
+	}
+	return dsql.Open(ctx, cfg)
+}
+
+func serverTLSConfigFromEnv() (*tls.Config, error) {
+	certPEM := strings.TrimSpace(os.Getenv("HAKO_GITHUB_BROKER_TLS_CERT_PEM"))
+	keyPEM := strings.TrimSpace(os.Getenv("HAKO_GITHUB_BROKER_TLS_KEY_PEM"))
+	caPEM := strings.TrimSpace(os.Getenv("HAKO_GITHUB_BROKER_CLIENT_CA_PEM"))
+	certPath := strings.TrimSpace(os.Getenv("HAKO_GITHUB_BROKER_TLS_CERT_FILE"))
+	keyPath := strings.TrimSpace(os.Getenv("HAKO_GITHUB_BROKER_TLS_KEY_FILE"))
+	caPath := strings.TrimSpace(os.Getenv("HAKO_GITHUB_BROKER_CLIENT_CA_FILE"))
+	fileValues := []string{certPath, keyPath, caPath}
+	pemValues := []string{certPEM, keyPEM, caPEM}
+	fileCount, pemCount := configuredCount(fileValues), configuredCount(pemValues)
+	if fileCount != 0 && pemCount != 0 {
+		return nil, errors.New("configure broker TLS material using either PEM values or files, not both")
+	}
+	var certificate tls.Certificate
+	var clientCAPEM []byte
+	switch {
+	case pemCount == len(pemValues):
+		var err error
+		certificate, err = tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
+		if err != nil {
+			return nil, errors.New("parse broker TLS certificate")
+		}
+		clientCAPEM = []byte(caPEM)
+	case fileCount == len(fileValues):
+		var err error
+		certificate, err = tls.LoadX509KeyPair(certPath, keyPath)
+		if err != nil {
+			return nil, errors.New("load broker TLS certificate")
+		}
+		clientCAPEM, err = os.ReadFile(caPath)
+		if err != nil {
+			return nil, errors.New("read broker client CA bundle")
+		}
+	default:
+		return nil, errors.New("configure broker TLS certificate, key, and client CA using PEM values or files together")
+	}
+	clientCAs := x509.NewCertPool()
+	if !clientCAs.AppendCertsFromPEM(clientCAPEM) {
+		return nil, errors.New("parse broker client CA bundle")
+	}
+	serverConfig, err := githubbroker.ServerTLSConfig(clientCAs)
+	if err != nil {
+		return nil, errors.New("configure broker mutual TLS")
+	}
+	serverConfig.Certificates = []tls.Certificate{certificate}
+	return serverConfig, nil
+}
+
+func configuredCount(values []string) int {
+	count := 0
+	for _, value := range values {
+		if value != "" {
+			count++
+		}
+	}
+	return count
+}

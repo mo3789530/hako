@@ -1,0 +1,348 @@
+// Package domain defines Hako's provider-independent control-plane model.
+package domain
+
+import (
+	"encoding/json"
+	"time"
+)
+
+type TenantID string
+type UserID string
+type WorkspaceID string
+type ResourcePlaneID string
+type OperationID string
+type SessionID string
+type ServiceID string
+type VolumeID string
+type WorkloadRunID string
+
+type Tenant struct {
+	ID        TenantID  `json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type User struct {
+	ID             UserID    `json:"id"`
+	CognitoSubject string    `json:"cognito_subject"`
+	Email          string    `json:"email"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+type TenantRole string
+
+const (
+	TenantRoleOwner  TenantRole = "owner"
+	TenantRoleAdmin  TenantRole = "admin"
+	TenantRoleMember TenantRole = "member"
+)
+
+type TenantMembership struct {
+	TenantID TenantID   `json:"tenant_id"`
+	UserID   UserID     `json:"user_id"`
+	Role     TenantRole `json:"role"`
+	JoinedAt time.Time  `json:"joined_at"`
+}
+
+type DesiredWorkspaceState string
+
+const (
+	DesiredWorkspaceRunning   DesiredWorkspaceState = "running"
+	DesiredWorkspaceSuspended DesiredWorkspaceState = "suspended"
+	DesiredWorkspaceDeleted   DesiredWorkspaceState = "deleted"
+)
+
+type ObservedWorkspaceState string
+
+const (
+	ObservedWorkspacePending      ObservedWorkspaceState = "pending"
+	ObservedWorkspaceProvisioning ObservedWorkspaceState = "provisioning"
+	ObservedWorkspaceRunning      ObservedWorkspaceState = "running"
+	ObservedWorkspaceSuspending   ObservedWorkspaceState = "suspending"
+	ObservedWorkspaceSuspended    ObservedWorkspaceState = "suspended"
+	ObservedWorkspaceDeleting     ObservedWorkspaceState = "deleting"
+	ObservedWorkspaceDeleted      ObservedWorkspaceState = "deleted"
+	ObservedWorkspaceFailed       ObservedWorkspaceState = "failed"
+)
+
+type Workspace struct {
+	ID           WorkspaceID `json:"id"`
+	TenantID     TenantID    `json:"tenant_id"`
+	OwnerID      UserID      `json:"owner_id"`
+	Name         string      `json:"name"`
+	RuntimeClass string      `json:"runtime_class"`
+	Image        string      `json:"image"`
+	CreatedAt    time.Time   `json:"created_at"`
+	UpdatedAt    time.Time   `json:"updated_at"`
+}
+
+type WorkspaceStatus struct {
+	WorkspaceID   WorkspaceID            `json:"workspace_id"`
+	DesiredState  DesiredWorkspaceState  `json:"desired_state"`
+	ObservedState ObservedWorkspaceState `json:"observed_state"`
+	UpdatedAt     time.Time              `json:"updated_at"`
+}
+
+type Placement struct {
+	WorkspaceID     WorkspaceID     `json:"workspace_id"`
+	ResourcePlaneID ResourcePlaneID `json:"resource_plane_id"`
+	PlacedAt        time.Time       `json:"placed_at"`
+}
+
+type ResourcePlaneStatus string
+
+const (
+	ResourcePlaneActive   ResourcePlaneStatus = "active"
+	ResourcePlaneDraining ResourcePlaneStatus = "draining"
+	ResourcePlaneDisabled ResourcePlaneStatus = "disabled"
+)
+
+type ResourcePlane struct {
+	ID           ResourcePlaneID `json:"id"`
+	Provider     string          `json:"provider"`
+	Region       string          `json:"region"`
+	Capabilities []string        `json:"capabilities"`
+}
+
+type ResourcePlaneState struct {
+	ResourcePlaneID ResourcePlaneID     `json:"resource_plane_id"`
+	Status          ResourcePlaneStatus `json:"status"`
+	UpdatedAt       time.Time           `json:"updated_at"`
+}
+
+type ResourceBinding struct {
+	WorkspaceID     WorkspaceID     `json:"workspace_id"`
+	ResourcePlaneID ResourcePlaneID `json:"resource_plane_id"`
+	Kind            string          `json:"kind"`
+	ExternalID      string          `json:"external_id"`
+	CreatedAt       time.Time       `json:"created_at"`
+}
+
+type OperationType string
+
+const (
+	OperationEnsureRunning OperationType = "ensure_running"
+	OperationSuspend       OperationType = "suspend"
+	OperationResume        OperationType = "resume"
+	OperationDelete        OperationType = "delete"
+)
+
+type OperationStatus string
+
+const (
+	OperationPending   OperationStatus = "pending"
+	OperationRunning   OperationStatus = "running"
+	OperationSucceeded OperationStatus = "succeeded"
+	OperationFailed    OperationStatus = "failed"
+	OperationCancelled OperationStatus = "cancelled"
+)
+
+type Operation struct {
+	ID              OperationID     `json:"id"`
+	TenantID        TenantID        `json:"tenant_id"`
+	WorkspaceID     WorkspaceID     `json:"workspace_id"`
+	ResourcePlaneID ResourcePlaneID `json:"resource_plane_id"`
+	Type            OperationType   `json:"type"`
+	Status          OperationStatus `json:"status"`
+	IdempotencyKey  string          `json:"idempotency_key"`
+	RequestHash     string          `json:"request_hash"`
+	Attempt         int             `json:"attempt"`
+	ErrorCode       string          `json:"error_code,omitempty"`
+	CreatedAt       time.Time       `json:"created_at"`
+	UpdatedAt       time.Time       `json:"updated_at"`
+}
+
+type OperationEvent struct {
+	OperationID OperationID     `json:"operation_id"`
+	Sequence    int64           `json:"sequence"`
+	Type        string          `json:"type"`
+	Payload     json.RawMessage `json:"payload,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+}
+
+type SessionPermission string
+
+const (
+	SessionPermissionVSCode      SessionPermission = "vscode"
+	SessionPermissionShell       SessionPermission = "shell"
+	SessionPermissionPortForward SessionPermission = "port-forward"
+	SessionPermissionSSHProxy    SessionPermission = "ssh-proxy"
+)
+
+type Session struct {
+	ID              SessionID           `json:"id"`
+	UserID          UserID              `json:"user_id"`
+	TenantID        TenantID            `json:"tenant_id"`
+	WorkspaceID     WorkspaceID         `json:"workspace_id"`
+	ResourcePlaneID ResourcePlaneID     `json:"resource_plane_id"`
+	Permissions     []SessionPermission `json:"permissions"`
+	ExpiresAt       time.Time           `json:"expires_at"`
+	CreatedAt       time.Time           `json:"created_at"`
+}
+
+type Service struct {
+	ID                        ServiceID   `json:"id"`
+	WorkspaceID               WorkspaceID `json:"workspace_id"`
+	Name                      string      `json:"name"`
+	CatalogVersion            string      `json:"catalog_version"`
+	ConfigJSON                string      `json:"config_json"`
+	DesiredState              string      `json:"desired_state"`
+	ObservedState             string      `json:"observed_state"`
+	DesiredRevision           int64       `json:"desired_revision"`
+	CredentialGeneration      int64       `json:"credential_generation"`
+	ObservedRevision          int64       `json:"observed_revision"`
+	ObservedRuntimeGeneration int64       `json:"observed_runtime_generation"`
+	CreatedAt                 time.Time   `json:"created_at"`
+	UpdatedAt                 time.Time   `json:"updated_at"`
+}
+
+// WorkspaceServiceCommand is a non-secret desired-state snapshot sent from
+// the Control Plane Outbox to the Resource Plane Service runtime.
+type WorkspaceServiceCommand struct {
+	SchemaVersion        int             `json:"schema_version"`
+	CorrelationID        string          `json:"correlation_id,omitempty"`
+	TenantID             TenantID        `json:"tenant_id"`
+	WorkspaceID          WorkspaceID     `json:"workspace_id"`
+	ResourcePlaneID      ResourcePlaneID `json:"resource_plane_id"`
+	ServiceID            ServiceID       `json:"service_id"`
+	Revision             int64           `json:"revision"`
+	CredentialGeneration int64           `json:"credential_generation,omitempty"`
+	DesiredState         string          `json:"desired_state"`
+	CatalogVersion       string          `json:"catalog_version"`
+	Config               json.RawMessage `json:"config"`
+}
+
+type Volume struct {
+	ID          VolumeID    `json:"id"`
+	WorkspaceID WorkspaceID `json:"workspace_id"`
+	Name        string      `json:"name"`
+	Kind        string      `json:"kind"`
+	MountPath   string      `json:"mount_path"`
+	CreatedAt   time.Time   `json:"created_at"`
+}
+
+type WorkloadKind string
+
+const (
+	WorkloadJob     WorkloadKind = "job"
+	WorkloadAgent   WorkloadKind = "agent"
+	WorkloadPreview WorkloadKind = "preview"
+)
+
+type WorkloadTrustLevel string
+
+const (
+	WorkloadUntrusted  WorkloadTrustLevel = "untrusted"
+	WorkloadTrusted    WorkloadTrustLevel = "trusted"
+	WorkloadPrivileged WorkloadTrustLevel = "privileged"
+)
+
+type WorkloadDesiredState string
+
+const (
+	WorkloadDesiredRunning   WorkloadDesiredState = "running"
+	WorkloadDesiredCancelled WorkloadDesiredState = "cancelled"
+)
+
+type WorkloadRunState string
+
+const (
+	WorkloadPending      WorkloadRunState = "pending"
+	WorkloadQueued       WorkloadRunState = "queued"
+	WorkloadProvisioning WorkloadRunState = "provisioning"
+	WorkloadRunning      WorkloadRunState = "running"
+	WorkloadSucceeded    WorkloadRunState = "succeeded"
+	WorkloadFailed       WorkloadRunState = "failed"
+	WorkloadCancelled    WorkloadRunState = "cancelled"
+	WorkloadTimedOut     WorkloadRunState = "timed_out"
+)
+
+type WorkloadRun struct {
+	ID                         WorkloadRunID             `json:"id"`
+	TenantID                   TenantID                  `json:"tenant_id"`
+	Kind                       WorkloadKind              `json:"kind"`
+	RequestedBy                UserID                    `json:"requested_by,omitempty"`
+	CorrelationID              string                    `json:"correlation_id,omitempty"`
+	GitHubInstallation         int64                     `json:"github_installation_id,omitempty"`
+	GitHubRepository           int64                     `json:"github_repository_id,omitempty"`
+	GitHubIntegrationID        string                    `json:"github_integration_id,omitempty"`
+	GitHubConfigRevision       int64                     `json:"github_config_revision,omitempty"`
+	GitHubCredentialGeneration int64                     `json:"github_credential_generation,omitempty"`
+	CommitSHA                  string                    `json:"commit_sha,omitempty"`
+	Ref                        string                    `json:"ref,omitempty"`
+	TriggerEvent               string                    `json:"trigger_event,omitempty"`
+	TriggerBranch              string                    `json:"trigger_branch,omitempty"`
+	RuntimeClass               string                    `json:"runtime_class"`
+	TrustLevel                 WorkloadTrustLevel        `json:"trust_level"`
+	DesiredState               WorkloadDesiredState      `json:"desired_state"`
+	State                      WorkloadRunState          `json:"state"`
+	ResourcePlaneID            ResourcePlaneID           `json:"resource_plane_id,omitempty"`
+	IdempotencyKey             string                    `json:"-"`
+	RequestHash                string                    `json:"-"`
+	TimeoutSeconds             int64                     `json:"timeout_seconds"`
+	TimeoutAt                  time.Time                 `json:"timeout_at"`
+	StartedAt                  *time.Time                `json:"started_at,omitempty"`
+	CompletedAt                *time.Time                `json:"completed_at,omitempty"`
+	ErrorCode                  string                    `json:"error_code,omitempty"`
+	Revision                   int64                     `json:"revision"`
+	CreatedAt                  time.Time                 `json:"created_at"`
+	UpdatedAt                  time.Time                 `json:"updated_at"`
+	PipelineResults            []WorkloadPipelineResult  `json:"pipeline_results,omitempty"`
+	Artifacts                  []WorkloadArtifactSummary `json:"artifacts,omitempty"`
+}
+
+// WorkloadArtifactSummary exposes artifact identity and integrity metadata to
+// authorized Run readers without exposing the Resource Plane storage URI.
+type WorkloadArtifactSummary struct {
+	ID        string     `json:"id"`
+	Kind      string     `json:"kind"`
+	SizeBytes int64      `json:"size_bytes"`
+	SHA256    string     `json:"sha256"`
+	Redacted  bool       `json:"redacted"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
+type WorkloadPipelineResult struct {
+	Name        string                    `json:"name"`
+	Status      string                    `json:"status"`
+	ExitCode    int                       `json:"exit_code"`
+	ErrorCode   string                    `json:"error_code,omitempty"`
+	Annotations []WorkloadCheckAnnotation `json:"annotations,omitempty"`
+}
+
+// WorkloadCheckAnnotation is bounded repository-relative diagnostic metadata
+// carried from a trusted Workload result to its GitHub Check. Its path and
+// text fields are untrusted and must pass the shared GitHub Check validator.
+type WorkloadCheckAnnotation struct {
+	Path            string `json:"path"`
+	StartLine       int    `json:"start_line"`
+	EndLine         int    `json:"end_line"`
+	StartColumn     int    `json:"start_column,omitempty"`
+	EndColumn       int    `json:"end_column,omitempty"`
+	AnnotationLevel string `json:"annotation_level"`
+	Message         string `json:"message"`
+	Title           string `json:"title,omitempty"`
+	RawDetails      string `json:"raw_details,omitempty"`
+}
+
+type WorkloadRunEvent struct {
+	RunID     WorkloadRunID `json:"run_id"`
+	Sequence  int64         `json:"sequence"`
+	Type      string        `json:"type"`
+	CreatedAt time.Time     `json:"created_at"`
+}
+
+type WorkloadArtifact struct {
+	ID            string        `json:"id"`
+	TenantID      TenantID      `json:"tenant_id"`
+	RunID         WorkloadRunID `json:"run_id"`
+	CorrelationID string        `json:"correlation_id,omitempty"`
+	Kind          string        `json:"kind"`
+	StorageRef    string        `json:"storage_ref"`
+	SizeBytes     int64         `json:"size_bytes"`
+	SHA256        string        `json:"sha256"`
+	Redacted      bool          `json:"redacted"`
+	ExpiresAt     *time.Time    `json:"expires_at,omitempty"`
+	CreatedAt     time.Time     `json:"created_at"`
+}

@@ -1,0 +1,212 @@
+-- Run once as the Aurora DSQL admin role after applying Control Plane Terraform.
+-- Replace the placeholder with module output api_lambda_role_arn.
+CREATE ROLE hako_api WITH LOGIN;
+AWS IAM GRANT hako_api TO 'REPLACE_WITH_API_LAMBDA_ROLE_ARN';
+GRANT USAGE ON SCHEMA public TO hako_api;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO hako_api;
+-- API compromise must not permit rewriting actor-oriented audit history.
+GRANT SELECT, INSERT ON TABLE audit_events, platform_audit_events TO hako_api;
+REVOKE UPDATE, DELETE ON TABLE audit_events, platform_audit_events FROM hako_api;
+-- If this bootstrap template was applied before migration 000043, rerun this
+-- explicit grant for the newly introduced one-time setup state table.
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE github_installation_setup_states TO hako_api;
+-- Workload Run tables are introduced in migrations 000046-000048.
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE workload_runs, workload_run_events, workload_artifacts TO hako_api;
+-- Issue body text is execution input, not user-facing Run metadata. Keep it
+-- unavailable to API handlers even though the bootstrap initially grants
+-- access to current application tables.
+REVOKE ALL PRIVILEGES ON TABLE workload_agent_tasks FROM hako_api;
+-- Workload cancellation reads the pinned current attempt; it does not modify attempts.
+GRANT SELECT ON TABLE workload_run_attempts TO hako_api;
+-- Tenant App metadata (000050-000053); operator approval is NOT an API power.
+GRANT SELECT ON TABLE github_credential_bindings TO hako_api;
+REVOKE INSERT, UPDATE, DELETE ON TABLE github_credential_bindings FROM hako_api;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE github_app_registrations, tenant_github_integrations, tenant_github_default_integrations TO hako_api;
+GRANT SELECT, INSERT, UPDATE ON TABLE github_webhook_rate_limits TO hako_api;
+REVOKE DELETE ON TABLE github_webhook_rate_limits FROM hako_api;
+GRANT SELECT ON TABLE tenant_github_app_installation_bindings TO hako_api;
+-- The reviewed OAuth setup adapter inserts immutable integration bindings.
+-- No API permission to update/delete or reassign an existing binding.
+GRANT INSERT ON TABLE tenant_github_app_installation_bindings TO hako_api;
+REVOKE UPDATE, DELETE ON TABLE tenant_github_app_installation_bindings FROM hako_api;
+-- Credential bindings must be provisioned through an explicitly authorized
+-- operator DB role, not this API role. No Secret values belong in these rows.
+-- Claude/model credential bindings follow the same operator-only rule. Tenant
+-- Owners/Admins may reference approved bindings and rotate/disable metadata,
+-- but the API cannot create or retarget a binding to another Tenant's Secret.
+GRANT SELECT ON TABLE tenant_model_credential_bindings TO hako_api;
+REVOKE INSERT, UPDATE, DELETE ON TABLE tenant_model_credential_bindings FROM hako_api;
+GRANT SELECT, INSERT, UPDATE ON TABLE tenant_model_credentials TO hako_api;
+REVOKE DELETE ON TABLE tenant_model_credentials FROM hako_api;
+-- Software Catalog entries are Tenant-scoped metadata. The API may list and
+-- upsert them but does not delete history or manage repository bindings.
+GRANT SELECT, INSERT, UPDATE ON TABLE tenant_software_catalog_services TO hako_api;
+REVOKE DELETE ON TABLE tenant_software_catalog_services FROM hako_api;
+-- Preview lifecycle is read-only from the API; webhook processing owns updates.
+REVOKE INSERT, UPDATE, DELETE ON TABLE repository_previews FROM hako_api;
+GRANT SELECT ON TABLE repository_previews TO hako_api;
+-- Preview Gateway sessions are separate from developer Workspace sessions;
+-- only the API may issue/revoke tickets and validate their current generation.
+GRANT SELECT (tenant_id, installation_id, github_repository_id, pull_request_number, generation, desired_state,
+    state, expires_at, resource_plane_id, workspace_id, microvm_id, gateway_route_id)
+    ON TABLE repository_preview_runtime_allocations TO hako_api;
+GRANT SELECT, INSERT, DELETE ON TABLE repository_preview_sessions TO hako_api;
+
+-- The Workspace idle reconciler is a separate scheduled Control Plane
+-- execution identity. It owns only idle-suspend state/Operation writes and
+-- cannot access GitHub, Workload, Secret, or Resource Plane credentials.
+CREATE ROLE hako_workspace_idle_reconciler WITH LOGIN;
+AWS IAM GRANT hako_workspace_idle_reconciler TO 'REPLACE_WITH_WORKSPACE_IDLE_RECONCILER_LAMBDA_ROLE_ARN';
+GRANT USAGE ON SCHEMA public TO hako_workspace_idle_reconciler;
+GRANT SELECT ON TABLE tenants, workspaces, placements, resource_bindings, tenant_workspace_idle_policies,
+    workspace_connection_leases, operations TO hako_workspace_idle_reconciler;
+GRANT SELECT, UPDATE (desired_state, updated_at, reconcile_revision) ON TABLE workspace_status TO hako_workspace_idle_reconciler;
+GRANT INSERT, UPDATE (idempotency_key) ON TABLE operations TO hako_workspace_idle_reconciler;
+GRANT INSERT ON TABLE operation_events, outbox_events, audit_events TO hako_workspace_idle_reconciler;
+
+-- Preview expiry transitions expired Preview rows and purges expired Preview
+-- Session metadata in bounded batches. It cannot read runtime/provider IDs or
+-- touch Workspaces, Gateway routes, or provider resources.
+CREATE ROLE hako_preview_reconciler WITH LOGIN;
+AWS IAM GRANT hako_preview_reconciler TO 'REPLACE_WITH_PREVIEW_EXPIRY_RECONCILER_LAMBDA_ROLE_ARN';
+GRANT USAGE ON SCHEMA public TO hako_preview_reconciler;
+GRANT SELECT (tenant_id, installation_id, github_repository_id, pull_request_number, desired_state, expires_at, generation)
+    ON TABLE repository_previews TO hako_preview_reconciler;
+GRANT UPDATE (desired_state, state, generation, cleanup_next_attempt_at, cleanup_claim_id, cleanup_lease_expires_at, updated_at)
+    ON TABLE repository_previews TO hako_preview_reconciler;
+GRANT SELECT (id, expires_at) ON TABLE repository_preview_sessions TO hako_preview_reconciler;
+GRANT DELETE ON TABLE repository_preview_sessions TO hako_preview_reconciler;
+-- Preview runtime allocations are per immutable PR-head generation. The
+-- expiry reconciler may only move active generations into cleanup; it cannot
+-- read provider bindings or execute Resource Plane commands.
+GRANT SELECT (tenant_id, installation_id, github_repository_id, pull_request_number, generation, desired_state)
+    ON TABLE repository_preview_runtime_allocations TO hako_preview_reconciler;
+GRANT UPDATE (desired_state, state, updated_at)
+    ON TABLE repository_preview_runtime_allocations TO hako_preview_reconciler;
+
+-- The Preview runtime dispatcher selects/reserves placement and writes only
+-- generation-fenced provider commands to the existing Outbox. It cannot read
+-- credentials or bind provider IDs; those are Resource Plane/result duties.
+CREATE ROLE hako_preview_runtime_dispatcher WITH LOGIN;
+AWS IAM GRANT hako_preview_runtime_dispatcher TO 'REPLACE_WITH_PREVIEW_RUNTIME_DISPATCHER_LAMBDA_ROLE_ARN';
+GRANT USAGE ON SCHEMA public TO hako_preview_runtime_dispatcher;
+GRANT SELECT ON TABLE repository_previews TO hako_preview_runtime_dispatcher;
+GRANT SELECT ON TABLE repository_preview_runtime_allocations TO hako_preview_runtime_dispatcher;
+GRANT UPDATE (state, target_resource_plane_id, provision_claim_id, provision_lease_expires_at,
+    provision_attempts, provision_next_attempt_at, provision_last_error,
+    runtime_cleanup_claim_id, runtime_cleanup_lease_expires_at, runtime_cleanup_attempts,
+    runtime_cleanup_next_attempt_at, runtime_cleanup_last_error, updated_at)
+    ON TABLE repository_preview_runtime_allocations TO hako_preview_runtime_dispatcher;
+GRANT UPDATE (state, cleanup_claim_id, cleanup_lease_expires_at, cleanup_next_attempt_at, cleanup_last_error, updated_at)
+    ON TABLE repository_previews TO hako_preview_runtime_dispatcher;
+GRANT INSERT ON TABLE outbox_events TO hako_preview_runtime_dispatcher;
+GRANT SELECT ON TABLE resource_planes TO hako_preview_runtime_dispatcher;
+GRANT SELECT ON TABLE resource_plane_status TO hako_preview_runtime_dispatcher;
+GRANT SELECT ON TABLE resource_plane_health TO hako_preview_runtime_dispatcher;
+GRANT SELECT ON TABLE placements TO hako_preview_runtime_dispatcher;
+GRANT SELECT ON TABLE workspace_status TO hako_preview_runtime_dispatcher;
+GRANT SELECT ON TABLE tenant_placement_policies TO hako_preview_runtime_dispatcher;
+GRANT SELECT, UPDATE ON TABLE resource_plane_capacities TO hako_preview_runtime_dispatcher;
+GRANT SELECT ON TABLE runtime_class_resources TO hako_preview_runtime_dispatcher;
+GRANT SELECT, INSERT, DELETE ON TABLE preview_resource_plane_reservations TO hako_preview_runtime_dispatcher;
+
+-- The result consumer applies only claim-fenced Preview provider results. It
+-- can update runtime binding/cleanup metadata and release capacity after a
+-- confirmed provider cleanup; it cannot claim work or access tenant secrets.
+CREATE ROLE hako_preview_result_consumer WITH LOGIN;
+AWS IAM GRANT hako_preview_result_consumer TO 'REPLACE_WITH_PREVIEW_RESULT_CONSUMER_LAMBDA_ROLE_ARN';
+GRANT USAGE ON SCHEMA public TO hako_preview_result_consumer;
+GRANT SELECT (tenant_id, installation_id, github_repository_id, pull_request_number, generation,
+    desired_state, state, target_resource_plane_id, resource_plane_id, workspace_id, microvm_id,
+    gateway_route_id, provision_claim_id, provision_attempts, provision_lease_expires_at,
+    runtime_cleanup_claim_id, runtime_cleanup_attempts, runtime_cleanup_lease_expires_at, expires_at,
+    head_sha, head_ref)
+    ON TABLE repository_preview_runtime_allocations TO hako_preview_result_consumer;
+GRANT UPDATE (state, resource_plane_id, workspace_id, microvm_id, gateway_route_id,
+    provision_claim_id, provision_lease_expires_at, provision_next_attempt_at, provision_last_error,
+    runtime_cleanup_claim_id, runtime_cleanup_lease_expires_at, runtime_cleanup_next_attempt_at,
+    runtime_cleanup_last_error, updated_at)
+    ON TABLE repository_preview_runtime_allocations TO hako_preview_result_consumer;
+GRANT SELECT (tenant_id, installation_id, github_repository_id, pull_request_number, generation,
+    desired_state, state, expires_at)
+    ON TABLE repository_previews TO hako_preview_result_consumer;
+GRANT UPDATE (state, cleanup_claim_id, cleanup_lease_expires_at, cleanup_next_attempt_at,
+    cleanup_last_error, updated_at)
+    ON TABLE repository_previews TO hako_preview_result_consumer;
+GRANT SELECT (runtime_workspace_id, resource_plane_id, runtime_class, cpu_millicores, memory_mib, capacity_charged)
+    ON TABLE preview_resource_plane_reservations TO hako_preview_result_consumer;
+GRANT DELETE ON TABLE preview_resource_plane_reservations TO hako_preview_result_consumer;
+GRANT SELECT (resource_plane_id, reserved_workspaces, reserved_cpu_millicores, reserved_memory_mib)
+    ON TABLE resource_plane_capacities TO hako_preview_result_consumer;
+GRANT UPDATE (reserved_workspaces, reserved_cpu_millicores, reserved_memory_mib, updated_at)
+    ON TABLE resource_plane_capacities TO hako_preview_result_consumer;
+
+-- The Dispatcher role can claim/publish Outbox rows but cannot alter schema or
+-- access Workspace, Tenant, User, Session, or Operation tables.
+CREATE ROLE hako_dispatcher WITH LOGIN;
+AWS IAM GRANT hako_dispatcher TO 'REPLACE_WITH_OUTBOX_DISPATCHER_ROLE_ARN';
+GRANT USAGE ON SCHEMA public TO hako_dispatcher;
+GRANT SELECT, UPDATE ON TABLE outbox_events TO hako_dispatcher;
+
+-- The webhook processor reads normalized pending deliveries, purges original
+-- payloads after their retention deadline, updates inbox status, and syncs the
+-- Tenant's repository registry. The optional repository-trigger path may
+-- create an untrusted Job and its Check/outbox in the same transaction. It
+-- never reads secrets or calls GitHub.
+CREATE ROLE hako_webhook_processor WITH LOGIN;
+AWS IAM GRANT hako_webhook_processor TO 'REPLACE_WITH_GITHUB_WEBHOOK_PROCESSOR_ROLE_ARN';
+GRANT USAGE ON SCHEMA public TO hako_webhook_processor;
+GRANT SELECT ON TABLE github_webhook_deliveries, github_app_installation_bindings, tenant_github_installations,
+    github_app_registrations, tenant_github_integrations, github_credential_bindings,
+    tenant_github_app_installation_bindings TO hako_webhook_processor;
+GRANT UPDATE (processing_status, payload_json, payload_purged_at, agent_processing_claim_id, agent_processing_lease_expires_at) ON TABLE github_webhook_deliveries TO hako_webhook_processor;
+GRANT UPDATE (status, suspended_at, updated_at) ON TABLE tenant_github_installations TO hako_webhook_processor;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE tenant_github_repositories TO hako_webhook_processor;
+-- Admission writes only the shared OCC revision guard. It may not change
+-- configured limits; the API remains the only Tenant quota writer.
+GRANT SELECT (tenant_id, workspace_limit, concurrent_workload_run_limit, queued_workload_run_limit, preview_run_limit, preview_lifetime_seconds,
+    artifact_bytes_limit, workspace_service_memory_bytes_limit, workspace_service_milli_cpu_limit,
+    workspace_compute_milli_cpu_limit, workspace_compute_memory_mib_limit, revision, updated_by, updated_at)
+    ON TABLE tenant_quota_limits TO hako_webhook_processor;
+GRANT INSERT (tenant_id, revision, updated_at) ON TABLE tenant_quota_limits TO hako_webhook_processor;
+GRANT UPDATE (revision) ON TABLE tenant_quota_limits TO hako_webhook_processor;
+GRANT SELECT, INSERT ON TABLE workload_runs, workload_run_events TO hako_webhook_processor;
+GRANT SELECT, INSERT, UPDATE ON TABLE repository_previews TO hako_webhook_processor;
+GRANT SELECT, INSERT, UPDATE ON TABLE repository_preview_runtime_allocations TO hako_webhook_processor;
+GRANT SELECT, INSERT ON TABLE workload_agent_tasks TO hako_webhook_processor;
+GRANT SELECT, INSERT, UPDATE ON TABLE workload_github_checks TO hako_webhook_processor;
+-- Actions Runner admission/status events also update the exact durable Check
+-- and terminal-cleanup rows in the same transaction.
+GRANT SELECT, INSERT, UPDATE ON TABLE github_actions_runner_jobs, github_actions_runner_checks,
+    github_actions_runner_cleanup_outbox TO hako_webhook_processor;
+GRANT INSERT ON TABLE outbox_events TO hako_webhook_processor;
+
+-- The Fargate GitHub Checks consumer only reads immutable Run/desired Check
+-- state and persists the remote Check Run ID after a successful API request.
+-- It does not mutate Workload state or access credential-bearing tables.
+CREATE ROLE hako_checks_consumer WITH LOGIN;
+AWS IAM GRANT hako_checks_consumer TO 'REPLACE_WITH_GITHUB_CHECKS_CONSUMER_TASK_ROLE_ARN';
+GRANT USAGE ON SCHEMA public TO hako_checks_consumer;
+GRANT SELECT ON TABLE workload_runs, workload_github_checks TO hako_checks_consumer;
+GRANT UPDATE (check_run_id, updated_at) ON TABLE workload_github_checks TO hako_checks_consumer;
+GRANT SELECT ON TABLE github_actions_runner_checks TO hako_checks_consumer;
+GRANT UPDATE (check_run_id, updated_at) ON TABLE github_actions_runner_checks TO hako_checks_consumer;
+
+-- The GitHub Broker reads Tenant-pinned App metadata and mutates only
+-- Actions Runner admission/claim/cleanup/Check lifecycle rows. It never reads
+-- Secret values from DSQL; the exact reader role and immutable Secret version
+-- are resolved as metadata and Secrets Manager access stays in the broker's
+-- AWS role boundary.
+CREATE ROLE hako_github_broker WITH LOGIN;
+AWS IAM GRANT hako_github_broker TO 'REPLACE_WITH_GITHUB_BROKER_ROLE_ARN';
+GRANT USAGE ON SCHEMA public TO hako_github_broker;
+GRANT SELECT ON TABLE tenant_github_integrations, tenant_github_installations, tenant_github_app_installation_bindings,
+    github_app_installation_bindings, tenant_github_repositories, github_app_registrations, github_credential_bindings,
+    tenant_members, github_webhook_deliveries, tenant_software_catalog_services TO hako_github_broker;
+-- Agent task text is readable only by the trusted broker. The Resource Plane
+-- worker must present its mTLS identity and active Run/attempt coordinates;
+-- the generic Hako API has no direct table privileges.
+GRANT SELECT ON TABLE workload_runs, workload_run_attempts, workload_agent_tasks TO hako_github_broker;
+GRANT SELECT, UPDATE ON TABLE github_actions_runner_jobs TO hako_github_broker;
+GRANT SELECT, INSERT, UPDATE ON TABLE github_actions_runner_checks, github_actions_runner_cleanup_outbox TO hako_github_broker;
+GRANT INSERT ON TABLE outbox_events TO hako_github_broker;
