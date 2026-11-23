@@ -4,9 +4,9 @@ Adapters are deliberately injected: this module does not execute repository
 commands, call a model, publish artifacts or contact AWS by itself.
 """
 
+import re
 from dataclasses import dataclass
 from enum import Enum
-import re
 from typing import Protocol
 
 
@@ -50,18 +50,33 @@ def run(steps: Steps, *, max_iterations: int = 3) -> Result:
     tree is never reported verified. Errors from adapters propagate to the
     caller, which must record a failed run and perform cleanup.
     """
-    if isinstance(max_iterations, bool) or not isinstance(max_iterations, int) or not 1 <= max_iterations <= 10:
+    if (
+        isinstance(max_iterations, bool)
+        or not isinstance(max_iterations, int)
+        or not 1 <= max_iterations <= 10
+    ):
         raise ValueError("max_iterations must be between 1 and 10")
     for iteration in range(1, max_iterations + 1):
         steps.plan(iteration)
         steps.code(iteration)
         verification = steps.verify()
-        if not isinstance(verification, Verification) or not isinstance(verification.tree_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", verification.tree_digest):
+        if (
+            not isinstance(verification, Verification)
+            or not isinstance(verification.tree_digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", verification.tree_digest)
+        ):
             raise ValueError("verification must identify the measured tree")
-        if verification.exit_code is not None and (isinstance(verification.exit_code, bool) or not isinstance(verification.exit_code, int)):
+        if verification.exit_code is not None and (
+            isinstance(verification.exit_code, bool) or not isinstance(verification.exit_code, int)
+        ):
             raise ValueError("invalid verification exit code")
         review = steps.review()
-        if not isinstance(review, Review) or not isinstance(review.tree_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", review.tree_digest) or not isinstance(review.approved, bool):
+        if (
+            not isinstance(review, Review)
+            or not isinstance(review.tree_digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", review.tree_digest)
+            or not isinstance(review.approved, bool)
+        ):
             raise ValueError("review must identify the reviewed tree")
         if verification.tree_digest != review.tree_digest:
             if iteration == max_iterations:

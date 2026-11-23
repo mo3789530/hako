@@ -30,20 +30,35 @@ class StubVerifier:
 
 class LanguagesTest(unittest.TestCase):
     def test_detect_mixed_and_manifest_only_projects(self):
-        paths = ["apps/server/pom.xml", "tools/pyproject.toml", "go.mod", "lib/Cargo.toml",
-                 "ui/tsconfig.json", "module/main.tf", "module/vars.tfvars"]
-        self.assertEqual(detect_languages(paths), ("Go", "Java", "Python", "Rust", "Terraform", "TypeScript"))
+        paths = [
+            "apps/server/pom.xml",
+            "tools/pyproject.toml",
+            "go.mod",
+            "lib/Cargo.toml",
+            "ui/tsconfig.json",
+            "module/main.tf",
+            "module/vars.tfvars",
+        ]
+        self.assertEqual(
+            detect_languages(paths), ("Go", "Java", "Python", "Rust", "Terraform", "TypeScript")
+        )
         self.assertEqual(detect_languages(["README.md", "package.json"]), ())
 
     def test_changes_become_proposals_for_each_language(self):
-        cases = [("main.py", b"print(2)\n"), ("Main.java", b"class Main {}\n"),
-                 ("main.go", b"package main\n"), ("src/main.rs", b"fn main() {}\n"),
-                 ("src/main.tsx", b"export const x = 2;\n"),
-                 ("main.tf", b'variable "name" { type = string }\n')]
+        cases = [
+            ("main.py", b"print(2)\n"),
+            ("Main.java", b"class Main {}\n"),
+            ("main.go", b"package main\n"),
+            ("src/main.rs", b"fn main() {}\n"),
+            ("src/main.tsx", b"export const x = 2;\n"),
+            ("main.tf", b'variable "name" { type = string }\n'),
+        ]
         for path, content in cases:
             with self.subTest(path=path):
                 workspace = Workspace({path: b"old\n"})
-                result = run_agent("Update source", workspace, ScriptedModel(path, content), StubVerifier())
+                result = run_agent(
+                    "Update source", workspace, ScriptedModel(path, content), StubVerifier()
+                )
                 self.assertEqual(result.workflow.outcome, Outcome.VERIFIED)
                 with zipfile.ZipFile(io.BytesIO(result.proposal.data)) as archive:
                     self.assertEqual(archive.read(path), content)

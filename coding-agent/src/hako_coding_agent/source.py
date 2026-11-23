@@ -6,7 +6,13 @@ import io
 import re
 import tarfile
 
-from .workspace import MAX_SOURCE_BYTES, MAX_SOURCE_FILES, MAX_SOURCE_FILE_BYTES, Workspace, validate_source_path
+from .workspace import (
+    MAX_SOURCE_BYTES,
+    MAX_SOURCE_FILE_BYTES,
+    MAX_SOURCE_FILES,
+    Workspace,
+    validate_source_path,
+)
 
 MAX_TAR_BYTES = 40 << 20
 MAX_ENTRIES = 8192
@@ -19,8 +25,12 @@ def load_source(data: bytes, expected_sha256: str) -> Workspace:
     files to model tools. Symlinks and special files remain unsupported.
     The caller must obtain the digest from authorized attempt metadata.
     """
-    if (not isinstance(data, bytes) or not 1 <= len(data) <= MAX_TAR_BYTES or
-            not isinstance(expected_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)):
+    if (
+        not isinstance(data, bytes)
+        or not 1 <= len(data) <= MAX_TAR_BYTES
+        or not isinstance(expected_sha256, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)
+    ):
         raise ValueError("invalid source archive identity")
     if not hmac.compare_digest(hashlib.sha256(data).hexdigest(), expected_sha256):
         raise ValueError("source archive digest mismatch")
@@ -43,8 +53,12 @@ def load_source(data: bytes, expected_sha256: str) -> Workspace:
                     if member.size != 0:
                         raise ValueError("invalid source directory")
                     continue
-                if (not member.isfile() or member.size < 0 or member.size > MAX_SOURCE_FILE_BYTES or
-                        len(files) >= MAX_SOURCE_FILES):
+                if (
+                    not member.isfile()
+                    or member.size < 0
+                    or member.size > MAX_SOURCE_FILE_BYTES
+                    or len(files) >= MAX_SOURCE_FILES
+                ):
                     raise ValueError("unsupported source file")
                 total += member.size
                 if total > MAX_SOURCE_BYTES:

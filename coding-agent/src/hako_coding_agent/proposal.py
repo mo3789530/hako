@@ -9,16 +9,21 @@ import hashlib
 import io
 import stat
 import zipfile
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Mapping
 
 MAX_FILES = 128
 MAX_FILE_BYTES = 128 << 10
 MAX_ARCHIVE_BYTES = 8 << 20
 _PROTECTED = {".git", ".hako", ".github", ".aws", ".ssh", "terraform", "infra"}
-_MARKERS = (b"-----begin private key-----", b"-----begin rsa private key-----",
-            b"-----begin ec private key-----", b"-----begin openssh private key-----",
-            b"sk-ant-api", b"akia")
+_MARKERS = (
+    b"-----begin private key-----",
+    b"-----begin rsa private key-----",
+    b"-----begin ec private key-----",
+    b"-----begin openssh private key-----",
+    b"sk-ant-api",
+    b"akia",
+)
 
 
 @dataclass(frozen=True)
@@ -35,12 +40,18 @@ def _validate_path(path: str) -> None:
     except UnicodeEncodeError as exc:
         raise ValueError("invalid proposal path") from exc
     parts = path.split("/")
-    if (not 1 <= length <= 512 or any(c in path for c in "\\\r\n\0:") or
-            any(part in ("", ".", "..") or part.lower() in _PROTECTED for part in parts)):
+    if (
+        not 1 <= length <= 512
+        or any(c in path for c in "\\\r\n\0:")
+        or any(part in ("", ".", "..") or part.lower() in _PROTECTED for part in parts)
+    ):
         raise ValueError("invalid proposal path")
     base = parts[-1].lower()
-    if (base.startswith(".env") or base in {"credentials", "id_rsa", "id_ed25519"} or
-            base.endswith((".pem", ".key", ".p12", ".pfx"))):
+    if (
+        base.startswith(".env")
+        or base in {"credentials", "id_rsa", "id_ed25519"}
+        or base.endswith((".pem", ".key", ".p12", ".pfx"))
+    ):
         raise ValueError("protected proposal path")
 
 

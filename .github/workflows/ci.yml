@@ -9,6 +9,21 @@ permissions:
   contents: read
 
 jobs:
+  python:
+    name: Python checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install coding agent development tools
+        run: python -m pip install -e "coding-agent[dev]"
+      - name: Lint and type check
+        run: make lint-python
+      - name: Test
+        run: make test-python
+
   go:
     name: Go checks
     runs-on: ubuntu-latest

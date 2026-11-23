@@ -29,12 +29,20 @@ class Attempt:
     source_sha256: str
 
     def validate(self) -> None:
-        if (any(not isinstance(value, str) or not _ID.fullmatch(value) for value in
-                (self.tenant_id, self.run_id, self.attempt_id, self.resource_plane_id)) or
-                type(self.generation) is not int or self.generation < 1 or
-                type(self.repository_id) is not int or self.repository_id < 1 or
-                not isinstance(self.commit_sha, str) or not _COMMIT.fullmatch(self.commit_sha) or
-                not isinstance(self.source_sha256, str) or not _HASH.fullmatch(self.source_sha256)):
+        if (
+            any(
+                not isinstance(value, str) or not _ID.fullmatch(value)
+                for value in (self.tenant_id, self.run_id, self.attempt_id, self.resource_plane_id)
+            )
+            or type(self.generation) is not int
+            or self.generation < 1
+            or type(self.repository_id) is not int
+            or self.repository_id < 1
+            or not isinstance(self.commit_sha, str)
+            or not _COMMIT.fullmatch(self.commit_sha)
+            or not isinstance(self.source_sha256, str)
+            or not _HASH.fullmatch(self.source_sha256)
+        ):
             raise ValueError("invalid attempt identity")
 
 
@@ -46,8 +54,15 @@ class ExecutionResult:
     proposal: Proposal | None
 
 
-def execute(attempt: Attempt, source_tar: bytes, task: str, model: CodingModel,
-            verifier: Verifier, *, max_iterations: int = 3) -> ExecutionResult:
+def execute(
+    attempt: Attempt,
+    source_tar: bytes,
+    task: str,
+    model: CodingModel,
+    verifier: Verifier,
+    *,
+    max_iterations: int = 3,
+) -> ExecutionResult:
     """Run once using injected adapters, returning an untrusted local result.
 
     Only a locally verified run can return proposal bytes. This does not satisfy

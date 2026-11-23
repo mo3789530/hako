@@ -56,8 +56,14 @@ class _Steps:
         return Review(approved, self.workspace.tree_digest())
 
 
-def run_agent(task: str, workspace: Workspace, model: CodingModel, verifier: Verifier,
-              *, max_iterations: int = 3) -> AgentResult:
+def run_agent(
+    task: str,
+    workspace: Workspace,
+    model: CodingModel,
+    verifier: Verifier,
+    *,
+    max_iterations: int = 3,
+) -> AgentResult:
     """Run with injected adapters; results remain subject to Hako verification."""
     if not isinstance(task, str) or not task.strip() or len(task.encode("utf-8")) > 64 << 10:
         raise ValueError("invalid task")

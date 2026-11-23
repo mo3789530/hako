@@ -5,6 +5,7 @@ from hako_coding_agent.workflow import Outcome, Review, Verification, run
 A = "a" * 64
 B = "b" * 64
 
+
 class FakeSteps:
     def __init__(self, verifications, reviews):
         self.verifications = iter(verifications)
@@ -28,13 +29,14 @@ class FakeSteps:
 
 class WorkflowTest(unittest.TestCase):
     def test_failed_test_replans_and_success_requires_matching_tree(self):
-        steps = FakeSteps([Verification(1, A), Verification(0, B)],
-                          [Review(True, A), Review(True, B)])
+        steps = FakeSteps(
+            [Verification(1, A), Verification(0, B)], [Review(True, A), Review(True, B)]
+        )
         result = run(steps)
-        self.assertEqual((result.outcome, result.iterations, result.tree_digest),
-                         (Outcome.VERIFIED, 2, B))
-        self.assertEqual([x[0] for x in steps.calls],
-                         ["plan", "code", "verify", "review"] * 2)
+        self.assertEqual(
+            (result.outcome, result.iterations, result.tree_digest), (Outcome.VERIFIED, 2, B)
+        )
+        self.assertEqual([x[0] for x in steps.calls], ["plan", "code", "verify", "review"] * 2)
 
     def test_review_edit_invalidates_verification(self):
         steps = FakeSteps([Verification(0, A)], [Review(True, B)])
@@ -54,10 +56,15 @@ class WorkflowTest(unittest.TestCase):
                 run(FakeSteps([], []), max_iterations=value)
 
     def test_invalid_evidence_is_rejected(self):
-        for verification, review in ((Verification(False, A), Review(True, A)),
-                                     (Verification(0, "bad"), Review(True, A)),
-                                     (Verification(0, A), Review(1, A))):
-            with self.subTest(verification=verification, review=review), self.assertRaises(ValueError):
+        for verification, review in (
+            (Verification(False, A), Review(True, A)),
+            (Verification(0, "bad"), Review(True, A)),
+            (Verification(0, A), Review(1, A)),
+        ):
+            with (
+                self.subTest(verification=verification, review=review),
+                self.assertRaises(ValueError),
+            ):
                 run(FakeSteps([verification], [review]))
 
 

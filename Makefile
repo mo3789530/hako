@@ -1,4 +1,4 @@
-.PHONY: fmt lint test test-integration test-integration-local test-webhook-lifecycle-integration test-tenant-app-proof-integration test-tenant-github-apps-integration test-actions-runner-lifecycle-integration test-software-factory-e2e test-native-agent-e2e test-api-lambda-image-smoke test-api-lambda-rie-smoke test-aws-e2e-guard aws-e2e-preflight test-workload-runtime test-workload-runtime-integration test-job-services-podman test-workspace-service-runtime-integration test-workspace-podman-network test-artifact-retention-integration test-workspace-idle-lifecycle-integration test-preview-expiry-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-workspace-service-controller-lambda build-health-reporter-lambda build-workspace-idle-reconciler-lambda build-preview-expiry-lambda build-preview-runtime-dispatch-lambda build-preview-result-consumer-lambda build-workload-controller-lambda build-actions-runner-lambda build-actions-runner-microvm-image build-workload-microvm-artifact verify-workload-microvm-artifact build-workload-microvm-services-image build-workspace-microvm-image build-github-checks-consumer-image build-github-broker-image build-workspace-gateway-image check-arm64-podman-build terraform-fmt terraform-validate terraform-test
+.PHONY: fmt lint lint-python test test-python test-integration test-integration-local test-webhook-lifecycle-integration test-tenant-app-proof-integration test-tenant-github-apps-integration test-actions-runner-lifecycle-integration test-software-factory-e2e test-native-agent-e2e test-api-lambda-image-smoke test-api-lambda-rie-smoke test-aws-e2e-guard aws-e2e-preflight test-workload-runtime test-workload-runtime-integration test-job-services-podman test-workspace-service-runtime-integration test-workspace-podman-network test-artifact-retention-integration test-workspace-idle-lifecycle-integration test-preview-expiry-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-workspace-service-controller-lambda build-health-reporter-lambda build-workspace-idle-reconciler-lambda build-preview-expiry-lambda build-preview-runtime-dispatch-lambda build-preview-result-consumer-lambda build-workload-controller-lambda build-actions-runner-lambda build-actions-runner-microvm-image build-workload-microvm-artifact verify-workload-microvm-artifact build-workload-microvm-services-image build-workspace-microvm-image build-github-checks-consumer-image build-github-broker-image build-workspace-gateway-image check-arm64-podman-build terraform-fmt terraform-validate terraform-test
 
 TERRAFORM ?= terraform
 
@@ -26,6 +26,15 @@ fmt:
 
 lint:
 	go vet ./...
+	$(MAKE) lint-python
+
+lint-python:
+	cd coding-agent && python3 -m ruff check src tests
+	cd coding-agent && python3 -m ruff format --check src tests
+	cd coding-agent && python3 -m mypy src
+
+test-python:
+	cd coding-agent && python3 -m pytest
 
 test:
 	go test ./...

@@ -22,8 +22,11 @@ def validate_source_path(path: str) -> None:
         size = len(path.encode("utf-8"))
     except UnicodeEncodeError as exc:
         raise ValueError("invalid source path") from exc
-    if (not 1 <= size <= 4096 or any(c in path for c in "\\\r\n\0") or
-            any(part in ("", ".", "..") for part in path.split("/"))):
+    if (
+        not 1 <= size <= 4096
+        or any(c in path for c in "\\\r\n\0")
+        or any(part in ("", ".", "..") for part in path.split("/"))
+    ):
         raise ValueError("invalid source path")
 
 
@@ -121,8 +124,11 @@ class Workspace:
             raise ValueError("source directory conflicts with a file")
 
     def _changes(self) -> dict[str, bytes]:
-        return {path: content for path, content in self._files.items()
-                if path not in self._base or self._base[path] != content}
+        return {
+            path: content
+            for path, content in self._files.items()
+            if path not in self._base or self._base[path] != content
+        }
 
     def proposal(self) -> Proposal | None:
         changes = self._changes()

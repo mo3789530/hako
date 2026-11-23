@@ -43,14 +43,36 @@ class AgentTest(unittest.TestCase):
             self.assertEqual(archive.read("example.py"), b"print(2)\n")
 
     def test_review_change_invalidates_test(self):
-        result = run_agent("Update", Workspace({"example.py": b"before"}),
-                           FakeModel(edit_review=True), FakeVerifier(), max_iterations=1)
+        result = run_agent(
+            "Update",
+            Workspace({"example.py": b"before"}),
+            FakeModel(edit_review=True),
+            FakeVerifier(),
+            max_iterations=1,
+        )
         self.assertEqual(result.workflow.outcome, Outcome.UNVERIFIED)
 
     def test_verifier_mutation_fails_closed(self):
         with self.assertRaisesRegex(ValueError, "changed the source"):
-            run_agent("Update", Workspace({"example.py": b"before"}),
-                      FakeModel(), FakeVerifier(mutate=True))
+            run_agent(
+                "Update",
+                Workspace({"example.py": b"before"}),
+                FakeModel(),
+                FakeVerifier(mutate=True),
+            )
+
+    def test_rejects_invalid_task_before_running_adapters(self):
+        for task in ("", " \n", None, "x" * (64 * 1024 + 1)):
+            with self.subTest(task=task), self.assertRaises(ValueError):
+                run_agent(task, Workspace({}), FakeModel(), FakeVerifier())
+
+    def test_rejects_empty_model_plan_before_code_or_verification(self):
+        class EmptyPlanModel(FakeModel):
+            def plan(self, task, workspace, iteration):
+                return "  "
+
+        with self.assertRaisesRegex(ValueError, "invalid model plan"):
+            run_agent("Update", Workspace({}), EmptyPlanModel(), FakeVerifier())
 
 
 if __name__ == "__main__":

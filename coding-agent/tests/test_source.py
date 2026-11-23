@@ -1,3 +1,4 @@
+import gzip
 import hashlib
 import io
 import tarfile
@@ -26,8 +27,12 @@ def load(data):
 
 class SourceTest(unittest.TestCase):
     def test_load_and_verify_digest(self):
-        data = archive([("src/", b"", tarfile.DIRTYPE, 0o755),
-                        ("src/main.py", b"print(1)\n", tarfile.REGTYPE, 0o644)])
+        data = archive(
+            [
+                ("src/", b"", tarfile.DIRTYPE, 0o755),
+                ("src/main.py", b"print(1)\n", tarfile.REGTYPE, 0o644),
+            ]
+        )
         workspace = load(data)
         self.assertEqual(workspace.read_file("src/main.py"), b"print(1)\n")
         with self.assertRaisesRegex(ValueError, "digest mismatch"):
@@ -39,15 +44,37 @@ class SourceTest(unittest.TestCase):
             [("a", b"", tarfile.SYMTYPE, 0o777)],
             [("a", b"x", tarfile.REGTYPE, 0o644), ("a", b"y", tarfile.REGTYPE, 0o644)],
             [("a", b"x", tarfile.REGTYPE, 0o644), ("a/b", b"", tarfile.DIRTYPE, 0o755)],
+            [("a/", b"", tarfile.DIRTYPE, 0o755), ("a/", b"", tarfile.DIRTYPE, 0o755)],
         ]
         for entries in invalid:
             with self.subTest(entries=entries), self.assertRaises(ValueError):
                 load(archive(entries))
 
+    def test_rejects_invalid_archive_identity_and_compressed_tar(self):
+        data = archive([("app.py", b"print(1)", tarfile.REGTYPE, 0o644)])
+        invalid = (
+            (b"", hashlib.sha256(b"").hexdigest()),
+            (data, "short"),
+            (data, "A" * 64),
+            (data, "0" * 64),
+            (None, hashlib.sha256(data).hexdigest()),
+        )
+        for contents, digest in invalid:
+            with self.subTest(digest=digest), self.assertRaises(ValueError):
+                load_source(contents, digest)
+
+        compressed = gzip.compress(data)
+        with self.assertRaisesRegex(ValueError, "invalid source archive"):
+            load(compressed)
+
     def test_protected_binary_and_executable_files_are_retained(self):
-        data = archive([(".github/workflow.yml", b"private", tarfile.REGTYPE, 0o644),
-                        ("image.png", b"\xff\0", tarfile.REGTYPE, 0o644),
-                        ("script.sh", b"echo hi\n", tarfile.REGTYPE, 0o755)])
+        data = archive(
+            [
+                (".github/workflow.yml", b"private", tarfile.REGTYPE, 0o644),
+                ("image.png", b"\xff\0", tarfile.REGTYPE, 0o644),
+                ("script.sh", b"echo hi\n", tarfile.REGTYPE, 0o755),
+            ]
+        )
         workspace = load(data)
         self.assertEqual(workspace.list_files(), ("image.png", "script.sh"))
         self.assertEqual(workspace.read_file("script.sh"), b"echo hi\n")
@@ -56,9 +83,15 @@ class SourceTest(unittest.TestCase):
                 workspace.read_file(path)
         with self.assertRaises(ValueError):
             workspace.write_file("script.sh", b"echo bye\n")
-        nonexec = load(archive([(".github/workflow.yml", b"private", tarfile.REGTYPE, 0o644),
-                                ("image.png", b"\xff\0", tarfile.REGTYPE, 0o644),
-                                ("script.sh", b"echo hi\n", tarfile.REGTYPE, 0o644)]))
+        nonexec = load(
+            archive(
+                [
+                    (".github/workflow.yml", b"private", tarfile.REGTYPE, 0o644),
+                    ("image.png", b"\xff\0", tarfile.REGTYPE, 0o644),
+                    ("script.sh", b"echo hi\n", tarfile.REGTYPE, 0o644),
+                ]
+            )
+        )
         self.assertNotEqual(workspace.tree_digest(), nonexec.tree_digest())
 
 

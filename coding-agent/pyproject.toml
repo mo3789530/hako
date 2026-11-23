@@ -8,5 +8,24 @@ version = "0.1.0"
 requires-python = ">=3.11"
 description = "Hako coding agent workflow for AgentCore Runtime"
 
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.15,<2",
+    "pytest>=8,<10",
+    "ruff>=0.11,<1",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src"]
+
 [tool.setuptools.packages.find]
 where = ["src"]

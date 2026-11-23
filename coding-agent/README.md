@@ -22,6 +22,11 @@ Run the offline tests from the repository root:
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=coding-agent/src python3 -m unittest discover -s coding-agent/tests -v
 ```
 
+Install the Python development tools with `python3 -m pip install -e "coding-agent[dev]"`.
+Run `make lint-python` from the repository root to check formatting, lint rules
+and strict types. Run `make test-python` to execute the coding agent tests with
+pytest.
+
 The proposal encoder creates bounded deterministic ZIPs from captured file bytes;
 an integration test passes its output to Hako's Go inspector. It does not capture
 filesystem changes or support deletions and mode changes.
