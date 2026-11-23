@@ -180,6 +180,9 @@ func ProcessInstallationLifecycleDeliveryForIntegration(ctx context.Context, tx 
 					WHERE tenant_id = $1 AND installation_id = $2`, tenantID, event.InstallationID, processedAt); err != nil {
 					return false, fmt.Errorf("revoke deleted GitHub Installation: %w", err)
 				}
+				if _, err := tx.Exec(ctx, `DELETE FROM tenant_repository_members WHERE tenant_id = $1 AND installation_id = $2`, tenantID, event.InstallationID); err != nil {
+					return false, fmt.Errorf("remove repository grants: %w", err)
+				}
 				if _, err := tx.Exec(ctx, `DELETE FROM tenant_github_repositories WHERE tenant_id = $1 AND installation_id = $2`, tenantID, event.InstallationID); err != nil {
 					return false, fmt.Errorf("remove repositories for deleted GitHub Installation: %w", err)
 				}
