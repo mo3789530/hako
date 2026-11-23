@@ -168,7 +168,9 @@ run "workload_controller_is_disabled_by_default" {
 }
 
 run "agentcore_command_queue_is_separate_and_dispatcher_scoped" {
-  command = plan
+  # The policy Resource needs the queue ARN, which is only known after apply.
+  # This test uses the mocked provider, so apply has no AWS side effects.
+  command = apply
   providers = {
     aws = aws.mock
   }
@@ -280,7 +282,9 @@ run "workspace_lambda_microvm_controller_is_disabled_by_default" {
 }
 
 run "workspace_lambda_microvm_controller_uses_scoped_runtime_iam" {
-  command = plan
+  # Lambda event-source and queue policy assertions compare computed ARNs.
+  # The mocked provider keeps this apply local to Terraform's test harness.
+  command = apply
   providers = {
     aws = aws.mock
   }
@@ -485,7 +489,7 @@ run "workspace_lambda_microvm_controller_uses_scoped_runtime_iam" {
 }
 
 run "workspace_service_controller_isolated_and_opt_in" {
-  command = plan
+  command = apply
   providers = {
     aws = aws.mock
   }
@@ -592,7 +596,7 @@ run "workspace_service_controller_isolated_and_opt_in" {
 }
 
 run "actions_runner_worker_consumes_only_its_opt_in_queue" {
-  command = plan
+  command = apply
   providers = {
     aws = aws.mock
   }
@@ -683,7 +687,7 @@ run "actions_runner_worker_consumes_only_its_opt_in_queue" {
 }
 
 run "workload_controller_wires_only_dedicated_queue_and_recovery" {
-  command = plan
+  command = apply
   providers = {
     aws = aws.mock
   }
@@ -979,7 +983,7 @@ run "workspace_gateway_is_disabled_by_default" {
 }
 
 run "workspace_gateway_uses_private_tasks_exact_iam_and_tls_wss_only" {
-  command = plan
+  command = apply
   providers = {
     aws = aws.mock
   }

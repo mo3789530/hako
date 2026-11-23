@@ -504,7 +504,8 @@ func TestComposedLambdaWorkerCancellationOutboxTerminatesAndProjectsIntoPostgres
 	identity := workloadjournal.Command{TenantID: "tenant_1", WorkloadRunID: "run_cancel", AttemptID: "attempt_cancel", Generation: 1,
 		ResourcePlaneID: "rp_1", IdempotencyToken: "token_cancel"}
 	dispatch := workloadjobs.DispatchCommand{SchemaVersion: 1, TenantID: domain.TenantID(identity.TenantID), WorkloadRunID: domain.WorkloadRunID(identity.WorkloadRunID),
-		AttemptID: identity.AttemptID, Generation: identity.Generation, ResourcePlane: domain.ResourcePlaneID(identity.ResourcePlaneID), IdempotencyToken: identity.IdempotencyToken}
+		AttemptID: identity.AttemptID, Generation: identity.Generation, ResourcePlane: domain.ResourcePlaneID(identity.ResourcePlaneID),
+		IdempotencyToken: identity.IdempotencyToken, RuntimeProvider: domain.WorkloadRuntimeLambdaMicroVM}
 	commandBody, err := json.Marshal(dispatch)
 	if err != nil {
 		t.Fatal(err)

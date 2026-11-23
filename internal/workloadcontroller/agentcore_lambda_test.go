@@ -52,12 +52,12 @@ func TestDecodeAgentCoreSQSCommandStrictlyValidatesIdentity(t *testing.T) {
 		t.Fatalf("valid command=%+v err=%v", command, err)
 	}
 	for name, body := range map[string]string{
-		"duplicate": valid[:len(valid)-1] + `,"generation":2}`,
-		"unknown":   valid[:len(valid)-1] + `,"runtime_arn":"arn:untrusted"}`,
+		"duplicate":              valid[:len(valid)-1] + `,"generation":2}`,
+		"unknown":                valid[:len(valid)-1] + `,"runtime_arn":"arn:untrusted"}`,
 		"wrong runtime provider": strings.Replace(valid, `"runtime_provider":"agentcore"`, `"runtime_provider":"lambda_microvm"`, 1),
-		"trailing":  valid + `{}`,
-		"oversized": strings.Repeat("x", maxAgentCoreSQSBody+1),
-		"malformed": `{`,
+		"trailing":               valid + `{}`,
+		"oversized":              strings.Repeat("x", maxAgentCoreSQSBody+1),
+		"malformed":              `{`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := decodeAgentCoreSQSCommand([]byte(body)); err == nil {

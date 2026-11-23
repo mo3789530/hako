@@ -198,6 +198,9 @@ func TestProcessAgentIssueCommentCreatesOneImmutableRunAndTask(t *testing.T) {
 	placement := PlacementSelectorFunc(func(context.Context, domain.WorkloadRun) (domain.ResourcePlaneID, error) {
 		return "rp_agentcore", nil
 	})
+	if _, err := pool.Exec(ctx, `INSERT INTO resource_planes (id,provider,region,capabilities_json) VALUES ('rp_agentcore','agentcore','ap-northeast-1','[]')`); err != nil {
+		t.Fatalf("seed AgentCore Resource Plane: %v", err)
+	}
 	dispatcher := DispatchHandler{Pool: pool, Policy: transaction.DefaultPolicy(), Placement: placement, Now: func() time.Time { return now.Add(20 * time.Minute) }}
 	if err := dispatcher.Handle(ctx, ScheduleRequest{SchemaVersion: 1, TenantID: run.TenantID, WorkloadRunID: run.ID}); err != nil {
 		t.Fatalf("schedule managed Agent Run: %v", err)

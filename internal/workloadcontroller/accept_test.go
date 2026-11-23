@@ -153,7 +153,7 @@ func TestDecodeRejectsAmbiguousFields(t *testing.T) {
 func TestLambdaWorkloadDecoderRejectsAgentCoreRouteAndMissingProvider(t *testing.T) {
 	valid := string(envelope(t, nil))
 	for name, data := range map[string]string{
-		"agentcore route": strings.Replace(valid, `"lambda_microvm"`, `"agentcore"`, 1),
+		"agentcore route":  strings.Replace(valid, `"lambda_microvm"`, `"agentcore"`, 1),
 		"missing provider": strings.Replace(valid, `,"runtime_provider":"lambda_microvm"`, "", 1),
 	} {
 		t.Run(name, func(t *testing.T) {
