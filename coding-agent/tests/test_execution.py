@@ -39,6 +39,7 @@ class Client:
                     },
                 },
                 response("Done"),
+                response("Tests updated"),
                 response("PASS"),
             ]
         )

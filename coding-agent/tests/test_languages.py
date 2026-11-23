@@ -19,6 +19,9 @@ class ScriptedModel:
     def code(self, task, plan, workspace):
         workspace.write_file(self.path, self.content)
 
+    def test(self, task, plan, workspace):
+        pass
+
     def review(self, task, workspace):
         return True
 

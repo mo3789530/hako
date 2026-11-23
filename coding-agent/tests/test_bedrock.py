@@ -48,6 +48,7 @@ class BedrockTest(unittest.TestCase):
                 text_response("Edit app.py"),
                 tool_response("write_file", {"path": "app.py", "content": "new\n"}),
                 text_response("Done"),
+                text_response("Tests updated"),
                 text_response("PASS"),
             ]
         )
@@ -116,6 +117,37 @@ class BedrockTest(unittest.TestCase):
         )
         prompt = client.requests[0]["messages"][0]["content"][0]["text"]
         self.assertIn("Detected source languages (advisory): Go, Terraform", prompt)
+        self.assertIn("Go: Inspect go.mod", prompt)
+        self.assertIn("Terraform: Inspect modules", prompt)
+        self.assertNotIn("Python: Inspect", prompt)
+
+    def test_plan_includes_guidance_for_each_detected_language(self):
+        client = Client([text_response("Plan")])
+        workspace = Workspace(
+            {
+                name: b""
+                for name in ("main.tf", "main.go", "main.rs", "main.ts", "main.py", "Main.java")
+            }
+        )
+        BedrockCodingModel(client, "model").plan("task", workspace, 1)
+        prompt = client.requests[0]["messages"][0]["content"][0]["text"]
+        for language in ("Terraform", "Go", "Rust", "TypeScript", "Python", "Java"):
+            with self.subTest(language=language):
+                self.assertIn(f"{language}:", prompt)
+        self.assertIn("concrete test cases", prompt)
+
+    def test_test_stage_can_write_tests_without_claiming_execution(self):
+        client = Client(
+            [
+                tool_response("write_file", {"path": "test_app.py", "content": "assert True\n"}),
+                text_response("Added a test"),
+            ]
+        )
+        workspace = Workspace({"app.py": b"x"})
+        BedrockCodingModel(client, "model").test("task", "plan", workspace)
+        self.assertEqual(workspace.read_file("test_app.py"), b"assert True\n")
+        prompt = client.requests[0]["messages"][0]["content"][0]["text"]
+        self.assertIn("Do not claim tests were executed", prompt)
 
     def test_rejects_invalid_model_configuration(self):
         for client, model_id, options in (
@@ -159,6 +191,20 @@ class BedrockTest(unittest.TestCase):
         model = BedrockCodingModel(Client([tool_response("list_files", {})]), "model", max_turns=1)
         with self.assertRaisesRegex(ValueError, "turn budget"):
             model.plan("task", Workspace({}), 1)
+
+    def test_prompt_cache_is_opt_in_and_retained_across_tool_turns(self):
+        for enabled in (False, True):
+            client = Client([tool_response("list_files", {}), text_response("Plan")])
+            model = BedrockCodingModel(client, "model", prompt_cache=enabled)
+            self.assertEqual(model.plan("task", Workspace({}), 1), "Plan")
+            for request in client.requests:
+                content = request["messages"][0]["content"]
+                points = [block for block in content if "cachePoint" in block]
+                self.assertEqual(points, [{"cachePoint": {"type": "default"}}] if enabled else [])
+
+    def test_prompt_cache_requires_explicit_boolean(self):
+        with self.assertRaises(ValueError):
+            BedrockCodingModel(Client([]), "model", prompt_cache=1)
 
 
 if __name__ == "__main__":

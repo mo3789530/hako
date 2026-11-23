@@ -17,6 +17,9 @@ class FakeModel:
     def code(self, task, plan, workspace):
         workspace.write_file("example.py", b"print(2)\n")
 
+    def test(self, task, plan, workspace):
+        workspace.write_file("test_example.py", b"assert True\n")
+
     def review(self, task, workspace):
         if self.edit_review:
             workspace.write_file("example.py", b"print(3)\n")

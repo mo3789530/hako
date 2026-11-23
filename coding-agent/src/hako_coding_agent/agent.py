@@ -1,5 +1,6 @@
 """Composition of the local coding workflow and bounded workspace tools."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -13,6 +14,7 @@ class CodingModel(Protocol):
 
     def plan(self, task: str, workspace: Workspace, iteration: int) -> str: ...
     def code(self, task: str, plan: str, workspace: Workspace) -> None: ...
+    def test(self, task: str, plan: str, workspace: Workspace) -> None: ...
     def review(self, task: str, workspace: Workspace) -> bool: ...
 
 
@@ -43,6 +45,9 @@ class _Steps:
     def code(self, iteration: int) -> None:
         self.model.code(self.task, self.current_plan, self.workspace)
 
+    def test(self, iteration: int) -> None:
+        self.model.test(self.task, self.current_plan, self.workspace)
+
     def verify(self) -> Verification:
         before = self.workspace.tree_digest()
         exit_code = self.verifier.verify(self.workspace)
@@ -63,10 +68,13 @@ def run_agent(
     verifier: Verifier,
     *,
     max_iterations: int = 3,
+    observe: Callable[[str, int, str, int], None] | None = None,
 ) -> AgentResult:
     """Run with injected adapters; results remain subject to Hako verification."""
     if not isinstance(task, str) or not task.strip() or len(task.encode("utf-8")) > 64 << 10:
         raise ValueError("invalid task")
-    result = run(_Steps(task, workspace, model, verifier), max_iterations=max_iterations)
+    result = run(
+        _Steps(task, workspace, model, verifier), max_iterations=max_iterations, observe=observe
+    )
     # A success without a proposal is not evidence of a repository change.
     return AgentResult(result, workspace.proposal())

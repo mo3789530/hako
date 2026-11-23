@@ -77,6 +77,10 @@ class Workspace:
     def list_changes(self) -> tuple[str, ...]:
         return tuple(sorted(self._changes()))
 
+    def export_changes(self) -> dict[str, bytes]:
+        """Return an independent copy of the changed files for trusted storage."""
+        return self._changes()
+
     def read_file(self, path: str) -> bytes:
         _validate_path(path)
         return self._read_text(self._files[path])

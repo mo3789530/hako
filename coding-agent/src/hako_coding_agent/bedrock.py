@@ -7,7 +7,7 @@ ID. This adapter does not configure credentials, network policy or a sandbox.
 import json
 from typing import Any, Protocol
 
-from .languages import detect_languages
+from .languages import detect_languages, plan_guidance
 from .workspace import Workspace
 
 _SYSTEM = (
@@ -69,6 +69,7 @@ class BedrockCodingModel:
         max_turns: int = 12,
         max_tool_calls: int = 32,
         max_tokens: int = 2048,
+        prompt_cache: bool = False,
     ):
         if (
             client is None
@@ -79,14 +80,20 @@ class BedrockCodingModel:
             or not 1 <= max_tool_calls <= 128
             or not 1 <= max_tokens <= 4096
             or any(isinstance(v, bool) for v in (max_turns, max_tool_calls, max_tokens))
+            or not isinstance(prompt_cache, bool)
         ):
             raise ValueError("invalid Bedrock model configuration")
         self.client, self.model_id = client, model_id
         self.max_turns, self.max_tool_calls, self.max_tokens = max_turns, max_tool_calls, max_tokens
+        self.prompt_cache = prompt_cache
 
     def plan(self, task: str, workspace: Workspace, iteration: int) -> str:
+        guidance = plan_guidance(detect_languages(workspace.list_files()))
         return self._run(
-            "Plan the requested change. Do not modify files. "
+            "Inspect relevant files and existing tests before planning. Identify affected files, "
+            "assumptions, risks, concrete test cases and available verification; do not claim "
+            "checks were run. Do not modify files. Language guidance is advisory:\n"
+            f"{guidance}\n"
             f"Iteration: {iteration}.\nTask:\n{task}",
             workspace,
             False,
@@ -95,6 +102,16 @@ class BedrockCodingModel:
     def code(self, task: str, plan: str, workspace: Workspace) -> None:
         self._run(
             f"Implement the task using the workspace tools.\nTask:\n{task}\nPlan:\n{plan}",
+            workspace,
+            True,
+        )
+
+    def test(self, task: str, plan: str, workspace: Workspace) -> None:
+        self._run(
+            "Inspect the changes and existing tests. Add or update focused tests for the "
+            "requested behavior, boundary cases and failures using workspace tools. "
+            "Do not claim tests were executed; an independent verifier runs afterwards.\n"
+            f"Task:\n{task}\nPlan:\n{plan}",
             workspace,
             True,
         )
@@ -121,6 +138,9 @@ class BedrockCodingModel:
                 ],
             }
         ]
+        if self.prompt_cache:
+            # Cache the initial prompt prefix across tool turns. It can contain task data.
+            messages[0]["content"].append({"cachePoint": {"type": "default"}})
         tools = list(_TOOLS if writable else _TOOLS[:4])
         tool_count = 0
         seen_ids: set[str] = set()

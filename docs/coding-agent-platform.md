@@ -1,5 +1,8 @@
 # Hako Coding Agent Platform
 
+Repository isolation design and its current implementation status are documented
+in [Coding Agent repository isolation](agent-repository-isolation.md).
+
 Status: design and local prototype. AgentCore execution and production
 activation are not implemented. This document describes the initial coding
 agent milestone, not a claim that a general agent platform is operational.

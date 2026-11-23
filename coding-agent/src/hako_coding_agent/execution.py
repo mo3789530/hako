@@ -5,6 +5,7 @@ authorize every value and fence execution and result delivery independently.
 """
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from .agent import CodingModel, Verifier, run_agent
@@ -62,6 +63,7 @@ def execute(
     verifier: Verifier,
     *,
     max_iterations: int = 3,
+    observe: Callable[[str, int, str, int], None] | None = None,
 ) -> ExecutionResult:
     """Run once using injected adapters, returning an untrusted local result.
 
@@ -72,6 +74,8 @@ def execute(
         raise ValueError("invalid attempt identity")
     attempt.validate()
     workspace = load_source(source_tar, attempt.source_sha256)
-    result = run_agent(task, workspace, model, verifier, max_iterations=max_iterations)
+    result = run_agent(
+        task, workspace, model, verifier, max_iterations=max_iterations, observe=observe
+    )
     proposal = result.proposal if result.workflow.outcome == Outcome.VERIFIED else None
     return ExecutionResult(attempt, result.workflow.outcome, result.workflow.iterations, proposal)
