@@ -36,6 +36,10 @@ Hako User Identity != AWS IAM Identity
 
 将来拡張として、GitHubを開発の入口、Hakoを実行・環境・自動化の中核とする **Hako Software Factory** を計画しています。GitHub App/Webhook、Repository Registry、Pipeline/Job、ephemeral self-hosted runner、Checks API、Agent Workloadを段階導入する構想です。これは未実装のロードマップであり、詳細な権限・信頼境界・実装順は[Hako Software Factory](docs/software-factory.md)を参照してください。
 
+## ドキュメント
+
+文書は[テーマ別ドキュメント目次](docs/README.md)から探せます。全体像と開発環境を読んだあと、関心領域の設計・運用文書へ進んでください。実装タスクの順序と進捗は[タスク一覧](tasks/README.md)、設計判断の記録は[ADR一覧](docs/README.md#設計判断adr)にあります。
+
 ## 2. 全体アーキテクチャ
 
 ```text
