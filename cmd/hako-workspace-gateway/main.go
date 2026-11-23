@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -34,6 +35,7 @@ import (
 	"github.com/mo3789530/hako/internal/workspaceagent"
 	"github.com/mo3789530/hako/internal/workspacegateway"
 	"github.com/mo3789530/hako/internal/workspacejournal"
+	"github.com/mo3789530/hako/internal/workspaceruntime"
 	"github.com/mo3789530/hako/internal/workspacesession"
 )
 
@@ -59,6 +61,9 @@ type deploymentConfig struct {
 	WorkloadArtifactBucket  string
 	WorkloadArtifactPrefix  string
 	Region                  string
+	RuntimeImplementation   string
+	LocalStateDirectory     string
+	LocalJournalDirectory   string
 	AllowedOrigins          []string
 	MaxConnections          int
 	MaxConnectionsPerWS     int
@@ -77,9 +82,12 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithRegion(cfg.Region))
-	if err != nil {
-		return errors.New("load Resource Plane task-role AWS configuration")
+	awsCfg := aws.Config{}
+	if cfg.RuntimeImplementation == "lambda-microvm" || cfg.WorkloadArtifactBucket != "" {
+		awsCfg, err = awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithRegion(cfg.Region))
+		if err != nil {
+			return errors.New("load Resource Plane task-role AWS configuration")
+		}
 	}
 	gateway, err := buildGateway(awsCfg, cfg)
 	if err != nil {
@@ -155,15 +163,31 @@ func buildGateway(awsCfg aws.Config, cfg deploymentConfig) (*workspacegateway.Ga
 		return nil, errors.New("Workspace Agent ticket key file must contain an Ed25519 PKCS#8 private key")
 	}
 	issuer := &workspaceagent.AgentTicketIssuer{KeyID: cfg.AgentTicketKeyID, PrivateKey: privateKey}
-	journal, err := workspacejournal.NewS3Store(s3.NewFromConfig(awsCfg), cfg.JournalBucket, cfg.JournalPrefix)
-	if err != nil {
-		return nil, errors.New("configure Resource Plane Workspace runtime journal")
-	}
-	microVMs := lambdamicrovms.NewFromConfig(awsCfg)
-	directory := &workspaceagent.WorkspaceLambdaMicroVMStreamDirectory{
-		ResourcePlaneID: cfg.ResourcePlaneID, Journal: journal, MicroVMs: microVMs,
-		Tokens: workspaceagent.LambdaMicroVMAuthTokenProvider{API: microVMs}, Tickets: issuer,
-		Leases: leases, Region: cfg.Region, Origin: cfg.PublicOrigin,
+	var directory workspacegateway.StreamDialer
+	switch cfg.RuntimeImplementation {
+	case "cloud-hypervisor-local":
+		journal, err := workspacejournal.NewFileStore(cfg.LocalJournalDirectory)
+		if err != nil {
+			return nil, errors.New("configure local Workspace runtime journal")
+		}
+		directory = &workspaceagent.CloudHypervisorWorkspaceVsockStreamDirectory{
+			ResourcePlaneID: cfg.ResourcePlaneID, Journal: journal, StateDirectory: cfg.LocalStateDirectory,
+			Tickets: issuer, Origin: cfg.PublicOrigin,
+			Dial: workspaceruntime.DialCloudHypervisorLocalGuest,
+		}
+	case "lambda-microvm":
+		journal, err := workspacejournal.NewS3Store(s3.NewFromConfig(awsCfg), cfg.JournalBucket, cfg.JournalPrefix)
+		if err != nil {
+			return nil, errors.New("configure Resource Plane Workspace runtime journal")
+		}
+		microVMs := lambdamicrovms.NewFromConfig(awsCfg)
+		directory = &workspaceagent.WorkspaceLambdaMicroVMStreamDirectory{
+			ResourcePlaneID: cfg.ResourcePlaneID, Journal: journal, MicroVMs: microVMs,
+			Tokens: workspaceagent.LambdaMicroVMAuthTokenProvider{API: microVMs}, Tickets: issuer,
+			Leases: leases, Region: cfg.Region, Origin: cfg.PublicOrigin,
+		}
+	default:
+		return nil, errors.New("unsupported Workspace Gateway runtime implementation")
 	}
 	var artifactAccess *workspacegateway.ArtifactAccessConfig
 	if cfg.WorkloadArtifactBucket != "" {
@@ -212,6 +236,9 @@ func loadDeploymentConfig(getenv func(string) string) (deploymentConfig, error) 
 		PublicOrigin:            get("HAKO_GATEWAY_PUBLIC_ORIGIN"),
 		JournalBucket:           get("HAKO_WORKSPACE_RUNTIME_JOURNAL_BUCKET"),
 		JournalPrefix:           get("HAKO_WORKSPACE_RUNTIME_JOURNAL_PREFIX"),
+		RuntimeImplementation:   defaultValue(get("HAKO_WORKSPACE_RUNTIME_IMPLEMENTATION"), "lambda-microvm"),
+		LocalStateDirectory:     get("HAKO_LOCAL_CLOUD_HYPERVISOR_STATE_DIR"),
+		LocalJournalDirectory:   get("HAKO_LOCAL_WORKSPACE_JOURNAL_DIR"),
 		WorkloadArtifactBucket:  get("HAKO_WORKLOAD_ARTIFACT_BUCKET"),
 		WorkloadArtifactPrefix:  get("HAKO_WORKLOAD_ARTIFACT_PREFIX"),
 		Region:                  get("AWS_REGION"),
@@ -243,8 +270,22 @@ func loadDeploymentConfig(getenv func(string) string) (deploymentConfig, error) 
 	if cfg.ResourcePlaneID == "" || cfg.TLSCertFile == "" || cfg.TLSKeyFile == "" || cfg.SessionPublicKeysFile == "" ||
 		cfg.SessionLookupEndpoint == "" || cfg.SessionLookupKeyFile == "" || cfg.ConnectionLeaseEndpoint == "" || cfg.ConnectionLeaseKeyFile == "" ||
 		cfg.AgentTicketKeyID == "" || cfg.AgentTicketKeyFile == "" ||
-		cfg.PublicOrigin == "" || cfg.JournalBucket == "" || cfg.Region == "" || len(cfg.AllowedOrigins) == 0 {
-		return deploymentConfig{}, errors.New("Workspace Gateway requires Resource Plane, TLS, session keys, lookup endpoint/key, connection lease endpoint/key, Agent key, journal, region, and allowed-origin configuration")
+		cfg.PublicOrigin == "" || len(cfg.AllowedOrigins) == 0 {
+		return deploymentConfig{}, errors.New("Workspace Gateway requires Resource Plane, TLS, session keys, lookup and lease endpoints/keys, Agent key, and allowed origins")
+	}
+	switch cfg.RuntimeImplementation {
+	case "lambda-microvm":
+		if cfg.JournalBucket == "" || cfg.Region == "" || cfg.LocalStateDirectory != "" || cfg.LocalJournalDirectory != "" {
+			return deploymentConfig{}, errors.New("Lambda MicroVM Gateway requires its journal bucket and Region and forbids local CloudHypervisor paths")
+		}
+	case "cloud-hypervisor-local":
+		if cfg.JournalBucket != "" || cfg.JournalPrefix != "" || !filepath.IsAbs(cfg.LocalStateDirectory) ||
+			filepath.Clean(cfg.LocalStateDirectory) != cfg.LocalStateDirectory || !filepath.IsAbs(cfg.LocalJournalDirectory) ||
+			filepath.Clean(cfg.LocalJournalDirectory) != cfg.LocalJournalDirectory {
+			return deploymentConfig{}, errors.New("local CloudHypervisor Gateway requires clean absolute state/journal directories and forbids the S3 journal")
+		}
+	default:
+		return deploymentConfig{}, errors.New("HAKO_WORKSPACE_RUNTIME_IMPLEMENTATION must be lambda-microvm or cloud-hypervisor-local")
 	}
 	if (cfg.WorkloadArtifactBucket == "") != (cfg.WorkloadArtifactPrefix == "") {
 		return deploymentConfig{}, errors.New("HAKO_WORKLOAD_ARTIFACT_BUCKET and HAKO_WORKLOAD_ARTIFACT_PREFIX must be configured together")

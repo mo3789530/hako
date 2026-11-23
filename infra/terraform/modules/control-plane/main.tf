@@ -175,6 +175,42 @@ resource "aws_cloudwatch_metric_alarm" "api_latency_p95" {
   tags = local.common_tags
 }
 
+resource "aws_cloudwatch_metric_alarm" "tenant_webhook_rate_limited" {
+  alarm_name          = "${var.api_name}-tenant-webhook-rate-limited"
+  alarm_description   = "Tenant GitHub webhook admissions were rate limited more than 100 times in five minutes. Review integration traffic and configured budgets."
+  namespace           = "Hako/ControlPlane"
+  metric_name         = "TenantWebhookAdmission"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 100
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  dimensions = {
+    Service = "HakoAPI"
+    Outcome = "rate_limited"
+  }
+  tags = local.common_tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "tenant_webhook_limiter_unavailable" {
+  alarm_name          = "${var.api_name}-tenant-webhook-limiter-unavailable"
+  alarm_description   = "Tenant GitHub webhook admission failed closed because the shared rate limiter was unavailable."
+  namespace           = "Hako/ControlPlane"
+  metric_name         = "TenantWebhookAdmission"
+  statistic           = "Sum"
+  period              = 60
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  dimensions = {
+    Service = "HakoAPI"
+    Outcome = "limiter_unavailable"
+  }
+  tags = local.common_tags
+}
+
 resource "aws_cloudwatch_metric_alarm" "dsql_query_timeouts" {
   alarm_name          = "${var.api_name}-dsql-query-timeouts"
   alarm_description   = "Aurora DSQL recorded a query timeout. Inspect database load and correlated Control Plane requests."

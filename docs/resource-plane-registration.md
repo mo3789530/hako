@@ -21,6 +21,7 @@ Each registration contains:
 | `result_queue_url` | SQS queue URL for Resource Plane results. |
 | `workload_command_queue_url` | Optional SQS queue URL dedicated to Workload attempt dispatch/cancel. Must be configured together with `workload_result_queue_url`. |
 | `workload_result_queue_url` | Optional SQS queue URL dedicated to Workload execution results. |
+| `agentcore_command_queue_url` | Optional, separate SQS queue for managed Coding Agent attempts. It is never a fallback for the Lambda Workload queue; if absent, Agent Run dispatch remains retryable and is not published to another runtime. |
 | `actions_runner_startup_queue_url` | Optional SQS queue URL for ephemeral Actions Runner startup claims. At most one Resource Plane may configure this field until runner placement is implemented. |
 | `preview_runtime_command_queue_url` | Optional dedicated SQS queue URL for Preview generation provision/cleanup commands. |
 

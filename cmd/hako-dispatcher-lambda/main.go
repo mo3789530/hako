@@ -120,12 +120,16 @@ func buildHandler(ctx context.Context) (func(context.Context, events.CloudWatchE
 	}
 	queueURLs := make(map[string]string, len(queues))
 	workloadQueueURLs := make(map[string]string, len(queues))
+	agentCoreQueueURLs := make(map[string]string, len(queues))
 	previewRuntimeQueueURLs := make(map[string]string, len(queues))
 	regionalClients := make(map[string]dispatcher.SQSAPI, len(queues))
 	for resourcePlaneID, queue := range queues {
 		queueURLs[resourcePlaneID] = queue.URL
 		if queue.WorkloadURL != "" {
 			workloadQueueURLs[resourcePlaneID] = queue.WorkloadURL
+		}
+		if queue.AgentCoreURL != "" {
+			agentCoreQueueURLs[resourcePlaneID] = queue.AgentCoreURL
 		}
 		if queue.PreviewRuntimeURL != "" {
 			previewRuntimeQueueURLs[resourcePlaneID] = queue.PreviewRuntimeURL
@@ -136,6 +140,9 @@ func buildHandler(ctx context.Context) (func(context.Context, events.CloudWatchE
 			regionalClients[queue.URL] = sqs.NewFromConfig(regionalConfig)
 			if queue.WorkloadURL != "" {
 				regionalClients[queue.WorkloadURL] = sqs.NewFromConfig(regionalConfig)
+			}
+			if queue.AgentCoreURL != "" {
+				regionalClients[queue.AgentCoreURL] = sqs.NewFromConfig(regionalConfig)
 			}
 			if queue.PreviewRuntimeURL != "" {
 				regionalClients[queue.PreviewRuntimeURL] = sqs.NewFromConfig(regionalConfig)
@@ -151,6 +158,7 @@ func buildHandler(ctx context.Context) (func(context.Context, events.CloudWatchE
 		BatchSize: 10, LeaseDuration: 2 * time.Minute, BaseBackoff: time.Second, MaxBackoff: time.Minute,
 		WorkloadSchedulerQueueURL:      strings.TrimSpace(os.Getenv("HAKO_WORKLOAD_SCHEDULER_QUEUE_URL")),
 		WorkloadCommandQueueURLs:       workloadQueueURLs,
+		AgentCoreCommandQueueURLs:      agentCoreQueueURLs,
 		GitHubChecksQueueURL:           strings.TrimSpace(os.Getenv("HAKO_GITHUB_CHECKS_QUEUE_URL")),
 		PreviewRuntimeCommandQueueURLs: previewRuntimeQueueURLs,
 	})
@@ -199,6 +207,7 @@ func configuredActionsRunnerQueue() (resourceplane.Registration, bool, error) {
 type queueConfiguration struct {
 	URL               string
 	WorkloadURL       string
+	AgentCoreURL      string
 	PreviewRuntimeURL string
 	Region            string
 }
@@ -215,7 +224,7 @@ func configuredQueues() (map[string]queueConfiguration, error) {
 	queues := make(map[string]queueConfiguration, len(manifest.ResourcePlanes))
 	for _, registration := range manifest.ResourcePlanes {
 		queues[registration.ID] = queueConfiguration{URL: registration.CommandQueueURL, WorkloadURL: registration.WorkloadCommandQueueURL,
-			PreviewRuntimeURL: registration.PreviewRuntimeCommandQueueURL, Region: registration.Region}
+			AgentCoreURL: registration.AgentCoreCommandQueueURL, PreviewRuntimeURL: registration.PreviewRuntimeCommandQueueURL, Region: registration.Region}
 	}
 	return queues, nil
 }

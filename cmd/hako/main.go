@@ -1411,6 +1411,10 @@ func tenantWorkspaceIdlePolicy(tenantID string, update *api.TenantWorkspaceIdleP
 }
 
 func createWorkspace(tenantID, name, idempotencyKey string) (api.WorkspaceCreateResult, error) {
+	return createWorkspaceWithRepository(tenantID, name, idempotencyKey, "")
+}
+
+func createWorkspaceWithRepository(tenantID, name, idempotencyKey, repository string) (api.WorkspaceCreateResult, error) {
 	accessToken, err := auth.LoadAccessToken(cliCredentialGetter, time.Now())
 	if err != nil {
 		return api.WorkspaceCreateResult{}, err
@@ -1419,7 +1423,8 @@ func createWorkspace(tenantID, name, idempotencyKey string) (api.WorkspaceCreate
 	if apiURL == "" {
 		return api.WorkspaceCreateResult{}, errors.New("HAKO_API_URL is required")
 	}
-	return api.CreateWorkspace(context.Background(), apiURL, accessToken, tenantID, name, idempotencyKey, nil)
+	return api.CreateWorkspaceWithOptions(context.Background(), apiURL, accessToken, tenantID, name, idempotencyKey,
+		api.WorkspaceCreateOptions{Repository: repository}, nil)
 }
 
 func listWorkspaces(tenantID string, limit, offset int) (api.WorkspaceListResult, error) {

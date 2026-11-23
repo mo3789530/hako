@@ -43,7 +43,7 @@ func (*memoryJournal) CompareAndSwap(context.Context, workloadjournal.Snapshot, 
 }
 func envelope(t *testing.T, mutate func(*Command)) []byte {
 	t.Helper()
-	c := Command{SchemaVersion: 1, TenantID: "tenant_1", WorkloadRunID: "run_1", AttemptID: "attempt_1", Generation: 1, ResourcePlaneID: "rp_1", IdempotencyToken: "token_1"}
+	c := Command{SchemaVersion: 1, TenantID: "tenant_1", WorkloadRunID: "run_1", AttemptID: "attempt_1", Generation: 1, ResourcePlaneID: "rp_1", IdempotencyToken: "token_1", RuntimeProvider: "lambda_microvm"}
 	if mutate != nil {
 		mutate(&c)
 	}
@@ -147,6 +147,20 @@ func TestDecodeRejectsAmbiguousFields(t *testing.T) {
 		if _, err := Decode([]byte(data)); !errors.Is(err, ErrInvalidCommand) {
 			t.Errorf("ambiguous envelope accepted: %v", err)
 		}
+	}
+}
+
+func TestLambdaWorkloadDecoderRejectsAgentCoreRouteAndMissingProvider(t *testing.T) {
+	valid := string(envelope(t, nil))
+	for name, data := range map[string]string{
+		"agentcore route":  strings.Replace(valid, `"lambda_microvm"`, `"agentcore"`, 1),
+		"missing provider": strings.Replace(valid, `,"runtime_provider":"lambda_microvm"`, "", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Decode([]byte(data)); !errors.Is(err, ErrInvalidCommand) {
+				t.Fatalf("Lambda Workload queue accepted wrong/missing route: %v", err)
+			}
+		})
 	}
 }
 func TestAcceptStoreFailure(t *testing.T) {

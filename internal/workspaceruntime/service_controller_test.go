@@ -704,6 +704,51 @@ func TestSignedWorkspaceServiceReportSinkRetriesRejectedReport(t *testing.T) {
 	}
 }
 
+func TestSignedWorkspaceRepositoryCheckoutReportSinkSignsPinnedResult(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	now := time.Date(2026, 11, 21, 1, 2, 3, 0, time.UTC)
+	report := WorkspaceRepositoryCheckoutReport{TenantID: "tenant_test", WorkspaceID: "ws_test", ResourcePlaneID: "rp_test",
+		InstallationID: 77, RepositoryID: 88, CommitSHA: strings.Repeat("c", 40), State: "ready", ObservedAt: now}
+	sink, err := NewSignedWorkspaceRepositoryCheckoutReportSink("https://control.example", key, &http.Client{Transport: serviceRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		wantURL := "https://control.example/v1/internal/resource-planes/rp_test/workspaces/ws_test/repository-checkout"
+		if request.Method != http.MethodPut || request.URL.String() != wantURL {
+			t.Fatalf("unexpected repository checkout report URL: %s", request.URL)
+		}
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		timestamp, reportID := request.Header.Get("X-Hako-Timestamp"), request.Header.Get("X-Hako-Report-ID")
+		if timestamp != fmt.Sprint(now.Unix()) || len(reportID) != 48 || request.Header.Get("Content-Type") != "application/json" {
+			t.Fatalf("report authentication headers = %+v", request.Header)
+		}
+		bodyHash := sha256.Sum256(body)
+		message := strings.Join([]string{http.MethodPut, request.URL.EscapedPath(), timestamp, reportID, hex.EncodeToString(bodyHash[:])}, "\n")
+		mac := hmac.New(sha256.New, key)
+		_, _ = mac.Write([]byte(message))
+		if !hmac.Equal(mac.Sum(nil), mustDecodeHex(t, request.Header.Get("X-Hako-Signature"))) {
+			t.Fatal("Workspace repository checkout signature does not match canonical request")
+		}
+		var got WorkspaceRepositoryCheckoutReport
+		if err := json.Unmarshal(body, &got); err != nil || got != report || strings.Contains(string(body), "token") {
+			t.Fatalf("signed report contains unexpected fields: %+v, error=%v", got, err)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"accepted":true}`))}, nil
+	})}, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink.newID = func() ([]byte, error) { return bytes.Repeat([]byte{0x2a}, 24), nil }
+	if err := sink.Report(context.Background(), report); err != nil {
+		t.Fatalf("send signed Workspace repository checkout result: %v", err)
+	}
+	invalid := report
+	invalid.State, invalid.CommitSHA = "ready", ""
+	if err := sink.Report(context.Background(), invalid); !errors.Is(err, ErrWorkspaceServiceDelivery) {
+		t.Fatalf("ready result without an immutable commit should be rejected: %v", err)
+	}
+}
+
 func TestSignedWorkspaceServiceCommandResolverAuthenticatesAndReturnsLatestRevision(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")
 	now := time.Date(2026, 10, 18, 1, 2, 3, 0, time.UTC)

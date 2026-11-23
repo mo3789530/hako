@@ -51,6 +51,9 @@ func TestFileControlFramesRejectUnsafeRequestsAndMalformedResponses(t *testing.T
 		{Operation: "install_archive", Path: "/workspace/other", Size: 1, Digest: validDigest},
 		{Operation: "install_archive", Path: "/workspace/src", Size: 0, Digest: validDigest},
 		{Operation: "install_archive", Path: "/workspace/src", Size: 1, Digest: strings.ToUpper(validDigest)},
+		{Operation: "install_repository", Path: "/workspace/../escape", Size: 1, Digest: validDigest, CommitSHA: strings.Repeat("a", 40)},
+		{Operation: "install_repository", Path: "/workspace/project", Size: 1, Digest: validDigest, CommitSHA: "main"},
+		{Operation: "install_repository", Path: "/workspace/project/nested", Size: 1, Digest: validDigest, CommitSHA: strings.Repeat("a", 40)},
 		{Operation: "preview_logs", Path: "/workspace/src/.hako/preview.yaml"},
 		{Operation: "preview_logs", Path: "/workspace/src/.hako/preview.log", Size: 1},
 	} {
@@ -60,6 +63,9 @@ func TestFileControlFramesRejectUnsafeRequestsAndMalformedResponses(t *testing.T
 	}
 	if err := WriteFileRequest(&bytes.Buffer{}, FileRequest{Operation: "install_archive", Path: "/workspace/src", Size: 1, Digest: validDigest}); err != nil {
 		t.Fatalf("valid Preview source install request rejected: %v", err)
+	}
+	if err := WriteFileRequest(&bytes.Buffer{}, FileRequest{Operation: "install_repository", Path: "/workspace/project", Size: 1, Digest: validDigest, CommitSHA: strings.Repeat("a", 40)}); err != nil {
+		t.Fatalf("valid Workspace repository install request rejected: %v", err)
 	}
 	if err := WriteFileRequest(&bytes.Buffer{}, FileRequest{Operation: "preview_logs", Path: "/workspace/src/.hako/preview.log"}); err != nil {
 		t.Fatalf("valid read-only Preview log request rejected: %v", err)

@@ -133,3 +133,25 @@ an approved AWS PoC. No AWS resource is created by this contract.
 - [ListMicrovms](https://docs.aws.amazon.com/lambda/latest/microvm-api/API_ListMicrovms.html)
 - [TagResource](https://docs.aws.amazon.com/lambda/latest/microvm-api/API_TagResource.html)
 - [ListTags](https://docs.aws.amazon.com/lambda/latest/microvm-api/API_ListTags.html)
+
+## Staging smoke checklist
+
+Follow the [staging preflight and ownership checks](software-factory-aws-smoke.md#progressive-microvm-verification)
+before creating a disposable Workspace. Use the deployed ARM64 image and
+Gateway, and record Hako observed state alongside provider state.
+
+1. Create the Workspace and wait for `running`. Use `hako shell` to verify
+   PTY input/output and write a unique test marker under `/workspace`.
+2. Open the browser IDE with `hako open`. Connect with VS Code Remote - SSH
+   using the [key setup](workspace-cli.md#ssh-and-vs-code-remote-ssh) and verify
+   that both clients can read the marker.
+3. Suspend and wait for the provider to report `SUSPENDED`. Resume, wait for
+   `RUNNING`, then reconnect and verify the marker remains readable.
+4. Delete the Workspace and verify provider termination and journal cleanup.
+   Record whether test storage was removed or retained according to the
+   deployment's storage policy. Keep the provider ID for cleanup verification
+   if any earlier step fails.
+
+When Task 97 is implemented, add a private fixture repository and verify the
+initial checkout matches the recorded commit. Make a local edit and confirm
+that suspend/resume preserves it.

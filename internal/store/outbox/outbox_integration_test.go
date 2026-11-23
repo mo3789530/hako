@@ -64,3 +64,32 @@ func TestClaimLeaseRetryAndPublishAcknowledgement(t *testing.T) {
 		t.Fatalf("published Outbox event must clear age metric: metrics=%+v error=%v", metrics, err)
 	}
 }
+
+func TestClaimWorkspaceOperationsLeavesOtherEventFamiliesUnleased(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testutil.NewIsolatedPostgres(t)
+	if err := dsql.Migrate(ctx, pool); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, event := range []struct{ id, aggregate, kind string }{
+		{"evt_local_workspace", "operation", "operation.requested"},
+		{"evt_unrelated_workload", "workload_run", "workload_run.schedule_requested"},
+	} {
+		if _, err := pool.Exec(ctx, `INSERT INTO outbox_events (id, aggregate_type, aggregate_id, event_type, payload_json, created_at, published_at, attempt) VALUES ($1, $2, $1, $3, '{}', $4, NULL, 0)`, event.id, event.aggregate, event.kind, now); err != nil {
+			t.Fatalf("insert Outbox event %s: %v", event.id, err)
+		}
+	}
+	claimed, err := ClaimWorkspaceOperations(ctx, pool, transaction.DefaultPolicy(), 10, time.Minute, now)
+	if err != nil || len(claimed) != 1 || claimed[0].ID != "evt_local_workspace" {
+		t.Fatalf("local worker should claim only Workspace Operation events: claimed=%+v error=%v", claimed, err)
+	}
+	var unrelatedLease *string
+	if err := pool.QueryRow(ctx, `SELECT lease_token FROM outbox_events WHERE id = 'evt_unrelated_workload'`).Scan(&unrelatedLease); err != nil {
+		t.Fatalf("read unrelated Outbox event lease: %v", err)
+	}
+	if unrelatedLease != nil {
+		t.Fatal("local Workspace worker must not lease a Workload event")
+	}
+}

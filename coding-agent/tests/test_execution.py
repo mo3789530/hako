@@ -3,9 +3,11 @@ import io
 import tarfile
 import unittest
 from dataclasses import replace
+from unittest.mock import patch
 
 from hako_coding_agent.bedrock import BedrockCodingModel
-from hako_coding_agent.execution import Attempt, execute
+from hako_coding_agent.execution import Attempt, execute, execute_with_policy, propose_with_policy
+from hako_coding_agent.policy import AgentCorePolicy
 from hako_coding_agent.workflow import Outcome
 
 
@@ -118,6 +120,53 @@ class ExecutionTest(unittest.TestCase):
         )
         self.assertEqual(result.outcome, Outcome.UNVERIFIED)
         self.assertIsNone(result.proposal)
+
+    def test_execute_with_policy_propagates_trusted_model_and_workflow_budgets(self):
+        policy = AgentCorePolicy.from_deployment(
+            {
+                "HAKO_CODING_AGENT_MODEL_ID": "allowed-model",
+                "HAKO_CODING_AGENT_ALLOWED_MODEL_IDS": '["allowed-model"]',
+                "HAKO_CODING_AGENT_ALLOWED_BEDROCK_REGIONS": '["ap-northeast-1"]',
+                "HAKO_CODING_AGENT_BEDROCK_REGION": "ap-northeast-1",
+                "HAKO_CODING_AGENT_MAX_ITERATIONS": "2",
+                "HAKO_CODING_AGENT_MAX_TURNS": "4",
+                "HAKO_CODING_AGENT_MAX_TOOL_CALLS": "5",
+                "HAKO_CODING_AGENT_MAX_TOKENS": "512",
+            }
+        )
+        with patch("hako_coding_agent.execution.execute") as run:
+            execute_with_policy(self.attempt, self.source, "task", Client(), Verifier(), policy)
+        args, kwargs = run.call_args
+        self.assertEqual(args[:3], (self.attempt, self.source, "task"))
+        self.assertEqual(kwargs["max_iterations"], 2)
+        self.assertEqual(args[3].model_id, "allowed-model")
+        self.assertEqual(
+            (args[3].max_turns, args[3].max_tool_calls, args[3].max_tokens), (4, 5, 512)
+        )
+
+    def test_execute_with_policy_rejects_unvalidated_policy(self):
+        with self.assertRaises(ValueError):
+            execute_with_policy(self.attempt, self.source, "task", Client(), Verifier(), None)
+        unvalidated = AgentCorePolicy("unapproved", "invalid-region")
+        with self.assertRaises(ValueError):
+            execute_with_policy(
+                self.attempt, self.source, "task", Client(), Verifier(), unvalidated
+            )
+
+    def test_propose_with_policy_returns_untrusted_attempt_bound_draft(self):
+        policy = AgentCorePolicy.from_deployment(
+            {
+                "HAKO_CODING_AGENT_MODEL_ID": "allowed-model",
+                "HAKO_CODING_AGENT_ALLOWED_MODEL_IDS": '["allowed-model"]',
+                "HAKO_CODING_AGENT_ALLOWED_BEDROCK_REGIONS": '["ap-northeast-1"]',
+                "HAKO_CODING_AGENT_BEDROCK_REGION": "ap-northeast-1",
+                "HAKO_CODING_AGENT_MAX_ITERATIONS": "1",
+            }
+        )
+        result = propose_with_policy(self.attempt, self.source, "Update app", Client(), policy)
+        self.assertEqual(result.attempt, self.attempt)
+        self.assertIsNotNone(result.draft.proposal)
+        self.assertFalse(hasattr(result, "verified"))
 
 
 if __name__ == "__main__":

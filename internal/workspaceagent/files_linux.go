@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -22,6 +23,33 @@ import (
 const MaxWorkspaceFileBytes int64 = 1 << 30
 
 var ErrWorkspaceFile = errors.New("invalid or unavailable Workspace file")
+
+type workspaceFileFailure struct{ code string }
+
+func (e workspaceFileFailure) Error() string        { return ErrWorkspaceFile.Error() }
+func (e workspaceFileFailure) Is(target error) bool { return target == ErrWorkspaceFile }
+
+func workspaceFileFailureCode(err error) string {
+	var failure workspaceFileFailure
+	if errors.As(err, &failure) {
+		return failure.code
+	}
+	return "transfer_failed"
+}
+
+func workspaceFileFailureForSystemError(err error) error {
+	switch {
+	case errors.Is(err, unix.EACCES), errors.Is(err, unix.EPERM):
+		return workspaceFileFailure{code: "workspace_permission_denied"}
+	case errors.Is(err, unix.EROFS):
+		return workspaceFileFailure{code: "workspace_read_only"}
+	default:
+		return workspaceFileFailure{code: "workspace_storage_failed"}
+	}
+}
+
+var workspaceRepositoryNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
+var workspaceRepositoryCommitPattern = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 
 // WorkspaceFiles confines upload/download operations to a pinned Workspace
 // directory. Every path component is opened with O_NOFOLLOW relative to an
@@ -110,6 +138,136 @@ func (f *WorkspaceFiles) InstallSourceArchive(ctx context.Context, size int64, d
 		return ErrWorkspaceFile
 	}
 	if err := unix.Fsync(f.rootFD); err != nil {
+		return ErrWorkspaceFile
+	}
+	return nil
+}
+
+// InstallWorkspaceRepositoryArchive atomically installs the first Git
+// checkout at a single fixed child of /workspace. Replays accept an identical
+// pinned HEAD and worktree even if Git pack metadata differs; local edits are
+// never replaced.
+func (f *WorkspaceFiles) InstallWorkspaceRepositoryArchive(ctx context.Context, repositoryName, commitSHA string, size int64, digest string, src io.Reader) error {
+	decoded, digestErr := hex.DecodeString(digest)
+	if f == nil || ctx == nil || src == nil || !workspaceRepositoryNamePattern.MatchString(repositoryName) ||
+		repositoryName == "." || repositoryName == ".." || !workspaceRepositoryCommitPattern.MatchString(commitSHA) ||
+		size < 1 || size > MaxWorkspaceFileBytes || digestErr != nil || len(decoded) != 32 || hex.EncodeToString(decoded) != digest {
+		return ErrWorkspaceFile
+	}
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	if f.rootFD < 0 || ctx.Err() != nil {
+		return ErrWorkspaceFile
+	}
+	lockFD, err := f.lockWorkspaceRepository(ctx)
+	if err != nil {
+		return ErrWorkspaceFile
+	}
+	defer func() { _ = unix.Flock(lockFD, unix.LOCK_UN); _ = unix.Close(lockFD) }()
+	temporary, err := os.MkdirTemp(f.root, ".hako-repository-install-")
+	if err != nil {
+		return ErrWorkspaceFile
+	}
+	defer os.RemoveAll(temporary)
+	if err := os.Chmod(temporary, 0700); err != nil {
+		return ErrWorkspaceFile
+	}
+	content := path.Join(temporary, "content")
+	if err := workloadsource.ExtractArchive(ctx, io.LimitReader(src, size), size, digest, content, f.max); err != nil {
+		return ErrWorkspaceFile
+	}
+	if err := verifyWorkspaceRepositoryHead(ctx, content, commitSHA); err != nil {
+		return ErrWorkspaceFile
+	}
+	if err := f.verifyExistingWorkspaceRepository(ctx, repositoryName, content, commitSHA); err == nil {
+		return nil
+	} else if !errors.Is(err, unix.ENOENT) {
+		return ErrWorkspaceFile
+	}
+	if err := unix.Renameat(unix.AT_FDCWD, content, f.rootFD, repositoryName); err != nil {
+		return ErrWorkspaceFile
+	}
+	if err := unix.Fsync(f.rootFD); err != nil {
+		return ErrWorkspaceFile
+	}
+	return nil
+}
+
+func (f *WorkspaceFiles) lockWorkspaceRepository(ctx context.Context) (int, error) {
+	fd, err := unix.Openat(f.rootFD, ".hako-workspace-repository-install.lock", unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
+	if err != nil {
+		return -1, ErrWorkspaceFile
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG {
+		_ = unix.Close(fd)
+		return -1, ErrWorkspaceFile
+	}
+	for {
+		if ctx.Err() != nil {
+			_ = unix.Close(fd)
+			return -1, ErrWorkspaceFile
+		}
+		if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err == nil {
+			return fd, nil
+		} else if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
+			_ = unix.Close(fd)
+			return -1, ErrWorkspaceFile
+		}
+		timer := time.NewTimer(20 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			_ = unix.Close(fd)
+			return -1, ErrWorkspaceFile
+		case <-timer.C:
+		}
+	}
+}
+
+func (f *WorkspaceFiles) verifyExistingWorkspaceRepository(ctx context.Context, repositoryName, candidatePath, commitSHA string) error {
+	fd, err := unix.Openat(f.rootFD, repositoryName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return err
+	}
+	_ = unix.Close(fd)
+	archive, err := workloadsource.CreateArchive(ctx, path.Join(f.root, repositoryName), f.max)
+	if err != nil {
+		return ErrWorkspaceFile
+	}
+	defer archive.Close()
+	candidate, err := workloadsource.CreateArchive(ctx, candidatePath, f.max)
+	if err != nil {
+		return ErrWorkspaceFile
+	}
+	defer candidate.Close()
+	if archive.SHA256() != candidate.SHA256() {
+		return ErrWorkspaceFile
+	}
+	return verifyWorkspaceRepositoryHead(ctx, path.Join(f.root, repositoryName), commitSHA)
+}
+
+func verifyWorkspaceRepositoryHead(ctx context.Context, repositoryPath, commitSHA string) error {
+	if ctx == nil || ctx.Err() != nil {
+		return ErrWorkspaceFile
+	}
+	gitFD, err := unix.Open(path.Join(repositoryPath, ".git"), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return ErrWorkspaceFile
+	}
+	defer unix.Close(gitFD)
+	headFD, err := unix.Openat(gitFD, "HEAD", unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return ErrWorkspaceFile
+	}
+	head := os.NewFile(uintptr(headFD), "git-head")
+	defer head.Close()
+	var stat unix.Stat_t
+	if err := unix.Fstat(headFD, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Size < 1 || stat.Size > 128 {
+		return ErrWorkspaceFile
+	}
+	data, err := io.ReadAll(io.LimitReader(&contextReader{ctx: ctx, reader: head}, 129))
+	if err != nil || strings.TrimSpace(string(data)) != commitSHA {
 		return ErrWorkspaceFile
 	}
 	return nil
@@ -238,34 +396,34 @@ func (f *WorkspaceFiles) Size(workspacePath string) (int64, error) {
 
 func (f *WorkspaceFiles) Write(ctx context.Context, workspacePath string, size int64, src io.Reader) error {
 	if f == nil || ctx == nil || src == nil || size < 0 || size > MaxWorkspaceFileBytes {
-		return ErrWorkspaceFile
+		return workspaceFileFailure{code: "transfer_invalid"}
 	}
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	if f.rootFD < 0 {
-		return ErrWorkspaceFile
+		return workspaceFileFailure{code: "workspace_runtime_unavailable"}
 	}
 	parent, name, err := f.openParent(workspacePath)
 	if err != nil {
-		return ErrWorkspaceFile
+		return workspaceFileFailure{code: "workspace_path_unavailable"}
 	}
 	defer unix.Close(parent)
 	var existing unix.Stat_t
 	if err := unix.Fstatat(parent, name, &existing, unix.AT_SYMLINK_NOFOLLOW); err == nil {
 		if existing.Mode&unix.S_IFMT != unix.S_IFREG {
-			return ErrWorkspaceFile
+			return workspaceFileFailure{code: "workspace_path_unavailable"}
 		}
 	} else if !errors.Is(err, unix.ENOENT) {
-		return ErrWorkspaceFile
+		return workspaceFileFailureForSystemError(err)
 	}
 	var random [16]byte
 	if _, err := rand.Read(random[:]); err != nil {
-		return ErrWorkspaceFile
+		return workspaceFileFailure{code: "transfer_random_failed"}
 	}
 	temp := ".hako-upload-" + hex.EncodeToString(random[:])
 	fd, err := unix.Openat(parent, temp, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
 	if err != nil {
-		return ErrWorkspaceFile
+		return workspaceFileFailureForSystemError(err)
 	}
 	file := os.NewFile(uintptr(fd), "workspace-upload")
 	committed := false
@@ -276,24 +434,27 @@ func (f *WorkspaceFiles) Write(ctx context.Context, workspacePath string, size i
 		}
 	}()
 	if err := file.Chmod(0600); err != nil {
-		return ErrWorkspaceFile
+		return workspaceFileFailureForSystemError(err)
 	}
 	reader := &contextReader{ctx: ctx, reader: io.LimitReader(src, size)}
 	written, err := io.CopyN(file, reader, size)
 	if err != nil || written != size {
-		return ErrWorkspaceFile
+		if ctx.Err() != nil {
+			return workspaceFileFailure{code: "upload_cancelled"}
+		}
+		return workspaceFileFailure{code: "upload_stream_failed"}
 	}
 	if err := file.Sync(); err != nil {
-		return ErrWorkspaceFile
+		return workspaceFileFailureForSystemError(err)
 	}
 	if err := file.Close(); err != nil {
-		return ErrWorkspaceFile
+		return workspaceFileFailureForSystemError(err)
 	}
 	if err := unix.Renameat(parent, temp, parent, name); err != nil {
-		return ErrWorkspaceFile
+		return workspaceFileFailureForSystemError(err)
 	}
 	if err := unix.Fsync(parent); err != nil {
-		return ErrWorkspaceFile
+		return workspaceFileFailureForSystemError(err)
 	}
 	committed = true
 	return nil

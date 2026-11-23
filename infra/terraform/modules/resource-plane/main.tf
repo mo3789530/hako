@@ -249,6 +249,59 @@ resource "aws_sqs_queue_redrive_allow_policy" "workload_commands_dlq" {
   })
 }
 
+# AgentCore attempts use a separate command envelope and consumer from the
+# Lambda MicroVM Workload queue. This queue is independently opt-in so adding
+# the route cannot silently activate the worker or change provider placement.
+resource "aws_sqs_queue" "agentcore_commands" {
+  count = var.enable_agentcore_command_queue ? 1 : 0
+
+  name                       = "${var.resource_plane_id}-agentcore-commands"
+  message_retention_seconds  = var.message_retention_seconds
+  visibility_timeout_seconds = var.agentcore_command_visibility_timeout_seconds
+  receive_wait_time_seconds  = 20
+  sqs_managed_sse_enabled    = true
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.agentcore_commands_dlq[0].arn
+    maxReceiveCount     = var.max_receive_count
+  })
+  tags = merge(local.common_tags, { "hako:queue-role" = "agentcore-commands" })
+}
+
+resource "aws_sqs_queue" "agentcore_commands_dlq" {
+  count = var.enable_agentcore_command_queue ? 1 : 0
+
+  name                      = "${var.resource_plane_id}-agentcore-commands-dlq"
+  message_retention_seconds = var.dlq_retention_seconds
+  sqs_managed_sse_enabled   = true
+  tags                      = merge(local.common_tags, { "hako:queue-role" = "agentcore-commands-dlq" })
+}
+
+resource "aws_sqs_queue_redrive_allow_policy" "agentcore_commands_dlq" {
+  count = var.enable_agentcore_command_queue ? 1 : 0
+
+  queue_url = aws_sqs_queue.agentcore_commands_dlq[0].id
+  redrive_allow_policy = jsonencode({
+    redrivePermission = "byQueue"
+    sourceQueueArns   = [aws_sqs_queue.agentcore_commands[0].arn]
+  })
+}
+
+resource "aws_sqs_queue_policy" "agentcore_commands" {
+  count = var.enable_agentcore_command_queue ? 1 : 0
+
+  queue_url = aws_sqs_queue.agentcore_commands[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "AllowExactControlPlaneDispatcherSend"
+      Effect    = "Allow"
+      Principal = { AWS = var.control_plane_dispatcher_role_arn }
+      Action    = "sqs:SendMessage"
+      Resource  = aws_sqs_queue.agentcore_commands[0].arn
+    }]
+  })
+}
+
 # The Actions Runner startup path is independently opt-in. It receives only
 # opaque job/attempt/claim keys; repository metadata and runner credentials are
 # resolved by the Control Plane broker after mTLS authentication.
@@ -2471,6 +2524,36 @@ resource "aws_iam_role_policy" "resource_controller_preview_source" {
   })
 }
 
+resource "aws_iam_role_policy" "resource_controller_workspace_repository_checkout" {
+  count = var.workspace_runtime_deployment == null || var.workspace_repository_checkout == null ? 0 : 1
+
+  name = "${var.resource_plane_id}-resource-controller-workspace-repository-checkout"
+  role = aws_iam_role.resource_controller.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "ReadOnlyConfiguredWorkspaceMicroVM"
+        Effect   = "Allow"
+        Action   = ["lambda:GetMicrovm", "lambda:CreateMicrovmAuthToken"]
+        Resource = var.workspace_runtime_deployment.microvm_image_arn
+      },
+      {
+        Sid    = "ReadOnlyWorkspaceRepositoryCheckoutSecrets"
+        Effect = "Allow"
+        Action = ["secretsmanager:GetSecretValue"]
+        Resource = [
+          var.workspace_repository_checkout.broker_client_cert_arn,
+          var.workspace_repository_checkout.broker_client_key_arn,
+          var.workspace_repository_checkout.broker_ca_arn,
+          var.workspace_repository_checkout.ticket_key_secret_arn,
+          var.workspace_repository_checkout.report_key_secret_arn,
+        ]
+      }
+    ]
+  })
+}
+
 # The development-only Fake controller remains separate from the opt-in
 # Lambda MicroVM controller below; both cannot consume the shared queue.
 resource "aws_lambda_function" "fake_resource_controller" {
@@ -2540,27 +2623,36 @@ resource "aws_lambda_function" "workspace_resource_controller" {
 
   environment {
     variables = {
-      HAKO_RESOURCE_PLANE_ID                     = var.resource_plane_id
-      HAKO_OPERATION_RESULT_QUEUE_URL            = aws_sqs_queue.results.url
-      HAKO_RUNTIME_IMPLEMENTATION                = "lambda-microvm"
-      HAKO_OPERATION_TIMEOUT                     = "${var.workspace_runtime_deployment.operation_timeout_seconds}s"
-      HAKO_PREVIEW_RUNTIME_COMMAND_QUEUE_ARN     = var.enable_preview_runtime ? aws_sqs_queue.preview_runtime_commands[0].arn : ""
-      HAKO_PREVIEW_RUNTIME_RESULT_QUEUE_URL      = var.enable_preview_runtime ? aws_sqs_queue.preview_runtime_results[0].url : ""
-      HAKO_PREVIEW_CHECKOUT_BROKER_URL           = var.enable_preview_runtime ? var.preview_runtime_source.checkout_broker_url : ""
-      HAKO_PREVIEW_BROKER_CLIENT_CERT_SECRET_ARN = var.enable_preview_runtime ? var.preview_runtime_source.broker_client_cert_arn : ""
-      HAKO_PREVIEW_BROKER_CLIENT_KEY_SECRET_ARN  = var.enable_preview_runtime ? var.preview_runtime_source.broker_client_key_arn : ""
-      HAKO_PREVIEW_BROKER_CA_SECRET_ARN          = var.enable_preview_runtime ? var.preview_runtime_source.broker_ca_arn : ""
-      HAKO_PREVIEW_SOURCE_BUCKET                 = var.enable_preview_runtime ? var.preview_runtime_source.source_bucket_name : ""
-      HAKO_PREVIEW_SOURCE_PREFIX                 = var.enable_preview_runtime ? var.preview_runtime_source.source_prefix : ""
-      HAKO_PREVIEW_SOURCE_KMS_KEY_ID             = var.enable_preview_runtime ? var.preview_runtime_source.source_kms_key_arn : ""
-      HAKO_PREVIEW_GATEWAY_ORIGIN                = var.enable_preview_runtime ? var.preview_runtime_source.gateway_origin : ""
-      HAKO_PREVIEW_TICKET_KEY_ID                 = var.enable_preview_runtime ? var.preview_runtime_source.ticket_key_id : ""
-      HAKO_PREVIEW_TICKET_PRIVATE_KEY_SECRET_ARN = var.enable_preview_runtime ? var.preview_runtime_source.ticket_private_key_arn : ""
-      HAKO_WORKSPACE_RUNTIME_JOURNAL_BUCKET      = var.workspace_runtime_deployment.journal_bucket_name
-      HAKO_WORKSPACE_RUNTIME_JOURNAL_PREFIX      = var.workspace_runtime_deployment.journal_prefix
-      HAKO_WORKSPACE_EFS_FILE_SYSTEM_ID          = var.workspace_storage_runtime.file_system_id
-      HAKO_WORKSPACE_RUNTIME_POLL_INTERVAL       = "500ms"
-      HAKO_WORKSPACE_RUNTIME_POLL_TIMEOUT        = "30s"
+      HAKO_RESOURCE_PLANE_ID                                  = var.resource_plane_id
+      HAKO_OPERATION_RESULT_QUEUE_URL                         = aws_sqs_queue.results.url
+      HAKO_RUNTIME_IMPLEMENTATION                             = "lambda-microvm"
+      HAKO_OPERATION_TIMEOUT                                  = "${var.workspace_runtime_deployment.operation_timeout_seconds}s"
+      HAKO_PREVIEW_RUNTIME_COMMAND_QUEUE_ARN                  = var.enable_preview_runtime ? aws_sqs_queue.preview_runtime_commands[0].arn : ""
+      HAKO_PREVIEW_RUNTIME_RESULT_QUEUE_URL                   = var.enable_preview_runtime ? aws_sqs_queue.preview_runtime_results[0].url : ""
+      HAKO_PREVIEW_CHECKOUT_BROKER_URL                        = var.enable_preview_runtime ? var.preview_runtime_source.checkout_broker_url : ""
+      HAKO_PREVIEW_BROKER_CLIENT_CERT_SECRET_ARN              = var.enable_preview_runtime ? var.preview_runtime_source.broker_client_cert_arn : ""
+      HAKO_PREVIEW_BROKER_CLIENT_KEY_SECRET_ARN               = var.enable_preview_runtime ? var.preview_runtime_source.broker_client_key_arn : ""
+      HAKO_PREVIEW_BROKER_CA_SECRET_ARN                       = var.enable_preview_runtime ? var.preview_runtime_source.broker_ca_arn : ""
+      HAKO_PREVIEW_SOURCE_BUCKET                              = var.enable_preview_runtime ? var.preview_runtime_source.source_bucket_name : ""
+      HAKO_PREVIEW_SOURCE_PREFIX                              = var.enable_preview_runtime ? var.preview_runtime_source.source_prefix : ""
+      HAKO_PREVIEW_SOURCE_KMS_KEY_ID                          = var.enable_preview_runtime ? var.preview_runtime_source.source_kms_key_arn : ""
+      HAKO_PREVIEW_GATEWAY_ORIGIN                             = var.enable_preview_runtime ? var.preview_runtime_source.gateway_origin : ""
+      HAKO_PREVIEW_TICKET_KEY_ID                              = var.enable_preview_runtime ? var.preview_runtime_source.ticket_key_id : ""
+      HAKO_PREVIEW_TICKET_PRIVATE_KEY_SECRET_ARN              = var.enable_preview_runtime ? var.preview_runtime_source.ticket_private_key_arn : ""
+      HAKO_WORKSPACE_RUNTIME_JOURNAL_BUCKET                   = var.workspace_runtime_deployment.journal_bucket_name
+      HAKO_WORKSPACE_RUNTIME_JOURNAL_PREFIX                   = var.workspace_runtime_deployment.journal_prefix
+      HAKO_WORKSPACE_EFS_FILE_SYSTEM_ID                       = var.workspace_storage_runtime.file_system_id
+      HAKO_WORKSPACE_RUNTIME_POLL_INTERVAL                    = "500ms"
+      HAKO_WORKSPACE_RUNTIME_POLL_TIMEOUT                     = "30s"
+      HAKO_WORKSPACE_REPOSITORY_CHECKOUT_BROKER_URL           = var.workspace_repository_checkout == null ? "" : var.workspace_repository_checkout.checkout_broker_url
+      HAKO_WORKSPACE_REPOSITORY_BROKER_CLIENT_CERT_SECRET_ARN = var.workspace_repository_checkout == null ? "" : var.workspace_repository_checkout.broker_client_cert_arn
+      HAKO_WORKSPACE_REPOSITORY_BROKER_CLIENT_KEY_SECRET_ARN  = var.workspace_repository_checkout == null ? "" : var.workspace_repository_checkout.broker_client_key_arn
+      HAKO_WORKSPACE_REPOSITORY_BROKER_CA_SECRET_ARN          = var.workspace_repository_checkout == null ? "" : var.workspace_repository_checkout.broker_ca_arn
+      HAKO_WORKSPACE_REPOSITORY_GATEWAY_ORIGIN                = var.workspace_repository_checkout == null ? "" : var.workspace_repository_checkout.gateway_origin
+      HAKO_WORKSPACE_REPOSITORY_TICKET_KEY_ID                 = var.workspace_repository_checkout == null ? "" : var.workspace_repository_checkout.ticket_key_id
+      HAKO_WORKSPACE_REPOSITORY_TICKET_KEY_SECRET_ARN         = var.workspace_repository_checkout == null ? "" : var.workspace_repository_checkout.ticket_key_secret_arn
+      HAKO_WORKSPACE_REPOSITORY_REPORT_ENDPOINT               = var.workspace_repository_checkout == null ? "" : var.workspace_repository_checkout.report_endpoint
+      HAKO_WORKSPACE_REPOSITORY_REPORT_KEY_SECRET_ARN         = var.workspace_repository_checkout == null ? "" : var.workspace_repository_checkout.report_key_secret_arn
       HAKO_WORKSPACE_RUNTIME_LAUNCH_SPEC_JSON = jsonencode({
         runtime_class               = var.workspace_runtime_deployment.runtime_class
         image_identifier            = var.workspace_runtime_deployment.microvm_image_arn
@@ -2580,7 +2672,8 @@ resource "aws_lambda_function" "workspace_resource_controller" {
     aws_iam_role_policy.resource_controller,
     aws_iam_role_policy.resource_controller_workspace_storage,
     aws_iam_role_policy.resource_controller_workspace_runtime,
-    aws_iam_role_policy.resource_controller_preview_source
+    aws_iam_role_policy.resource_controller_preview_source,
+    aws_iam_role_policy.resource_controller_workspace_repository_checkout
   ]
 
   lifecycle {

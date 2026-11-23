@@ -2,9 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -30,6 +35,7 @@ import (
 	"github.com/mo3789530/hako/internal/store/githubregistry"
 	webhookinbox "github.com/mo3789530/hako/internal/store/githubwebhook"
 	"github.com/mo3789530/hako/internal/store/transaction"
+	"github.com/mo3789530/hako/internal/workspacesession"
 )
 
 func main() {
@@ -86,6 +92,11 @@ func main() {
 		log.Fatal("configure Resource Plane Workspace Session credentials")
 	}
 	createConfig.ResourcePlaneWorkspaceSessionKeyResolver = workspaceSessionKeyResolver
+	workspaceSessionIssuer, err := workspaceSessionIssuerFromEnv()
+	if err != nil {
+		log.Fatal("configure Workspace Session issuer failed (failure_class=session_configuration)")
+	}
+	createConfig.WorkspaceSessionTicketIssuer = workspaceSessionIssuer
 	if createConfig.WebhookWorkloadTriggersEnabled && !createConfig.WorkloadRunsEnabled {
 		log.Fatal("Webhook-triggered Workload Runs require HAKO_WORKLOAD_RUNS_ENABLED=true")
 	}
@@ -130,6 +141,7 @@ func main() {
 		if err != nil {
 			log.Fatal("configure Tenant GitHub webhook handler failed (failure_class=handler_configuration)")
 		}
+		handler.SetWebhookAdmissionMetrics(githubwebhook.NewTenantWebhookEMFMetrics(os.Stdout))
 		createConfig.TenantGitHubWebhookHandler = handler
 	}
 	var webhookHandler http.Handler
@@ -192,10 +204,21 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
+	certFile, keyFile, err := apiTLSFilesFromEnv()
+	if err != nil {
+		log.Fatal("configure Control Plane HTTPS certificate failed (failure_class=tls_configuration)")
+	}
+	if certFile != "" {
+		server.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
 	errCh := make(chan error, 1)
 	go func() {
 		log.Printf("Hako API listening on %s", addr)
-		errCh <- server.ListenAndServe()
+		if certFile == "" {
+			errCh <- server.ListenAndServe()
+			return
+		}
+		errCh <- server.ListenAndServeTLS(certFile, keyFile)
 	}()
 	select {
 	case err := <-errCh:
@@ -209,6 +232,15 @@ func main() {
 			log.Printf("shutdown Hako API failed (failure_class=http_shutdown)")
 		}
 	}
+}
+
+func apiTLSFilesFromEnv() (string, string, error) {
+	certFile := strings.TrimSpace(os.Getenv("HAKO_API_TLS_CERT_FILE"))
+	keyFile := strings.TrimSpace(os.Getenv("HAKO_API_TLS_KEY_FILE"))
+	if (certFile == "") != (keyFile == "") {
+		return "", "", errors.New("HAKO_API_TLS_CERT_FILE and HAKO_API_TLS_KEY_FILE must be set together")
+	}
+	return certFile, keyFile, nil
 }
 
 var resourcePlaneSecretARNPattern = regexp.MustCompile(`^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+$`)
@@ -357,6 +389,23 @@ func resourcePlaneArtifactCleanupKeyResolverFromEnv(ctx context.Context) (api.Re
 }
 
 func resourcePlaneWorkspaceSessionKeyResolverFromEnv(ctx context.Context) (api.ResourcePlaneWorkspaceSessionKeyResolver, error) {
+	localKeyFile := strings.TrimSpace(os.Getenv("HAKO_LOCAL_RESOURCE_PLANE_SESSION_KEY_FILE"))
+	localPlaneID := domain.ResourcePlaneID(strings.TrimSpace(os.Getenv("HAKO_LOCAL_RESOURCE_PLANE_ID")))
+	if localKeyFile != "" || localPlaneID != "" {
+		if localKeyFile == "" || localPlaneID == "" || strings.TrimSpace(os.Getenv("HAKO_RESOURCE_PLANE_WORKSPACE_SESSION_SECRET_ARNS")) != "" {
+			return nil, errors.New("local Resource Plane Session key settings are incomplete or conflict with Secrets Manager")
+		}
+		key, err := readOwnedPrivateFile(localKeyFile, 4096)
+		if err != nil || len(key) < 32 {
+			return nil, errors.New("local Resource Plane Session key file is unavailable")
+		}
+		return func(_ context.Context, resourcePlaneID domain.ResourcePlaneID) ([]byte, error) {
+			if resourcePlaneID != localPlaneID {
+				return nil, errors.New("Workspace Session identity is not configured")
+			}
+			return append([]byte(nil), key...), nil
+		}, nil
+	}
 	raw := strings.TrimSpace(os.Getenv("HAKO_RESOURCE_PLANE_WORKSPACE_SESSION_SECRET_ARNS"))
 	if raw == "" {
 		return nil, nil
@@ -384,6 +433,54 @@ func resourcePlaneWorkspaceSessionKeyResolverFromEnv(ctx context.Context) (api.R
 		}
 		return []byte(*output.SecretString), nil
 	}, nil
+}
+
+func workspaceSessionIssuerFromEnv() (workspacesession.Issuer, error) {
+	keyPath := strings.TrimSpace(os.Getenv("HAKO_LOCAL_WORKSPACE_SESSION_PRIVATE_KEY_FILE"))
+	keyID := strings.TrimSpace(os.Getenv("HAKO_WORKSPACE_SESSION_KEY_ID"))
+	if keyPath == "" && keyID == "" {
+		return nil, nil
+	}
+	if keyPath == "" || keyID == "" {
+		return nil, errors.New("local Workspace Session signing key path and key ID must be configured together")
+	}
+	data, err := readOwnedPrivateFile(keyPath, 16<<10)
+	if err != nil {
+		return nil, errors.New("read local Workspace Session signing key")
+	}
+	defer clear(data)
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return nil, errors.New("local Workspace Session signing key must be PEM encoded")
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	privateKey, ok := parsed.(ed25519.PrivateKey)
+	if err != nil || !ok || len(privateKey) != ed25519.PrivateKeySize {
+		return nil, errors.New("local Workspace Session signing key must be Ed25519 PKCS#8")
+	}
+	return &workspacesession.Ed25519Issuer{KeyID: keyID, PrivateKey: append(ed25519.PrivateKey(nil), privateKey...), TTL: workspacesession.TicketMaxTTL}, nil
+}
+
+func readOwnedPrivateFile(path string, maxBytes int64) ([]byte, error) {
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() < 1 || info.Size() > maxBytes || info.Mode().Perm()&0077 != 0 {
+		return nil, errors.New("private file must be an owner-only regular file within size bounds")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != uint32(os.Getuid()) {
+		return nil, errors.New("private file must be owned by the Hako API user")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	if err != nil || int64(len(data)) > maxBytes {
+		clear(data)
+		return nil, errors.New("private file exceeds its size limit")
+	}
+	return data, nil
 }
 
 func loadGitHubWebhookSecret(ctx context.Context, secretARN string) ([]byte, error) {

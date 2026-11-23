@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/aws/aws-sdk-go-v2/service/lambdamicrovms"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/resourcecontroller"
 	fakeruntime "github.com/mo3789530/hako/internal/runtime/fake"
 	"github.com/mo3789530/hako/internal/workspacejournal"
@@ -31,10 +33,10 @@ type workspaceRuntimeDeployment struct {
 	PollTimeout   time.Duration
 }
 
-func configuredRuntime(implementation string, awsCfg aws.Config, getenv func(string) string) (resourcecontroller.Runtime, error) {
+func configuredRuntime(implementation string, awsCfg aws.Config, getenv func(string) string, plane domain.ResourcePlaneID) (resourcecontroller.Runtime, error) {
 	switch strings.TrimSpace(implementation) {
 	case "fake":
-		return fakeruntime.New(), nil
+		return workspaceruntime.NewWorkspaceRepositoryRuntime(fakeruntime.New(), nil)
 	case "lambda-microvm":
 		config, err := configuredWorkspaceRuntime(getenv, awsCfg.Region)
 		if err != nil {
@@ -70,7 +72,19 @@ func configuredRuntime(implementation string, awsCfg aws.Config, getenv func(str
 		if err != nil {
 			return nil, errors.New("configure Lambda MicroVM Workspace runtime")
 		}
-		return runtime, nil
+		checkoutConfig, enabled, err := configuredWorkspaceRepositoryCheckout(getenv, awsCfg.Region)
+		if err != nil {
+			return nil, err
+		}
+		var checkoutWorkflow *workspaceruntime.WorkspaceRepositoryCheckoutWorkflow
+		if enabled {
+			api := lambdamicrovms.NewFromConfig(awsCfg)
+			checkoutWorkflow, err = composeWorkspaceRepositoryCheckout(context.Background(), awsCfg, plane, checkoutConfig, api)
+			if err != nil {
+				return nil, errors.New("compose Workspace repository checkout dependencies")
+			}
+		}
+		return workspaceruntime.NewWorkspaceRepositoryRuntime(runtime, checkoutWorkflow)
 	default:
 		return nil, errors.New("HAKO_RUNTIME_IMPLEMENTATION must be explicitly set to fake or lambda-microvm")
 	}

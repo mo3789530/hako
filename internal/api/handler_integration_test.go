@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -97,6 +98,26 @@ func TestTenantMembershipRouteResolvesUserAndRejectsNonMembers(t *testing.T) {
 			return serviceReportKey, nil
 		},
 	})
+	reportWorkspaceCheckout := func(report workspaceRepositoryCheckoutReport) *httptest.ResponseRecorder {
+		body, err := json.Marshal(report)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := "/v1/internal/resource-planes/" + string(report.ResourcePlaneID) + "/workspaces/" + string(report.WorkspaceID) + "/repository-checkout"
+		timestamp, reportID := fmt.Sprintf("%d", time.Now().UTC().Unix()), strings.Repeat("a", 48)
+		bodyHash := sha256.Sum256(body)
+		message := strings.Join([]string{http.MethodPut, path, timestamp, reportID, hex.EncodeToString(bodyHash[:])}, "\n")
+		mac := hmac.New(sha256.New, serviceReportKey)
+		_, _ = mac.Write([]byte(message))
+		request := httptest.NewRequest(http.MethodPut, path, bytes.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set(healthReportTimestampHeader, timestamp)
+		request.Header.Set(healthReportIDHeader, reportID)
+		request.Header.Set(healthReportSignatureHeader, hex.EncodeToString(mac.Sum(nil)))
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
 
 	requestInstallation := func(subject, method, tenantID, body string) *httptest.ResponseRecorder {
 		token := signTenantAPIToken(t, privateKey, issuer, subject, "openid hako/api")
@@ -236,7 +257,7 @@ func TestTenantMembershipRouteResolvesUserAndRejectsNonMembers(t *testing.T) {
 		VALUES ('run_usage_active','tenant_member','job','standard','untrusted','running','pending','usage-active','usage-request',600,$1,1,$2,$2)`, joinedAt.Add(10*time.Minute), joinedAt); err != nil {
 		t.Fatalf("seed active Workload usage: %v", err)
 	}
-	created := requestCreateWorkspace(t, handler, createToken, "tenant_member", `{"name":"api-dev"}`, "create-api-dev")
+	created := requestCreateWorkspace(t, handler, createToken, "tenant_member", `{"name":"api-dev","repository":"acme/alpha"}`, "create-api-dev")
 	if created.Code != http.StatusAccepted {
 		t.Fatalf("workspace create returned HTTP %d: %s", created.Code, created.Body.String())
 	}
@@ -247,15 +268,29 @@ func TestTenantMembershipRouteResolvesUserAndRejectsNonMembers(t *testing.T) {
 	if createResult.Workspace.OwnerID != "usr_member" || createResult.Workspace.Name != "api-dev" || createResult.Status.ObservedState != domain.ObservedWorkspacePending {
 		t.Fatalf("unexpected created Workspace: %+v", createResult)
 	}
+	if createResult.Workspace.Repository == nil || createResult.Workspace.Repository.InstallationID != activeInstallationID ||
+		createResult.Workspace.Repository.GitHubRepositoryID != 9001 || createResult.Workspace.Repository.Owner != "acme" ||
+		createResult.Workspace.Repository.Name != "alpha" || createResult.Workspace.Repository.DefaultBranch != "trunk" ||
+		createResult.Workspace.Repository.CheckoutState != "pending" || createResult.Workspace.Repository.CommitSHA != "" {
+		t.Fatalf("created Workspace did not expose the persisted pending checkout pin: %+v", createResult.Workspace.Repository)
+	}
 	var operationPayload string
 	if err := pool.QueryRow(ctx, `SELECT payload_json FROM outbox_events WHERE aggregate_id = $1 AND event_type = 'operation.requested'`, createResult.OperationID).Scan(&operationPayload); err != nil {
 		t.Fatalf("load API-created Operation command: %v", err)
 	}
 	var operationCorrelation struct {
-		CorrelationID string `json:"correlation_id"`
+		CorrelationID        string `json:"correlation_id"`
+		GitHubInstallationID int64  `json:"github_installation_id"`
+		GitHubRepositoryID   int64  `json:"github_repository_id"`
+		GitHubOwner          string `json:"github_owner"`
+		GitHubRepository     string `json:"github_repository"`
+		GitHubDefaultBranch  string `json:"github_default_branch"`
 	}
 	if json.Unmarshal([]byte(operationPayload), &operationCorrelation) != nil || operationCorrelation.CorrelationID == "" ||
-		operationCorrelation.CorrelationID != created.Header().Get("X-Hako-Request-ID") {
+		operationCorrelation.CorrelationID != created.Header().Get("X-Hako-Request-ID") ||
+		operationCorrelation.GitHubInstallationID != activeInstallationID ||
+		operationCorrelation.GitHubRepositoryID != 9001 || operationCorrelation.GitHubOwner != "acme" ||
+		operationCorrelation.GitHubRepository != "alpha" || operationCorrelation.GitHubDefaultBranch != "trunk" {
 		t.Fatalf("API-generated request ID was not persisted with Operation command: payload=%s header=%q", operationPayload, created.Header().Get("X-Hako-Request-ID"))
 	}
 	usageResponse := requestWorkspaceUsage(t, handler, createToken, "tenant_member")
@@ -267,10 +302,58 @@ func TestTenantMembershipRouteResolvesUserAndRejectsNonMembers(t *testing.T) {
 	if foreignUsage.Code != http.StatusNotFound {
 		t.Fatalf("non-member read of another Tenant's usage should be hidden: HTTP %d %s", foreignUsage.Code, foreignUsage.Body.String())
 	}
-	replayed := requestCreateWorkspace(t, handler, createToken, "tenant_member", `{"name":"api-dev"}`, "create-api-dev")
+	replayed := requestCreateWorkspace(t, handler, createToken, "tenant_member", `{"name":"api-dev","repository":"acme/alpha"}`, "create-api-dev")
 	var replayResult workspaceCreateResponse
 	if replayed.Code != http.StatusAccepted || json.Unmarshal(replayed.Body.Bytes(), &replayResult) != nil || replayResult.Workspace.ID != createResult.Workspace.ID {
 		t.Fatalf("idempotent create did not return original Workspace: %d %s", replayed.Code, replayed.Body.String())
+	}
+	if replayResult.Workspace.Repository == nil || replayResult.Workspace.Repository.GitHubRepositoryID != 9001 || replayResult.Workspace.Repository.CheckoutState != "pending" {
+		t.Fatalf("idempotent create lost the persisted repository pin: %+v", replayResult.Workspace.Repository)
+	}
+	detailed := requestWorkspaceGet(t, handler, createToken, "tenant_member", string(createResult.Workspace.ID))
+	var detailResult workspaceCreateResponse
+	if detailed.Code != http.StatusOK || json.Unmarshal(detailed.Body.Bytes(), &detailResult) != nil || detailResult.Workspace.Repository == nil ||
+		detailResult.Workspace.Repository.GitHubRepositoryID != 9001 || detailResult.Workspace.Repository.CheckoutState != "pending" {
+		t.Fatalf("Workspace detail did not return repository checkout state: HTTP %d %s", detailed.Code, detailed.Body.String())
+	}
+	workspaceCommit := strings.Repeat("a", 40)
+	if err := workspaces.PinWorkspaceRepositoryCommit(ctx, pool, transaction.DefaultPolicy(), "tenant_member", createResult.Workspace.ID, workspaceCommit, time.Now().UTC()); err != nil {
+		t.Fatalf("persist immutable Workspace default-branch commit: %v", err)
+	}
+	if err := workspaces.PinWorkspaceRepositoryCommit(ctx, pool, transaction.DefaultPolicy(), "tenant_member", createResult.Workspace.ID, workspaceCommit, time.Now().UTC()); err != nil {
+		t.Fatalf("replaying the same Workspace commit pin should be idempotent: %v", err)
+	}
+	if err := workspaces.PinWorkspaceRepositoryCommit(ctx, pool, transaction.DefaultPolicy(), "tenant_member", createResult.Workspace.ID, strings.Repeat("b", 40), time.Now().UTC()); !errors.Is(err, workspaces.ErrWorkspaceRepositoryCommitConflict) {
+		t.Fatalf("changing an immutable Workspace commit pin returned %v", err)
+	}
+	failedCheckout := reportWorkspaceCheckout(workspaceRepositoryCheckoutReport{TenantID: "tenant_member", WorkspaceID: createResult.Workspace.ID,
+		ResourcePlaneID: "rp_test", InstallationID: activeInstallationID, RepositoryID: 9001, State: "failed", ObservedAt: time.Now().UTC()})
+	if failedCheckout.Code != http.StatusOK {
+		t.Fatalf("signed Resource Plane failed-checkout report returned HTTP %d: %s", failedCheckout.Code, failedCheckout.Body.String())
+	}
+	readyCheckout := reportWorkspaceCheckout(workspaceRepositoryCheckoutReport{TenantID: "tenant_member", WorkspaceID: createResult.Workspace.ID,
+		ResourcePlaneID: "rp_test", InstallationID: activeInstallationID, RepositoryID: 9001, CommitSHA: workspaceCommit, State: "ready", ObservedAt: time.Now().UTC()})
+	if readyCheckout.Code != http.StatusOK {
+		t.Fatalf("retry at the pinned commit should mark checkout ready: HTTP %d %s", readyCheckout.Code, readyCheckout.Body.String())
+	}
+	conflictingCheckout := reportWorkspaceCheckout(workspaceRepositoryCheckoutReport{TenantID: "tenant_member", WorkspaceID: createResult.Workspace.ID,
+		ResourcePlaneID: "rp_test", InstallationID: activeInstallationID, RepositoryID: 9001, CommitSHA: strings.Repeat("b", 40), State: "ready", ObservedAt: time.Now().UTC()})
+	if conflictingCheckout.Code != http.StatusConflict {
+		t.Fatalf("Resource Plane checkout result changed immutable commit: HTTP %d %s", conflictingCheckout.Code, conflictingCheckout.Body.String())
+	}
+	checkoutDetail := requestWorkspaceGet(t, handler, createToken, "tenant_member", string(createResult.Workspace.ID))
+	var checkoutDetailResult workspaceCreateResponse
+	if checkoutDetail.Code != http.StatusOK || json.Unmarshal(checkoutDetail.Body.Bytes(), &checkoutDetailResult) != nil || checkoutDetailResult.Workspace.Repository == nil ||
+		checkoutDetailResult.Workspace.Repository.CheckoutState != "ready" || checkoutDetailResult.Workspace.Repository.CommitSHA != workspaceCommit {
+		t.Fatalf("Workspace detail did not expose the signed ready checkout result: HTTP %d %s", checkoutDetail.Code, checkoutDetail.Body.String())
+	}
+	changedRepositoryReplay := requestCreateWorkspace(t, handler, createToken, "tenant_member", `{"name":"api-dev","repository":"acme/zeta"}`, "create-api-dev")
+	if changedRepositoryReplay.Code != http.StatusConflict || !strings.Contains(changedRepositoryReplay.Body.String(), "idempotency_conflict") {
+		t.Fatalf("idempotency replay with a different repository was accepted: HTTP %d %s", changedRepositoryReplay.Code, changedRepositoryReplay.Body.String())
+	}
+	foreignRepository := requestCreateWorkspace(t, handler, createToken, "tenant_member", `{"name":"foreign-repo","repository":"foreign/api"}`, "create-foreign-repository")
+	if foreignRepository.Code != http.StatusNotFound || !strings.Contains(foreignRepository.Body.String(), "repository_not_found") {
+		t.Fatalf("repository outside the Tenant registry was accepted: HTTP %d %s", foreignRepository.Code, foreignRepository.Body.String())
 	}
 	var auditCount int
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM audit_events WHERE tenant_id = $1 AND actor_user_id = $2 AND action = 'workspace.create' AND target_id = $3`, "tenant_member", "usr_member", createResult.Workspace.ID).Scan(&auditCount); err != nil || auditCount != 1 {
@@ -888,6 +971,14 @@ func TestTenantMembershipRouteResolvesUserAndRejectsNonMembers(t *testing.T) {
 	}
 	runOperationThroughFakeRuntime(t, ctx, pool, resumeResult.OperationID, fakeRuntime)
 	assertWorkspaceObservedState(t, handler, createToken, "tenant_member", createResult.Workspace.ID, domain.ObservedWorkspaceRunning)
+	resumedWorkspaceResponse := requestWorkspaceGet(t, handler, createToken, "tenant_member", string(createResult.Workspace.ID))
+	var resumedWorkspace workspaceCreateResponse
+	if resumedWorkspaceResponse.Code != http.StatusOK || json.Unmarshal(resumedWorkspaceResponse.Body.Bytes(), &resumedWorkspace) != nil ||
+		resumedWorkspace.Workspace.Repository == nil || resumedWorkspace.Workspace.Repository.InstallationID != activeInstallationID ||
+		resumedWorkspace.Workspace.Repository.GitHubRepositoryID != 9001 || resumedWorkspace.Workspace.Repository.CheckoutState != "ready" ||
+		resumedWorkspace.Workspace.Repository.CommitSHA != workspaceCommit {
+		t.Fatalf("Workspace resume changed its immutable repository selection: HTTP %d %s", resumedWorkspaceResponse.Code, resumedWorkspaceResponse.Body.String())
+	}
 	delete := sendWorkspaceAction(t, handler, createToken, "tenant_member", string(createResult.Workspace.ID), "delete", "delete-api-dev")
 	var deleteResult workspaceActionResponse
 	if delete.Code != http.StatusAccepted || json.Unmarshal(delete.Body.Bytes(), &deleteResult) != nil || deleteResult.Workspace.Status.DesiredState != domain.DesiredWorkspaceDeleted {

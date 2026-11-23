@@ -8,6 +8,24 @@ No smoke run, infrastructure apply, GitHub App change, or real Secret read is
 authorized by this document. Each requires explicit approval for the named
 accounts, Region, repository, and time window.
 
+## Local E2E with Kiri
+
+On Linux, Kiri 0.2.2 requires a root daemon to launch containers and uses
+the host kernel. This path verifies the Factory flow through Kiri.
+
+With a running Kiri engine and local PostgreSQL, prefetch the pinned Go
+image and run the Factory tests:
+
+```sh
+kiri pull docker.io/library/golang:1.27.4-alpine
+make test-software-factory-kiri
+```
+
+This target selects Kiri for the Factory Job and checks that its labeled
+containers are removed. The test fails if the Kiri engine or image is
+unavailable. The run uses synthetic repositories and fake AWS/GitHub
+providers.
+
 ## Account and environment boundary
 
 - Use a dedicated Hako staging Control Plane account and a dedicated staging
@@ -47,6 +65,28 @@ Obtain and record all of the following before deployment or execution:
 The change record must identify who can stop the run and who verifies cleanup.
 Approval of this runbook is not approval to apply Terraform or access real
 Secrets.
+
+## Progressive MicroVM verification
+
+Run the stages in order. Use one test Workspace and one Job attempt at a
+time. Record the deployment revision, image digests, account and Region,
+Workspace/Run IDs, provider IDs, correlation IDs, elapsed times, and final
+cleanup state.
+
+| Stage | Run | Pass evidence |
+| --- | --- | --- |
+| 1. Local prerequisites | Run `make test-software-factory-e2e`, `make test-integration-local`, and `make test-aws-e2e-guard`. Build/inspect the Workspace ARM64 image and verify the Workload package with `make verify-workload-microvm-artifact`. | Local tests pass and artifacts match the expected architecture and contents. |
+| 2. Staging preflight | Run `make aws-e2e-preflight` with the planned test identities. Review exact resource ownership, time and spend limits, and cleanup access before launching. | STS identities match the approved accounts; image, connector, and other inputs are recorded. |
+| 3. Workspace smoke | Create one Workspace using the deployed image. Use the [Workspace runtime checklist](workspace-lambda-microvm.md#staging-smoke-checklist). | Gateway reaches the running Guest, suspend/resume preserves a test file, and delete confirms termination. |
+| 4. Factory smoke | Run the single fixed Job described below. On a subsequent run, verify cancellation and repeat delivery of the same event. | GitHub Check matches the Run outcome, duplicate delivery does not launch another attempt, and provider cleanup is confirmed. |
+
+The preflight performs read-only identity checks. AWS mutations and cleanup
+remain operator-run until the guard is integrated with actual AWS calls.
+Record network and cgroup checks independently. For network policy, use
+controlled endpoints to verify both an allowed connection and a denied
+connection from the Guest. For cgroups, validate the configured limit with a
+bounded fixture and capture the observed enforcement. These checks may be
+tracked separately from initial connectivity.
 
 ## Smoke scope
 

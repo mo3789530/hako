@@ -133,6 +133,31 @@ output "workload_commands_dlq_arn" {
   value       = try(aws_sqs_queue.workload_commands_dlq[0].arn, null)
 }
 
+output "agentcore_commands_queue_url" {
+  description = "URL of the distinct opt-in AgentCore invocation queue; null until enabled."
+  value       = try(aws_sqs_queue.agentcore_commands[0].url, null)
+}
+
+output "agentcore_commands_queue_arn" {
+  description = "ARN of the distinct opt-in AgentCore invocation queue; null until enabled."
+  value       = try(aws_sqs_queue.agentcore_commands[0].arn, null)
+}
+
+output "agentcore_commands_dlq_arn" {
+  description = "ARN of the AgentCore invocation queue DLQ; null until enabled."
+  value       = try(aws_sqs_queue.agentcore_commands_dlq[0].arn, null)
+}
+
+output "agentcore_worker_lambda_arn" {
+  description = "ARN of the optional AgentCore SQS orchestration worker Lambda; null while disabled."
+  value       = try(aws_lambda_function.agentcore_worker[0].arn, null)
+}
+
+output "agentcore_worker_event_source_mapping_uuid" {
+  description = "UUID of the optional AgentCore command queue event source mapping; null while disabled."
+  value       = try(aws_lambda_event_source_mapping.agentcore_worker[0].uuid, null)
+}
+
 output "actions_runner_startup_queue_url" {
   description = "URL of the opt-in Actions Runner startup queue; null until its worker is configured."
   value       = try(aws_sqs_queue.actions_runner_startup[0].url, null)

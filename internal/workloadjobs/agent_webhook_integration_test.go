@@ -4,6 +4,7 @@ package workloadjobs
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -193,6 +194,26 @@ func TestProcessAgentIssueCommentCreatesOneImmutableRunAndTask(t *testing.T) {
 	}
 	if err := pool.QueryRow(ctx, `SELECT processing_status FROM github_webhook_deliveries WHERE integration_id=$1 AND delivery_id=$2`, unauthorized.IntegrationID, unauthorized.DeliveryID).Scan(&deliveryState); err != nil || deliveryState != "failed" {
 		t.Fatalf("unauthorized delivery state=%q error=%v", deliveryState, err)
+	}
+	placement := PlacementSelectorFunc(func(context.Context, domain.WorkloadRun) (domain.ResourcePlaneID, error) {
+		return "rp_agentcore", nil
+	})
+	if _, err := pool.Exec(ctx, `INSERT INTO resource_planes (id,provider,region,capabilities_json) VALUES ('rp_agentcore','agentcore','ap-northeast-1','[]')`); err != nil {
+		t.Fatalf("seed AgentCore Resource Plane: %v", err)
+	}
+	dispatcher := DispatchHandler{Pool: pool, Policy: transaction.DefaultPolicy(), Placement: placement, Now: func() time.Time { return now.Add(20 * time.Minute) }}
+	if err := dispatcher.Handle(ctx, ScheduleRequest{SchemaVersion: 1, TenantID: run.TenantID, WorkloadRunID: run.ID}); err != nil {
+		t.Fatalf("schedule managed Agent Run: %v", err)
+	}
+	var dispatchPayload []byte
+	if err := pool.QueryRow(ctx, `SELECT payload_json FROM outbox_events WHERE aggregate_type='workload_attempt' AND aggregate_id=(
+		SELECT id FROM workload_run_attempts WHERE tenant_id=$1 AND workload_run_id=$2 ORDER BY generation DESC LIMIT 1
+	) AND event_type='workload_attempt.dispatch'`, run.TenantID, run.ID).Scan(&dispatchPayload); err != nil {
+		t.Fatal(err)
+	}
+	var command DispatchCommand
+	if err := json.Unmarshal(dispatchPayload, &command); err != nil || command.RuntimeProvider != domain.WorkloadRuntimeAgentCore || command.ResourcePlane != "rp_agentcore" {
+		t.Fatalf("Agent attempt was not durably pinned to AgentCore: command=%+v error=%v", command, err)
 	}
 }
 

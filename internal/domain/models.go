@@ -66,14 +66,28 @@ const (
 )
 
 type Workspace struct {
-	ID           WorkspaceID `json:"id"`
-	TenantID     TenantID    `json:"tenant_id"`
-	OwnerID      UserID      `json:"owner_id"`
-	Name         string      `json:"name"`
-	RuntimeClass string      `json:"runtime_class"`
-	Image        string      `json:"image"`
-	CreatedAt    time.Time   `json:"created_at"`
-	UpdatedAt    time.Time   `json:"updated_at"`
+	ID           WorkspaceID          `json:"id"`
+	TenantID     TenantID             `json:"tenant_id"`
+	OwnerID      UserID               `json:"owner_id"`
+	Name         string               `json:"name"`
+	RuntimeClass string               `json:"runtime_class"`
+	Image        string               `json:"image"`
+	Repository   *WorkspaceRepository `json:"repository,omitempty"`
+	CreatedAt    time.Time            `json:"created_at"`
+	UpdatedAt    time.Time            `json:"updated_at"`
+}
+
+// WorkspaceRepository is the Tenant-authorized source pin selected during
+// Workspace creation. CommitSHA remains empty until trusted checkout resolves
+// the registry's default branch to an immutable Git commit.
+type WorkspaceRepository struct {
+	InstallationID     int64  `json:"installation_id"`
+	GitHubRepositoryID int64  `json:"github_repository_id"`
+	Owner              string `json:"owner"`
+	Name               string `json:"name"`
+	DefaultBranch      string `json:"default_branch"`
+	CommitSHA          string `json:"commit_sha,omitempty"`
+	CheckoutState      string `json:"checkout_state"`
 }
 
 type WorkspaceStatus struct {
@@ -227,6 +241,16 @@ const (
 	WorkloadJob     WorkloadKind = "job"
 	WorkloadAgent   WorkloadKind = "agent"
 	WorkloadPreview WorkloadKind = "preview"
+)
+
+// WorkloadRuntimeProvider is assigned by trusted scheduling from the durable
+// Workload kind. Agent Runs must use the managed AgentCore route; there is no
+// implicit Lambda MicroVM fallback.
+type WorkloadRuntimeProvider string
+
+const (
+	WorkloadRuntimeLambdaMicroVM WorkloadRuntimeProvider = "lambda_microvm"
+	WorkloadRuntimeAgentCore     WorkloadRuntimeProvider = "agentcore"
 )
 
 type WorkloadTrustLevel string

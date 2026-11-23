@@ -30,6 +30,51 @@ type AgentIssueContext struct {
 	DefaultRef  string `json:"default_ref"`
 }
 
+// RepositoryDefaultBranch identifies the immutable head resolved for a
+// repository's current default branch.
+type RepositoryDefaultBranch struct {
+	Name      string `json:"name"`
+	CommitSHA string `json:"commit_sha"`
+}
+
+// ResolveRepositoryDefaultBranch resolves the default branch name and its
+// current commit using a repository-scoped, unexpired installation token.
+// Callers that persist the result must bind it to their immutable Workspace
+// or Run identity before any Guest receives source.
+func (c *TokenClient) ResolveRepositoryDefaultBranch(ctx context.Context, token InstallationToken, repository RepositoryAccess) (RepositoryDefaultBranch, error) {
+	if c == nil || c.now == nil || ctx == nil || !validLogin(repository.Owner) || !validCredentialRepositoryName(repository.Name) ||
+		token.Value() == "" || token.ExpiresAt().IsZero() || !token.ExpiresAt().After(c.now()) {
+		return RepositoryDefaultBranch{}, credentialError("invalid_request")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	resolved, err := c.resolveRepositoryDefaultBranch(ctx, token, repository)
+	if err != nil {
+		return RepositoryDefaultBranch{}, credentialError("repository_head_unavailable")
+	}
+	return resolved, nil
+}
+
+func (c *TokenClient) resolveRepositoryDefaultBranch(ctx context.Context, token InstallationToken, repository RepositoryAccess) (RepositoryDefaultBranch, error) {
+	var metadata struct {
+		DefaultBranch string `json:"default_branch"`
+	}
+	if err := c.getInstallationJSON(ctx, token, "/repos/"+url.PathEscape(repository.Owner)+"/"+url.PathEscape(repository.Name), &metadata); err != nil ||
+		metadata.DefaultBranch == "" || len(metadata.DefaultBranch) > 255 || strings.TrimSpace(metadata.DefaultBranch) != metadata.DefaultBranch ||
+		strings.ContainsAny(metadata.DefaultBranch, "\r\n\x00") {
+		return RepositoryDefaultBranch{}, credentialError("repository_head_unavailable")
+	}
+	query := url.Values{"sha": []string{metadata.DefaultBranch}, "per_page": []string{"1"}}
+	var commits []struct {
+		SHA string `json:"sha"`
+	}
+	path := "/repos/" + url.PathEscape(repository.Owner) + "/" + url.PathEscape(repository.Name) + "/commits?" + query.Encode()
+	if err := c.getInstallationJSON(ctx, token, path, &commits); err != nil || len(commits) != 1 || !agentCommitSHAPattern.MatchString(commits[0].SHA) {
+		return RepositoryDefaultBranch{}, credentialError("repository_head_unavailable")
+	}
+	return RepositoryDefaultBranch{Name: metadata.DefaultBranch, CommitSHA: commits[0].SHA}, nil
+}
+
 // ResolveAgentIssueContext fetches the exact Issue and the current immutable
 // default-branch commit using an already repository-scoped Tenant App token.
 // Pull requests, closed Issues, malformed metadata, redirects, and oversized
@@ -56,26 +101,15 @@ func (c *TokenClient) ResolveAgentIssueContext(ctx context.Context, token Instal
 		strings.TrimSpace(issue.Title) == "" || len(issue.Title) > 1024 || issue.Body != nil && len(*issue.Body) > 64<<10 {
 		return AgentIssueContext{}, credentialError("issue_context_unavailable")
 	}
-	var repositoryMetadata struct {
-		DefaultBranch string `json:"default_branch"`
-	}
-	if err := c.getInstallationJSON(ctx, token, "/repos/"+url.PathEscape(repository.Owner)+"/"+url.PathEscape(repository.Name), &repositoryMetadata); err != nil ||
-		repositoryMetadata.DefaultBranch == "" || len(repositoryMetadata.DefaultBranch) > 255 || strings.ContainsAny(repositoryMetadata.DefaultBranch, "\r\n\x00") {
-		return AgentIssueContext{}, credentialError("issue_context_unavailable")
-	}
-	query := url.Values{"sha": []string{repositoryMetadata.DefaultBranch}, "per_page": []string{"1"}}
-	var commits []struct {
-		SHA string `json:"sha"`
-	}
-	commitPath := "/repos/" + url.PathEscape(repository.Owner) + "/" + url.PathEscape(repository.Name) + "/commits?" + query.Encode()
-	if err := c.getInstallationJSON(ctx, token, commitPath, &commits); err != nil || len(commits) != 1 || !agentCommitSHAPattern.MatchString(commits[0].SHA) {
+	defaultBranch, err := c.resolveRepositoryDefaultBranch(ctx, token, repository)
+	if err != nil {
 		return AgentIssueContext{}, credentialError("issue_context_unavailable")
 	}
 	body := ""
 	if issue.Body != nil {
 		body = *issue.Body
 	}
-	return AgentIssueContext{IssueNumber: issue.Number, Title: issue.Title, Body: body, CommitSHA: commits[0].SHA, DefaultRef: repositoryMetadata.DefaultBranch}, nil
+	return AgentIssueContext{IssueNumber: issue.Number, Title: issue.Title, Body: body, CommitSHA: defaultBranch.CommitSHA, DefaultRef: defaultBranch.Name}, nil
 }
 
 func (c *TokenClient) getInstallationJSON(ctx context.Context, token InstallationToken, path string, destination any) error {

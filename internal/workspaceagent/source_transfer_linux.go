@@ -39,6 +39,33 @@ func TransferSourceArchive(ctx context.Context, stream io.ReadWriteCloser, archi
 	return nil
 }
 
+// TransferWorkspaceRepositoryArchive installs a pre-fetched Git checkout at
+// the selected repository's fixed top-level directory. The token is not part
+// of this protocol; the Resource Plane removes it before creating the archive.
+func TransferWorkspaceRepositoryArchive(ctx context.Context, stream io.ReadWriteCloser, archive workloadsource.SourceArchive,
+	repositoryName, commitSHA, digest string) error {
+	if ctx == nil || stream == nil || archive.Body == nil || archive.Size < 1 || archive.Size > workspaceprotocol.FileMaxBytes || ctx.Err() != nil {
+		return ErrSourceTransfer
+	}
+	stopClose := context.AfterFunc(ctx, func() { _ = stream.Close() })
+	defer stopClose()
+	if err := workspaceprotocol.WriteFileRequest(stream, workspaceprotocol.FileRequest{
+		Operation: "install_repository", Path: "/workspace/" + repositoryName, Size: archive.Size, Digest: digest, CommitSHA: commitSHA,
+	}); err != nil {
+		return ErrSourceTransfer
+	}
+	reader := &sourceTransferContextReader{ctx: ctx, reader: archive.Body}
+	written, err := io.CopyN(stream, reader, archive.Size)
+	if err != nil || written != archive.Size {
+		return ErrSourceTransfer
+	}
+	response, err := workspaceprotocol.ReadFileResponse(stream)
+	if err != nil || !response.OK || response.Size != archive.Size {
+		return ErrSourceTransfer
+	}
+	return nil
+}
+
 // StartPreviewApplication asks the bound Guest Agent to start the command from
 // its installed .hako/preview.yaml manifest and waits for its fixed loopback
 // port to pass the Guest-side readiness check.

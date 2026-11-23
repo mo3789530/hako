@@ -1,17 +1,21 @@
 # Task 90: AgentCore Runtime Coding Agent
 
-Status: In Progress (Python workflow core, session identity and journal preparation primitives, and initial lifecycle contract;
-backend dispatch, AWS integration and execution are not implemented). Priority: P3. Depends on Tasks 38, 39, 53, 87 and 89;
+Status: In Progress. Local Python/Go contracts, AgentCore invocation and cleanup worker, attempt-pinned Broker/S3 resolver, AWS SDK Runtime adapter, SQS queue/DLQ, default-off ARM64 Lambda consumer, and background attempt-lease heartbeat are implemented. Terraform mock coverage and module/dev validation pass; `make build-agentcore-worker-lambda` builds the ZIP. AgentCore proposals use the existing Workload result contract: the Control Plane stores the attempt-scoped change bundle and enqueues the independent verifier under the existing factory opt-in. Existing result-consumer PostgreSQL E2E and AgentCore result-bridge tests cover both boundaries. Remaining work is the digest-pinned Runtime image and AWS isolation/deployment acceptance. Priority: P3. Depends on Tasks 38, 39, 53, 87 and 89;
 production verification also depends on the verifier and Broker deployment gates.
 
 The unresolved design decisions and actionable follow-ups are tracked in
 Tasks [91](task-91-agent-runtime-and-workspace.md)–[96](task-96-agentcore-lifecycle-operations.md).
 Task 90 remains the parent acceptance and integration milestone.
 
+Local result bridge follow-up (2026-11-22): the Workload Controller can now map a strict attempt-bound AgentCore draft to its existing `agent_changes` artifact metadata/result contract. It checks Tenant/Run/attempt/generation/Resource Plane, Repository/base commit/source digest and deadline against the trusted Specification; the proposal archive is re-inspected before storage. The existing Controller remains responsible for durable result checkpoint, cleanup confirmation and Control Plane publication. `make test-workload-runtime` and tagged Workload integration tests pass. No AgentCore provider, cancellation lease or AWS call was connected.
+
+Local Worker composition follow-up (2026-11-22): added `AgentCoreWorkloadWorker` as a fakeable end-to-end Resource Plane worker. It acquires a journal-backed attempt lease, refuses to replay an ambiguous `Running` invocation after restart, resolves trusted invocation input through an injected resolver, checkpoints terminal Workload results, confirms session cleanup, then publishes and records `ResultPublished`. Duplicate delivery after publication is idempotent; cleanup failure can retry with the same stop token without invoking again. Focused worker tests pass. This is not yet an SQS/Lambda composition: the worker does not automatically renew its bounded lease, and no concrete authenticated source resolver or AWS AgentCore adapter is wired.
+
 ## Goal
 
-Add Amazon Bedrock AgentCore Runtime as an execution backend for Hako coding
-Agent Runs. A request pinned to a Tenant, Repository and immutable commit
+Route managed Hako coding Agent Runs to Amazon Bedrock AgentCore Runtime.
+GitHub Actions runners and interactive VS Code Workspaces run on Lambda
+MicroVM. A request pinned to a Tenant, Repository and immutable commit
 produces a bounded `agent_changes` proposal and verification evidence. Hako's
 existing verifier and publication flow remain authoritative for branch and PR
 creation. Keep this backend explicitly opt-in and default-off.
@@ -85,9 +89,17 @@ runs return proposal bytes. Its identity is caller-supplied binding metadata,
 not authentication or independent verification. Tool rejection is returned as
 a sanitized error so the model may recover within the existing call budgets.
 Attempt-authorized source delivery, broader source support, a verifier adapter,
-trusted tree measurement, AgentCore entrypoint, proposal delivery and
-independent verification integration remain open. Its local result is not
-publication evidence.
+trusted tree measurement, proposal delivery and independent verification
+integration remain open. Its local result is not publication evidence. The
+Python package now also has a stdlib HTTP entrypoint with `/ping` and a strict
+versioned `/invocations` request, regional Bedrock client creation, generic
+error responses and fake-backed tests. The handler validates shape and size,
+but does not authenticate caller-supplied attempt pins; only the trusted
+Resource Plane may invoke it, and Hako must independently revalidate results.
+Deadline checks stop additional model calls before/after each Converse call,
+while an in-flight request can exceed the local deadline by up to the configured
+read timeout (60 seconds). No Runtime image, deployed IAM boundary, provider
+cleanup or end-to-end Hako handoff exists yet.
 
 ## Work
 
@@ -150,3 +162,15 @@ publication evidence.
 - Documentation identifies deployed resources, ongoing costs, teardown order,
   supported region/model and remaining limits. AWS deployment and live GitHub
   writes are separate operational steps.
+
+- Task 90 invocation-request follow-up (2026-11-22): added a Go v1 payload builder for the local AgentCore Runtime contract. It validates the immutable Hako command, repository/commit/source pins, UTF-8 task bound, archive size, and SHA-256 of the exact archive bytes before base64 encoding. Unit tests reject malformed pins and changed source; an integration test runs the body through Python `parse_invocation`. Focused Go and Go-to-Python tests pass. The Resource Plane dispatcher, authenticated source broker, provider invocation/cleanup, and deployed IAM remain open; no AWS call was made.
+
+- Task 90 Runtime response follow-up (2026-11-22): added strict Go decoding for AgentCore responses. It rejects duplicate/unknown fields, foreign attempt pins, malformed status/base64 and digest mismatch; it returns explicitly unverified proposal bytes or a no-proposal outcome. `go test ./internal/workloadagentcore ./internal/workloadjournal -count=1` and the Go-to-Python invocation parser integration test pass. Runtime dispatch/source authentication, artifact storage, cleanup, independent verifier composition, and AWS adapter remain open.
+
+
+Local brokered-input resolver follow-up (2026-11-22): added `BrokeredAgentCoreInvocationResolver`. It reloads the current journal by exact command, restores and validates the frozen Agent specification, resolves the Issue task through the existing trusted `AgentTaskProvider`, checks task context digest plus Repository/Installation/branch/commit pins, reads only the attempt-scoped source archive, and verifies its bounded size and SHA-256 before constructing the Go/Python invocation request. Fake tests reject foreign/changed tasks, wrong archive digest metadata, changed archive bytes, and foreign attempts. `make test-workload-runtime`, tagged Workload PostgreSQL tests, AgentCore/workloadjournal/controller race tests, and `git diff --check` pass. No AWS or GitHub service was contacted.
+
+Runtime image follow-up (2026-11-22): added a non-root ARM64 Dockerfile using the SHA-256 pinned official Python 3.13 slim Bookworm multi-architecture manifest, plus a complete boto3 runtime wheel lock with per-artifact hashes. The root Makefile exposes `build-agentcore-coding-agent-image`, which uses Kiri and does not publish. AWS documentation confirms ARM64 and the default 8080 `/ping` and `/invocations` HTTP contract. The local Kiri build could not complete: Kiri is stopped, its Linux daemon requires root (`sudo kiri daemon`), passwordless sudo is unavailable, and the Kiri BuildKit reported Docker Hub DNS failure. No Podman fallback or AWS call was made. A successful ARM64 image build and inspection remain outstanding.
+
+
+Independent verifier path review (2026-11-23): AgentCore draft results are converted to the ordinary `WorkloadResult` with an attempt-scoped `ChangeBundle`; `workloadjobs.ApplyWorkloadResult` already persists that artifact and enqueues the existing isolated verifier only for factory-enabled Tenant repositories. The AgentCore result bridge and PostgreSQL-backed verifier enqueue/binding tests pass separately. The standard result contract preserves the independent verifier boundary; no AgentCore-specific verifier implementation remains. Live verifier execution and rollout are deployment acceptance.

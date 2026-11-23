@@ -26,6 +26,7 @@ var errConcurrentCreate = errors.New("another request created this idempotent op
 var ErrWorkspaceNameConflict = errors.New("workspace name is already in use in this tenant")
 
 var ErrWorkspaceQuotaExceeded = errors.New("tenant workspace quota exceeded")
+var ErrWorkspaceRepositoryUnavailable = errors.New("GitHub repository is not active for Tenant")
 
 const maxCreateRaceRetries = 5
 
@@ -35,6 +36,7 @@ type CreateInput struct {
 	TenantID             domain.TenantID
 	OwnerID              domain.UserID
 	Name                 string
+	Repository           string
 	RuntimeClass         string
 	Image                string
 	Region               string
@@ -56,20 +58,26 @@ type CreateResult struct {
 type createRequest struct {
 	OwnerID      domain.UserID `json:"owner_id"`
 	Name         string        `json:"name"`
+	Repository   string        `json:"repository,omitempty"`
 	RuntimeClass string        `json:"runtime_class"`
 	Image        string        `json:"image"`
 }
 
 type operationCommand struct {
-	SchemaVersion     int                    `json:"schema_version"`
-	WorkspaceRevision int64                  `json:"workspace_revision,omitempty"`
-	OperationID       domain.OperationID     `json:"operation_id"`
-	TenantID          domain.TenantID        `json:"tenant_id"`
-	WorkspaceID       domain.WorkspaceID     `json:"workspace_id"`
-	ResourcePlaneID   domain.ResourcePlaneID `json:"resource_plane_id"`
-	Type              domain.OperationType   `json:"type"`
-	CorrelationID     string                 `json:"correlation_id,omitempty"`
-	CreatedAt         time.Time              `json:"created_at"`
+	SchemaVersion        int                    `json:"schema_version"`
+	WorkspaceRevision    int64                  `json:"workspace_revision,omitempty"`
+	OperationID          domain.OperationID     `json:"operation_id"`
+	TenantID             domain.TenantID        `json:"tenant_id"`
+	WorkspaceID          domain.WorkspaceID     `json:"workspace_id"`
+	ResourcePlaneID      domain.ResourcePlaneID `json:"resource_plane_id"`
+	Type                 domain.OperationType   `json:"type"`
+	CorrelationID        string                 `json:"correlation_id,omitempty"`
+	CreatedAt            time.Time              `json:"created_at"`
+	GitHubInstallationID int64                  `json:"github_installation_id,omitempty"`
+	GitHubRepositoryID   int64                  `json:"github_repository_id,omitempty"`
+	GitHubOwner          string                 `json:"github_owner,omitempty"`
+	GitHubRepository     string                 `json:"github_repository,omitempty"`
+	GitHubDefaultBranch  string                 `json:"github_default_branch,omitempty"`
 }
 
 // Create inserts a Workspace, desired/observed state, placement, initial
@@ -90,7 +98,7 @@ func Create(ctx context.Context, pool transaction.Beginner, input CreateInput, p
 		return CreateResult{}, err
 	}
 
-	request := createRequest{OwnerID: input.OwnerID, Name: input.Name, RuntimeClass: input.RuntimeClass, Image: input.Image}
+	request := createRequest{OwnerID: input.OwnerID, Name: input.Name, Repository: strings.TrimSpace(input.Repository), RuntimeClass: input.RuntimeClass, Image: input.Image}
 	workspaceID, err := idgen.New("ws_")
 	if err != nil {
 		return CreateResult{}, err
@@ -147,6 +155,26 @@ func Create(ctx context.Context, pool transaction.Beginner, input CreateInput, p
 				}
 				return loadCreateResult(ctx, tx, existing)
 			}
+			var installationID, repositoryID int64
+			var ownerLogin, registeredRepositoryName, defaultBranch string
+			if request.Repository != "" {
+				parts := strings.Split(request.Repository, "/")
+				if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+					return CreateResult{}, errors.New("repository must be owner/name")
+				}
+				err := tx.QueryRow(ctx, `SELECT r.installation_id, r.github_repository_id, r.owner_login, r.repository_name, r.default_branch
+					FROM tenant_github_repositories r
+					JOIN tenant_github_installations i ON i.tenant_id = r.tenant_id AND i.installation_id = r.installation_id
+					JOIN github_app_installation_bindings b ON b.tenant_id = r.tenant_id AND b.installation_id = r.installation_id
+					WHERE r.tenant_id = $1 AND lower(r.owner_login) = lower($2) AND lower(r.repository_name) = lower($3)
+					AND i.status = 'active' AND i.suspended_at IS NULL AND r.default_branch <> ''`, input.TenantID, parts[0], parts[1]).Scan(&installationID, &repositoryID, &ownerLogin, &registeredRepositoryName, &defaultBranch)
+				if errors.Is(err, pgx.ErrNoRows) {
+					return CreateResult{}, ErrWorkspaceRepositoryUnavailable
+				}
+				if err != nil {
+					return CreateResult{}, fmt.Errorf("resolve Tenant GitHub repository: %w", err)
+				}
+			}
 			placementPolicy := scheduler.Policy{
 				TenantID:        input.TenantID,
 				ResourcePlaneID: input.ResourcePlaneID,
@@ -165,6 +193,9 @@ func Create(ctx context.Context, pool transaction.Beginner, input CreateInput, p
 				SchemaVersion: 2, WorkspaceRevision: 1, OperationID: selectedOperation.ID, TenantID: selectedOperation.TenantID,
 				WorkspaceID: selectedOperation.WorkspaceID, ResourcePlaneID: selectedOperation.ResourcePlaneID,
 				Type: selectedOperation.Type, CorrelationID: input.CorrelationID, CreatedAt: selectedOperation.CreatedAt,
+				GitHubInstallationID: installationID,
+				GitHubRepositoryID:   repositoryID, GitHubOwner: ownerLogin,
+				GitHubRepository: registeredRepositoryName, GitHubDefaultBranch: defaultBranch,
 			})
 			if err != nil {
 				return CreateResult{}, fmt.Errorf("encode initial operation command: %w", err)
@@ -204,6 +235,22 @@ func Create(ctx context.Context, pool transaction.Beginner, input CreateInput, p
 			}
 			if insertedWorkspaceID != workspace.ID {
 				return CreateResult{}, errors.New("database returned an unexpected Workspace ID")
+			}
+			selectedWorkspace := workspace
+			if repositoryID > 0 {
+				selectedWorkspace.Repository = &domain.WorkspaceRepository{
+					InstallationID: installationID, GitHubRepositoryID: repositoryID,
+					Owner: ownerLogin, Name: registeredRepositoryName,
+					DefaultBranch: defaultBranch, CheckoutState: "pending",
+				}
+				if _, err := tx.Exec(ctx, `INSERT INTO workspace_github_checkouts
+					(tenant_id, workspace_id, installation_id, github_repository_id, owner_login,
+					 repository_name, default_branch, checkout_state, created_at, updated_at)
+					VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',$8,$8)`, input.TenantID, workspace.ID,
+					installationID, repositoryID, selectedWorkspace.Repository.Owner, selectedWorkspace.Repository.Name,
+					defaultBranch, createdAt); err != nil {
+					return CreateResult{}, fmt.Errorf("persist Workspace repository checkout pin: %w", err)
+				}
 			}
 			if err := reserveQuotaSlot(ctx, tx, input.TenantID, workspace.ID, workspaceLimit); err != nil {
 				return CreateResult{}, err
@@ -254,7 +301,7 @@ func Create(ctx context.Context, pool transaction.Beginner, input CreateInput, p
 				return CreateResult{}, err
 			}
 
-			return CreateResult{Workspace: workspace, Status: status, Placement: selectedPlacement, Operation: storedOperation}, nil
+			return CreateResult{Workspace: selectedWorkspace, Status: status, Placement: selectedPlacement, Operation: storedOperation}, nil
 		})
 		if !errors.Is(err, errConcurrentCreate) {
 			return result, err
@@ -370,12 +417,27 @@ func prepareQuotaSlots(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID,
 func loadCreateResult(ctx context.Context, tx pgx.Tx, operation domain.Operation) (CreateResult, error) {
 	var result CreateResult
 	result.Operation = operation
-	err := tx.QueryRow(ctx, `SELECT id, tenant_id, owner_id, name, runtime_class, image, created_at, updated_at FROM workspaces WHERE id = $1`, operation.WorkspaceID).Scan(
+	var installationID, repositoryID *int64
+	var owner, repositoryName, defaultBranch, commitSHA, checkoutState *string
+	err := tx.QueryRow(ctx, `SELECT w.id, w.tenant_id, w.owner_id, w.name, w.runtime_class, w.image, w.created_at, w.updated_at,
+		c.installation_id, c.github_repository_id, c.owner_login, c.repository_name, c.default_branch, c.commit_sha, c.checkout_state
+		FROM workspaces w LEFT JOIN workspace_github_checkouts c ON c.tenant_id=w.tenant_id AND c.workspace_id=w.id
+		WHERE w.id = $1`, operation.WorkspaceID).Scan(
 		&result.Workspace.ID, &result.Workspace.TenantID, &result.Workspace.OwnerID, &result.Workspace.Name,
 		&result.Workspace.RuntimeClass, &result.Workspace.Image, &result.Workspace.CreatedAt, &result.Workspace.UpdatedAt,
+		&installationID, &repositoryID, &owner, &repositoryName, &defaultBranch, &commitSHA, &checkoutState,
 	)
 	if err != nil {
 		return CreateResult{}, fmt.Errorf("load idempotent Workspace: %w", err)
+	}
+	if repositoryID != nil {
+		result.Workspace.Repository = &domain.WorkspaceRepository{
+			InstallationID: *installationID, GitHubRepositoryID: *repositoryID, Owner: *owner,
+			Name: *repositoryName, DefaultBranch: *defaultBranch, CheckoutState: *checkoutState,
+		}
+		if commitSHA != nil {
+			result.Workspace.Repository.CommitSHA = *commitSHA
+		}
 	}
 	err = tx.QueryRow(ctx, `SELECT workspace_id, desired_state, observed_state, updated_at FROM workspace_status WHERE workspace_id = $1`, operation.WorkspaceID).Scan(
 		&result.Status.WorkspaceID, &result.Status.DesiredState, &result.Status.ObservedState, &result.Status.UpdatedAt,

@@ -59,18 +59,23 @@ type WorkspaceCreateResult struct {
 	OperationState string `json:"operation_state"`
 }
 
+type WorkspaceCreateOptions struct {
+	Repository string `json:"repository,omitempty"`
+}
+
 type WorkspaceView struct {
 	Workspace WorkspaceSummary `json:"workspace"`
 	Status    WorkspaceStatus  `json:"status"`
 }
 
 type WorkspaceSummary struct {
-	ID           string `json:"id"`
-	TenantID     string `json:"tenant_id"`
-	OwnerID      string `json:"owner_id"`
-	Name         string `json:"name"`
-	RuntimeClass string `json:"runtime_class"`
-	Image        string `json:"image"`
+	ID           string                      `json:"id"`
+	TenantID     string                      `json:"tenant_id"`
+	OwnerID      string                      `json:"owner_id"`
+	Name         string                      `json:"name"`
+	RuntimeClass string                      `json:"runtime_class"`
+	Image        string                      `json:"image"`
+	Repository   *domain.WorkspaceRepository `json:"repository,omitempty"`
 }
 
 type WorkspaceStatus struct {
@@ -397,6 +402,10 @@ func PutTenantWorkspaceIdlePolicy(ctx context.Context, baseURL, accessToken stri
 // CreateWorkspace requests asynchronous Workspace provisioning. The caller
 // must reuse idempotencyKey if retrying the same logical request.
 func CreateWorkspace(ctx context.Context, baseURL, accessToken, tenantID, name, idempotencyKey string, client *http.Client) (WorkspaceCreateResult, error) {
+	return CreateWorkspaceWithOptions(ctx, baseURL, accessToken, tenantID, name, idempotencyKey, WorkspaceCreateOptions{}, client)
+}
+
+func CreateWorkspaceWithOptions(ctx context.Context, baseURL, accessToken, tenantID, name, idempotencyKey string, options WorkspaceCreateOptions, client *http.Client) (WorkspaceCreateResult, error) {
 	var result WorkspaceCreateResult
 	if !validTenantID(tenantID) {
 		return result, errors.New("tenant ID must contain only letters, numbers, underscores, or hyphens")
@@ -416,8 +425,9 @@ func CreateWorkspace(ctx context.Context, baseURL, accessToken, tenantID, name, 
 		return result, err
 	}
 	body, err := json.Marshal(struct {
-		Name string `json:"name"`
-	}{Name: name})
+		Name       string `json:"name"`
+		Repository string `json:"repository,omitempty"`
+	}{Name: name, Repository: strings.TrimSpace(options.Repository)})
 	if err != nil {
 		return result, fmt.Errorf("encode Workspace request: %w", err)
 	}

@@ -1,6 +1,103 @@
 .PHONY: fmt lint lint-python test test-python test-integration test-integration-local test-webhook-lifecycle-integration test-tenant-app-proof-integration test-tenant-github-apps-integration test-actions-runner-lifecycle-integration test-software-factory-e2e test-native-agent-e2e test-api-lambda-image-smoke test-api-lambda-rie-smoke test-aws-e2e-guard aws-e2e-preflight test-workload-runtime test-workload-runtime-integration test-job-services-podman test-workspace-service-runtime-integration test-workspace-podman-network test-artifact-retention-integration test-workspace-idle-lifecycle-integration test-preview-expiry-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-workspace-service-controller-lambda build-health-reporter-lambda build-workspace-idle-reconciler-lambda build-preview-expiry-lambda build-preview-runtime-dispatch-lambda build-preview-result-consumer-lambda build-workload-controller-lambda build-actions-runner-lambda build-actions-runner-microvm-image build-workload-microvm-artifact verify-workload-microvm-artifact build-workload-microvm-services-image build-workspace-microvm-image build-github-checks-consumer-image build-github-broker-image build-workspace-gateway-image check-arm64-podman-build terraform-fmt terraform-validate terraform-test
+.PHONY: check-local-workspace-microvm-host smoke-local-workspace-microvm-boot smoke-local-workspace-controller test-local-workspace-reconciler build-local-workspace-reconciler test-local-workspace-worker build-local-workspace-worker test-local-idp build-local-idp test-local-workspace-keygen build-local-workspace-keygen test-local-workspace-profile build-local-workspace-stack build-local-workspace-initrd test-local-workspace-initrd test-local-workspace-initrd-rekey test-managed-runtime-local test-managed-runtime-integration fmt lint test test-integration test-integration-local test-webhook-lifecycle-integration test-tenant-app-proof-integration test-tenant-github-apps-integration test-actions-runner-lifecycle-integration test-software-factory-e2e test-native-agent-e2e test-api-lambda-image-smoke test-api-lambda-rie-smoke test-aws-e2e-guard aws-e2e-preflight test-workload-runtime test-workload-runtime-integration test-job-services-podman test-workspace-service-runtime-integration test-workspace-podman-network test-artifact-retention-integration test-workspace-idle-lifecycle-integration test-preview-expiry-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-workspace-service-controller-lambda build-health-reporter-lambda build-workspace-idle-reconciler-lambda build-preview-expiry-lambda build-preview-runtime-dispatch-lambda build-preview-result-consumer-lambda build-workload-controller-lambda build-actions-runner-lambda build-actions-runner-microvm-image build-workload-microvm-artifact verify-workload-microvm-artifact build-workload-microvm-services-image build-workspace-microvm-image build-github-checks-consumer-image build-github-broker-image build-workspace-gateway-image check-arm64-podman-build terraform-fmt terraform-validate terraform-test test-local-workspace-cli-cloud-hypervisor
 
 TERRAFORM ?= terraform
+CLOUD_HYPERVISOR ?= cloud-hypervisor
+CLOUD_HYPERVISOR_KERNEL ?= /boot/vmlinuz-$(shell uname -r)
+CLOUD_HYPERVISOR_KERNEL_CONFIG ?= /boot/config-$(shell uname -r)
+CLOUD_HYPERVISOR_INITRD ?= build/local-workspace/workspace-initrd.cpio.gz
+CLOUD_HYPERVISOR_VSOCK_MODULE_DIR ?= /lib/modules/$(shell uname -r)
+.PHONY: build-local-workspace-native-rootfs check-workspace-image-build-host smoke-local-workspace-hako-initrd
+
+check-local-workspace-microvm-host:
+	CLOUD_HYPERVISOR_BIN="$(CLOUD_HYPERVISOR)" ./scripts/check-local-cloud-hypervisor-host.sh
+
+# Boots a disposable static Guest init on the host kernel through Cloud Hypervisor/KVM.
+smoke-local-workspace-microvm-boot:
+	CLOUD_HYPERVISOR_BIN="$(CLOUD_HYPERVISOR)" CLOUD_HYPERVISOR_KERNEL="$(CLOUD_HYPERVISOR_KERNEL)" CLOUD_HYPERVISOR_INITRD="$(CLOUD_HYPERVISOR_INITRD)" ./scripts/smoke-local-cloud-hypervisor-boot.sh
+
+# Exercises the private local operation API against a real Cloud Hypervisor Guest.
+smoke-local-workspace-controller: build-local-workspace-reconciler
+	python3 scripts/smoke-local-workspace-controller.py "$(CLOUD_HYPERVISOR)"
+
+# Runs the Hako CLI exec client through a real local Gateway and Cloud Hypervisor Guest.
+test-local-workspace-cli-cloud-hypervisor:
+	@test -n "$(HAKO_LOCAL_WORKSPACE_AGENT_PRIVATE_KEY)" || (echo "set HAKO_LOCAL_WORKSPACE_AGENT_PRIVATE_KEY to the matching local Guest key" >&2; exit 1)
+	HAKO_LOCAL_WORKSPACE_AGENT_PRIVATE_KEY="$(HAKO_LOCAL_WORKSPACE_AGENT_PRIVATE_KEY)" CLOUD_HYPERVISOR_BIN="$(CLOUD_HYPERVISOR)" CLOUD_HYPERVISOR_KERNEL="$(CLOUD_HYPERVISOR_KERNEL)" CLOUD_HYPERVISOR_INITRD="$(CLOUD_HYPERVISOR_INITRD)" go test ./cmd/hako -tags cloud_hypervisor_workspace_smoke -run '^TestWorkspaceExecCLIThroughCloudHypervisorGuest$$' -count=1 -v
+
+# The Cloud Hypervisor Guest initrd uses virtio PCI and vsock devices; build it with native host modules.
+smoke-local-workspace-hako-initrd:
+	CLOUD_HYPERVISOR_BIN="$(CLOUD_HYPERVISOR)" CLOUD_HYPERVISOR_KERNEL="$(CLOUD_HYPERVISOR_KERNEL)" CLOUD_HYPERVISOR_KERNEL_CONFIG="$(CLOUD_HYPERVISOR_KERNEL_CONFIG)" CLOUD_HYPERVISOR_INITRD="$(CLOUD_HYPERVISOR_INITRD)" ./scripts/smoke-local-cloud-hypervisor-hako-initrd.sh
+
+# Runs unit/race coverage for the host-local lifecycle and startup reconciler.
+test-local-workspace-reconciler:
+	GOCACHE="$${GOCACHE:-/tmp/hako-go-cache}" go test -race ./internal/workspaceruntime ./cmd/hako-local-workspace-reconciler -count=1
+
+# Runs unit/race coverage for the local Outbox-to-Controller-to-PostgreSQL worker.
+test-local-workspace-worker:
+	GOCACHE="$${GOCACHE:-/tmp/hako-go-cache}" go test -race ./internal/localoperationworker ./cmd/hako-local-workspace-worker ./internal/store/outbox -count=1
+
+# Builds the Linux host-local startup reconciler; no AWS configuration is used.
+build-local-workspace-reconciler:
+	go build -trimpath -o build/hako-local-workspace-reconciler ./cmd/hako-local-workspace-reconciler
+
+# Builds the AWS-free local Workspace Outbox worker.
+build-local-workspace-worker:
+	go build -trimpath -o build/hako-local-workspace-worker ./cmd/hako-local-workspace-worker
+
+# Runs race-enabled tests for the loopback-only local OAuth/JWKS provider.
+test-local-idp:
+	GOCACHE="$${GOCACHE:-/tmp/hako-go-cache}" go test -race ./internal/localidp ./cmd/hako-local-idp -count=1
+
+# Builds the development-only loopback identity provider.
+build-local-idp:
+	go build -trimpath -o build/hako-local-idp ./cmd/hako-local-idp
+
+# Tests/builds the private single-host session, Agent, HMAC and localhost TLS key bundle generator.
+test-local-workspace-keygen:
+	GOCACHE="$${GOCACHE:-/tmp/hako-go-cache}" go test -race ./cmd/hako-local-workspace-keygen -count=1
+
+build-local-workspace-keygen:
+	go build -trimpath -o build/hako-local-workspace-keygen ./cmd/hako-local-workspace-keygen
+
+# Builds the local Control Plane/CLI/IDP/Gateway/Outbox worker/KVM controller processes.
+build-local-workspace-stack: build-local-workspace-keygen build-local-idp build-local-workspace-worker build-local-workspace-reconciler
+	mkdir -p build
+	go build -trimpath -o build/hako-api ./cmd/hako-api
+	go build -trimpath -o build/hako-workspace-gateway ./cmd/hako-workspace-gateway
+	go build -trimpath -o build/hako ./cmd/hako
+
+test-local-workspace-profile:
+	python3 scripts/test-local-workspace-launch-profile.py
+
+# Packages an extracted native-architecture Workspace image rootfs as a Cloud Hypervisor initramfs.
+build-local-workspace-initrd:
+	@test -n "$(HAKO_LOCAL_WORKSPACE_ROOTFS_DIR)" || (echo "set HAKO_LOCAL_WORKSPACE_ROOTFS_DIR to the extracted native-architecture Workspace image rootfs" >&2; exit 1)
+	mkdir -p build/local-workspace
+	@case "$$(uname -m)" in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) echo "unsupported host architecture: $$(uname -m)" >&2; exit 1 ;; esac; \
+	GOOS=linux GOARCH=$$arch CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o build/local-workspace/hako-local-workspace-guest-init ./cmd/hako-local-workspace-guest-init
+	@if [ "$(HAKO_LOCAL_WORKSPACE_INCLUDE_HOST_MODULES)" = true ]; then \
+	  ./scripts/package-local-workspace-initrd.sh "$(HAKO_LOCAL_WORKSPACE_ROOTFS_DIR)" build/local-workspace/hako-local-workspace-guest-init build/local-workspace/workspace-initrd.cpio.gz "$(CLOUD_HYPERVISOR_VSOCK_MODULE_DIR)" "$(CLOUD_HYPERVISOR_KERNEL_CONFIG)"; \
+	else \
+	  ./scripts/package-local-workspace-initrd.sh "$(HAKO_LOCAL_WORKSPACE_ROOTFS_DIR)" build/local-workspace/hako-local-workspace-guest-init build/local-workspace/workspace-initrd.cpio.gz; \
+	fi
+
+# Builds and exports a host-native Workspace OCI rootfs, then packages it as a Guest initrd.
+build-local-workspace-native-rootfs:
+	@set -e; case "$$(uname -m)" in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) echo "unsupported host architecture: $$(uname -m)" >&2; exit 1 ;; esac; \
+	$(MAKE) build-workspace-microvm-image HAKO_WORKSPACE_IMAGE_ARCH=$$arch HAKO_WORKSPACE_IMAGE_TAG=localhost/hako-workspace-init:local-native; \
+	rootfs=$$(mktemp -d "$${TMPDIR:-/tmp}/hako-local-workspace-rootfs.XXXXXX"); cid=; \
+	cleanup() { if [ -n "$$cid" ]; then podman rm -f "$$cid" >/dev/null 2>&1 || true; fi; podman unshare rm -rf "$$rootfs" >/dev/null 2>&1 || true; }; \
+	trap cleanup EXIT HUP INT TERM; cid=$$(podman create localhost/hako-workspace-init:local-native); \
+	podman export "$$cid" | podman unshare tar -C "$$rootfs" -xf -; \
+	podman rm "$$cid" >/dev/null; cid=; \
+	podman unshare $(MAKE) build-local-workspace-initrd HAKO_LOCAL_WORKSPACE_ROOTFS_DIR="$$rootfs" HAKO_LOCAL_WORKSPACE_INCLUDE_HOST_MODULES=true
+
+test-local-workspace-initrd:
+	./scripts/test-local-workspace-initrd-packaging.sh
+
+test-local-workspace-initrd-rekey:
+	python3 scripts/test_local_workspace_initrd_rekey.py
 
 # ARM64 Podman builds execute RUN commands from the target image. On x86_64,
 # fail early unless a QEMU binfmt_misc handler is already installed.
@@ -14,6 +111,7 @@ check-arm64-podman-build:
 	exit 1
 
 HAKO_WORKSPACE_SERVICES_ENABLED ?= false
+HAKO_WORKSPACE_AGENT_VSOCK_ENABLED ?= false
 HAKO_PREVIEW_TICKET_KEY_ID ?=
 
 .PHONY: validate-workspace-agent-keys
@@ -72,9 +170,30 @@ test-software-factory-e2e:
 	HAKO_TEST_DATABASE_URL="$${HAKO_TEST_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" go test -tags=integration ./internal/api -run '^TestWorkloadRunRoutesEnforceTenantAndRequesterVisibility$$' -count=1
 	HAKO_TEST_DATABASE_URL="$${HAKO_TEST_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" go test -tags=integration ./internal/workloadcontroller -run '^TestComposedLambdaWorker(ResultAndCleanupProjectsIntoPostgres|CancellationOutboxTerminatesAndProjectsIntoPostgres)$$' -count=1
 
+.PHONY: check-local-workspace-microvm-host test-managed-runtime-local test-software-factory-kiri build-agentcore-coding-agent-image build-agentcore-worker-lambda
+test-software-factory-kiri: export HAKO_E2E_USE_KIRI = 1
+test-software-factory-kiri: test-software-factory-e2e
+
+# Builds the digest-pinned, non-root ARM64 AgentCore Runtime image with Kiri; this never publishes it.
+build-agentcore-coding-agent-image:
+	kiri build --platform linux/arm64 --tag hako-coding-agent:local -f coding-agent/Dockerfile coding-agent
+
+build-agentcore-worker-lambda:
+	mkdir -p build/agentcore-worker-lambda
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -o build/agentcore-worker-lambda/bootstrap ./cmd/hako-agentcore-worker-lambda
+	cd build/agentcore-worker-lambda && zip -q ../hako-agentcore-worker.zip bootstrap
+
 # Composes the signed Issue command inbox, persisted bounded Agent task, and local Native Agent proposal executor.
 test-native-agent-e2e:
 	HAKO_TEST_DATABASE_URL="$${HAKO_TEST_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" go test -tags=integration ./internal/workloadjobs -run '^TestIssueCommandToNativeAgentProposalUsesPersistedBoundedContext$$' -count=1
+
+# Local unit acceptance for managed routes. No AWS, GitHub, or PostgreSQL required.
+test-managed-runtime-local:
+	GOCACHE="$${GOCACHE:-/tmp/hako-go-cache}" go test ./internal/workloadagentcore ./internal/actionsrunner ./internal/workspacesession ./internal/workspacegateway ./internal/workspaceruntime -count=1
+	PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=coding-agent/src python3 -m unittest discover -s coding-agent/tests -v
+
+# PostgreSQL-backed fake-provider lifecycle acceptance. Never calls AWS/GitHub.
+test-managed-runtime-integration: test-actions-runner-lifecycle-integration test-workspace-idle-lifecycle-integration
 
 test-workload-runtime:
 	go test -race ./internal/workloadcontroller ./internal/workloadjournal ./internal/dispatcher
@@ -130,14 +249,16 @@ build-api-lambda-image:
 
 # Builds/runs the OCI HTTP server on the local host architecture against local PostgreSQL.
 test-api-lambda-image-smoke:
-	podman build --arch amd64 --build-arg TARGETARCH=amd64 -f cmd/hako-api/Dockerfile -t hako-api:smoke .
-	HAKO_DATABASE_URL="$${HAKO_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" HAKO_API_SMOKE_IMAGE=hako-api:smoke ./scripts/test-api-lambda-image-smoke.sh
+	set -e; trap 'podman image rm hako-api:smoke >/dev/null 2>&1 || true' EXIT; \
+		podman build --arch amd64 --build-arg TARGETARCH=amd64 -f cmd/hako-api/Dockerfile -t hako-api:smoke .; \
+		HAKO_DATABASE_URL="$${HAKO_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" HAKO_API_SMOKE_IMAGE=hako-api:smoke ./scripts/test-api-lambda-image-smoke.sh
 
 # Uses AWS's Runtime Interface Emulator to exercise the image's Lambda Web Adapter with API Gateway v2 events.
 test-api-lambda-rie-smoke:
-	podman build --arch amd64 --build-arg TARGETARCH=amd64 -f cmd/hako-api/Dockerfile -t hako-api:rie-smoke .
-	podman build --arch amd64 -f cmd/hako-api/Dockerfile.rie-smoke -t hako-api:rie-local .
-	HAKO_DATABASE_URL="$${HAKO_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" HAKO_API_SMOKE_IMAGE=hako-api:rie-local ./scripts/test-api-lambda-rie-smoke.sh
+	set -e; trap 'podman image rm hako-api:rie-local hako-api:rie-smoke >/dev/null 2>&1 || true' EXIT; \
+		podman build --arch amd64 --build-arg TARGETARCH=amd64 -f cmd/hako-api/Dockerfile -t hako-api:rie-smoke .; \
+		podman build --arch amd64 -f cmd/hako-api/Dockerfile.rie-smoke -t hako-api:rie-local .; \
+		HAKO_DATABASE_URL="$${HAKO_DATABASE_URL:-postgres://hako:local-dev-only@127.0.0.1:5432/hako?sslmode=disable}" HAKO_API_SMOKE_IMAGE=hako-api:rie-local ./scripts/test-api-lambda-rie-smoke.sh
 
 # Pure validation and mocked STS lookups; never contacts AWS.
 test-aws-e2e-guard:
@@ -263,21 +384,30 @@ build-workload-microvm-services-image: check-arm64-podman-build build-workload-m
 	podman build --arch arm64 --tag hako-workload-agent:local-base -f build/workload-microvm/Dockerfile build/workload-microvm
 	podman build --arch arm64 --build-arg HAKO_WORKLOAD_BASE_IMAGE=hako-workload-agent:local-base --build-arg NERDCTL_FULL_VERSION="$(HAKO_NERDCTL_FULL_VERSION)" --build-arg NERDCTL_FULL_SHA256="$(HAKO_NERDCTL_FULL_SHA256)" --build-arg CNI_PLUGINS_VERSION="$(HAKO_CNI_PLUGINS_VERSION)" --build-arg SLIRP4NETNS_VERSION="$(HAKO_SLIRP4NETNS_VERSION)" --build-arg SLIRP4NETNS_SHA256="$(HAKO_SLIRP4NETNS_SHA256)" --tag hako-workload-agent:services-local -f build/workload-microvm/Dockerfile.services build/workload-microvm
 
-# Builds a distinct root-owned Workspace init image with a separate unprivileged shell Agent. EFS RPM, nerdctl-full artifact, and public verification keys are pinned inputs.
-build-workspace-microvm-image: check-arm64-podman-build
+# Builds a distinct root-owned Workspace init image with a separate unprivileged shell Agent. Architecture-matched EFS RPM, nerdctl-full, slirp4netns and code-server inputs are pinned.
+HAKO_WORKSPACE_IMAGE_ARCH ?= arm64
+HAKO_WORKSPACE_IMAGE_TAG ?= hako-workspace-init:local
+ifeq ($(HAKO_WORKSPACE_IMAGE_ARCH),amd64)
+HAKO_WORKSPACE_BASE_IMAGE ?= public.ecr.aws/lambda/microvms@sha256:10fe67044ef13e1795b8ae8281fdaa3fe2efb26ecd101e9223beb169c4c373da
+else
+HAKO_WORKSPACE_BASE_IMAGE ?= public.ecr.aws/lambda/microvms@sha256:b6a34591182b4a1969f57eb24c812582d0c52dc2e40b75b73c0df371bb7aef82
+endif
+
+build-workspace-microvm-image: check-workspace-image-build-host
 	@test "$(HAKO_WORKSPACE_SERVICES_ENABLED)" = true -o "$(HAKO_WORKSPACE_SERVICES_ENABLED)" = false || (echo "set HAKO_WORKSPACE_SERVICES_ENABLED to true or false" >&2; exit 1)
+	@test "$(HAKO_WORKSPACE_AGENT_VSOCK_ENABLED)" = true -o "$(HAKO_WORKSPACE_AGENT_VSOCK_ENABLED)" = false || (echo "set HAKO_WORKSPACE_AGENT_VSOCK_ENABLED to true or false" >&2; exit 1)
 	@test -n "$(HAKO_EFS_UTILS_RPM_VERSION)" || (echo "set HAKO_EFS_UTILS_RPM_VERSION to the pinned amazon-efs-utils RPM version" >&2; exit 1)
 	@test -n "$(HAKO_OPENSSH_RPM_VERSION)" || (echo "set HAKO_OPENSSH_RPM_VERSION to the pinned OpenSSH RPM version" >&2; exit 1)
-	@test -n "$(HAKO_NERDCTL_FULL_ARCHIVE)" || (echo "set HAKO_NERDCTL_FULL_ARCHIVE to a reviewed nerdctl-full Linux ARM64 archive" >&2; exit 1)
+	@test -n "$(HAKO_NERDCTL_FULL_ARCHIVE)" || (echo "set HAKO_NERDCTL_FULL_ARCHIVE to a reviewed nerdctl-full Linux $(HAKO_WORKSPACE_IMAGE_ARCH) archive" >&2; exit 1)
 	@test -n "$(HAKO_NERDCTL_FULL_VERSION)" || (echo "set HAKO_NERDCTL_FULL_VERSION to the exact nerdctl release" >&2; exit 1)
 	@test -n "$(HAKO_NERDCTL_FULL_SHA256)" || (echo "set HAKO_NERDCTL_FULL_SHA256 to the reviewed archive digest" >&2; exit 1)
 	@test -n "$(HAKO_CNI_PLUGINS_VERSION)" || (echo "set HAKO_CNI_PLUGINS_VERSION to the exact CNI plugins version in nerdctl-full" >&2; exit 1)
-	@test -n "$(HAKO_SLIRP4NETNS_BINARY)" || (echo "set HAKO_SLIRP4NETNS_BINARY to a reviewed Linux ARM64 slirp4netns binary" >&2; exit 1)
+	@test -n "$(HAKO_SLIRP4NETNS_BINARY)" || (echo "set HAKO_SLIRP4NETNS_BINARY to a reviewed Linux $(HAKO_WORKSPACE_IMAGE_ARCH) slirp4netns binary" >&2; exit 1)
 	@test -n "$(HAKO_SLIRP4NETNS_VERSION)" || (echo "set HAKO_SLIRP4NETNS_VERSION to the exact slirp4netns release" >&2; exit 1)
 	@test -n "$(HAKO_SLIRP4NETNS_SHA256)" || (echo "set HAKO_SLIRP4NETNS_SHA256 to the reviewed binary digest" >&2; exit 1)
 	@test -s "$(HAKO_SLIRP4NETNS_BINARY)" || (echo "slirp4netns binary is missing or empty" >&2; exit 1)
 	@test -n "$(HAKO_CODE_SERVER_VERSION)" || (echo "set HAKO_CODE_SERVER_VERSION to the pinned code-server version" >&2; exit 1)
-	@test -n "$(HAKO_CODE_SERVER_SHA256)" || (echo "set HAKO_CODE_SERVER_SHA256 to the pinned ARM64 archive SHA-256" >&2; exit 1)
+	@test -n "$(HAKO_CODE_SERVER_SHA256)" || (echo "set HAKO_CODE_SERVER_SHA256 to the pinned $(HAKO_WORKSPACE_IMAGE_ARCH) archive SHA-256" >&2; exit 1)
 	@test -n "$(HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE)" || (echo "set HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE to a public-key JSON file" >&2; exit 1)
 	@test -s "$(HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE)" || (echo "Workspace Agent public-key JSON file is missing or empty" >&2; exit 1)
 	$(MAKE) validate-workspace-agent-keys HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE="$(HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE)" HAKO_PREVIEW_TICKET_KEY_ID="$(HAKO_PREVIEW_TICKET_KEY_ID)"
@@ -287,13 +417,24 @@ build-workspace-microvm-image: check-arm64-podman-build
 		printf '%s\n' "$$archive_entries" | grep -Fxq "$$required" || { echo "nerdctl-full archive is missing $$required" >&2; exit 1; }; \
 	done
 	mkdir -p build/workspace-init
-	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o build/workspace-init/hako-workspace-init ./cmd/hako-workspace-init
-	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o build/workspace-init/hako-workspace-agent ./cmd/hako-workspace-agent
-	install -m 0644 "$(HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE)" build/workspace-init/trusted-keys.json
-	install -m 0644 "$(HAKO_NERDCTL_FULL_ARCHIVE)" build/workspace-init/nerdctl-full-linux-arm64.tar.gz
-	install -m 0644 "$(HAKO_SLIRP4NETNS_BINARY)" build/workspace-init/slirp4netns-aarch64
+	GOOS=linux GOARCH=$(HAKO_WORKSPACE_IMAGE_ARCH) CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o build/workspace-init/hako-workspace-init ./cmd/hako-workspace-init
+	GOOS=linux GOARCH=$(HAKO_WORKSPACE_IMAGE_ARCH) CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o build/workspace-init/hako-workspace-agent ./cmd/hako-workspace-agent
+	GOOS=linux GOARCH=$(HAKO_WORKSPACE_IMAGE_ARCH) CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o build/workspace-init/hako-local-workspace-guest-init ./cmd/hako-local-workspace-guest-init
+	@if [ "$$(realpath -m "$(HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE)")" != "$$(realpath -m build/workspace-init/trusted-keys.json)" ]; then install -m 0644 "$(HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE)" build/workspace-init/trusted-keys.json; fi
+	install -m 0644 "$(HAKO_NERDCTL_FULL_ARCHIVE)" build/workspace-init/nerdctl-full-linux-$(HAKO_WORKSPACE_IMAGE_ARCH).tar.gz
+	install -m 0644 "$(HAKO_SLIRP4NETNS_BINARY)" build/workspace-init/slirp4netns-$(HAKO_WORKSPACE_IMAGE_ARCH)
 	install -m 0644 images/workspace-init/Dockerfile build/workspace-init/Dockerfile
-	podman build --arch arm64 --build-arg EFS_UTILS_RPM_VERSION="$(HAKO_EFS_UTILS_RPM_VERSION)" --build-arg OPENSSH_RPM_VERSION="$(HAKO_OPENSSH_RPM_VERSION)" --build-arg NERDCTL_FULL_VERSION="$(HAKO_NERDCTL_FULL_VERSION)" --build-arg NERDCTL_FULL_SHA256="$(HAKO_NERDCTL_FULL_SHA256)" --build-arg CNI_PLUGINS_VERSION="$(HAKO_CNI_PLUGINS_VERSION)" --build-arg SLIRP4NETNS_VERSION="$(HAKO_SLIRP4NETNS_VERSION)" --build-arg SLIRP4NETNS_SHA256="$(HAKO_SLIRP4NETNS_SHA256)" --build-arg CODE_SERVER_VERSION="$(HAKO_CODE_SERVER_VERSION)" --build-arg CODE_SERVER_SHA256="$(HAKO_CODE_SERVER_SHA256)" --build-arg HAKO_WORKSPACE_SERVICES_ENABLED="$(HAKO_WORKSPACE_SERVICES_ENABLED)" --tag hako-workspace-init:local -f build/workspace-init/Dockerfile build/workspace-init
+	podman build --arch $(HAKO_WORKSPACE_IMAGE_ARCH) --build-arg HAKO_IMAGE_ARCH="$(HAKO_WORKSPACE_IMAGE_ARCH)" --build-arg HAKO_WORKSPACE_BASE_IMAGE="$(HAKO_WORKSPACE_BASE_IMAGE)" --build-arg EFS_UTILS_RPM_VERSION="$(HAKO_EFS_UTILS_RPM_VERSION)" --build-arg OPENSSH_RPM_VERSION="$(HAKO_OPENSSH_RPM_VERSION)" --build-arg NERDCTL_FULL_VERSION="$(HAKO_NERDCTL_FULL_VERSION)" --build-arg NERDCTL_FULL_SHA256="$(HAKO_NERDCTL_FULL_SHA256)" --build-arg CNI_PLUGINS_VERSION="$(HAKO_CNI_PLUGINS_VERSION)" --build-arg SLIRP4NETNS_VERSION="$(HAKO_SLIRP4NETNS_VERSION)" --build-arg SLIRP4NETNS_SHA256="$(HAKO_SLIRP4NETNS_SHA256)" --build-arg CODE_SERVER_VERSION="$(HAKO_CODE_SERVER_VERSION)" --build-arg CODE_SERVER_SHA256="$(HAKO_CODE_SERVER_SHA256)" --build-arg HAKO_WORKSPACE_SERVICES_ENABLED="$(HAKO_WORKSPACE_SERVICES_ENABLED)" --build-arg HAKO_WORKSPACE_AGENT_VSOCK_ENABLED="$(HAKO_WORKSPACE_AGENT_VSOCK_ENABLED)" --tag "$(HAKO_WORKSPACE_IMAGE_TAG)" -f build/workspace-init/Dockerfile build/workspace-init
+
+check-workspace-image-build-host:
+	@set -e; host_arch=$$(uname -m); case "$$host_arch" in x86_64) host_arch=amd64 ;; aarch64|arm64) host_arch=arm64 ;; esac; \
+	case "$(HAKO_WORKSPACE_IMAGE_ARCH)" in amd64|arm64) ;; *) echo "HAKO_WORKSPACE_IMAGE_ARCH must be amd64 or arm64" >&2; exit 1 ;; esac; \
+	if [ "$$host_arch" != "$(HAKO_WORKSPACE_IMAGE_ARCH)" ]; then \
+	  handler=qemu-$(HAKO_WORKSPACE_IMAGE_ARCH); \
+	  for path in "/proc/sys/fs/binfmt_misc/$$handler" "/proc/sys/fs/binfmt_misc/$${handler}-static"; do \
+	    if [ -r "$$path" ] && grep -q '^enabled$$' "$$path"; then exit 0; fi; \
+	  done; echo "cross-architecture Workspace OCI builds require enabled $$handler binfmt_misc" >&2; exit 1; \
+	fi
 
 # Builds an ARM64 ECS/Fargate image locally; publishing to ECR is a separate authorized step.
 build-github-checks-consumer-image: check-arm64-podman-build

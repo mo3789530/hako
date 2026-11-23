@@ -2,12 +2,11 @@
 
 Python 3.14 implementation of the coding workflow intended for AgentCore Runtime.
 The LangGraph workflow composes a bounded in-memory workspace, injected
-plan/code/test/review and verifier adapters, and proposal generation. A Bedrock
-Converse model adapter accepts a configured client and model ID, and exposes
-bounded in-memory file tools. A production client composition, source and
-verifier adapters are not implemented, and it cannot yet run a real task or be
-deployed. No live Bedrock request has been tested.
-It must not be used as publication evidence. Hako's independent verifier and
+plan/code/test/review and verifier adapters, and proposal generation. The
+Bedrock Converse adapter and an HTTP Runtime entrypoint support locally tested
+composition. The HTTP handler validates payload shape and relies on a trusted
+Resource Plane caller to authenticate attempt pins. No live Bedrock or AgentCore
+Runtime request has been tested. Hako's independent verifier, cleanup fence and
 publication policy remain authoritative.
 
 `hako_coding_agent.execution.execute` composes a source digest check, model,
@@ -17,6 +16,17 @@ The caller still must authenticate those pins; this function does not provide
 dispatch fencing, cleanup, cancellation or independent verification.
 
 Install the Python development tools with `python3 -m pip install -e "coding-agent[dev]"`.
+`propose_with_policy` is the AgentCore draft path: it requires an
+`AgentCorePolicy` built from trusted model and Region allowlists, validates the
+attempt identity and source digest, and runs only the bounded plan/code/test preparation/review
+loop. It returns a digest-bound proposal draft with attempt metadata but makes
+no verification claim and executes no repository tests. Hako must independently
+verify the proposal, revalidate the current attempt, and confirm runtime cleanup
+before using it as publication evidence. The caller still owns authenticated
+dispatch, durable cancellation, and result delivery. The local deadline is
+checked around each model call; an in-flight Bedrock request can continue until
+its configured 60-second read timeout.
+
 Run the offline tests from the repository root:
 
 ```sh
@@ -102,9 +112,21 @@ rejected. The workspace does not sandbox Python code. Its digest binds file
 content, paths and executable bits in the loaded mapping, not Hako's independent
 verifier source.
 
-The next implementation steps are attempt-authorized source and task input, configured
-Bedrock client with network and IAM restrictions, broader source support, a verifier
-adapter, AgentCore entrypoint, durable
-result handoff and integration with the attempt lifecycle in Task 90. A tree
-digest in the workflow is supplied by an adapter; until a trusted digest
-implementation exists it is not proof of the tested proposal.
+The Resource Plane now resolves task text and an exact digest-checked source
+archive from trusted attempt-bound providers, builds the request consumed by
+this Runtime, and validates the attempt-bound draft response. The lifecycle
+worker, cleanup-before-publish gate, and fakeable AgentCore SDK adapter are
+implemented in Go. Remaining work includes wiring the worker to SQS/Lambda,
+renewing the journal lease during execution, connecting broker-backed source
+and proposal storage in the deployment, completing cancellation behavior, and
+providing deployed IAM/network/isolation evidence. The Runtime image pins the
+official Python 3.13 slim Bookworm multi-architecture manifest digest and all
+Python runtime wheels by SHA-256, runs as UID/GID 10001, and exposes the
+implemented port 8080 HTTP entrypoint. Re-export locked dependencies with
+`uv export --format requirements-txt --extra runtime --no-dev --no-emit-project
+--no-annotate --no-header --output-file requirements-runtime.txt` from this
+directory. Build locally with `make build-agentcore-coding-agent-image`; the
+target uses Kiri and builds `linux/arm64` without publishing. AgentCore requires
+ARM64 and its default HTTP contract uses `/ping` and `/invocations` on port
+8080. A tree digest in the local workflow is still only a draft property and
+is not proof of independent verification.

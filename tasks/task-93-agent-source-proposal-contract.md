@@ -1,6 +1,6 @@
 # Task 93: Coding Agent Source and Proposal Contract
 
-Status: Planned. Priority: P3. Parent: Task 90. Depends on Tasks 38, 53, 87 and 91.
+Status: Local contract and implementation acceptance complete; AgentCore attempt-authorized delivery and deployed storage/IAM/runtime acceptance remain under Tasks 90, 95 and 96. Go independently inspects proposal ZIPs, applies only supported additions/edits to a digest-verified pinned source archive, and binds the exact proposal digest/base commit through verifier metadata and the existing Broker publication gate. Python↔Go source/proposal integration tests pass in `make test-integration-local`; unsupported changes fail closed. See [Source and Proposal Contract](../docs/coding-agent-source-proposal-contract.md). Priority: P3. Parent: Task 90. Depends on Tasks 38, 53, 87 and 91.
 
 ## Goal
 

@@ -62,6 +62,7 @@ type JobResult struct {
 
 type JobRuntimeConfig struct {
 	PodmanPath    string
+	UseKiri       bool
 	GoImage       string
 	ModuleCache   string
 	MaxLogBytes   int
@@ -173,8 +174,13 @@ func (r *JobRuntime) RunGoTest(ctx context.Context, spec JobSpec) (JobResult, er
 	defer cancel()
 	logs := &boundedJobLog{limit: r.config.MaxLogBytes}
 	args := r.podmanArgs(repositoryPath, spec.TenantID, spec.RunID)
+	engine := r.config.PodmanPath
+	if r.config.UseKiri {
+		engine = "kiri"
+		args = kiriRunArgs(args)
+	}
 	args = append(args, r.config.GoImage, "go", "test", "./...")
-	jobErr := r.config.CommandRunner.Run(jobCtx, r.config.PodmanPath, args, logs)
+	jobErr := r.config.CommandRunner.Run(jobCtx, engine, args, logs)
 	completedAt := time.Now().UTC()
 	result := JobResult{TenantID: spec.TenantID, RunID: spec.RunID, CommitSHA: spec.CommitSHA,
 		ExitCode: 0, StartedAt: startedAt, CompletedAt: completedAt}
@@ -215,6 +221,23 @@ func (r *JobRuntime) podmanArgs(repositoryPath string, tenantID domain.TenantID,
 		args = append(args, "--env=GOMODCACHE=/tmp/go-mod-cache")
 	}
 	return args
+}
+
+// Kiri uses Docker-style bind mounts and has its own VM UID mapping.
+func kiriRunArgs(args []string) []string {
+	result := make([]string, 0, len(args))
+	for _, arg := range args {
+		switch {
+		case strings.HasPrefix(arg, "--userns=keep-id:"):
+			continue
+		case strings.HasPrefix(arg, "type=bind,"):
+			arg = strings.TrimSuffix(arg, ",relabel=private")
+			arg = strings.TrimSuffix(arg, ",relabel=shared")
+			arg = strings.Replace(arg, ",ro=true", ",readonly", 1)
+		}
+		result = append(result, arg)
+	}
+	return result
 }
 
 func (r *JobRuntime) Result(tenantID domain.TenantID, runID domain.WorkloadRunID) (JobResult, bool) {

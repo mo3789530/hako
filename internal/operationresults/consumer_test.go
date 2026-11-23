@@ -111,6 +111,17 @@ func TestDecodeRejectsUnsupportedOrInconsistentResult(t *testing.T) {
 	if decoded, err := decode(encodedVersioned); err != nil || decoded.WorkspaceRevision != 7 {
 		t.Fatalf("valid versioned result should be accepted: %+v error=%v", decoded, err)
 	}
+	localBinding := versioned
+	localBinding.ResourceKind = "cloud_hypervisor_local"
+	localBinding.ExternalResourceID = "cloud-hypervisor-allocation-1"
+	localBinding.AllocationGeneration = 1
+	encodedLocal, err := json.Marshal(localBinding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded, err := decode(encodedLocal); err != nil || decoded.ResourceKind != "cloud_hypervisor_local" {
+		t.Fatalf("valid local Cloud Hypervisor binding should be accepted: %+v error=%v", decoded, err)
+	}
 	tests := []struct {
 		name   string
 		mutate func(*resourcecontroller.Result)

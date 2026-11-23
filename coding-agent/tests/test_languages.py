@@ -54,7 +54,6 @@ class LanguagesTest(unittest.TestCase):
             ("main.go", b"package main\n"),
             ("src/main.rs", b"fn main() {}\n"),
             ("src/main.tsx", b"export const x = 2;\n"),
-            ("main.tf", b'variable "name" { type = string }\n'),
         ]
         for path, content in cases:
             with self.subTest(path=path):
@@ -68,11 +67,20 @@ class LanguagesTest(unittest.TestCase):
 
     def test_terraform_protected_paths_remain_unwritable(self):
         workspace = Workspace({"infra/main.tf": b"original", "main.tf": b"original"})
-        self.assertEqual(detect_languages(workspace.list_files()), ("Terraform",))
+        self.assertEqual(detect_languages(["infra/main.tf", "main.tf"]), ("Terraform",))
+        self.assertEqual(workspace.list_files(), ())
         with self.assertRaises(ValueError):
             workspace.write_file("infra/main.tf", b"changed")
-        workspace.write_file("main.tf", b"changed")
-        self.assertEqual(workspace.list_changes(), ("main.tf",))
+        self.assertNotIn("infra/main.tf", workspace.list_files())
+        for path in (
+            "main.tf",
+            "module/vars.tfvars",
+            "nested/config.TF.JSON",
+            ".terraform.lock.hcl",
+        ):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                workspace.write_file(path, b"changed")
+        self.assertEqual(workspace.list_changes(), ())
 
 
 if __name__ == "__main__":

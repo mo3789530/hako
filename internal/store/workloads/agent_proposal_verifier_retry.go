@@ -186,15 +186,17 @@ func RetryFailedAgentProposalVerifier(ctx context.Context, tx pgx.Tx, tenantID d
 		return AgentProposalVerifierRetry{}, fmt.Errorf("create proposal verifier retry attempt: %w", err)
 	}
 	command := struct {
-		SchemaVersion    int                    `json:"schema_version"`
-		TenantID         domain.TenantID        `json:"tenant_id"`
-		WorkloadRunID    domain.WorkloadRunID   `json:"workload_run_id"`
-		AttemptID        string                 `json:"attempt_id"`
-		Generation       int64                  `json:"generation"`
-		ResourcePlaneID  domain.ResourcePlaneID `json:"resource_plane_id"`
-		IdempotencyToken string                 `json:"idempotency_token"`
-		CorrelationID    string                 `json:"correlation_id,omitempty"`
-	}{1, tenantID, run.ID, newAttemptID, generation + 1, run.ResourcePlaneID, token, run.CorrelationID}
+		SchemaVersion    int                            `json:"schema_version"`
+		TenantID         domain.TenantID                `json:"tenant_id"`
+		WorkloadRunID    domain.WorkloadRunID           `json:"workload_run_id"`
+		AttemptID        string                         `json:"attempt_id"`
+		Generation       int64                          `json:"generation"`
+		ResourcePlaneID  domain.ResourcePlaneID         `json:"resource_plane_id"`
+		IdempotencyToken string                         `json:"idempotency_token"`
+		RuntimeProvider  domain.WorkloadRuntimeProvider `json:"runtime_provider"`
+		CorrelationID    string                         `json:"correlation_id,omitempty"`
+	}{1, tenantID, run.ID, newAttemptID, generation + 1, run.ResourcePlaneID, token,
+		domain.WorkloadRuntimeLambdaMicroVM, run.CorrelationID}
 	payload, err := json.Marshal(command)
 	if err != nil {
 		return AgentProposalVerifierRetry{}, fmt.Errorf("encode proposal verifier retry command: %w", err)

@@ -65,6 +65,27 @@ func TestJournalFreezesSpecificationAndResult(t *testing.T) {
 	}
 }
 
+func TestJournalRejectsResultPublicationBeforeCleanupConfirmation(t *testing.T) {
+	j, err := New(Command{TenantID: "tenant_1", WorkloadRunID: "run_1", AttemptID: "attempt_1", Generation: 1, ResourcePlaneID: "rp_1", IdempotencyToken: "token_1"}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.ExecutionState = Succeeded
+	j.CleanupState = CleanupPending
+	j.ResultPayload = json.RawMessage(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_1","attempt_id":"attempt_1","generation":1,"resource_plane_id":"rp_1","status":"succeeded"}`)
+	if err := j.Validate(); err != nil {
+		t.Fatalf("durable result should be allowed while cleanup is pending: %v", err)
+	}
+	j.ResultPublished = true
+	if err := j.Validate(); err == nil {
+		t.Fatal("result publication before cleanup confirmation was accepted")
+	}
+	j.CleanupState = CleanupConfirmed
+	if err := j.Validate(); err != nil {
+		t.Fatalf("publication after cleanup confirmation rejected: %v", err)
+	}
+}
+
 func TestFrozenSpecificationHashAndImmutability(t *testing.T) {
 	j, err := New(Command{TenantID: "tenant_1", WorkloadRunID: "run_1", AttemptID: "attempt_1", Generation: 1, ResourcePlaneID: "rp_1", IdempotencyToken: "token_1"}, time.Now().UTC())
 	if err != nil {

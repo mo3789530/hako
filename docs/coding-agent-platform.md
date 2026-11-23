@@ -33,6 +33,38 @@ authorized task + pinned commit
 All production execution is default-off until lifecycle, effective isolation,
 credentials, egress and cleanup are verified on the target AWS environment.
 
+## Managed runtime routing
+
+The initial AgentCore placement and security decision is documented in the
+[AgentCore Runtime placement ADR](agentcore-runtime-placement.md).
+The supported Python harness and trusted model policy are documented in the
+[coding-agent harness policy](coding-agent-harness-policy.md).
+The versioned source and proposal boundaries are in the
+[coding-agent source/proposal contract](coding-agent-source-proposal-contract.md).
+Independent checks and the initial Terraform boundary are defined in the
+[coding-agent verification policy](coding-agent-verification-policy.md).
+The AgentCore threat model and credential/egress acceptance gates are in the
+[isolation and credentials baseline](coding-agent-isolation-and-credentials.md).
+
+
+| Hako workload | Execution target |
+| --- | --- |
+| Automated Coding Agent Run | Amazon Bedrock AgentCore Runtime, with one session per Run attempt |
+| GitHub Actions jobs | Hako ephemeral GitHub Actions runner on Lambda MicroVM |
+| Interactive Workspace for VS Code | Workspace Agent on Lambda MicroVM, with browser and Remote SSH access through the Gateway |
+
+For this deployment, route automated coding attempts explicitly to AgentCore
+and surface a configuration or provider error when that route is unavailable.
+The existing Native Agent paths remain available for local development tests.
+Task 98 tracks a separate local Workspace deployment.
+
+The independent verifier must bind its result to the exact proposal digest.
+For the managed deployment, evaluate running that verification as a trusted
+GitHub Actions job on the ephemeral runner. The existing Task 89 verifier is
+the local reference for the publication gate. Keep publication disabled in
+the new route until verifier provenance, digest binding, and cleanup are
+verified.
+
 ## Current implementation
 
 - Workload Run state, task identity, source checkout and proposal verification

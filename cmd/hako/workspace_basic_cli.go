@@ -15,18 +15,36 @@ func runWorkspaceBasicCLI(command string, args []string, stdout, stderr io.Write
 	}
 	switch command {
 	case "create":
-		if len(args) != 2 && len(args) != 4 {
-			_, _ = fmt.Fprintln(stderr, "usage: hako create <tenant-id> <workspace-name> [--idempotency-key <key>]")
+		if len(args) < 2 {
+			_, _ = fmt.Fprintln(stderr, "usage: hako create <tenant-id> <workspace-name> [--repository <owner>/<repo>] [--idempotency-key <key>]")
 			return 2
 		}
 		idempotencyKey := ""
-		if len(args) == 4 {
-			if args[2] != "--idempotency-key" || args[3] == "" {
-				_, _ = fmt.Fprintln(stderr, "usage: hako create <tenant-id> <workspace-name> [--idempotency-key <key>]")
+		repository := ""
+		for index := 2; index < len(args); index += 2 {
+			if index+1 >= len(args) {
+				_, _ = fmt.Fprintln(stderr, "usage: hako create <tenant-id> <workspace-name> [--repository <owner>/<repo>] [--idempotency-key <key>]")
 				return 2
 			}
-			idempotencyKey = args[3]
-		} else {
+			switch args[index] {
+			case "--idempotency-key":
+				if idempotencyKey != "" || args[index+1] == "" {
+					_, _ = fmt.Fprintln(stderr, "invalid or duplicate --idempotency-key")
+					return 2
+				}
+				idempotencyKey = args[index+1]
+			case "--repository":
+				if repository != "" || args[index+1] == "" {
+					_, _ = fmt.Fprintln(stderr, "invalid or duplicate --repository")
+					return 2
+				}
+				repository = args[index+1]
+			default:
+				_, _ = fmt.Fprintf(stderr, "unknown create option %q\n", args[index])
+				return 2
+			}
+		}
+		if idempotencyKey == "" {
 			var err error
 			idempotencyKey, err = idgen.New("req_")
 			if err != nil {
@@ -34,7 +52,7 @@ func runWorkspaceBasicCLI(command string, args []string, stdout, stderr io.Write
 				return 1
 			}
 		}
-		created, err := createWorkspace(args[0], args[1], idempotencyKey)
+		created, err := createWorkspaceWithRepository(args[0], args[1], idempotencyKey, repository)
 		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "hako create: %v\nRetry the same request with --idempotency-key %s\n", err, idempotencyKey)
 			return 1
@@ -85,6 +103,23 @@ func runWorkspaceBasicCLI(command string, args []string, stdout, stderr io.Write
 			workspace.Status.DesiredState, workspace.Status.ObservedState); err != nil {
 			_, _ = fmt.Fprintf(stderr, "hako get: write output: %v\n", err)
 			return 1
+		}
+		if workspace.Workspace.Repository != nil {
+			if _, err := fmt.Fprintf(stdout, "repository\t%s/%s\tcheckout=%s", workspace.Workspace.Repository.Owner,
+				workspace.Workspace.Repository.Name, workspace.Workspace.Repository.CheckoutState); err != nil {
+				_, _ = fmt.Fprintf(stderr, "hako get: write output: %v\n", err)
+				return 1
+			}
+			if workspace.Workspace.Repository.CommitSHA != "" {
+				if _, err := fmt.Fprintf(stdout, "\tcommit=%s", workspace.Workspace.Repository.CommitSHA); err != nil {
+					_, _ = fmt.Fprintf(stderr, "hako get: write output: %v\n", err)
+					return 1
+				}
+			}
+			if _, err := fmt.Fprintln(stdout); err != nil {
+				_, _ = fmt.Fprintf(stderr, "hako get: write output: %v\n", err)
+				return 1
+			}
 		}
 		return 0
 	default:

@@ -253,6 +253,27 @@ func TestCreateWorkspaceSendsIdempotencyAndDecodesAsyncResponse(t *testing.T) {
 	}
 }
 
+func TestCreateWorkspaceWithRepositorySendsRepositorySelection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Name       string `json:"name"`
+			Repository string `json:"repository"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Name != "api-dev" || request.Repository != "acme/api" {
+			t.Errorf("create request = %+v, err=%v", request, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"workspace":{"id":"ws_1","tenant_id":"tenant_123","owner_id":"usr_1","name":"api-dev"},"status":{"desired_state":"running","observed_state":"pending"},"operation_id":"op_1","operation_state":"pending"}`))
+	}))
+	defer server.Close()
+
+	_, err := CreateWorkspaceWithOptions(context.Background(), server.URL, "test-access-token", "tenant_123", "api-dev", "request-key-1", WorkspaceCreateOptions{Repository: " acme/api "}, server.Client())
+	if err != nil {
+		t.Fatalf("create Workspace request failed: %v", err)
+	}
+}
+
 func TestCreateWorkspacePreservesQuotaErrorCode(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

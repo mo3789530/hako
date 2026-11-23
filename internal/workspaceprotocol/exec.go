@@ -56,10 +56,14 @@ func ValidateExecRequest(request ExecRequest) error {
 }
 
 func ValidateExecResult(result ExecResult) error {
+	validCode := result.Code == "" || result.Code == "exec_failed" || result.Code == "timed_out" ||
+		result.Code == "executable_unavailable" || result.Code == "exec_permission_denied" || result.Code == "exec_not_found"
+	validCode = validCode || result.Code == "exec_format_invalid" || result.Code == "exec_filesystem_read_only" ||
+		result.Code == "exec_resource_unavailable" || result.Code == "exec_binary_unavailable" || result.Code == "exec_runtime_failed"
 	if len(result.Stdout) > MaxExecOutput || len(result.Stderr) > MaxExecOutput ||
 		(result.ExitCode < -1 || result.ExitCode > 255) ||
 		(result.TimedOut && result.ExitCode != -1) ||
-		(result.Code != "" && result.Code != "exec_failed" && result.Code != "timed_out") {
+		!validCode {
 		return ErrInvalidExec
 	}
 	return nil

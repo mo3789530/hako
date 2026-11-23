@@ -39,7 +39,7 @@ func TestConnectionLeaseRenewReleaseExpiryAndRuntimeFence(t *testing.T) {
 		{`INSERT INTO workspace_status (workspace_id, desired_state, observed_state, updated_at)
 			VALUES ('ws_activity', 'running', 'running', $1)`, []any{now}},
 		{`INSERT INTO resource_bindings (workspace_id, resource_plane_id, kind, external_id, created_at, allocation_generation)
-			VALUES ('ws_activity', 'rp_activity', 'lambda_microvm', 'vm_activity', $1, 4)`, []any{now}},
+			VALUES ('ws_activity', 'rp_activity', 'cloud_hypervisor_local', 'vm_activity', $1, 4)`, []any{now}},
 		{`INSERT INTO sessions (id, user_id, tenant_id, workspace_id, resource_plane_id, permissions_json, expires_at, created_at)
 			VALUES ('abcdef0123456789abcdef0123456789abcdef0123456789', 'user_activity', 'tenant_activity', 'ws_activity', 'rp_activity', '["shell"]', $1, $2)`, []any{now.Add(10 * time.Minute), now}},
 	} {

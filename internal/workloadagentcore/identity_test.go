@@ -49,3 +49,21 @@ func TestSessionIDRejectsInvalidIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestStopClientTokenIsStableAndAttemptBound(t *testing.T) {
+	base := workloadjournal.Command{TenantID: "tenant", WorkloadRunID: "run", AttemptID: "attempt",
+		Generation: 1, ResourcePlaneID: "plane", IdempotencyToken: "token"}
+	want, err := StopClientToken(base)
+	if err != nil || len(want) < 33 || len(want) > 256 || strings.Contains(want, "tenant") {
+		t.Fatalf("invalid stop client token %q: %v", want, err)
+	}
+	again, err := StopClientToken(base)
+	if err != nil || again != want {
+		t.Fatalf("stop token is not stable for an attempt: %q, %v", again, err)
+	}
+	base.Generation++
+	changed, err := StopClientToken(base)
+	if err != nil || changed == want {
+		t.Fatalf("different attempt reused stop token: %q, %v", changed, err)
+	}
+}

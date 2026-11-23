@@ -94,7 +94,7 @@ func NewLinuxWorkspaceMountLifecycleHandler(next http.Handler) (http.Handler, er
 }
 
 func (m *LinuxEFSMountExecutor) MountAndVerify(ctx context.Context, spec WorkspaceMountSpec) error {
-	if m == nil || ctx == nil || ctx.Err() != nil || !validWorkspaceMountSpec(spec) || m.runner == nil ||
+	if m == nil || ctx == nil || ctx.Err() != nil || spec.LocalDisk || !validWorkspaceMountSpec(spec) || m.runner == nil ||
 		m.mountBinary == "" || m.mountInfoPath == "" || m.markerPath == "" || m.workspacePath != workspaceEFSMountPath ||
 		m.mountTimeout <= 0 || m.isRoot == nil || !m.isRoot() || m.makeDirectory == nil {
 		return errors.New("Workspace EFS mount configuration or privilege is invalid")

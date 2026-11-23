@@ -36,6 +36,10 @@ func (f tenantLimiterFunc) AllowWebhookAttempt(ctx context.Context, id string, n
 	return f(ctx, id, now)
 }
 
+type tenantAdmissionMetricsFunc func(string)
+
+func (f tenantAdmissionMetricsFunc) RecordWebhookAdmission(outcome string) { f(outcome) }
+
 func signWebhook(secret, body []byte) string {
 	mac := hmac.New(sha256.New, secret)
 	_, _ = mac.Write(body)
@@ -192,6 +196,7 @@ func TestTenantWebhookRejectsMalformedTransportBeforeSecretRead(t *testing.T) {
 
 func TestTenantWebhookLimiterFailureFailsClosedBeforeSecretResolution(t *testing.T) {
 	resolverCalls := 0
+	var outcomes []string
 	handler, err := NewTenantHTTPHandler(tenantResolverFunc(func(context.Context, string) (WebhookCredential, error) {
 		resolverCalls++
 		return WebhookCredential{}, nil
@@ -201,6 +206,7 @@ func TestTenantWebhookLimiterFailureFailsClosedBeforeSecretResolution(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	handler.SetWebhookAdmissionMetrics(tenantAdmissionMetricsFunc(func(outcome string) { outcomes = append(outcomes, outcome) }))
 	body := validPushWebhookPayload
 	request := httptest.NewRequest("POST", "/v1/integrations/github/apps/integration_tenant_a/webhook", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
@@ -209,13 +215,14 @@ func TestTenantWebhookLimiterFailureFailsClosedBeforeSecretResolution(t *testing
 	request.Header.Set("X-Hub-Signature-256", signWebhook([]byte("secret"), []byte(body)))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != 503 || resolverCalls != 0 || strings.Contains(response.Body.String(), "database detail") {
+	if response.Code != 503 || resolverCalls != 0 || strings.Contains(response.Body.String(), "database detail") || strings.Join(outcomes, ",") != "limiter_unavailable" {
 		t.Fatalf("status=%d resolver=%d body=%q", response.Code, resolverCalls, response.Body.String())
 	}
 }
 
 func TestTenantWebhookRateLimitRunsBeforeSecretResolution(t *testing.T) {
 	resolverCalls, limitCalls := 0, 0
+	var outcomes []string
 	handler, err := NewTenantHTTPHandler(tenantResolverFunc(func(context.Context, string) (WebhookCredential, error) {
 		resolverCalls++
 		return WebhookCredential{}, errors.New("must not resolve")
@@ -229,6 +236,7 @@ func TestTenantWebhookRateLimitRunsBeforeSecretResolution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	handler.SetWebhookAdmissionMetrics(tenantAdmissionMetricsFunc(func(outcome string) { outcomes = append(outcomes, outcome) }))
 	body := validPushWebhookPayload
 	request := httptest.NewRequest("POST", "/v1/integrations/github/apps/integration_tenant_a/webhook", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
@@ -237,7 +245,7 @@ func TestTenantWebhookRateLimitRunsBeforeSecretResolution(t *testing.T) {
 	request.Header.Set("X-Hub-Signature-256", signWebhook([]byte("secret"), []byte(body)))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != 429 || response.Header().Get("Retry-After") != "60" || resolverCalls != 0 || limitCalls != 1 {
+	if response.Code != 429 || response.Header().Get("Retry-After") != "60" || resolverCalls != 0 || limitCalls != 1 || strings.Join(outcomes, ",") != "rate_limited" {
 		t.Fatalf("status=%d limit=%d resolver=%d", response.Code, limitCalls, resolverCalls)
 	}
 }

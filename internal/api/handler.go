@@ -88,8 +88,11 @@ type WorkspaceCreateConfig struct {
 }
 
 type workspaceCreateRequest struct {
-	Name string `json:"name"`
+	Name       string `json:"name"`
+	Repository string `json:"repository,omitempty"`
 }
+
+var workspaceRepositoryRefPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$`)
 
 type workspaceCreateResponse struct {
 	Workspace      domain.Workspace       `json:"workspace"`
@@ -197,6 +200,8 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 	if workspaceConfig.ResourcePlaneServiceReportKeyResolver != nil {
 		e.POST("/v1/internal/resource-planes/:resource_plane_id/workspace-services/:service_id/reports",
 			putResourcePlaneWorkspaceServiceReport(pool, workspaceConfig.ResourcePlaneServiceReportKeyResolver))
+		e.PUT("/v1/internal/resource-planes/:resource_plane_id/workspaces/:workspace_id/repository-checkout",
+			putResourcePlaneWorkspaceRepositoryCheckout(pool, workspaceConfig.ResourcePlaneServiceReportKeyResolver))
 		e.POST("/v1/internal/resource-planes/:resource_plane_id/workspace-services/:service_id/desired-state",
 			resolveResourcePlaneWorkspaceServiceDesiredState(pool, workspaceConfig.ResourcePlaneServiceReportKeyResolver))
 		e.PUT("/v1/internal/resource-planes/:resource_plane_id/workspace-connection-leases/:lease_id",
@@ -1486,7 +1491,11 @@ func createWorkspace(pool transaction.Beginner, config WorkspaceCreateConfig) ec
 			return invalidRequest(c)
 		}
 		request.Name = strings.TrimSpace(request.Name)
+		request.Repository = strings.TrimSpace(request.Repository)
 		if request.Name == "" || len(request.Name) > 128 {
+			return invalidRequest(c)
+		}
+		if request.Repository != "" && (!workspaceRepositoryRefPattern.MatchString(request.Repository) || strings.Contains(request.Repository, "..")) {
 			return invalidRequest(c)
 		}
 		idempotencyKey := strings.TrimSpace(c.Request().Header.Get("Idempotency-Key"))
@@ -1501,6 +1510,7 @@ func createWorkspace(pool transaction.Beginner, config WorkspaceCreateConfig) ec
 			TenantID:             domain.TenantID(strings.TrimSpace(c.Param("tenant_id"))),
 			OwnerID:              user.ID,
 			Name:                 request.Name,
+			Repository:           request.Repository,
 			RuntimeClass:         runtimeClass,
 			Image:                strings.TrimSpace(config.Image),
 			Region:               strings.TrimSpace(config.Region),
@@ -1522,6 +1532,9 @@ func createWorkspace(pool transaction.Beginner, config WorkspaceCreateConfig) ec
 		}
 		if errors.Is(err, workspaces.ErrWorkspaceNameConflict) {
 			return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "workspace_name_conflict", Message: "Workspace name is already in use in this Tenant"}})
+		}
+		if errors.Is(err, workspaces.ErrWorkspaceRepositoryUnavailable) {
+			return c.JSON(http.StatusNotFound, errorResponse{Error: errorBody{Code: "repository_not_found", Message: "GitHub repository is not available to this Tenant"}})
 		}
 		if errors.Is(err, operations.ErrIdempotencyConflict) {
 			return c.JSON(http.StatusConflict, errorResponse{Error: errorBody{Code: "idempotency_conflict", Message: "Idempotency-Key was already used for a different request"}})

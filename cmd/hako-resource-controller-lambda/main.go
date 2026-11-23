@@ -36,7 +36,7 @@ func main() {
 	if err != nil {
 		log.Fatal("load AWS SDK configuration failed (failure_class=aws_configuration)")
 	}
-	runtime, err := configuredRuntime(os.Getenv("HAKO_RUNTIME_IMPLEMENTATION"), awsCfg, os.Getenv)
+	runtime, err := configuredRuntime(os.Getenv("HAKO_RUNTIME_IMPLEMENTATION"), awsCfg, os.Getenv, resourcePlaneID)
 	if err != nil {
 		log.Fatal("configure Resource Controller runtime failed (failure_class=runtime_configuration)")
 	}

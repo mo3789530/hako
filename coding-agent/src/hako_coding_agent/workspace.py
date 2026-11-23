@@ -74,6 +74,15 @@ class Workspace:
     def list_files(self) -> tuple[str, ...]:
         return tuple(sorted(path for path in self._files if _visible_path(path)))
 
+    def source_languages(self) -> tuple[str, ...]:
+        """Detect languages without exposing protected file paths."""
+        from .languages import detect_languages
+
+        languages = set(detect_languages(self.list_files()))
+        if any(path.lower().endswith((".tf", ".tfvars", ".tf.json")) for path in self._files):
+            languages.add("Terraform")
+        return tuple(sorted(languages))
+
     def list_changes(self) -> tuple[str, ...]:
         return tuple(sorted(self._changes()))
 

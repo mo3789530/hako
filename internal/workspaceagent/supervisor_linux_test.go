@@ -142,7 +142,7 @@ func TestWorkspaceAgentSupervisorStartsBoundChildAndProxiesOnlyWorkspaceRoutes(t
 		SocketPath: socket, BinaryPath: "/image/hako-workspace-agent", TrustedKeysFile: trustedKeysPath,
 		ServiceFenceDirectory: filepath.Join(root, "service-fences"),
 		GatewayOrigin:         "https://gateway.hako.test", Launcher: launcher, isRoot: func() bool { return true }, EnableServices: true,
-		EnableSSH: true, StartSSHServer: sshStarter,
+		EnableSSH: true, EnableVsock: true, StartSSHServer: sshStarter,
 		HeartbeatInterval: 10 * time.Millisecond, HeartbeatLease: 50 * time.Millisecond,
 		PrepareRuntimeDirectory: func(uid, gid uint32) error {
 			if uid != testMountSpec().UID || gid != testMountSpec().GID {
@@ -173,7 +173,7 @@ func TestWorkspaceAgentSupervisorStartsBoundChildAndProxiesOnlyWorkspaceRoutes(t
 	}
 	if launcher.launch.MicroVMID != "microvm-1" || launcher.launch.Mount.WorkspaceID != spec.WorkspaceID ||
 		launcher.launch.GatewayOrigin != "https://gateway.hako.test" || launcher.launch.TrustedKeysFile != trustedKeysPath || !launcher.launch.EnableServices ||
-		launcher.launch.ContainerdSocket != containerd.socket {
+		!launcher.launch.EnableVsock || launcher.launch.ContainerdSocket != containerd.socket {
 		t.Fatalf("child launch config = %+v", launcher.launch)
 	}
 	if info, err := os.Stat(socket); err != nil || info.Mode().Perm() != 0600 {
@@ -354,7 +354,7 @@ func TestWorkspaceAgentSupervisorFailsClosedWhenRuntimeTmpfsCannotBePrepared(t *
 	launcher := &supervisorTestLauncher{}
 	supervisor, err := NewLinuxWorkspaceAgentSupervisor(WorkspaceAgentSupervisorConfig{
 		SocketPath: filepath.Join(root, "agent.sock"), TrustedKeysFile: trustedKeysPath,
-		GatewayOrigin: "https://gateway.hako.test", Launcher: launcher, isRoot: func() bool { return true },
+		GatewayOrigin: "https://gateway.hako.test", Launcher: launcher, isRoot: func() bool { return true }, EnableServices: true,
 		PrepareRuntimeDirectory: func(uint32, uint32) error { return errors.New("tmpfs unavailable") },
 	})
 	if err != nil {
@@ -366,9 +366,9 @@ func TestWorkspaceAgentSupervisorFailsClosedWhenRuntimeTmpfsCannotBePrepared(t *
 }
 
 func TestWorkspaceAgentChildPayloadStrictlyValidatesIdentityAndBounds(t *testing.T) {
-	payload := `{"microvm_id":"microvm-1","mount":{"tenant_id":"tenant-1","workspace_id":"workspace-1","resource_plane_id":"rp-1","file_system_id":"fs-0123456789abcdef0","region":"us-east-1","access_point_id":"fsap-0123456789abcdef0","root_path":"/hako/0123456789abcdef/1123456789abcdef/2123456789abcdef","mount_path":"/workspace","uid":100123,"gid":100123,"tls":true,"iam":true},"gateway_origin":"https://gateway.hako.test"}`
+	payload := `{"microvm_id":"microvm-1","mount":{"tenant_id":"tenant-1","workspace_id":"workspace-1","resource_plane_id":"rp-1","file_system_id":"fs-0123456789abcdef0","region":"us-east-1","access_point_id":"fsap-0123456789abcdef0","root_path":"/hako/0123456789abcdef/1123456789abcdef/2123456789abcdef","mount_path":"/workspace","uid":100123,"gid":100123,"tls":true,"iam":true},"gateway_origin":"https://gateway.hako.test","enable_vsock":true}`
 	parsed, err := ReadWorkspaceAgentChildPayload(strings.NewReader(payload))
-	if err != nil || parsed.MicroVMID != "microvm-1" || parsed.Mount.WorkspaceID != "workspace-1" {
+	if err != nil || parsed.MicroVMID != "microvm-1" || parsed.Mount.WorkspaceID != "workspace-1" || !parsed.EnableVsock {
 		t.Fatalf("read child payload = %+v, err = %v", parsed, err)
 	}
 	for _, malformed := range []string{
@@ -379,5 +379,12 @@ func TestWorkspaceAgentChildPayloadStrictlyValidatesIdentityAndBounds(t *testing
 		if _, err := ReadWorkspaceAgentChildPayload(strings.NewReader(malformed)); err == nil {
 			t.Error("accepted malformed, privileged, or oversized child payload")
 		}
+	}
+}
+
+func TestWorkspaceAgentVsockListenerRejectsZeroPort(t *testing.T) {
+	if listener, err := ListenWorkspaceAgentVsock(0); err == nil {
+		_ = listener.Close()
+		t.Fatal("accepted zero Workspace Agent vsock port")
 	}
 }

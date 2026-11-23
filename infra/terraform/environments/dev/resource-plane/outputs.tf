@@ -98,6 +98,26 @@ output "workload_commands_dlq_arn" {
   value = module.resource_plane.workload_commands_dlq_arn
 }
 
+output "agentcore_commands_queue_url" {
+  value = module.resource_plane.agentcore_commands_queue_url
+}
+
+output "agentcore_commands_queue_arn" {
+  value = module.resource_plane.agentcore_commands_queue_arn
+}
+
+output "agentcore_commands_dlq_arn" {
+  value = module.resource_plane.agentcore_commands_dlq_arn
+}
+
+output "agentcore_worker_lambda_arn" {
+  value = module.resource_plane.agentcore_worker_lambda_arn
+}
+
+output "agentcore_worker_event_source_mapping_uuid" {
+  value = module.resource_plane.agentcore_worker_event_source_mapping_uuid
+}
+
 output "actions_runner_startup_queue_url" {
   value = module.resource_plane.actions_runner_startup_queue_url
 }

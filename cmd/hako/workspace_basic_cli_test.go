@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -128,13 +129,19 @@ func TestWorkspaceBasicCLIDispatchRendersCreateListAndGet(t *testing.T) {
 			if r.URL.Path != "/v1/tenants/tenant_cli/workspaces" || r.Header.Get("Idempotency-Key") != "request-cli-1" {
 				t.Errorf("create request = %s %s idempotency=%q", r.Method, r.URL.Path, r.Header.Get("Idempotency-Key"))
 			}
-			_, _ = io.ReadAll(r.Body)
+			var request struct {
+				Name       string `json:"name"`
+				Repository string `json:"repository"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Name != "api-dev" || request.Repository != "acme/api" {
+				t.Errorf("create request = %+v, err=%v", request, err)
+			}
 			w.WriteHeader(http.StatusAccepted)
 			_, _ = fmt.Fprint(w, `{"workspace":{"id":"ws_cli","tenant_id":"tenant_cli","owner_id":"user_cli","name":"api-dev"},"status":{"desired_state":"running","observed_state":"provisioning"},"operation_id":"op_cli","operation_state":"pending"}`)
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/tenants/tenant_cli/workspaces" && r.URL.Query().Get("limit") == "5" && r.URL.Query().Get("offset") == "10":
 			_, _ = fmt.Fprint(w, `{"items":[{"workspace":{"id":"ws_cli","name":"api-dev"},"status":{"desired_state":"running","observed_state":"provisioning"}}],"total":1,"limit":5,"offset":10}`)
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/tenants/tenant_cli/workspaces/ws_cli":
-			_, _ = fmt.Fprint(w, `{"workspace":{"id":"ws_cli","name":"api-dev"},"status":{"desired_state":"running","observed_state":"provisioning"}}`)
+			_, _ = fmt.Fprint(w, `{"workspace":{"id":"ws_cli","name":"api-dev","repository":{"installation_id":41,"github_repository_id":42,"owner":"acme","name":"api","default_branch":"main","checkout_state":"pending"}},"status":{"desired_state":"running","observed_state":"provisioning"}}`)
 		default:
 			t.Errorf("unexpected CLI API request: %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
 			http.NotFound(w, r)
@@ -145,7 +152,7 @@ func TestWorkspaceBasicCLIDispatchRendersCreateListAndGet(t *testing.T) {
 	setWorkspaceBasicCLICredentials(t, token)
 
 	var stdout, stderr bytes.Buffer
-	if code := runWorkspaceBasicCLI("create", []string{"tenant_cli", "api-dev", "--idempotency-key", "request-cli-1"}, &stdout, &stderr); code != 0 {
+	if code := runWorkspaceBasicCLI("create", []string{"tenant_cli", "api-dev", "--repository", "acme/api", "--idempotency-key", "request-cli-1"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("create CLI code=%d stderr=%q", code, stderr.String())
 	}
 	if !strings.Contains(stdout.String(), "Workspace api-dev accepted: ws_cli") || !strings.Contains(stdout.String(), "request-key=request-cli-1") {
@@ -162,7 +169,7 @@ func TestWorkspaceBasicCLIDispatchRendersCreateListAndGet(t *testing.T) {
 	if code := runWorkspaceBasicCLI("get", []string{"tenant_cli", "ws_cli"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("get CLI code=%d stderr=%q", code, stderr.String())
 	}
-	if got := stdout.String(); got != "ws_cli\tapi-dev\trunning\tprovisioning\n" {
+	if got := stdout.String(); got != "ws_cli\tapi-dev\trunning\tprovisioning\nrepository\tacme/api\tcheckout=pending\n" {
 		t.Fatalf("get CLI output = %q", got)
 	}
 	if requests != 3 {

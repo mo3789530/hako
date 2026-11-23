@@ -71,8 +71,24 @@ func TestExecManagerResolvesRelativeProgramUnderWorkspace(t *testing.T) {
 		t.Fatalf("relative program result=%+v err=%v", result, err)
 	}
 	result, err = manager.Run(context.Background(), workspaceprotocol.ExecRequest{Argv: []string{"../outside"}})
-	if err != nil || result.Code != "exec_failed" || result.ExitCode != -1 {
+	if err != nil || result.Code != "executable_unavailable" || result.ExitCode != -1 {
 		t.Fatalf("workspace path traversal was accepted: result=%+v err=%v", result, err)
+	}
+}
+
+func TestExecManagerReportsSafeMissingInterpreterClass(t *testing.T) {
+	root := t.TempDir()
+	script := filepath.Join(root, "broken-interpreter")
+	if err := os.WriteFile(script, []byte("#!/hako-missing-test-interpreter\nprintf never\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewExecManager(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := manager.Run(context.Background(), workspaceprotocol.ExecRequest{Argv: []string{"./broken-interpreter"}})
+	if err != nil || result.ExitCode != -1 || result.Code != "exec_not_found" || workspaceprotocol.ValidateExecResult(result) != nil {
+		t.Fatalf("safe missing interpreter result = %+v, %v", result, err)
 	}
 }
 

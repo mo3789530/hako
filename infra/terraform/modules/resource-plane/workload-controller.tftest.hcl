@@ -62,6 +62,8 @@ mock_provider "aws" {
       url = "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-test-mock"
     }
   }
+  mock_resource "aws_sqs_queue_policy" {}
+  mock_resource "aws_sqs_queue_redrive_allow_policy" {}
 
   mock_resource "aws_cloudwatch_event_rule" {
     defaults = {
@@ -150,11 +152,50 @@ run "workload_controller_is_disabled_by_default" {
   }
 
   assert {
+    condition = (length(aws_sqs_queue.agentcore_commands) == 0 &&
+      length(aws_sqs_queue.agentcore_commands_dlq) == 0 &&
+    length(aws_sqs_queue_policy.agentcore_commands) == 0)
+    error_message = "The AgentCore command route must remain disabled by default."
+  }
+
+  assert {
     condition = (length(aws_sqs_queue.workspace_service_commands) == 0 &&
       length(aws_lambda_function.workspace_service_controller) == 0 &&
       length(aws_lambda_event_source_mapping.workspace_service_controller) == 0 &&
     length(aws_iam_role_policy.workspace_service_controller) == 0)
     error_message = "Workspace Service queue, consumer, event mapping, and runtime permissions must remain disabled by default."
+  }
+}
+
+run "agentcore_command_queue_is_separate_and_dispatcher_scoped" {
+  # The policy Resource needs the queue ARN, which is only known after apply.
+  # This test uses the mocked provider, so apply has no AWS side effects.
+  command = apply
+  providers = {
+    aws = aws.mock
+  }
+
+  variables {
+    resource_plane_id                      = "rp-test"
+    control_plane_dispatcher_role_arn      = "arn:aws:iam::123456789012:role/hako-cp-dispatcher"
+    control_plane_result_consumer_role_arn = "arn:aws:iam::123456789012:role/hako-cp-result-consumer"
+    enable_agentcore_command_queue         = true
+  }
+
+  assert {
+    condition = (length(aws_sqs_queue.agentcore_commands) == 1 &&
+      length(aws_sqs_queue.agentcore_commands_dlq) == 1 &&
+      aws_sqs_queue.agentcore_commands[0].name == "rp-test-agentcore-commands" &&
+    aws_sqs_queue.agentcore_commands[0].visibility_timeout_seconds == 1200)
+    error_message = "The opt-in AgentCore queue must be distinct and leave enough visibility for synchronous invocation."
+  }
+
+  assert {
+    condition = (length(aws_sqs_queue_policy.agentcore_commands) == 1 &&
+      jsondecode(aws_sqs_queue_policy.agentcore_commands[0].policy).Statement[0].Principal.AWS == "arn:aws:iam::123456789012:role/hako-cp-dispatcher" &&
+      jsondecode(aws_sqs_queue_policy.agentcore_commands[0].policy).Statement[0].Action == "sqs:SendMessage" &&
+    jsondecode(aws_sqs_queue_policy.agentcore_commands[0].policy).Statement[0].Resource == aws_sqs_queue.agentcore_commands[0].arn)
+    error_message = "Only the exact Control Plane Dispatcher may send AgentCore commands."
   }
 }
 
@@ -241,7 +282,9 @@ run "workspace_lambda_microvm_controller_is_disabled_by_default" {
 }
 
 run "workspace_lambda_microvm_controller_uses_scoped_runtime_iam" {
-  command = plan
+  # Lambda event-source and queue policy assertions compare computed ARNs.
+  # The mocked provider keeps this apply local to Terraform's test harness.
+  command = apply
   providers = {
     aws = aws.mock
   }
@@ -285,6 +328,17 @@ run "workspace_lambda_microvm_controller_uses_scoped_runtime_iam" {
       gateway_origin         = "https://gateway.hako.example"
       ticket_key_id          = "agent-v1"
       ticket_private_key_arn = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/agent-key-AbCdEf"
+    }
+    workspace_repository_checkout = {
+      checkout_broker_url    = "https://broker.hako.example"
+      broker_client_cert_arn = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/workspace-client-cert-AbCdEf"
+      broker_client_key_arn  = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/workspace-client-key-AbCdEf"
+      broker_ca_arn          = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/workspace-broker-ca-AbCdEf"
+      gateway_origin         = "https://gateway.hako.example"
+      ticket_key_id          = "agent-v1"
+      ticket_key_secret_arn  = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/agent-key-AbCdEf"
+      report_endpoint        = "https://api.hako.example"
+      report_key_secret_arn  = "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/workspace-report-key-AbCdEf"
     }
     workspace_gateway_deployment = {
       image_uri                 = "123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/hako/gateway@sha256:${join("", [for _ in range(64) : "a"])}"
@@ -407,6 +461,25 @@ run "workspace_lambda_microvm_controller_uses_scoped_runtime_iam" {
 
   assert {
     condition = (
+      aws_lambda_function.workspace_resource_controller[0].environment[0].variables.HAKO_WORKSPACE_REPOSITORY_CHECKOUT_BROKER_URL == "https://broker.hako.example" &&
+      aws_lambda_function.workspace_resource_controller[0].environment[0].variables.HAKO_WORKSPACE_REPOSITORY_REPORT_ENDPOINT == "https://api.hako.example" &&
+      anytrue([for statement in jsondecode(aws_iam_role_policy.resource_controller_workspace_repository_checkout[0].policy).Statement :
+        statement.Sid == "ReadOnlyWorkspaceRepositoryCheckoutSecrets" &&
+        toset(statement.Resource) == toset([
+          "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/workspace-client-cert-AbCdEf",
+          "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/workspace-client-key-AbCdEf",
+          "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/workspace-broker-ca-AbCdEf",
+          "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/agent-key-AbCdEf",
+          "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:hako/rp-test/workspace-report-key-AbCdEf",
+        ]) &&
+        statement.Action == ["secretsmanager:GetSecretValue"]
+      ])
+    )
+    error_message = "Workspace repository checkout must pass the configured endpoints and grant read access only to its five exact secrets."
+  }
+
+  assert {
+    condition = (
       strcontains(aws_sqs_queue_policy.preview_runtime_commands[0].policy, "arn:aws:iam::123456789012:role/hako-cp-dispatcher") &&
       strcontains(aws_sqs_queue_policy.preview_runtime_results[0].policy, "arn:aws:iam::123456789012:role/hako-cp-preview-result-consumer")
     )
@@ -416,7 +489,7 @@ run "workspace_lambda_microvm_controller_uses_scoped_runtime_iam" {
 }
 
 run "workspace_service_controller_isolated_and_opt_in" {
-  command = plan
+  command = apply
   providers = {
     aws = aws.mock
   }
@@ -523,7 +596,7 @@ run "workspace_service_controller_isolated_and_opt_in" {
 }
 
 run "actions_runner_worker_consumes_only_its_opt_in_queue" {
-  command = plan
+  command = apply
   providers = {
     aws = aws.mock
   }
@@ -614,7 +687,7 @@ run "actions_runner_worker_consumes_only_its_opt_in_queue" {
 }
 
 run "workload_controller_wires_only_dedicated_queue_and_recovery" {
-  command = plan
+  command = apply
   providers = {
     aws = aws.mock
   }
@@ -910,7 +983,7 @@ run "workspace_gateway_is_disabled_by_default" {
 }
 
 run "workspace_gateway_uses_private_tasks_exact_iam_and_tls_wss_only" {
-  command = plan
+  command = apply
   providers = {
     aws = aws.mock
   }

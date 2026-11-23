@@ -89,7 +89,7 @@ func (s *linuxWorkspaceSSHServerStarter) Start(ctx context.Context, spec Workspa
 	}
 	privateKey, err := readWorkspaceSSHPrivateKey(s.path(workspaceSSHPrivateKey))
 	if err != nil {
-		return nil, errors.New("read Workspace SSH host key")
+		return nil, fmt.Errorf("read Workspace SSH host key: %w", err)
 	}
 	ephemeralKeyPath := s.path(workspaceSSHEphemeralKey)
 	if err := writeRootPrivateFile(ephemeralKeyPath, privateKey); err != nil {
@@ -158,17 +158,29 @@ func readWorkspaceSSHPrivateKey(path string) ([]byte, error) {
 	}
 	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("SSH private key open failed")
 	}
 	file := os.NewFile(uintptr(fd), path)
 	defer file.Close()
 	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || info.Size() < 1 || info.Size() > 16*1024 {
-		return nil, errors.New("Workspace SSH private key has unsafe type, permissions, or size")
+	if err != nil {
+		return nil, errors.New("SSH private key stat failed")
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("SSH private key type rejected")
+	}
+	if info.Mode().Perm() != 0600 {
+		return nil, errors.New("SSH private key permissions rejected")
+	}
+	if info.Size() < 1 {
+		return nil, errors.New("SSH private key is empty")
+	}
+	if info.Size() > 16*1024 {
+		return nil, errors.New("SSH private key is oversized")
 	}
 	data, err := io.ReadAll(io.LimitReader(file, 16*1024+1))
 	if err != nil || len(data) == 0 || len(data) > 16*1024 {
-		return nil, errors.New("Workspace SSH private key is invalid")
+		return nil, errors.New("SSH private key contents rejected")
 	}
 	return data, nil
 }

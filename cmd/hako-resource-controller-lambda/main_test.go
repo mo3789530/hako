@@ -12,11 +12,11 @@ import (
 
 func TestConfiguredRuntimeRequiresAnExplicitImplementation(t *testing.T) {
 	for _, implementation := range []string{"", "aws", "real", " FAKE "} {
-		if _, err := configuredRuntime(implementation, aws.Config{}, nil); err == nil {
+		if _, err := configuredRuntime(implementation, aws.Config{}, nil, "rp-test"); err == nil {
 			t.Errorf("runtime implementation %q should be rejected", implementation)
 		}
 	}
-	runtime, err := configuredRuntime(" fake ", aws.Config{}, nil)
+	runtime, err := configuredRuntime(" fake ", aws.Config{}, nil, "rp-test")
 	if err != nil || runtime == nil {
 		t.Fatalf("explicit fake runtime = %T, %v", runtime, err)
 	}
@@ -36,18 +36,62 @@ func TestConfiguredLambdaMicroVMRuntimeRequiresExplicitTrustedConfiguration(t *t
 		"HAKO_WORKSPACE_RUNTIME_POLL_INTERVAL":    "100ms",
 		"HAKO_WORKSPACE_RUNTIME_POLL_TIMEOUT":     "5s",
 	}
-	runtime, err := configuredRuntime("lambda-microvm", aws.Config{Region: "us-east-1"}, func(key string) string { return values[key] })
+	runtime, err := configuredRuntime("lambda-microvm", aws.Config{Region: "us-east-1"}, func(key string) string { return values[key] }, "rp-test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := runtime.(*workspaceruntime.LambdaMicroVM); !ok {
-		t.Fatalf("configured runtime = %T, want Lambda MicroVM", runtime)
+	if _, ok := runtime.(*workspaceruntime.WorkspaceRepositoryRuntime); !ok {
+		t.Fatalf("configured runtime = %T, want repository-aware Lambda MicroVM wrapper", runtime)
 	}
-	if _, err := configuredRuntime("lambda-microvm", aws.Config{Region: "us-east-1"}, nil); err == nil {
+	if _, err := configuredRuntime("lambda-microvm", aws.Config{Region: "us-east-1"}, nil, "rp-test"); err == nil {
 		t.Fatal("Lambda MicroVM runtime accepted missing deployment config")
 	}
-	if _, err := configuredRuntime("lambda-microvm", aws.Config{Region: "us-west-2"}, func(key string) string { return values[key] }); err == nil {
+	if _, err := configuredRuntime("lambda-microvm", aws.Config{Region: "us-west-2"}, func(key string) string { return values[key] }, "rp-test"); err == nil {
 		t.Fatal("Lambda MicroVM runtime accepted a profile from another region")
+	}
+}
+
+func TestConfiguredWorkspaceRepositoryCheckoutIsOptionalButCompleteWhenEnabled(t *testing.T) {
+	if _, enabled, err := configuredWorkspaceRepositoryCheckout(func(string) string { return "" }, "us-east-1"); err != nil || enabled {
+		t.Fatalf("empty checkout config = enabled %v, err %v", enabled, err)
+	}
+	values := map[string]string{
+		"HAKO_WORKSPACE_REPOSITORY_CHECKOUT_BROKER_URL":           "https://broker.hako.test",
+		"HAKO_WORKSPACE_REPOSITORY_BROKER_CLIENT_CERT_SECRET_ARN": "arn:aws:secretsmanager:us-east-1:123456789012:secret:broker-cert",
+		"HAKO_WORKSPACE_REPOSITORY_BROKER_CLIENT_KEY_SECRET_ARN":  "arn:aws:secretsmanager:us-east-1:123456789012:secret:broker-key",
+		"HAKO_WORKSPACE_REPOSITORY_BROKER_CA_SECRET_ARN":          "arn:aws:secretsmanager:us-east-1:123456789012:secret:broker-ca",
+		"HAKO_WORKSPACE_REPOSITORY_GATEWAY_ORIGIN":                "https://gateway.hako.test",
+		"HAKO_WORKSPACE_REPOSITORY_TICKET_KEY_ID":                 "rp-ticket-v1",
+		"HAKO_WORKSPACE_REPOSITORY_TICKET_KEY_SECRET_ARN":         "arn:aws:secretsmanager:us-east-1:123456789012:secret:ticket-key",
+		"HAKO_WORKSPACE_REPOSITORY_REPORT_ENDPOINT":               "https://api.hako.test",
+		"HAKO_WORKSPACE_REPOSITORY_REPORT_KEY_SECRET_ARN":         "arn:aws:secretsmanager:us-east-1:123456789012:secret:report-key",
+	}
+	getenv := func(key string) string { return values[key] }
+	if _, enabled, err := configuredWorkspaceRepositoryCheckout(getenv, "us-east-1"); err != nil || !enabled {
+		t.Fatalf("valid checkout config = enabled %v, err %v", enabled, err)
+	}
+	for name, mutate := range map[string]func(map[string]string){
+		"partial": func(env map[string]string) { delete(env, "HAKO_WORKSPACE_REPOSITORY_CHECKOUT_BROKER_URL") },
+		"wrong region": func(env map[string]string) {
+			env["HAKO_WORKSPACE_REPOSITORY_BROKER_CA_SECRET_ARN"] = "arn:aws:secretsmanager:us-west-2:123456789012:secret:broker-ca"
+		},
+		"duplicate secret": func(env map[string]string) {
+			env["HAKO_WORKSPACE_REPOSITORY_BROKER_CA_SECRET_ARN"] = env["HAKO_WORKSPACE_REPOSITORY_BROKER_CLIENT_CERT_SECRET_ARN"]
+		},
+		"http endpoint": func(env map[string]string) {
+			env["HAKO_WORKSPACE_REPOSITORY_GATEWAY_ORIGIN"] = "http://gateway.hako.test"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := map[string]string{}
+			for key, value := range values {
+				candidate[key] = value
+			}
+			mutate(candidate)
+			if _, _, err := configuredWorkspaceRepositoryCheckout(func(key string) string { return candidate[key] }, "us-east-1"); err == nil {
+				t.Fatal("invalid checkout configuration was accepted")
+			}
+		})
 	}
 }
 

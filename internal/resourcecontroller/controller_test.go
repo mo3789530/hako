@@ -215,6 +215,75 @@ func TestControllerRequiresRevisionForVersionTwoCommandsAndPreservesLegacyVersio
 	}
 }
 
+func TestDecodeCommandRequiresCompleteGitHubRepositoryPin(t *testing.T) {
+	base := Command{SchemaVersion: 2, WorkspaceRevision: 1, OperationID: "op_repo", TenantID: "tenant_1",
+		WorkspaceID: "ws_1", ResourcePlaneID: "rp_1", Type: domain.OperationEnsureRunning, CreatedAt: time.Now().UTC()}
+	for _, test := range []struct {
+		name    string
+		command Command
+		wantErr bool
+	}{
+		{name: "without repository", command: base},
+		{name: "complete repository", command: func() Command {
+			command := base
+			command.GitHubInstallationID = 41
+			command.GitHubRepositoryID = 42
+			command.GitHubOwner = "acme"
+			command.GitHubRepository = "api"
+			command.GitHubDefaultBranch = "main"
+			return command
+		}()},
+		{name: "incomplete repository", command: func() Command {
+			command := base
+			command.GitHubInstallationID = 41
+			command.GitHubRepositoryID = 42
+			command.GitHubOwner = "acme"
+			return command
+		}(), wantErr: true},
+		{name: "repository without Installation", command: func() Command {
+			command := base
+			command.GitHubRepositoryID = 42
+			command.GitHubOwner = "acme"
+			command.GitHubRepository = "api"
+			command.GitHubDefaultBranch = "main"
+			return command
+		}(), wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			payload, err := json.Marshal(test.command)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = decodeCommand(payload)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("decodeCommand() error = %v, wantErr %v", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestDecodeCommandRejectsGitHubCredentialFields(t *testing.T) {
+	command := Command{SchemaVersion: 2, WorkspaceRevision: 1, OperationID: "op_repo", TenantID: "tenant_1",
+		WorkspaceID: "ws_1", ResourcePlaneID: "rp_1", Type: domain.OperationEnsureRunning, CreatedAt: time.Now().UTC(),
+		GitHubInstallationID: 41, GitHubRepositoryID: 42, GitHubOwner: "acme", GitHubRepository: "api", GitHubDefaultBranch: "main"}
+	payload, err := json.Marshal(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		t.Fatal(err)
+	}
+	fields["github_token"] = "synthetic-token-must-not-enter-command"
+	payload, err = json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decodeCommand(payload); err == nil {
+		t.Fatal("Resource Plane command accepted an installation credential field")
+	}
+}
+
 func TestControllerReportsExecutionTimeout(t *testing.T) {
 	sink := &testSink{}
 	controller, err := NewWithExecutionTimeout("rp_1", blockingRuntime{}, sink, nil, 10*time.Millisecond)

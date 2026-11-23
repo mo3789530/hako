@@ -25,8 +25,8 @@ var (
 )
 
 // WorkspaceMountSpec is non-secret initialization metadata from the trusted
-// Resource Plane. The workspace image must mount this exact EFS Access Point
-// before acknowledging the Lambda MicroVM /run hook.
+// Resource Plane. Lambda guests use the exact EFS Access Point; local
+// Local KVM guests use the separately attached persistent disk.
 type WorkspaceMountSpec struct {
 	TenantID        string `json:"tenant_id"`
 	WorkspaceID     string `json:"workspace_id"`
@@ -40,6 +40,7 @@ type WorkspaceMountSpec struct {
 	GID             uint32 `json:"gid"`
 	TLS             bool   `json:"tls"`
 	IAM             bool   `json:"iam"`
+	LocalDisk       bool   `json:"local_disk,omitempty"`
 }
 
 type WorkspaceMountExecutor interface {
@@ -117,7 +118,7 @@ func workspaceHookRun(w http.ResponseWriter, r *http.Request, executor Workspace
 		return
 	}
 	var payload workspaceMountHookPayload
-	if decodeWorkspaceHookJSON([]byte(request.RunHookPayload), &payload) != nil || !validWorkspaceMountSpec(payload.Hako.WorkspaceMount) {
+	if decodeWorkspaceHookJSON([]byte(request.RunHookPayload), &payload) != nil || payload.Hako.WorkspaceMount.LocalDisk || !validWorkspaceMountSpec(payload.Hako.WorkspaceMount) {
 		http.Error(w, "invalid Workspace lifecycle request", http.StatusBadRequest)
 		return
 	}
@@ -148,9 +149,14 @@ func validWorkspaceHookVMID(value string) bool {
 }
 
 func validWorkspaceMountSpec(spec WorkspaceMountSpec) bool {
-	return workspaceMicroVMIDPattern.MatchString(spec.TenantID) && workspaceMicroVMIDPattern.MatchString(spec.WorkspaceID) &&
-		workspaceMicroVMIDPattern.MatchString(spec.ResourcePlaneID) && workspaceFileSystemIDPattern.MatchString(spec.FileSystemID) && workspaceRegionPattern.MatchString(spec.Region) &&
-		workspaceAccessPointPattern.MatchString(spec.AccessPointID) &&
-		workspaceRootPathPattern.MatchString(spec.RootPath) && spec.MountPath == "/workspace" &&
-		spec.UID >= 100000 && spec.GID == spec.UID && spec.TLS && spec.IAM
+	if !workspaceMicroVMIDPattern.MatchString(spec.TenantID) || !workspaceMicroVMIDPattern.MatchString(spec.WorkspaceID) ||
+		!workspaceMicroVMIDPattern.MatchString(spec.ResourcePlaneID) || spec.MountPath != "/workspace" ||
+		spec.UID < 100000 || spec.GID != spec.UID {
+		return false
+	}
+	if spec.LocalDisk {
+		return spec.FileSystemID == "" && spec.Region == "" && spec.AccessPointID == "" && spec.RootPath == "" && !spec.TLS && !spec.IAM
+	}
+	return workspaceFileSystemIDPattern.MatchString(spec.FileSystemID) && workspaceRegionPattern.MatchString(spec.Region) &&
+		workspaceAccessPointPattern.MatchString(spec.AccessPointID) && workspaceRootPathPattern.MatchString(spec.RootPath) && spec.TLS && spec.IAM
 }

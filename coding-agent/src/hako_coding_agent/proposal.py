@@ -47,6 +47,14 @@ def _validate_path(path: str) -> None:
     ):
         raise ValueError("invalid proposal path")
     base = parts[-1].lower()
+    # Terraform has no enabled verifier profile yet. Deny its source and state
+    # formats anywhere in the tree, not only under conventional directory names.
+    if (
+        base.endswith((".tf", ".tfvars", ".tfstate", ".tfstate.backup"))
+        or base == ".terraform.lock.hcl"
+        or base.endswith(".tf.json")
+    ):
+        raise ValueError("Terraform proposals are not enabled")
     if (
         base.startswith(".env")
         or base in {"credentials", "id_rsa", "id_ed25519"}

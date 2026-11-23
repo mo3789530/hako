@@ -1,6 +1,6 @@
 # Task 61: Validate Lambda MicroVM Runtime Contract
 
-Status: API contract identified (AWS Lambda MicroVMs); image/container/network PoC pending. Priority: P0. Depends on: Task 39 substrate-neutral foundations; coordinate with Task 43.
+Status: Blocked for provider PoC. Local API contract and artifact checks are complete; remaining acceptance requires a dedicated approved ARM64 AWS Lambda MicroVM environment, which is not part of this AWS-less run. No AWS API or resource was used. Priority: P0. Depends on: Task 39 substrate-neutral foundations; coordinate with Task 43.
 
 ## Goal
 

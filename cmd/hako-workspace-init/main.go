@@ -35,10 +35,15 @@ func run() error {
 	if err != nil {
 		return errors.New("configure Workspace SSH runtime")
 	}
+	vsockEnabled, err := workspaceAgentVsockEnabled(os.Getenv(workspaceagent.WorkspaceAgentVsockEnabledEnvironment))
+	if err != nil {
+		return errors.New("configure Workspace Agent vsock listener")
+	}
 	supervisor, err := workspaceagent.NewLinuxWorkspaceAgentSupervisor(workspaceagent.WorkspaceAgentSupervisorConfig{
 		TrustedKeysFile: os.Getenv(workspaceagent.WorkspaceAgentTrustedKeysFileEnvironment),
 		GatewayOrigin:   os.Getenv(workspaceagent.WorkspaceGatewayOriginEnvironment),
 		EnableServices:  servicesEnabled,
+		EnableVsock:     vsockEnabled,
 		EnableSSH:       sshEnabled,
 	})
 	if err != nil {
@@ -110,5 +115,16 @@ func workspaceSSHEnabled(value string) (bool, error) {
 		return true, nil
 	default:
 		return false, errors.New("Workspace SSH setting must be true or false")
+	}
+}
+
+func workspaceAgentVsockEnabled(value string) (bool, error) {
+	switch value {
+	case "", "false":
+		return false, nil
+	case "true":
+		return true, nil
+	default:
+		return false, errors.New("Workspace Agent vsock setting must be true or false")
 	}
 }

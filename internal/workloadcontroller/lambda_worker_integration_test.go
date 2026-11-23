@@ -265,7 +265,7 @@ func TestComposedLambdaWorkerResultAndCleanupProjectIntoPostgres(t *testing.T) {
 	}
 
 	checkout := t.TempDir()
-	if err := os.WriteFile(filepath.Join(checkout, "go.mod"), []byte("module example.invalid/hako-worker-integration\n\ngo 1.27.3\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(checkout, "go.mod"), []byte("module example.invalid/hako-worker-integration\n\ngo 1.27.4\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	archive, err := workloadsource.CreateArchive(ctx, checkout, 0)
@@ -462,7 +462,7 @@ func TestComposedLambdaWorkerCancellationOutboxTerminatesAndProjectsIntoPostgres
 
 	controller, runtime, api, _, now := setupLambda(t)
 	checkout := t.TempDir()
-	if err := os.WriteFile(filepath.Join(checkout, "go.mod"), []byte("module example.invalid/hako-cancel-integration\n\ngo 1.27.3\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(checkout, "go.mod"), []byte("module example.invalid/hako-cancel-integration\n\ngo 1.27.4\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	archive, err := workloadsource.CreateArchive(ctx, checkout, 0)
@@ -504,7 +504,8 @@ func TestComposedLambdaWorkerCancellationOutboxTerminatesAndProjectsIntoPostgres
 	identity := workloadjournal.Command{TenantID: "tenant_1", WorkloadRunID: "run_cancel", AttemptID: "attempt_cancel", Generation: 1,
 		ResourcePlaneID: "rp_1", IdempotencyToken: "token_cancel"}
 	dispatch := workloadjobs.DispatchCommand{SchemaVersion: 1, TenantID: domain.TenantID(identity.TenantID), WorkloadRunID: domain.WorkloadRunID(identity.WorkloadRunID),
-		AttemptID: identity.AttemptID, Generation: identity.Generation, ResourcePlane: domain.ResourcePlaneID(identity.ResourcePlaneID), IdempotencyToken: identity.IdempotencyToken}
+		AttemptID: identity.AttemptID, Generation: identity.Generation, ResourcePlane: domain.ResourcePlaneID(identity.ResourcePlaneID),
+		IdempotencyToken: identity.IdempotencyToken, RuntimeProvider: domain.WorkloadRuntimeLambdaMicroVM}
 	commandBody, err := json.Marshal(dispatch)
 	if err != nil {
 		t.Fatal(err)

@@ -18,7 +18,7 @@ SSH update: Task 47 provides the separate `ssh-proxy` Session and one-use Agent 
 
 File transfer update: Task 47 adds `hako cp` over a distinct signed `file-transfer` Agent route, not the SSH bridge. A one-use ticket authorizes the `/files` WebSocket endpoint; paths are confined beneath the pinned `/workspace` mount, symlinks and non-regular files are rejected, uploads are atomically committed, and downloads use a private local temporary file. This does not require guest `sshd`, SFTP, or SSH host-key provisioning. Actual MicroVM image and deployed routing validation remain open.
 
-Status: In Progress. The Workspace Agent's local path is composed across the
+Status: Local software implementation and tests complete; ARM64 Guest image execution, `/dev/pts` behavior, and deployed connectivity remain. The Workspace Agent's local path is composed across the
 EFS `/run` hook, non-root Guest process, signed one-use tickets, TLS/WSS
 Gateway routing, and the journal-backed Lambda MicroVM stream resolver.
 Locally covered capabilities include interactive PTY/reconnect, bounded
@@ -32,6 +32,7 @@ per-Workspace host-key handling are implemented locally; they still need
 validation in the built ARM64 image and a live MicroVM. No AWS apply or live
 Secret retrieval has been performed.
 Priority: P1.
+External acceptance blocked: ARM64 image execution, `/dev/pts`/`/run`, key provisioning, and live Gateway connectivity require an ARM64 Lambda MicroVM staging environment; no AWS changes or Secret reads were made.
 
 ## Goal
 

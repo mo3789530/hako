@@ -13,7 +13,8 @@ func TestControlPlaneDispatchEnvelopeMatchesResourcePlaneIdentityDecoder(t *test
 	command := workloadjobs.DispatchCommand{
 		SchemaVersion: 1, TenantID: domain.TenantID("tenant_1"), WorkloadRunID: domain.WorkloadRunID("run_1"),
 		AttemptID: "attempt_1", Generation: 1, ResourcePlane: domain.ResourcePlaneID("rp_1"), IdempotencyToken: "token_1",
-		CorrelationID: "req_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		RuntimeProvider: domain.WorkloadRuntimeLambdaMicroVM,
+		CorrelationID:   "req_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 	}
 	payload, err := json.Marshal(command)
 	if err != nil {

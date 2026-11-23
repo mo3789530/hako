@@ -16,19 +16,28 @@ import (
 // no attempt; their scheduler observes cancellation before creating one.
 func enqueueCancellation(ctx context.Context, tx pgx.Tx, run domain.WorkloadRun, now time.Time) error {
 	var command struct {
-		SchemaVersion    int                    `json:"schema_version"`
-		TenantID         domain.TenantID        `json:"tenant_id"`
-		WorkloadRunID    domain.WorkloadRunID   `json:"workload_run_id"`
-		AttemptID        string                 `json:"attempt_id"`
-		Generation       int64                  `json:"generation"`
-		ResourcePlaneID  domain.ResourcePlaneID `json:"resource_plane_id"`
-		IdempotencyToken string                 `json:"idempotency_token"`
-		CorrelationID    string                 `json:"correlation_id,omitempty"`
+		SchemaVersion    int                            `json:"schema_version"`
+		TenantID         domain.TenantID                `json:"tenant_id"`
+		WorkloadRunID    domain.WorkloadRunID           `json:"workload_run_id"`
+		AttemptID        string                         `json:"attempt_id"`
+		Generation       int64                          `json:"generation"`
+		ResourcePlaneID  domain.ResourcePlaneID         `json:"resource_plane_id"`
+		IdempotencyToken string                         `json:"idempotency_token"`
+		RuntimeProvider  domain.WorkloadRuntimeProvider `json:"runtime_provider"`
+		CorrelationID    string                         `json:"correlation_id,omitempty"`
 	}
 	command.SchemaVersion = 1
 	command.TenantID = run.TenantID
 	command.WorkloadRunID = run.ID
 	command.CorrelationID = run.CorrelationID
+	switch run.Kind {
+	case domain.WorkloadJob:
+		command.RuntimeProvider = domain.WorkloadRuntimeLambdaMicroVM
+	case domain.WorkloadAgent:
+		command.RuntimeProvider = domain.WorkloadRuntimeAgentCore
+	default:
+		return errors.New("Workload kind has no cancellation runtime provider")
+	}
 	err := tx.QueryRow(ctx, `SELECT id,generation,resource_plane_id,idempotency_token FROM workload_run_attempts
 		WHERE tenant_id=$1 AND workload_run_id=$2 ORDER BY generation DESC LIMIT 1`, run.TenantID, run.ID).
 		Scan(&command.AttemptID, &command.Generation, &command.ResourcePlaneID, &command.IdempotencyToken)

@@ -5,9 +5,9 @@ ID. This adapter does not configure credentials, network policy or a sandbox.
 """
 
 import json
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
-from .languages import detect_languages, plan_guidance
+from .languages import plan_guidance
 from .workspace import Workspace
 
 _SYSTEM = (
@@ -70,6 +70,7 @@ class BedrockCodingModel:
         max_tool_calls: int = 32,
         max_tokens: int = 2048,
         prompt_cache: bool = False,
+        deadline_check: Callable[[], None] | None = None,
     ):
         if (
             client is None
@@ -86,9 +87,10 @@ class BedrockCodingModel:
         self.client, self.model_id = client, model_id
         self.max_turns, self.max_tool_calls, self.max_tokens = max_turns, max_tool_calls, max_tokens
         self.prompt_cache = prompt_cache
+        self.deadline_check = deadline_check
 
     def plan(self, task: str, workspace: Workspace, iteration: int) -> str:
-        guidance = plan_guidance(detect_languages(workspace.list_files()))
+        guidance = plan_guidance(workspace.source_languages())
         return self._run(
             "Inspect relevant files and existing tests before planning. Identify affected files, "
             "assumptions, risks, concrete test cases and available verification; do not claim "
@@ -128,7 +130,7 @@ class BedrockCodingModel:
         return result.strip() == "PASS"
 
     def _run(self, prompt: str, workspace: Workspace, writable: bool) -> str:
-        languages = detect_languages(workspace.list_files())
+        languages = workspace.source_languages()
         context = ", ".join(languages) if languages else "unknown"
         messages: list[dict[str, Any]] = [
             {
@@ -145,6 +147,8 @@ class BedrockCodingModel:
         tool_count = 0
         seen_ids: set[str] = set()
         for _ in range(self.max_turns):
+            if self.deadline_check is not None:
+                self.deadline_check()
             if len(json.dumps(messages, ensure_ascii=True).encode("utf-8")) > _MAX_MESSAGE_BYTES:
                 raise ValueError("model context limit exceeded")
             response = self.client.converse(
@@ -154,6 +158,8 @@ class BedrockCodingModel:
                 inferenceConfig={"maxTokens": self.max_tokens},
                 toolConfig={"tools": tools},
             )
+            if self.deadline_check is not None:
+                self.deadline_check()
             try:
                 message = response["output"]["message"]
                 blocks = message["content"]

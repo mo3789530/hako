@@ -376,6 +376,102 @@ type SignedWorkspaceServiceReportSink struct {
 	now      func() time.Time
 }
 
+// WorkspaceRepositoryCheckoutReport is the authenticated result contract for
+// the first Guest checkout. It contains immutable identity and status only;
+// installation tokens and repository contents never cross this boundary.
+type WorkspaceRepositoryCheckoutReport struct {
+	TenantID        domain.TenantID        `json:"tenant_id"`
+	WorkspaceID     domain.WorkspaceID     `json:"workspace_id"`
+	ResourcePlaneID domain.ResourcePlaneID `json:"resource_plane_id"`
+	InstallationID  int64                  `json:"installation_id"`
+	RepositoryID    int64                  `json:"repository_id"`
+	CommitSHA       string                 `json:"commit_sha,omitempty"`
+	State           string                 `json:"state"`
+	ObservedAt      time.Time              `json:"observed_at"`
+}
+
+type SignedWorkspaceRepositoryCheckoutReportSink struct {
+	endpoint string
+	key      []byte
+	client   *http.Client
+	newID    func() ([]byte, error)
+	now      func() time.Time
+}
+
+func NewSignedWorkspaceRepositoryCheckoutReportSink(endpoint string, key []byte, client *http.Client, now func() time.Time) (*SignedWorkspaceRepositoryCheckoutReportSink, error) {
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil ||
+		(parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" || len(key) < 32 {
+		return nil, errors.New("Workspace repository checkout report endpoint and HMAC key are required")
+	}
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+	client = noRedirectClient(client)
+	if now == nil {
+		now = func() time.Time { return time.Now().UTC() }
+	}
+	return &SignedWorkspaceRepositoryCheckoutReportSink{endpoint: strings.TrimRight(endpoint, "/"), key: append([]byte(nil), key...), client: client,
+		newID: func() ([]byte, error) { raw := make([]byte, 24); _, err := rand.Read(raw); return raw, err }, now: now}, nil
+}
+
+func (s *SignedWorkspaceRepositoryCheckoutReportSink) Report(ctx context.Context, report WorkspaceRepositoryCheckoutReport) error {
+	if s == nil || ctx == nil || report.TenantID == "" || report.WorkspaceID == "" || report.ResourcePlaneID == "" ||
+		report.InstallationID < 1 || report.RepositoryID < 1 || report.ObservedAt.IsZero() || (report.State != "ready" && report.State != "failed") ||
+		(report.CommitSHA != "" && !validWorkspaceRepositoryCommitSHA(report.CommitSHA)) || (report.State == "ready" && !validWorkspaceRepositoryCommitSHA(report.CommitSHA)) {
+		return ErrWorkspaceServiceDelivery
+	}
+	body, err := json.Marshal(report)
+	if err != nil || len(body) > 8<<10 {
+		return ErrWorkspaceServiceDelivery
+	}
+	rawID, err := s.newID()
+	if err != nil || len(rawID) != 24 {
+		return ErrWorkspaceServiceDelivery
+	}
+	reportID := hex.EncodeToString(rawID)
+	timestamp := fmt.Sprint(s.now().UTC().Unix())
+	path := "/v1/internal/resource-planes/" + url.PathEscape(string(report.ResourcePlaneID)) + "/workspaces/" + url.PathEscape(string(report.WorkspaceID)) + "/repository-checkout"
+	bodyHash := sha256.Sum256(body)
+	message := strings.Join([]string{http.MethodPut, path, timestamp, reportID, hex.EncodeToString(bodyHash[:])}, "\n")
+	mac := hmac.New(sha256.New, s.key)
+	_, _ = mac.Write([]byte(message))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPut, s.endpoint+path, bytes.NewReader(body))
+	if err != nil {
+		return ErrWorkspaceServiceDelivery
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Hako-Timestamp", timestamp)
+	request.Header.Set("X-Hako-Report-ID", reportID)
+	request.Header.Set("X-Hako-Signature", hex.EncodeToString(mac.Sum(nil)))
+	response, err := s.client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1024))
+		return fmt.Errorf("Control Plane repository checkout report returned HTTP %d", response.StatusCode)
+	}
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, (8<<10)+1))
+	if err != nil || len(responseBody) > 8<<10 {
+		return ErrWorkspaceServiceDelivery
+	}
+	var accepted struct {
+		Accepted bool `json:"accepted"`
+	}
+	if json.Unmarshal(responseBody, &accepted) != nil || !accepted.Accepted {
+		return ErrWorkspaceServiceDelivery
+	}
+	return nil
+}
+
+var workspaceRepositoryCommitSHA = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
+
+func validWorkspaceRepositoryCommitSHA(value string) bool {
+	return workspaceRepositoryCommitSHA.MatchString(value)
+}
+
 func NewSignedWorkspaceServiceReportSink(endpoint string, key []byte, client *http.Client, now func() time.Time) (*SignedWorkspaceServiceReportSink, error) {
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil ||

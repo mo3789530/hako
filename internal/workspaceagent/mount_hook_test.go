@@ -67,6 +67,35 @@ func TestWorkspaceRunHookMountsExactAccessPointBeforeSuccess(t *testing.T) {
 	}
 }
 
+func TestLocalDiskWorkspaceSpecIsValidButCannotUseLambdaRunHook(t *testing.T) {
+	spec := WorkspaceMountSpec{TenantID: "tenant-1", WorkspaceID: "workspace-1", ResourcePlaneID: "rp-1",
+		MountPath: "/workspace", UID: 100123, GID: 100123, LocalDisk: true}
+	if !validWorkspaceMountSpec(spec) {
+		t.Fatal("valid local persistent-disk mount spec was rejected")
+	}
+	executor := &mountExecutorStub{}
+	handler, err := NewWorkspaceMountLifecycleHandler(http.NotFoundHandler(), executor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(struct {
+		Hako struct {
+			WorkspaceMount WorkspaceMountSpec `json:"workspace_mount"`
+		} `json:"hako"`
+	}{Hako: struct {
+		WorkspaceMount WorkspaceMountSpec `json:"workspace_mount"`
+	}{WorkspaceMount: spec}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(workspaceRuntimeHookRequest{MicroVMID: "microvm-1", RunHookPayload: string(payload)})
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, workspaceLifecyclePrefix+"run", strings.NewReader(string(body))))
+	if recorder.Code != http.StatusBadRequest || executor.calls != 0 {
+		t.Fatalf("Lambda run hook accepted local disk: status=%d executor_calls=%d", recorder.Code, executor.calls)
+	}
+}
+
 func TestWorkspaceRunHookBindsAgentAfterMountBeforeAcknowledgement(t *testing.T) {
 	executor := &mountExecutorStub{}
 	agent := &mountBinderStub{executor: executor}

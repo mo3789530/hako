@@ -1,6 +1,7 @@
 # Task 43: Production Workspace Runtime
 
 Status: Implemented locally through Tasks 80–83 (contract, durable journal, Lambda MicroVM adapter, SDK HTTP/recovery and PostgreSQL result/binding E2E). The Resource Controller Lambda composes the AWS runtime behind an explicit `HAKO_RUNTIME_IMPLEMENTATION=lambda-microvm` mode with strict static launch-profile parsing and the S3 journal. Resource Plane Terraform now has a default-off ARM64 Lambda deployment contract with exact image/journal permissions, dynamic EFS-role prerequisite, and mutually exclusive command-queue mapping; it remains unset in the dev root. Real AWS image/network/lifecycle PoC, EFS/agent recovery, and deployment remain unverified and gated by Tasks 44/45/61. Priority: P1.
+External acceptance blocked: live Lambda MicroVM image/network/lifecycle and EFS/Agent recovery require the designated AWS environment; none was used in this local run.
 
 ## Goal
 

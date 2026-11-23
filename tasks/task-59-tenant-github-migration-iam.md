@@ -2,7 +2,8 @@
 
 残作業の実行単位：[Task 69](task-69-tenant-checkout-broker.md)、[Task 70](task-70-tenant-migration-cutover.md)。親タスクは集約用に保持し、子タスク完了だけで配備済みとはしない。
 
-Status: In Progress (Tenant App-to-Installation binding, immutable Run pinning, Task 70 migration guards, and Task 40 Resource Plane Lambda Worker → mTLS checkout broker composition are implemented locally. Control Plane Terraform now attaches an exact-ARN `sts:AssumeRole` allowlist for private-key readers only to the existing GitHub Broker role; API Webhook reader Roles cannot overlap. Dedicated Terraform tests cover empty default, exact target set, broker-only attachment, wildcard rejection, and purpose separation. Cross-account target Role trust/Secret/KMS provisioning, production migration/drain/cutover, and deployment review remain approval-gated). Priority: P0.
+Status: Blocked on approved cross-account provisioning and production cutover. Tenant App-to-Installation binding, immutable Run pinning, Task 70 migration plan/backfill/drain guards, Resource Plane Worker → mTLS checkout broker composition, and exact broker-only `sts:AssumeRole` Terraform allowlisting are implemented and locally verified. Remaining work requires target Role trust/Secret/KMS provisioning, production migration and drain/cutover, deployment review, and operational rollback verification. No AWS apply or production GitHub change was made. Priority: P0.
+External acceptance blocked: cross-account trust/Secret/KMS setup and production migration/cutover require the designated AWS environment and operational review; no AWS or production GitHub changes were made in this local run.
 
 ## Goal
 

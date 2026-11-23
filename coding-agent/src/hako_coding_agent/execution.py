@@ -8,7 +8,9 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from .agent import CodingModel, Verifier, run_agent
+from .agent import CodingModel, ProposalDraft, Verifier, propose_changes, run_agent
+from .bedrock import ConverseClient
+from .policy import AgentCorePolicy
 from .proposal import Proposal
 from .source import load_source
 from .workflow import Outcome
@@ -55,6 +57,14 @@ class ExecutionResult:
     proposal: Proposal | None
 
 
+@dataclass(frozen=True)
+class ProposalExecutionResult:
+    """Attempt-bound metadata around an untrusted model proposal draft."""
+
+    attempt: Attempt
+    draft: ProposalDraft
+
+
 def execute(
     attempt: Attempt,
     source_tar: bytes,
@@ -79,3 +89,47 @@ def execute(
     )
     proposal = result.proposal if result.workflow.outcome == Outcome.VERIFIED else None
     return ExecutionResult(attempt, result.workflow.outcome, result.workflow.iterations, proposal)
+
+
+def execute_with_policy(
+    attempt: Attempt,
+    source_tar: bytes,
+    task: str,
+    client: ConverseClient,
+    verifier: Verifier,
+    policy: AgentCorePolicy,
+) -> ExecutionResult:
+    """Compose the workflow only after trusted model/budget policy validation.
+
+    The caller must create ``client`` in ``policy.region``. This function keeps
+    model ID and workflow budgets out of task, repository and invocation input.
+    """
+    if not isinstance(policy, AgentCorePolicy):
+        raise ValueError("trusted AgentCore policy is required")
+    return execute(
+        attempt,
+        source_tar,
+        task,
+        policy.build_model(client),
+        verifier,
+        max_iterations=policy.max_iterations,
+    )
+
+
+def propose_with_policy(
+    attempt: Attempt,
+    source_tar: bytes,
+    task: str,
+    client: ConverseClient,
+    policy: AgentCorePolicy,
+    *,
+    deadline_check: Callable[[], None] | None = None,
+) -> ProposalExecutionResult:
+    """Create a bounded proposal draft for downstream Hako verification."""
+    if not isinstance(attempt, Attempt) or not isinstance(policy, AgentCorePolicy):
+        raise ValueError("trusted attempt and AgentCore policy are required")
+    model = policy.build_model(client, deadline_check=deadline_check)
+    attempt.validate()
+    workspace = load_source(source_tar, attempt.source_sha256)
+    draft = propose_changes(task, workspace, model, max_iterations=policy.max_iterations)
+    return ProposalExecutionResult(attempt, draft)

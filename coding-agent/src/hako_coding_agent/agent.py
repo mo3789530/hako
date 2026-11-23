@@ -28,6 +28,15 @@ class AgentResult:
     proposal: Proposal | None
 
 
+@dataclass(frozen=True)
+class ProposalDraft:
+    """Untrusted proposal draft for Hako's separate verifier."""
+
+    iterations: int
+    tree_digest: str
+    proposal: Proposal | None
+
+
 class _Steps:
     def __init__(self, task: str, workspace: Workspace, model: CodingModel, verifier: Verifier):
         self.task = task
@@ -78,3 +87,46 @@ def run_agent(
     )
     # A success without a proposal is not evidence of a repository change.
     return AgentResult(result, workspace.proposal())
+
+
+def propose_changes(
+    task: str, workspace: Workspace, model: CodingModel, *, max_iterations: int = 3
+) -> ProposalDraft:
+    """Produce an untrusted draft without executing or claiming verification.
+
+    The returned ZIP must still pass Hako's independent verifier and current
+    attempt/digest checks before it can affect a Run or publication decision.
+    """
+    if (
+        not isinstance(task, str)
+        or not task.strip()
+        or len(task.encode("utf-8")) > 64 << 10
+        or not isinstance(workspace, Workspace)
+        or model is None
+    ):
+        raise ValueError("invalid proposal request")
+    if (
+        isinstance(max_iterations, bool)
+        or not isinstance(max_iterations, int)
+        or not 1 <= max_iterations <= 10
+    ):
+        raise ValueError("max_iterations must be between 1 and 10")
+    current_plan = ""
+    for iteration in range(1, max_iterations + 1):
+        plan = model.plan(task, workspace, iteration)
+        if not isinstance(plan, str) or not plan.strip() or len(plan.encode("utf-8")) > 32 << 10:
+            raise ValueError("invalid model plan")
+        current_plan = plan
+        model.code(task, current_plan, workspace)
+        model.test(task, current_plan, workspace)
+        before_review = workspace.tree_digest()
+        approved = model.review(task, workspace)
+        after_review = workspace.tree_digest()
+        if not isinstance(approved, bool):
+            raise ValueError("invalid model review")
+        if before_review != after_review:
+            continue
+        proposal = workspace.proposal() if approved else None
+        if proposal is not None:
+            return ProposalDraft(iteration, after_review, proposal)
+    return ProposalDraft(max_iterations, workspace.tree_digest(), None)

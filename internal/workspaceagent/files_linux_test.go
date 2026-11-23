@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -162,6 +163,84 @@ func TestWorkspaceFilesRejectsInvalidPreviewSourceArchiveWithoutInstalling(t *te
 	}
 	if _, err := os.Lstat(filepath.Join(workspace, "src")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("invalid source created destination: %v", err)
+	}
+}
+
+func TestWorkspaceFilesInstallsGitRepositoryAtomicallyAndPreservesLocalEdits(t *testing.T) {
+	workspace := t.TempDir()
+	repository := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %s (%v)", args, output, err)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	_ = run("-C", repository, "init", "--quiet")
+	if err := os.WriteFile(filepath.Join(repository, "README.md"), []byte("initial\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"-C", repository, "config", "user.email", "workspace@example.test"}, {"-C", repository, "config", "user.name", "Workspace"}, {"-C", repository, "add", "README.md"}, {"-C", repository, "commit", "--quiet", "-m", "initial"}, {"-C", repository, "checkout", "--quiet", "--detach", "HEAD"}} {
+		_ = run(args...)
+	}
+	commit := run("-C", repository, "rev-parse", "HEAD")
+	archive, err := workloadsource.CreateWorkspaceRepositoryArchive(context.Background(), repository, workloadsource.DefaultMaxArchiveBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.Close()
+	archiveBytes, err := io.ReadAll(archive.Reader())
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := newWorkspaceFilesAt(workspace, uint32(os.Getuid()), uint32(os.Getgid()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	install := func() error {
+		return files.InstallWorkspaceRepositoryArchive(context.Background(), "demo", commit, int64(len(archiveBytes)), archive.SHA256(), bytes.NewReader(archiveBytes))
+	}
+	if err := install(); err != nil {
+		t.Fatalf("install initial Git repository: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(workspace, "demo", "README.md")); err != nil || string(got) != "initial\n" {
+		t.Fatalf("initial worktree file=%q err=%v", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(workspace, "demo", ".git", "HEAD")); err != nil || strings.TrimSpace(string(got)) != commit {
+		t.Fatalf("Git metadata missing: %q err=%v", got, err)
+	}
+	if err := install(); err != nil {
+		t.Fatalf("identical retry should be idempotent: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".git", "volatile-pack-metadata"), []byte("fetch-specific metadata"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	changedMetadata, err := workloadsource.CreateWorkspaceRepositoryArchive(context.Background(), repository, workloadsource.DefaultMaxArchiveBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedBytes, err := io.ReadAll(changedMetadata.Reader())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedMetadata.SHA256() == archive.SHA256() {
+		t.Fatal("test Git metadata change did not change the archive digest")
+	}
+	if err := files.InstallWorkspaceRepositoryArchive(context.Background(), "demo", commit, int64(len(changedBytes)), changedMetadata.SHA256(), bytes.NewReader(changedBytes)); err != nil {
+		t.Fatalf("same HEAD/worktree with different Git metadata should be idempotent: %v", err)
+	}
+	_ = changedMetadata.Close()
+	if err := os.WriteFile(filepath.Join(workspace, "demo", "README.md"), []byte("local edit\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := install(); !errors.Is(err, ErrWorkspaceFile) {
+		t.Fatalf("retry overwrote/accepted edited checkout: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(workspace, "demo", "README.md")); err != nil || string(got) != "local edit\n" {
+		t.Fatalf("local edit was not preserved: %q err=%v", got, err)
 	}
 }
 

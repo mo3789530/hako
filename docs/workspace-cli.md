@@ -7,6 +7,33 @@ runtime cleanup/terminal result is confirmed. This aggregate view does not
 change Member visibility of Workspace records and does not report measured
 compute or storage consumption. See [Workspace lifecycle API](workspace-lifecycle-api.md).
 
+## GitHub repositories
+
+`hako create <tenant-id> <workspace-name>` creates a Workspace. The optional
+`--repository <owner>/<repo>` selects a repository registered to the same
+Tenant's active GitHub App:
+
+```sh
+hako create tenant_acme api-dev --repository acme/api
+```
+
+The selected Installation, repository ID, owner/name, and default branch are
+persisted with a checkout state and shown in Workspace details. The Broker
+accepts a Resource Plane mTLS request containing only Tenant and Workspace
+IDs, resolves the pinned repository itself, mints a single-repository token,
+resolves the default-branch commit, and records that immutable SHA before
+returning the credential. The Guest supports an atomic, digest- and
+HEAD-verified installation of a credential-free Git archive, preserving `.git`
+metadata while refusing to replace local changes. A signed Resource Plane
+result contract persists checkout status. The Resource Plane does not yet
+compose the Broker, Git fetch, Guest transfer and signed result, so creation
+currently records the authorized selection as pending. Until checkout is
+connected, use `hako shell` or a remote terminal
+in VS Code and clone under `/workspace`. Subsequent updates use the developer's Git authentication.
+Hako login authorizes the Workspace connection, not GitHub access from Git.
+`hako get <tenant-id> <workspace-id>` prints the selected repository and its
+checkout state when one was supplied.
+
 The first interactive CLI command is:
 
 ```sh
@@ -91,6 +118,8 @@ use `--yes`; this bypass is accepted only for `delete`, not `suspend` or
 `hako wait <tenant-id> <workspace-id> --state deleted` to confirm the observed
 terminal state. The delete request supports `--idempotency-key <key>` for safe
 retries after an ambiguous network result.
+
+## SSH and VS Code Remote SSH
 
 Configure OpenSSH or VS Code Remote SSH to use Hako as a ProxyCommand:
 
