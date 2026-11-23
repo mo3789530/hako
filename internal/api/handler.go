@@ -226,6 +226,13 @@ func newHandler(verifier *auth.CognitoVerifier, pool transaction.Beginner, webho
 	}
 	protected := e.Group("", CognitoMiddleware(verifier))
 	if workspaceConfig.GitHubAppManagementEnabled {
+		repositoryMembersPath := "/v1/tenants/:tenant_id/github/installations/:installation_id/repositories/:repository_id/members"
+		protected.GET(repositoryMembersPath, repositoryMembers(pool, http.MethodGet),
+			RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+		protected.PUT(repositoryMembersPath+"/:user_id", repositoryMembers(pool, http.MethodPut),
+			RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
+		protected.DELETE(repositoryMembersPath+"/:user_id", repositoryMembers(pool, http.MethodDelete),
+			RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool))
 		apps := protected.Group("/v1/tenants/:tenant_id/github/apps", RequireScopes(auth.HakoAPIScope), HakoUserMiddleware(pool), TenantMembershipMiddleware(pool), githubAppOwnerMiddleware)
 		apps.GET("", githubAppMetadata(pool, "list", workspaceConfig.GitHubAppProofVerifier))
 		apps.POST("", githubAppMetadata(pool, "add", workspaceConfig.GitHubAppProofVerifier))

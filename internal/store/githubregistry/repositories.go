@@ -102,6 +102,9 @@ func SyncInstallationRepositories(ctx context.Context, tx pgx.Tx, tenantID domai
 		if !validRepositoryRef(repository) {
 			return errors.New("invalid repository in Installation event")
 		}
+		if _, err := tx.Exec(ctx, `DELETE FROM tenant_repository_members WHERE tenant_id = $1 AND installation_id = $2 AND github_repository_id = $3`, tenantID, event.InstallationID, repository.GitHubID); err != nil {
+			return fmt.Errorf("remove repository grants: %w", err)
+		}
 		if _, err := tx.Exec(ctx, `DELETE FROM tenant_github_repositories
 			WHERE tenant_id = $1 AND installation_id = $2 AND github_repository_id = $3`, tenantID, event.InstallationID, repository.GitHubID); err != nil {
 			return fmt.Errorf("remove GitHub repository %d: %w", repository.GitHubID, err)

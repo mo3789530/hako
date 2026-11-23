@@ -41,3 +41,5 @@ Workspace list/get routes re-read Tenant membership inside the same transaction 
 ## Workspace visibility
 
 Workspace visibility is implemented for the list and get APIs: Member sees only Workspace rows they own, while Owner/Admin see all Workspace rows within the Tenant. The same transaction rechecks membership and applies the visibility filter. Session issuance and other future Workspace entry points must reuse this policy; they are not implemented yet.
+
+See the [proposed API repository authorization policy](api-repository-authorization.md) for repository grants within a Tenant.
