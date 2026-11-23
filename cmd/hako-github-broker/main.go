@@ -120,6 +120,7 @@ func run() error {
 		previewPlaneIDs = append(previewPlaneIDs, strings.TrimPrefix(caller, "spiffe://hako/resource-plane/"))
 	}
 	var previewCheckout *githubbroker.PreviewCheckoutService
+	var workspaceCheckout *githubbroker.WorkspaceCheckoutService
 	if len(previewPlaneIDs) > 0 {
 		previewCheckoutMinter, minterErr := githubbroker.NewAWSPreviewCheckoutTokenMinter(awsConfig, pool, policy, nil)
 		if minterErr != nil {
@@ -129,6 +130,15 @@ func run() error {
 			githubbroker.NewPostgresPreviewCheckoutResolver(pool, policy, nil), previewCheckoutMinter)
 		if err != nil {
 			return errors.New("configure Preview checkout broker service")
+		}
+		workspaceCheckoutMinter, minterErr := githubbroker.NewAWSWorkspaceCheckoutTokenMinter(awsConfig, pool, policy, nil)
+		if minterErr != nil {
+			return errors.New("configure Workspace checkout token minter")
+		}
+		workspaceCheckout, err = githubbroker.NewWorkspaceCheckoutService(previewPlaneIDs,
+			githubbroker.NewPostgresWorkspaceCheckoutResolver(pool, policy, nil), workspaceCheckoutMinter)
+		if err != nil {
+			return errors.New("configure Workspace checkout broker service")
 		}
 	}
 	resolveChecksRun := githubbroker.NewPostgresChecksRunResolver(pool, policy)
@@ -260,6 +270,7 @@ func run() error {
 	handler := githubbroker.HandlerWithActionsRunnerChecksLifecycle(oauth, checkout, checks, checkoutCallers, actionsRunner, runnerCleanup, runnerCleanupCallers, runnerBinding, runnerCleanupCallers, runnerBootstrapToken, runnerCleanupCallers, runnerLaunch, runnerCleanupCallers, runnerStartupFailure, runnerCleanupCallers, runnerModelCredential, runnerChecks)
 	handler = githubbroker.WithTenantAppProof(handler, appProof)
 	handler = githubbroker.WithPreviewCheckout(handler, previewCheckout)
+	handler = githubbroker.WithWorkspaceCheckout(handler, workspaceCheckout)
 	handler = githubbroker.WithEnvironmentApproval(handler, environmentApproval)
 	handler = githubbroker.WithAgentIssueContext(handler, agentIssueContext)
 	proposalBucket := strings.TrimSpace(os.Getenv("HAKO_GITHUB_BROKER_AGENT_PROPOSAL_BUCKET"))

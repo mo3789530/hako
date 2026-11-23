@@ -6,7 +6,7 @@
 
 | 項目 | 検出と対応 | 状態 |
 |---|---|---|
-| Go依存関係 | 初回検査で呼出経路のある依存脆弱性を修正し、pgx 5.9.2/x/text 0.41.0へ更新済み。2026-10-25の再検査でGO-2026-6809 (`crypto/x509`、CVE-2026-111943)を検出し、Go 1.27.3へtoolchain/build imageを更新。更新後の`govulncheck@v1.8.0 ./...`は`No vulnerabilities found`を返した | Go公式は1.27.3をx509 security fixと記録。govulncheckは依存モジュールに未到達5件を報告するが、呼出経路は見つけていない |
+| Go依存関係 | 2026-10-25にGO-2026-6809 (`crypto/x509`)を受けGo 1.27.3へ更新。2026-11-22の再検査でGO-2026-6859 (`net/http`)とEcho v5.3.1のGO-2026-6881/6883/6879/6877/6876が到達可能と判定されたため、Go 1.27.4、Echo v5.4.0へ更新し、Go build imagesとE2E fixturesも合わせた。更新後の`govulncheck@v1.8.0 ./...`は到達可能脆弱性0件を報告 | Go 1.27.4とEcho v5.4.0で修正版を使用。govulncheckは到達可能0件のほか、importされたpackageに4件、依存moduleに7件の未到達 advisoryを報告 |
 | OAuth credential redirect | OAuth endpointから307/308を返されると標準HTTP clientがclient secret/codeのPOST bodyを転送可能。exchangeとuser-token requestでredirect拒否、caller clientをcopyしtimeoutを制限 | 回帰テストを追加 |
 | Tenant OAuth identity | integration/App/revision/generationをstateに固定し、callbackのApp一致と設定失効を再検証。shared verifierへのfallbackとowned Installationの再assignmentを拒否 | adapter/local検証。production OAuth broker未配備 |
 | Webhook identity/retry | optional App ID照合、generation/Installation再検証。DB障害を失効として隔離せず再試行 | 前回実装・検証済み |
@@ -14,7 +14,7 @@
 | Artifact cleanup error propagation | Cleanup Workerは構造化ログをredactしていたが、返却errorにS3/DSQL詳細やArtifact IDを含める経路があった。Workerの戻り値を固定sentinelへ変更し、失敗分類と相関IDだけをlogへ残す | list/delete/release/oversized batchのunit testを追加。Lambdaへ渡るerror文面もsanitize |
 | Runtime/Gateway startup failure logs | Resource Controller LambdaのAWS SDK、runtime、queue、handler初期化失敗とWorkspace Gatewayの終了ログが元error文字列を出す経路を除去。固定`failure_class`だけを記録 | local source review。provider詳細、endpoint、filesystem pathをログへ渡さない |
 | Workspace port forwarding | GatewayはSession Ticketのactive lookup後、port-forward scopeを要求。Previewはgeneration-specific identityのTCP/3000のみ。通常WorkspaceはResource Plane HMAC署名APIを経由し、persisted Session、Tenant/Workspace/Plane、現在Placement、running状態、healthyかつ現行MicroVM世代のService、Catalog宣言TCP portを照合。制御APIへ渡るのはclaimsとportのみ | PostgreSQL統合テストが宣言外port、retired generation、unhealthy Service、suspended Workspace、Placement変更、identity mismatchを拒否。実Gateway/AWS接続は未検証 |
-| Process/Lambda failure boundary | API、Dispatcher、Webhook processor、result consumer、Reconciler、Runner、Workspace Service、GitHub broker、scheduled expiry/idle handlerの起動失敗を固定分類化。scheduled handlerは再試行用の固定errorだけを返す | 対象command test通過。既知の`log.*(err)`/`%v`形式をsource scanで除去 |
+| Process/Lambda failure boundary | API、Dispatcher、Webhook processor、result consumer、Reconciler、Runner、Workspace Service、GitHub broker、scheduled expiry/idle handlerの起動失敗を固定分類化。Task 98のlocal Firecracker Guest PID 1も、wrapped OS/startup errorを出さず固定stageだけをserial consoleへ記録 | 対象command test通過。Guest回帰テストでpath/tokenを含む原因文字列の非出力を確認。既知の`log.*(err)`/`%v`形式をsource scanで除去 |
 
 ## 確認した境界
 
@@ -28,10 +28,11 @@
 - local Fake Jobはnetworkなし・read-only・非root・capabilities全削除のPodman内で実行し、workerのAWS/GitHub資格情報を渡さない。これは本番MicroVM隔離の実証ではない。
 - Workspace Gatewayのrequest failureは固定failure classとSessionから検証済みのTenant/Workspace/Plane/permissionだけを記録し、Ticket、provider error、storage referenceは記録しない。Artifact cleanup Workerは固定failure classと信頼済みRun/artifact/correlation identityを記録し、provider/DB errorは戻り値にも含めない。Previewにはgeneration/attempt-fenced cleanup leaseとretry orchestratorがあるが、Lambda MicroVM/Gateway routeを削除するprovider-backed executorは未接続である。metadataの`cleaned`状態をprovider削除の証明として扱わない。
 - Production commandの起動失敗ログは固定failure classで記録する。Preview expiryとWorkspace idle scheduled handlerは内部DB errorをLambdaへ返さず固定再試行errorを返す。これは観測可能な秘密情報の削減であり、CloudWatch retention、alarm delivery、運用者アクセスの配備検証ではない。
+- Local Firecracker Workspace Guest PID 1は起動失敗時に固定stageのみをserial consoleへ出し、`execve`/filesystem等のwrapped error、path、source、credentialをログに含めない。低レベルの実機調査は別の制御されたdebug pathで行う必要がある。
 
 ## 残るリスク・受入条件
 
-- **公開Webhookの負荷制御**: Tenant ingressではheader preflightの後、active integrationに限定したDSQL共有rate counterとAPI Gateway route throttleをHMAC/Secret取得より前に適用する（Task 68）。default-offのため、これらの制限はAWSへ配備されるまで有効にならない。429/DB failureの監視と実環境負荷の確認が残る。
+- **公開Webhookの負荷制御**: Tenant ingressではheader preflightの後、active integrationに限定したDSQL共有rate counterとAPI Gateway route throttleをHMAC/Secret取得より前に適用し、固定Outcome dimensionのEMFとrate-limit/limiter-failure alarmを定義する（Task 68）。default-offのため、AWSへ配備されるまで制限と監視は有効にならず、通知先設定・実環境負荷の確認が残る。
 - **trusted brokerの侵害範囲**: processのAssumeRole許可が複数Tenant readerに及ぶ場合、そのbroker侵害の影響も複数Tenantへ及び得る。IAM trust/KMS/Secret resource policyを実環境で確認し、用途とTenantを限定する。
 - **実Runtime/通信経路**: MicroVM guest network/container権限、EFS Access Point越境、Gateway session ticketのreplay/revocation、agent相互認証は後続実装とAWS PoCの受入条件。通常Workspaceのポート認可はローカルで現行Service状態まで検証するが、実AWS上のControl Plane/Gateway通信は未確認。
 - **運用**: 監査の保持/export、callback query非記録、readアクセス監査、Secret rotation、実AWSのDLQ redrive・backup/recovery演習、container image scanは未完了。手順は[Operations Runbook](operations-runbook.md)に記載し、Secret値を取得して確認しない。

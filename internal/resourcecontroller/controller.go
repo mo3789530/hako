@@ -18,15 +18,20 @@ import (
 )
 
 type Command struct {
-	SchemaVersion     int                    `json:"schema_version"`
-	WorkspaceRevision int64                  `json:"workspace_revision,omitempty"`
-	OperationID       domain.OperationID     `json:"operation_id"`
-	TenantID          domain.TenantID        `json:"tenant_id"`
-	WorkspaceID       domain.WorkspaceID     `json:"workspace_id"`
-	ResourcePlaneID   domain.ResourcePlaneID `json:"resource_plane_id"`
-	Type              domain.OperationType   `json:"type"`
-	CorrelationID     string                 `json:"correlation_id,omitempty"`
-	CreatedAt         time.Time              `json:"created_at"`
+	SchemaVersion        int                    `json:"schema_version"`
+	WorkspaceRevision    int64                  `json:"workspace_revision,omitempty"`
+	OperationID          domain.OperationID     `json:"operation_id"`
+	TenantID             domain.TenantID        `json:"tenant_id"`
+	WorkspaceID          domain.WorkspaceID     `json:"workspace_id"`
+	ResourcePlaneID      domain.ResourcePlaneID `json:"resource_plane_id"`
+	Type                 domain.OperationType   `json:"type"`
+	CorrelationID        string                 `json:"correlation_id,omitempty"`
+	CreatedAt            time.Time              `json:"created_at"`
+	GitHubInstallationID int64                  `json:"github_installation_id,omitempty"`
+	GitHubRepositoryID   int64                  `json:"github_repository_id,omitempty"`
+	GitHubOwner          string                 `json:"github_owner,omitempty"`
+	GitHubRepository     string                 `json:"github_repository,omitempty"`
+	GitHubDefaultBranch  string                 `json:"github_default_branch,omitempty"`
 }
 
 type Result struct {
@@ -176,6 +181,11 @@ func decodeCommand(payload []byte) (Command, error) {
 	}
 	if command.CorrelationID != "" && !operationCorrelationIDPattern.MatchString(command.CorrelationID) {
 		return Command{}, errors.New("Resource Plane command correlation ID is invalid")
+	}
+	if command.GitHubInstallationID < 0 || command.GitHubRepositoryID < 0 ||
+		(command.GitHubRepositoryID == 0 && (command.GitHubInstallationID != 0 || command.GitHubOwner != "" || command.GitHubRepository != "" || command.GitHubDefaultBranch != "")) ||
+		(command.GitHubRepositoryID > 0 && (command.GitHubInstallationID < 1 || command.GitHubOwner == "" || command.GitHubRepository == "" || command.GitHubDefaultBranch == "")) {
+		return Command{}, errors.New("Resource Plane command GitHub repository pin is incomplete")
 	}
 	switch command.SchemaVersion {
 	case 1:

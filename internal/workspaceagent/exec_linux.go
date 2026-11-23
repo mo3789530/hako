@@ -52,7 +52,7 @@ func (m *ExecManager) Run(parent context.Context, request workspaceprotocol.Exec
 	defer cancel()
 	program, err := resolveWorkspaceExecProgram(m.root, request.Argv[0])
 	if err != nil {
-		return workspaceprotocol.ExecResult{ExitCode: -1, Code: "exec_failed"}, nil
+		return workspaceprotocol.ExecResult{ExitCode: -1, Code: "executable_unavailable"}, nil
 	}
 	command := exec.CommandContext(ctx, program, request.Argv[1:]...)
 	command.Dir = m.root
@@ -92,8 +92,29 @@ func (m *ExecManager) Run(parent context.Context, request workspaceprotocol.Exec
 		}
 		return result, nil
 	}
-	result.ExitCode, result.Code = -1, "exec_failed"
+	result.ExitCode, result.Code = -1, classifyWorkspaceExecFailure(runErr)
 	return result, nil
+}
+
+func classifyWorkspaceExecFailure(err error) string {
+	switch {
+	case errors.Is(err, syscall.EACCES), errors.Is(err, syscall.EPERM):
+		return "exec_permission_denied"
+	case errors.Is(err, syscall.ENOENT):
+		return "exec_not_found"
+	case errors.Is(err, syscall.ENOEXEC):
+		return "exec_format_invalid"
+	case errors.Is(err, syscall.EROFS):
+		return "exec_filesystem_read_only"
+	case errors.Is(err, syscall.EAGAIN), errors.Is(err, syscall.ENOMEM), errors.Is(err, syscall.EMFILE), errors.Is(err, syscall.ENFILE):
+		return "exec_resource_unavailable"
+	default:
+		var execError *exec.Error
+		if errors.As(err, &execError) {
+			return "exec_binary_unavailable"
+		}
+		return "exec_runtime_failed"
+	}
 }
 
 func resolveWorkspaceExecProgram(root, value string) (string, error) {

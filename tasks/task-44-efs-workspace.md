@@ -19,6 +19,7 @@ Real role lifecycle, EFS authorization behavior, private subnet/connector
 compatibility, image execution, restore testing, and deployment gates remain
 unverified.
 Priority: P1.
+External acceptance blocked: live EFS Access Point/IAM authorization, restore, and Lambda MicroVM mount tests require the approved AWS environment; no AWS resources were changed.
 
 ## Goal
 

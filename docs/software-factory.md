@@ -42,7 +42,8 @@ The webhook processor handles Installation lifecycle and repository-membership
 events, and supports versioned push/pull-request normalization with a
 default-off, per-Repository verification trigger. `workflow_job` is normalized
 and has default-off admission, token-broker, status, and cleanup-outbox
-primitives. Lambda MicroVM launch and cleanup consumers are not connected yet.
+primitives. Lambda MicroVM launch and cleanup have local composition coverage. Deployed
+execution remains unverified.
 Tenant owners/admins can
 submit inert installation claims through the tenant API; those claims remain
 `pending`. A separate opt-in setup flow redirects through the GitHub App
@@ -71,11 +72,23 @@ SSE-S3 or optional SSE-KMS. A local PostgreSQL E2E composes verified-delivery
 inbox processing, fixed untrusted Run creation, Podman execution, redacted
 artifact metadata, the durable Check outbox/dispatcher, and a fake GitHub
 Checks API. CI installs Podman and requires the Go image for this E2E; it uses
-no public GitHub credentials or AWS resources. Scheduler-to-Lambda MicroVM
-worker dispatch, signature ingress in this combined scenario, and the broader
-failure/cleanup matrix remain incomplete. Passing this local E2E does not
-mean a production worker is deployed. See
-`docs/software-factory-workloads.md` and Task 42.
+no public GitHub credentials or AWS resources. The current end-to-end path is:
+
+1. Verified GitHub deliveries resolve the active Tenant Installation and
+   repository. An enabled repository trigger creates a Run for a pinned commit.
+2. The Control Plane Scheduler places the attempt and records its dispatch in
+   the Outbox. The Dispatcher routes the command to the Resource Plane queue.
+3. The Worker resolves the pinned request, obtains a repository-scoped
+   checkout through the credential broker, and calls the Workload Agent. The
+   Go Job runs a fixed `go test ./...` and returns redacted output.
+4. The Control Plane records the terminal result and emits a GitHub Check
+   update through a durable Outbox. Transient delivery failures retry the
+   update without rerunning the Job.
+
+The local suite covers real PostgreSQL and Podman, fake provider execution,
+cancellation, result replay, and cleanup recovery. See
+[Task 42](../tasks/task-42-software-factory-e2e.md) for the evidence and the
+[AWS smoke runbook](software-factory-aws-smoke.md) for deployed verification.
 
 ## Integration model
 

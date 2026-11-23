@@ -250,10 +250,149 @@ variable "preview_runtime_source" {
   }
 }
 
+variable "workspace_repository_checkout" {
+  description = "Optional Tenant-scoped GitHub checkout Broker, Gateway ticket, and Control Plane report configuration for initial Workspace checkout. Secret values are never stored in Terraform."
+  type = object({
+    checkout_broker_url    = string
+    broker_client_cert_arn = string
+    broker_client_key_arn  = string
+    broker_ca_arn          = string
+    gateway_origin         = string
+    ticket_key_id          = string
+    ticket_key_secret_arn  = string
+    report_endpoint        = string
+    report_key_secret_arn  = string
+  })
+  default = null
+
+  validation {
+    condition = var.workspace_repository_checkout == null || (
+      can(regex("^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$", var.workspace_repository_checkout.checkout_broker_url)) &&
+      can(regex("^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$", var.workspace_repository_checkout.gateway_origin)) &&
+      can(regex("^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$", var.workspace_repository_checkout.report_endpoint)) &&
+      alltrue([for arn in [var.workspace_repository_checkout.broker_client_cert_arn, var.workspace_repository_checkout.broker_client_key_arn,
+        var.workspace_repository_checkout.broker_ca_arn, var.workspace_repository_checkout.ticket_key_secret_arn,
+      var.workspace_repository_checkout.report_key_secret_arn] : can(regex("^arn:(aws|aws-us-gov|aws-cn):secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$", arn))]) &&
+      length(toset([var.workspace_repository_checkout.broker_client_cert_arn, var.workspace_repository_checkout.broker_client_key_arn,
+        var.workspace_repository_checkout.broker_ca_arn, var.workspace_repository_checkout.ticket_key_secret_arn,
+      var.workspace_repository_checkout.report_key_secret_arn])) == 5 &&
+      can(regex("^[A-Za-z0-9_-]{1,64}$", var.workspace_repository_checkout.ticket_key_id))
+    )
+    error_message = "Workspace repository checkout requires three HTTPS origins, five distinct exact Secret ARNs, and a valid ticket key ID."
+  }
+
+  validation {
+    condition = var.workspace_repository_checkout == null || (
+      var.workspace_gateway_deployment != null &&
+      var.workspace_repository_checkout.gateway_origin == var.workspace_gateway_deployment.public_origin &&
+      var.workspace_repository_checkout.ticket_key_id == var.workspace_gateway_deployment.agent_ticket_key_id &&
+      var.workspace_repository_checkout.ticket_key_secret_arn == var.workspace_gateway_deployment.secret_arns.agent_ticket_private_key
+    )
+    error_message = "Workspace repository checkout must use the configured Workspace Gateway origin and exact Guest ticket signing key."
+  }
+}
+
 variable "enable_workload_result_queue" {
   description = "Create separate Workload command/result queues and DLQs plus a queue-only worker role; the Workload result queue is not the Workspace Operation result queue."
   type        = bool
   default     = false
+}
+
+variable "enable_agentcore_command_queue" {
+  description = "Create a separate AgentCore-only command queue and DLQ. This does not deploy or enable an AgentCore worker."
+  type        = bool
+  default     = false
+}
+
+variable "agentcore_command_visibility_timeout_seconds" {
+  description = "Visibility timeout for AgentCore invocation messages; keep above the 15-minute synchronous invocation limit with recovery headroom."
+  type        = number
+  default     = 1200
+
+  validation {
+    condition     = var.agentcore_command_visibility_timeout_seconds >= 1200 && var.agentcore_command_visibility_timeout_seconds <= 43200
+    error_message = "agentcore_command_visibility_timeout_seconds must be between 1200 and 43200 seconds."
+  }
+}
+
+variable "agentcore_worker_deployment" {
+  description = "Optional default-off ARM64 AgentCore orchestration Lambda. This worker does not run repository code; the configured AgentCore Runtime does."
+  type = object({
+    zip_path                       = string
+    broker_url                     = string
+    broker_client_cert_secret_arn  = string
+    broker_client_key_secret_arn   = string
+    broker_ca_secret_arn           = string
+    journal_bucket_arn             = string
+    journal_prefix                 = string
+    journal_kms_key_arn            = optional(string, "")
+    source_bucket_arn              = string
+    source_prefix                  = string
+    source_kms_key_arn             = optional(string, "")
+    artifact_bucket_arn            = string
+    artifact_prefix                = string
+    artifact_kms_key_arn           = optional(string, "")
+    runtime_arns                   = list(string)
+    additional_secret_kms_key_arns = optional(list(string), [])
+    lambda_timeout_seconds         = number
+    lambda_memory_size             = number
+    reserved_concurrent_executions = number
+    vpc_config = optional(object({
+      subnet_ids         = list(string)
+      security_group_ids = list(string)
+    }), null)
+  })
+  default = null
+
+  validation {
+    condition = var.agentcore_worker_deployment == null || (
+      var.enable_agentcore_command_queue && var.enable_workload_result_queue &&
+      var.agentcore_worker_deployment.zip_path != "" && fileexists(var.agentcore_worker_deployment.zip_path) &&
+      can(regex("^https://[^/]+", var.agentcore_worker_deployment.broker_url)) &&
+      can(regex("^arn:(aws|aws-us-gov|aws-cn):secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]{1,512}$", var.agentcore_worker_deployment.broker_client_cert_secret_arn)) &&
+      can(regex("^arn:(aws|aws-us-gov|aws-cn):secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]{1,512}$", var.agentcore_worker_deployment.broker_client_key_secret_arn)) &&
+      can(regex("^arn:(aws|aws-us-gov|aws-cn):secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]{1,512}$", var.agentcore_worker_deployment.broker_ca_secret_arn)) &&
+      length(toset([
+        var.agentcore_worker_deployment.broker_client_cert_secret_arn,
+        var.agentcore_worker_deployment.broker_client_key_secret_arn,
+        var.agentcore_worker_deployment.broker_ca_secret_arn
+      ])) == 3 &&
+      can(regex("^arn:(aws|aws-us-gov|aws-cn):s3:::[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.agentcore_worker_deployment.journal_bucket_arn)) &&
+      can(regex("^[A-Za-z0-9][A-Za-z0-9._/-]{0,511}$", var.agentcore_worker_deployment.journal_prefix)) &&
+      !strcontains(var.agentcore_worker_deployment.journal_prefix, "..") && !strcontains(var.agentcore_worker_deployment.journal_prefix, "//") &&
+      can(regex("^arn:(aws|aws-us-gov|aws-cn):s3:::[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.agentcore_worker_deployment.source_bucket_arn)) &&
+      can(regex("^[A-Za-z0-9][A-Za-z0-9._/-]{0,511}$", var.agentcore_worker_deployment.source_prefix)) &&
+      !strcontains(var.agentcore_worker_deployment.source_prefix, "..") && !strcontains(var.agentcore_worker_deployment.source_prefix, "//") &&
+      can(regex("^arn:(aws|aws-us-gov|aws-cn):s3:::[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.agentcore_worker_deployment.artifact_bucket_arn)) &&
+      can(regex("^[A-Za-z0-9][A-Za-z0-9._/-]{0,511}$", var.agentcore_worker_deployment.artifact_prefix)) &&
+      !strcontains(var.agentcore_worker_deployment.artifact_prefix, "..") && !strcontains(var.agentcore_worker_deployment.artifact_prefix, "//") &&
+      length(var.agentcore_worker_deployment.runtime_arns) >= 1 && length(var.agentcore_worker_deployment.runtime_arns) <= 20 &&
+      length(var.agentcore_worker_deployment.runtime_arns) == length(toset(var.agentcore_worker_deployment.runtime_arns)) &&
+      alltrue([for arn in var.agentcore_worker_deployment.runtime_arns : can(regex("^arn:(aws|aws-us-gov|aws-cn):bedrock-agentcore:[a-z0-9-]+:[0-9]{12}:runtime/[A-Za-z0-9_-]+$", arn))]) &&
+      var.agentcore_worker_deployment.lambda_timeout_seconds >= 1 && var.agentcore_worker_deployment.lambda_timeout_seconds <= 900 &&
+      floor(var.agentcore_worker_deployment.lambda_timeout_seconds) == var.agentcore_worker_deployment.lambda_timeout_seconds &&
+      var.agentcore_command_visibility_timeout_seconds >= var.agentcore_worker_deployment.lambda_timeout_seconds * 6 &&
+      var.agentcore_worker_deployment.lambda_memory_size >= 1024 && var.agentcore_worker_deployment.lambda_memory_size <= 10240 &&
+      floor(var.agentcore_worker_deployment.lambda_memory_size) == var.agentcore_worker_deployment.lambda_memory_size &&
+      var.agentcore_worker_deployment.reserved_concurrent_executions >= 1 && var.agentcore_worker_deployment.reserved_concurrent_executions <= 1000 &&
+      floor(var.agentcore_worker_deployment.reserved_concurrent_executions) == var.agentcore_worker_deployment.reserved_concurrent_executions &&
+      alltrue([for arn in concat(var.agentcore_worker_deployment.additional_secret_kms_key_arns,
+        compact([var.agentcore_worker_deployment.journal_kms_key_arn, var.agentcore_worker_deployment.source_kms_key_arn,
+      var.agentcore_worker_deployment.artifact_kms_key_arn])) : can(regex("^arn:(aws|aws-us-gov|aws-cn):kms:[a-z0-9-]+:[0-9]{12}:key/[A-Za-z0-9-]+$", arn))]) &&
+      length(var.agentcore_worker_deployment.additional_secret_kms_key_arns) == length(toset(var.agentcore_worker_deployment.additional_secret_kms_key_arns)) &&
+      (var.agentcore_worker_deployment.vpc_config == null || (
+        length(var.agentcore_worker_deployment.vpc_config.subnet_ids) >= 2 &&
+        length(var.agentcore_worker_deployment.vpc_config.subnet_ids) <= 16 &&
+        length(var.agentcore_worker_deployment.vpc_config.subnet_ids) == length(toset(var.agentcore_worker_deployment.vpc_config.subnet_ids)) &&
+        alltrue([for id in var.agentcore_worker_deployment.vpc_config.subnet_ids : can(regex("^subnet-[0-9A-Fa-f]+$", id))]) &&
+        length(var.agentcore_worker_deployment.vpc_config.security_group_ids) >= 1 &&
+        length(var.agentcore_worker_deployment.vpc_config.security_group_ids) <= 5 &&
+        length(var.agentcore_worker_deployment.vpc_config.security_group_ids) == length(toset(var.agentcore_worker_deployment.vpc_config.security_group_ids)) &&
+        alltrue([for id in var.agentcore_worker_deployment.vpc_config.security_group_ids : can(regex("^sg-[0-9A-Fa-f]+$", id))])
+      ))
+    )
+    error_message = "AgentCore worker deployment requires the separate command/result queues, an ARM64 ZIP, HTTPS Broker, three distinct exact Secrets, scoped S3 prefixes, allowlisted Runtime ARNs, bounded timeout/memory/concurrency, sufficient queue visibility, and optional valid private VPC IDs."
+  }
 }
 
 variable "control_plane_workload_result_consumer_role_arn" {

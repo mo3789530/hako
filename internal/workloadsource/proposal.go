@@ -217,6 +217,13 @@ func protectedProposalPath(value string) bool {
 		}
 	}
 	base := strings.ToLower(filepath.Base(filepath.FromSlash(value)))
+	// Terraform has no enabled verifier profile yet. Deny its file and state
+	// formats anywhere in the proposal, including paths outside infra/terraform.
+	if strings.HasSuffix(base, ".tf") || strings.HasSuffix(base, ".tfvars") ||
+		strings.HasSuffix(base, ".tfstate") || strings.HasSuffix(base, ".tfstate.backup") ||
+		strings.HasSuffix(base, ".tf.json") || base == ".terraform.lock.hcl" {
+		return true
+	}
 	return strings.HasPrefix(base, ".env") || base == "credentials" || base == "id_rsa" || base == "id_ed25519" ||
 		strings.HasSuffix(base, ".pem") || strings.HasSuffix(base, ".key") || strings.HasSuffix(base, ".p12") || strings.HasSuffix(base, ".pfx")
 }

@@ -1,6 +1,6 @@
 # Task 74: Claude Action workflow provenance and eligible-job contract
 
-Status: In Progress (a fail-closed verifier, repository-scoped GitHub REST Run/Job lookup, Owner/Admin policy API/CLI, and launch-time preflight are implemented locally. Production runtime and Task 76/77 end-to-end execution remain separate). Priority: P2. Parent: Task 73. Depends on: Tasks 51, 52.
+Status: Local implementation and acceptance complete (a fail-closed verifier, repository-scoped GitHub REST Run/Job lookup, Owner/Admin policy API/CLI, and launch-time preflight are implemented locally. Production runtime and Task 76/77 end-to-end execution remain separate). Priority: P2. Parent: Task 73. Depends on: Tasks 51, 52.
 
 ## Goal
 

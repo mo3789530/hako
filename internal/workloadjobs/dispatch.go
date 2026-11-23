@@ -41,14 +41,15 @@ type DispatchHandler struct {
 }
 
 type DispatchCommand struct {
-	SchemaVersion    int                    `json:"schema_version"`
-	TenantID         domain.TenantID        `json:"tenant_id"`
-	WorkloadRunID    domain.WorkloadRunID   `json:"workload_run_id"`
-	AttemptID        string                 `json:"attempt_id"`
-	Generation       int64                  `json:"generation"`
-	ResourcePlane    domain.ResourcePlaneID `json:"resource_plane_id"`
-	IdempotencyToken string                 `json:"idempotency_token"`
-	CorrelationID    string                 `json:"correlation_id,omitempty"`
+	SchemaVersion    int                            `json:"schema_version"`
+	TenantID         domain.TenantID                `json:"tenant_id"`
+	WorkloadRunID    domain.WorkloadRunID           `json:"workload_run_id"`
+	AttemptID        string                         `json:"attempt_id"`
+	Generation       int64                          `json:"generation"`
+	ResourcePlane    domain.ResourcePlaneID         `json:"resource_plane_id"`
+	IdempotencyToken string                         `json:"idempotency_token"`
+	RuntimeProvider  domain.WorkloadRuntimeProvider `json:"runtime_provider"`
+	CorrelationID    string                         `json:"correlation_id,omitempty"`
 }
 
 // Handle durably hands a scheduler delivery to the Resource Plane. It never
@@ -102,7 +103,7 @@ func (h *DispatchHandler) Handle(ctx context.Context, request ScheduleRequest) e
 				ExpectedRevision: run.Revision, NextState: domain.WorkloadCancelled, ErrorCode: "cancelled_before_dispatch", OccurredAt: occurredAt})
 			return struct{}{}, err
 		}
-		if run.Kind != domain.WorkloadJob || run.CommitSHA == "" || run.GitHubRepository <= 0 || run.GitHubInstallation <= 0 {
+		if (run.Kind != domain.WorkloadJob && run.Kind != domain.WorkloadAgent) || run.CommitSHA == "" || run.GitHubRepository <= 0 || run.GitHubInstallation <= 0 {
 			_, err := workloads.Transition(ctx, tx, workloads.TransitionInput{TenantID: run.TenantID, RunID: run.ID,
 				ExpectedRevision: run.Revision, NextState: domain.WorkloadFailed, ErrorCode: "invalid_workload_input", OccurredAt: occurredAt})
 			return struct{}{}, err
@@ -138,9 +139,17 @@ func (h *DispatchHandler) Handle(ctx context.Context, request ScheduleRequest) e
 			attemptID, run.TenantID, run.ID, generation, attemptNumber, planeID, idempotencyToken, occurredAt); err != nil {
 			return struct{}{}, fmt.Errorf("persist Workload attempt: %w", err)
 		}
+		provider := domain.WorkloadRuntimeLambdaMicroVM
+		if run.Kind == domain.WorkloadAgent {
+			provider = domain.WorkloadRuntimeAgentCore
+			if run.GitHubIntegrationID == "" || run.GitHubConfigRevision < 1 || run.GitHubCredentialGeneration < 1 {
+				return struct{}{}, ErrScheduleUnsupportedRun
+			}
+		}
 		command := DispatchCommand{SchemaVersion: 1, TenantID: run.TenantID, WorkloadRunID: run.ID,
 			AttemptID: attemptID, Generation: generation, ResourcePlane: planeID, IdempotencyToken: idempotencyToken,
-			CorrelationID: run.CorrelationID}
+			RuntimeProvider: provider,
+			CorrelationID:   run.CorrelationID}
 		payload, err := json.Marshal(command)
 		if err != nil {
 			return struct{}{}, fmt.Errorf("encode Workload dispatch command: %w", err)

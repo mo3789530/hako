@@ -38,6 +38,9 @@ type Config struct {
 	// dedicated Workload worker queue. There is deliberately no Workspace
 	// command-queue fallback when this entry is absent.
 	WorkloadCommandQueueURLs map[string]string
+	// AgentCoreCommandQueueURLs routes only DB-scheduled Agent attempts to the
+	// managed Coding Agent consumer. Missing entries fail closed.
+	AgentCoreCommandQueueURLs map[string]string
 	// GitHubChecksQueueURL routes durable Workload Run Check updates. It is
 	// optional until the trusted Checks result worker is deployed.
 	GitHubChecksQueueURL string
@@ -106,6 +109,7 @@ type workloadDispatchEnvelope struct {
 	Generation       int64  `json:"generation"`
 	ResourcePlaneID  string `json:"resource_plane_id"`
 	IdempotencyToken string `json:"idempotency_token"`
+	RuntimeProvider  string `json:"runtime_provider"`
 	CorrelationID    string `json:"correlation_id,omitempty"`
 }
 
@@ -169,6 +173,14 @@ func New(store Store, publisher Publisher, queueURLs map[string]string, config C
 		workloadURLs[id] = value
 	}
 	config.WorkloadCommandQueueURLs = workloadURLs
+	agentCoreURLs := make(map[string]string, len(config.AgentCoreCommandQueueURLs))
+	for id, value := range config.AgentCoreCommandQueueURLs {
+		if id == "" || value == "" {
+			return nil, errors.New("AgentCore Resource Plane IDs and command queue URLs must not be empty")
+		}
+		agentCoreURLs[id] = value
+	}
+	config.AgentCoreCommandQueueURLs = agentCoreURLs
 	serviceURLs := make(map[string]string, len(config.WorkspaceServiceQueueURLs))
 	for id, value := range config.WorkspaceServiceQueueURLs {
 		if id == "" || value == "" {
@@ -310,9 +322,17 @@ func (d *Dispatcher) route(event outbox.Event) (string, error) {
 			command.CorrelationID != "" && !workloadCorrelationIDPattern.MatchString(command.CorrelationID) {
 			return "", errors.New("Workload dispatch command has an unsupported or inconsistent envelope")
 		}
-		queueURL := d.config.WorkloadCommandQueueURLs[command.ResourcePlaneID]
+		var queueURL string
+		switch command.RuntimeProvider {
+		case "lambda_microvm":
+			queueURL = d.config.WorkloadCommandQueueURLs[command.ResourcePlaneID]
+		case "agentcore":
+			queueURL = d.config.AgentCoreCommandQueueURLs[command.ResourcePlaneID]
+		default:
+			return "", errors.New("Workload dispatch has no approved runtime provider")
+		}
 		if queueURL == "" {
-			return "", fmt.Errorf("no Workload command queue configured for Resource Plane %q", command.ResourcePlaneID)
+			return "", fmt.Errorf("no command queue configured for Workload runtime provider %q and Resource Plane %q", command.RuntimeProvider, command.ResourcePlaneID)
 		}
 		return queueURL, nil
 	}
@@ -370,6 +390,12 @@ func (s StoreAdapter) ReadPendingMetrics(ctx context.Context, now time.Time) (ou
 
 func (s StoreAdapter) Claim(ctx context.Context, limit int, lease time.Duration, now time.Time) ([]outbox.Event, error) {
 	return outbox.Claim(ctx, s.Pool, s.Policy, limit, lease, now)
+}
+
+// ClaimWorkspaceOperations is a local-runtime variant that leaves all other
+// Control Plane Outbox event types available to their configured dispatchers.
+func (s StoreAdapter) ClaimWorkspaceOperations(ctx context.Context, limit int, lease time.Duration, now time.Time) ([]outbox.Event, error) {
+	return outbox.ClaimWorkspaceOperations(ctx, s.Pool, s.Policy, limit, lease, now)
 }
 
 func (s StoreAdapter) MarkPublished(ctx context.Context, event outbox.Event, now time.Time) error {

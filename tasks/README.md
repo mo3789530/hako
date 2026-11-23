@@ -1,11 +1,291 @@
 # Hako Implementation Task Board
 
-このディレクトリは、次の実装担当（Lunnaを含む）が一つずつ着手できる粒度にしたタスクの実行台帳です。設計上のSystem of Recordは引き続き[README](../README.md)、コンポーネント仕様は各`docs/`です。ここでは未完了項目を依存関係・境界・受入条件に整理します。
+このディレクトリは実装タスクのSystem of Recordです。全体像は[実装まとめ](../docs/implementation-summary.md)、runtime配置は[実行アーキテクチャ](../docs/execution-architecture.md)、コンポーネント仕様は各`docs/`を参照してください。
+
+- [Task 84 — Workspace Service runtime](task-84-workspace-service-runtime.md): local fake-engine/PostgreSQL lifecycle and Podman internal-network acceptance passed on 2026-11-22. Remaining acceptance is real ARM64 nerdctl/containerd and network/cgroup behavior inside the deployed Lambda MicroVM.
 
 - [Task 90 — AgentCore Runtime Coding Agent](task-90-agentcore-coding-agent.md): AgentCoreをAgent Runの追加実行バックエンドとして実装し、既存の変更提案・独立検証・PR公開フローに接続する。default-off、AWS上の隔離・資格情報・cleanup検証は本番有効化の条件。[基盤の現状とマイルストーン](../docs/coding-agent-platform.md)。
-- Task 90 の未決定事項と実装順： [91 — Runtime・作業領域](task-91-agent-runtime-and-workspace.md) → [92 — ハーネス・モデル](task-92-coding-agent-harness-model.md)、[93 — ソース・変更提案](task-93-agent-source-proposal-contract.md) → [94 — 言語検証・Terraform](task-94-coding-agent-verification-terraform.md)、[95 — 隔離・資格情報](task-95-agent-isolation-and-credentials.md) → [96 — AgentCore運用・E2E](task-96-agentcore-lifecycle-operations.md)。92と93、94と95は依存を満たした後に並行可能。
+- Task 90 の未決定事項と実装順： [91 — Runtime・作業領域](task-91-agent-runtime-and-workspace.md) → [92 — ハーネス・モデル](task-92-coding-agent-harness-model.md)（deployment model allowlist/Region/budget validation、bounded HTTP Runtime、ARM64 image recipe implemented; Kiri image build is root/DNS-blocked）、[93 — ソース・変更提案](task-93-agent-source-proposal-contract.md)（ローカル実装・受入完了、AgentCore実行時のsource handoffは未接続）→ [94 — 言語検証・Terraform](task-94-coding-agent-verification-terraform.md)、[95 — 隔離・資格情報](task-95-agent-isolation-and-credentials.md) → [96 — AgentCore運用・E2E](task-96-agentcore-lifecycle-operations.md)。92と93、94と95は依存を満たした後に並行可能。
+
+- [Task 97 — Workspace GitHub Repository Option](task-97-workspace-github-repository.md): local implementation/PostgreSQL acceptance complete。`hako create --repository`、Tenant-scoped immutable checkout、mTLS Broker→Guest compositionとlocal-edit-safe retryを実装。Optional Terraform checkout wiringのmock planは5つのSecret ARNを完全一致で検証。実KVM Guest/Gatewayでfirst checkout、readback、同一archive retry、編集保持、cold suspend/resume後のcheckout永続性を受入。deployed AWS runtime gateは残る。
+
+- [Task 98 — Local Workspace MicroVM Runtime](task-98-local-workspace-microvm.md): AWSなしのKVM/Firecracker Workspace。実KVM Guest/GatewayでCLI `exec`、shell、file、Chromium VS Code描画、SSH公開鍵認証を確認。cold-resume後のファイル、Controller restart/retry、Deleteも成功。WebSocket upgrade後のContextとPID 1 orderly shutdownを修正。ローカル受入完了。deployed AWS runtime acceptanceはTask 99で追跡。[仕様・host smoke手順](../docs/local-workspace-microvm.md)
+
+- [Task 99 — Managed Runtime Routing and Acceptance](task-99-managed-runtime-acceptance.md): GitHub Actions・Claude Code Action・VS CodeのLambda MicroVM経路と、Coding AgentのAgentCore経路をステージングで検証する（ローカルunit/PostgreSQL fake-provider lifecycle suite成功。実サービスのステージング受入は未検証）。
+
+Task 90/96 Worker follow-up (2026-11-22): added a fakeable
+`AgentCoreWorkloadWorker` that acquires the durable attempt lease, invokes at
+most once, checkpoints a terminal result, confirms cleanup, then publishes.
+Lost invocation responses fail closed; cleanup retries do not reinvoke; a
+published duplicate delivery is a no-op. Focused worker tests, Workload race
+tests, and tagged PostgreSQL integration tests pass. The 2026-11-23 deployment
+follow-up composes the bounded SQS handler, AWS Runtime adapter, mTLS Broker/S3
+adapters and default-off ARM64 Lambda with scoped Terraform IAM. A cancellable
+background attempt-lease heartbeat is locally implemented and fake-tested;
+independent verification, Runtime image build, and deployed isolation evidence
+remain open.
+
+Task 90 brokered-input follow-up (2026-11-22): added a local resolver that
+restores the frozen Workload spec, re-resolves trusted Issue task context,
+checks repository/install/branch/commit pins, and reads/verifies only the exact
+attempt's source archive before building the AgentCore request. Fake tests
+reject task drift, foreign attempts, and archive digest/byte changes; runtime,
+PostgreSQL integration, and race suites pass. Provider and deployment wiring
+remain.
+
+Task 90/96 AWS provider follow-up (2026-11-22): added a fake-tested adapter
+using the official AgentCore Go SDK for frozen-target invocation and session
+stop. SDK retries are disabled per request to avoid replaying a non-idempotent
+Invoke; response streams are closed and capped at 12 MiB, and cleanup confirms
+only a successful response for the exact session. `go test
+./internal/workloadagentcore -count=1` passes. No AWS API was called. SQS/Lambda
+composition, lease renewal, broker/S3 adapters, and deployed acceptance remain.
+
+Task 90/96 SQS adapter follow-up (2026-11-23): added a strict, bounded Lambda
+SQS handler for attempt-only messages with partial batch failure reporting and
+fixed redacted logs. Fake tests cover malformed and duplicate JSON fields and
+retry only for the failed record. The handler is not composed into the Lambda
+binary; durable dispatch and SQS publication remain open.
+
+Task 50 log-boundary follow-up (2026-11-22): found and fixed the local
+Firecracker Workspace Guest PID 1 exception to the fixed-failure logging rule.
+Startup logs now expose only a bounded stage label; a regression test rejects
+path/token details in output. Unit/race tests and `git diff --check` pass.
+
+Task 50 static-analysis follow-up (2026-11-22): fixed mutex-copy warnings in
+AgentCore lease test fixtures and isolated the two standalone Firecracker smoke
+programs from the default Go package using build tags. `go vet ./...` passes;
+their documented named-file `go run` entrypoints still compile and display
+usage when arguments are omitted.
+
+Task 50 dependency follow-up (2026-11-22): `govulncheck` found newly reachable
+Go `net/http` and Echo advisories. Go is now 1.27.4 and Echo is v5.4.0; build
+images, the pinned ARM64 toolchain digest and test fixtures were updated.
+`govulncheck` reports zero reachable issues, the complete serial Go unit and
+database integration suites and `go vet ./...` pass. Kiri could pull the updated
+E2E image, but the explicit Kiri E2E container did not start because this host
+requires root for Kiri and sudo is not configured for non-interactive use. The
+full integration target used its default container backend.
+
+## AWS環境待ちの受入ゲート
+
+2026-11-21のこの実行ではAWS/GitHubの書き込みやSecret取得を行わず、次の本番・実機受入を明示的にブロックとして記録した。ローカル実装とテストは各タスク記載の状態で継続する。
+
+- [Task 61](task-61-workload-runtime-selection.md)・[39](task-39-workload-execution-handler.md)・[40](task-40-workload-worker-deployment.md): ARM64 Lambda MicroVMのimage/network/isolation、実際のRun/cancel/cleanupとAWS配備。
+- [Task 84](task-84-workspace-service-runtime.md): ARM64 Workspace Service containerd execution, effective cgroups/network isolation, and Lambda MicroVM deployment smoke.
+- [Task 43](task-43-workspace-runtime.md)〜[47](task-47-developer-ux.md): EFS、Workspace Agent、Gateway、ARM64 Guest imageとLambda MicroVM経路の実機受入。
+- [Task 41](task-41-github-checks.md)・[57](task-57-tenant-github-credential-resolver.md)・[59](task-59-tenant-github-migration-iam.md): 証明書・cross-account IAM/Secret/KMS・本番migrationやnetwork provisioning。
+- [Task 95](task-95-agent-isolation-and-credentials.md)・[99](task-99-managed-runtime-acceptance.md): AgentCoreの実効IAM/egress隔離と、承認済みstagingでのmanaged runtime E2E。
 
 ## 全ローカル統合テストの再確認（2026-10-25）
+
+Task 97 Broker follow-up (2026-11-21): added a Resource Plane mTLS endpoint
+that accepts only Tenant/Workspace identity, checks the active Workspace
+repository pin and Tenant App binding, mints a single-repository installation
+token, resolves/persists the immutable default-branch commit SHA, and rechecks
+the pin after token minting. Unit, HTTP, PostgreSQL resolver tests and
+`make test-integration-local` pass. No AWS service was contacted.
+
+Task 97 Guest follow-up (2026-11-21): added a fixed-path, bounded
+`install_repository` Guest protocol operation. The archive includes `.git`
+but no broker token; the Guest verifies the archive digest and detached HEAD,
+installs atomically, accepts identical retries, and refuses to replace edits.
+Focused source/protocol/Guest tests pass. The Resource Plane still does not
+compose fetch, archive transfer and result reporting.
+
+Task 97 runtime follow-up (2026-11-21): Resource Controller now composes mTLS
+Broker token retrieval, one-repository Git fetch, credential-free archive
+transfer to the Lambda MicroVM Guest, and signed checkout result reporting.
+Already-pinned retries retain the immutable commit if the remote default branch
+advances. Terraform exposes optional endpoints and exact Secret ARNs, and grants
+`GetSecretValue` only on the five configured Secrets. `make test-integration-local`
+and `tofu -chdir=infra/terraform/modules/resource-plane validate` pass. The
+configured Resource Plane test file also passes with `tofu test
+-filter=workload-controller.tftest.hcl`. No AWS APIs or Secrets were accessed.
+Suspend/resume MicroVM lifecycle acceptance remains open.
+
+Task 97 lifecycle follow-up (2026-11-21): a composed Resource Runtime test now
+executes the initial repository checkout, models a Workspace edit, and confirms
+Suspend/Resume does not request another token or reinstall the repository.
+Guest filesystem tests separately prove identical checkout retries preserve
+local edits. This is local fake-provider evidence; the same behavior on an
+actual persistent MicroVM disk and Gateway remains unverified.
+
+Task 97 configured-plan follow-up (2026-11-22): tightened the Resource Plane
+mock-plan assertion to compare the exact five Workspace checkout Secret ARNs
+and `GetSecretValue` action, rather than checking only the number of resources.
+`tofu fmt -check` and `tofu test -filter=workload-controller.tftest.hcl`
+pass (11 runs). This completes the local Terraform acceptance; persistent
+MicroVM/Gateway checkout behavior remains an AWS runtime gate.
+
+Task 98 disk follow-up (2026-11-21): the host smoke now attaches a 64 MiB
+temporary raw virtio disk, writes a marker from one Firecracker Guest, stops
+that VM, and confirms a second Guest reads the marker from the same file.
+The smoke passed on Firecracker v1.18.0 with the default seccomp configuration
+and the host kernel. It proves disk reattachment/persistence only, not a
+filesystem mount or Hako Workspace lifecycle.
+
+Task 98 filesystem follow-up (2026-11-21): updated the local Firecracker smoke
+to format the disk as ext4, mount it at `/workspace`, create a marker file,
+stop the VM, then remount the same disk in a second VM and verify the file.
+The test passed with Firecracker v1.18.0 and the host kernel (`CONFIG_EXT4_FS=y`).
+It still does not compose the Hako Guest/controller/Gateway or CLI lifecycle.
+
+Task 98 journal follow-up (2026-11-21): added the Linux host-local
+`workspacejournal.FileStore` as a durable allocation-record foundation. It
+preserves the shared journal's Workspace revision/tombstone contract and adds
+private identity directories, per-record `flock`, atomic replacement, fsync,
+and bounded deterministic listing for future controller reconciliation.
+Focused `go test ./internal/workspacejournal -count=1` and `git diff --check`
+pass. This does not yet persist a Firecracker process identity or reconcile VM
+state; controller and Guest integration remain open.
+
+Task 98 runtime orchestration follow-up (2026-11-21): added
+`workspaceruntime.LocalMicroVM`, implementing `resourcecontroller.Runtime` and
+`ResourceBindingReporter` over the durable journal and a trusted idempotent
+local-driver contract. It checkpoints a deterministic allocation ID before
+driver effects, reuses immutable launch JSON on resume/retry, and preserves
+revision/tombstone fencing. Fake-driver lifecycle tests cover runtime
+reconstruction, duplicate operations, binding reporting, and delayed ensure
+rejection after delete. `go test -race ./internal/workspacejournal
+./internal/workspaceruntime -count=1` and `git diff --check` pass. This is not a
+concrete Firecracker driver or Guest/Gateway/CLI integration.
+
+Task 98 retry follow-up (2026-11-21): fake-driver tests now inject lost
+responses after ensure, suspend, resume, and delete have already changed the
+provider state. Reconstructed runtimes retry the same durable operation and
+converge to its terminal observed state. The `FileStore` journal keeps the
+immutable launch parameters and operation/tombstone fence throughout. The
+repeat `make smoke-local-workspace-microvm-boot` with the checksum-verified
+Firecracker v1.18.0 binary also passed, as did the complete
+`make test-integration-local` suite. No concrete Hako Firecracker driver or
+AWS/GitHub calls were involved.
+
+Task 98 operation serialization follow-up (2026-11-21): added a
+process-shared `FileStore.LockOperation` separate from record CAS locks and
+require it in `LocalMicroVM`. The runtime holds the allocation lock across
+journal read/compare-and-swap, provider side effects, and terminal checkpoint,
+preventing concurrent controller processes from racing lifecycle changes.
+Tests cover cross-FileStore lock exclusion/cancellation and concurrent duplicate
+ensure from two runtime instances; the complete `make test-integration-local`
+suite, focused race tests, and `git diff --check` pass. Concrete Firecracker
+process/reconciliation and Guest integration remain.
+
+Task 98 restart reconciliation follow-up (2026-11-21): added bounded
+`LocalMicroVM.Reconcile`. It discovers journal records, reacquires each
+Workspace's process-shared operation lock, re-reads the authoritative record,
+and invokes the idempotent driver to restore a missing Running allocation or
+confirm a Suspended allocation remains stopped. Deleted records remain
+tombstones; provider-terminated records wait for explicit ensure/delete. Tests
+simulate controller process state loss while keeping the FileStore journal and
+verify convergence. Focused race tests and the complete
+`make test-integration-local` suite pass. A concrete Firecracker driver and a
+startup-loop caller are still required for actual reconciliation.
+
+Task 98 concrete Firecracker driver follow-up (2026-11-22): implemented the
+Linux `FirecrackerLocalDriver` against the pinned v1.18 API shape. It checks
+KVM API support at construction, uses an allocation-derived Unix API socket,
+launches with Firecracker's default seccomp, pins kernel/initrd SHA-256, creates
+and verifies a private labeled ext4 Workspace disk, records a PID with boot ID
+and process start ticks, requests a Guest orderly shutdown on suspend,
+reconstructs the driver and cold-boots from the same disk on resume, and removes
+process/disk state on delete. Suspend accepts only a Guest quiescence marker or
+Firecracker's successful orderly exit after `SendCtrlAltDel`; resume cold-boots
+the same data disk. `make smoke-local-workspace-microvm-boot` passed
+with real KVM and Firecracker v1.18.0, including the concrete
+ensure/suspend/process-stop/fresh-driver/resume/delete lifecycle and same-disk
+file persistence. The driver has no Guest networking/jailer and is not wired
+into a local Resource Controller startup loop yet. Focused race tests,
+`make test-integration-local`, and `git diff --check` pass.
+
+Task 98 local startup recovery follow-up (2026-11-22): added a cancellable
+immediate/periodic `RunLocalReconcileLoop` and the Linux
+`cmd/hako-local-workspace-reconciler` executable. It validates owner-private
+launch JSON, checks KVM, reconstructs FileStore/Firecracker, reconciles at
+startup and retries without stopping on one allocation's failure. Added
+`make test-local-workspace-reconciler` and
+`make build-local-workspace-reconciler`; both pass with focused race tests.
+This restores journaled allocations but still has no local operation ingress
+or API/deployment composition. Then `make test-integration-local` passed across
+all Go packages, and a live KVM startup→SIGTERM smoke confirmed the reconciler
+opens the host journal/driver and exits cleanly with an empty journal. No AWS
+configuration or request was used.
+
+Task 98 host-private Guest transport follow-up (2026-11-22): each local
+Firecracker VM now receives one vsock device. The host dialer validates the
+owner-private UDS and speaks Firecracker's `CONNECT`/`OK` handshake while
+allowing its assigned host-side port; callers can only request the fixed
+Workspace Agent port. The disposable KVM Guest loads matching vsock modules,
+binds that fixed port, and responds to ping/pong. The concrete driver smoke
+confirms the transport before suspend and after cold resume from the same
+disk. The Gateway has not yet been wired to this dialer. `make
+smoke-local-workspace-microvm-boot` and focused race tests pass.
+
+Task 98 Workspace Agent vsock follow-up (2026-11-22): added a Linux
+`net.Listener` for AF_VSOCK and an opt-in `HAKO_WORKSPACE_AGENT_VSOCK_ENABLED`
+setting. When enabled by trusted Guest configuration, the unprivileged
+Workspace Agent serves its existing HTTP/WebSocket handler on vsock port 7000
+alongside its inherited Unix listener; signed Agent ticket verification stays
+inside the same handler. Lambda image behavior remains disabled by default. The
+disposable real-KVM Guest now runs this same listener implementation and the
+host smoke sends HTTP health requests before suspend and after cold resume.
+Focused Agent/init tests, race tests, Firecracker lifecycle/filesystem smoke,
+and `git diff --check` pass. Gateway routing and a supported Hako Guest image
+remain unconnected.
+
+Task 98 vsock handshake follow-up (2026-11-22): the host dialer now reads the
+Firecracker ACK one byte at a time so buffered handshake parsing cannot consume
+Guest application bytes sent immediately after `OK`. A regression test writes
+the ACK and initial Guest payload together and confirms the payload remains on
+the returned stream. The focused test and complete `make test-integration-local`
+pass. Real KVM smoke, race tests, and the configured Resource Plane OpenTofu
+tests also pass after the fix; no AWS API was contacted.
+
+Task 98 local Gateway route follow-up (2026-11-22): added a `firecracker-local`
+Gateway runtime option that selects the host FileStore without requiring an
+S3 journal or AWS Region, resolves only running allocations on its configured
+Resource Plane, and routes signed, permission-checked Agent streams to the
+fixed Guest vsock endpoint. Local Gateway config rejects S3 journal mixing and
+requires clean absolute state/journal paths; Lambda MicroVM remains the
+default. Gateway configuration tests and the local vsock directory WebSocket
+test pass. After this wiring, `make test-integration-local` passed all Go
+packages and `make smoke-local-workspace-microvm-boot` passed the real KVM
+lifecycle/filesystem/vsock smoke. Supported Guest image, operation
+API/deployment, and full CLI lifecycle remain open; no AWS API was contacted.
+
+Task 98 local Guest init follow-up (2026-11-22): added
+`cmd/hako-local-workspace-guest-init` as a Linux PID 1 entrypoint for a local
+Firecracker Guest. It accepts only strict Tenant/Workspace/Plane/allocation
+identity and HTTPS Gateway-origin kernel arguments, mounts the fixed ext4
+`/dev/vda` at `/workspace`, and starts the existing non-root Workspace Agent
+with fixed-port vsock and SSH. The distinct local-disk mount descriptor is
+rejected by the Lambda EFS `/run` hook. The ARM64 Workspace image now contains
+the guest-init binary and has a validated build-time vsock opt-in. Parser,
+mount-policy, Workspace Agent/init tests and race tests pass; an ARM64 static
+cross-build succeeds. `FirecrackerLocalWorkspaceLaunchResolver` injects only
+trusted operation identity and the journal's deterministic allocation
+generation into the Guest boot args; it rejects reserved args from the base
+profile and permits a replacement only after confirmed termination. Resolver
+tests cover first allocation, replacement generation, and unsafe inputs. A
+supported KVM rootfs/initrd build and full local operation/CLI composition
+remain open. `go test ./... -count=1`, the local Guest/Agent/runtime race
+tests, the ARM64 static guest-init cross-build, and `git diff --check` pass;
+the disposable KVM smoke still does not boot the supported Hako Guest rootfs.
+
+Task 96 stop-token follow-up (2026-11-22): added a deterministic
+`StopClientToken` bound to the full immutable AgentCore attempt identity for
+retries of `StopRuntimeSession`. Official API review confirms `InvokeAgentRuntime`
+has no client-token field, so ambiguous invocation responses still require a
+durable in-flight fence and cannot be made safe by replaying the request. Added
+`ClaimInvocation`, a journal CAS from `Launching` to `Running` before provider
+invocation; a lost response remains claimed across process restart and cannot
+be invoked twice. `PreparedInvocationFromJournal` strictly decodes and validates
+the pinned Runtime ARN, qualifier, and attempt session for post-restart
+recovery, rejecting unknown fields and mismatched sessions. `GOCACHE=/tmp/hako-go-cache go test -race
+./internal/workloadagentcore -count=1` passes. This is API-contract/unit
+evidence only and did not contact AWS. A recovery-focused test reloads the
+claimed journal and confirms an ambiguous invocation cannot reclaim the call
+after dispatcher restart.
 
 `make test-integration-local`を2026-10-25に再実行し、`go test -tags=integration -p=1 ./... -count=1`が全パッケージで成功した。既に起動中のローカルPostgreSQLを使用し、テスト後も`hako-dev-postgres`が稼働中であることを確認した。直近の対象コードにはloopback-only OpenSSH/Workspace host-key実装と、sshd listener readiness待機・起動失敗時cleanupを含む。その後のfocused SSH testでは、ローカルOpenSSH 10.2p1がWorkspaceのsshd設定を`sshd -t`で受理することを確認済み。これはローカル統合受入の証拠であり、AWS配備、Lambda MicroVM上の実行、Secrets取得やGitHub/AWS外部接続の証拠ではない。
 
@@ -240,7 +520,7 @@ Task 41のGitHub Checks delivery（mTLS broker/consumer、idempotent Check更新
 | 完了（ローカル） | [87 — Workload Artifact Download](task-87-workload-artifact-download.md) | 40, 46 | Short-lived Tenant/Run/artifact/Plane-bound ticket、Gateway直結S3 stream、exact-prefix IAM、CLI SHA-256検証を実装。AWS deployment/live S3 retrievalは未検証 |
 | 完了（ローカル） | [88 — Preview Application Log Tail](task-88-preview-application-logs.md) | 54 | Guest内256 KiB bounded log tail、Preview専用read-only Session/Gateway route、CLI取得を実装。実MicroVM/image/Gateway検証はTask 54のAWS gate |
 
-Tenant App子タスクのlocal受入条件はTask 70/71まで実装・検証済み。brokerのWorker接続とbroker専用IAM contractもlocal実装済み。cross-account certificate/Role trust/Secret/KMS provisioningと承認済みcutoverは未完了で、次の実装順は下の「整理後の実行キュー」に集約する。Task 68のローカル実装も完了扱いだが、監視・AWS配備レビューは別の運用作業として残る。Terraform配備はAPI/CLIとローカル検証の後段とする。Workspace/EFS/Gateway（43–47）、運用（48–50）、Software Factory拡張（53–55）も未完了。親子タスクは二重計上せず、詳細は各taskの受入条件を参照する。
+Tenant App子タスクのlocal受入条件はTask 70/71まで実装・検証済み。brokerのWorker接続とbroker専用IAM contractもlocal実装済み。cross-account certificate/Role trust/Secret/KMS provisioningと承認済みcutoverは未完了で、次の実装順は下の「整理後の実行キュー」に集約する。Task 68のローカル実装（固定低カーディナリティEMFとCloudWatch alarm定義を含む）も完了扱いだが、通知先設定・AWS配備レビューは別の運用作業として残る。Terraform配備はAPI/CLIとローカル検証の後段とする。Workspace/EFS/Gateway（43–47）、運用（48–50）、Software Factory拡張（53–55）も未完了。親子タスクは二重計上せず、詳細は各taskの受入条件を参照する。
 
 Preview generation snapshots the eligible Tenant-owned GitHub App identity
 (integration, config revision, and credential generation) when its runtime
@@ -317,7 +597,7 @@ lifecycle document.
 | 8 | [74 — Provenance](task-74-claude-action-provenance.md) → [75 — Tenant credential policy](task-75-claude-tenant-credential-policy.md) | **Task 74/75 local acceptance implemented。** Tenant API/CLI、exact-Version reader、provenance/Plane/MicroVM fence、mTLS broker→Worker→signed bootstrap、guest process env handoff/cleanup、pinned ARM64 image build、fake-provider PostgreSQL E2Eを検証済み。実image execution、IAM/certificate配備は残る | 不正workflow/fork/cross-Tenant/foreign VM拒否。Secretはfake/localテストだけ |
 | 9 | [76 — Action execution](task-76-claude-action-execution.md) → [77 — E2E/operations](task-77-claude-action-e2e.md) | **Task 77 local E2E/runbook完了。Task 76の主要local compositionを実装・検証、production gateは未完了**。signed webhook→startup worker→model-credential HTTP client/Broker/PostgreSQL resolver→signed guest bootstrap→runner process→Checks Outbox/Dispatcher/fake GitHub→Broker HTTP cleanupを接続。success/failure/cancel/timeout、provider failure/restart/backoffを検証。synthetic CA証明書によるTLS 1.3 mTLS実ハンドシェイクで許可Plane/非許可Plane/証明書なしを検証。official Runner 2.338.1 ARM64 digest-pinned imageはbuild/inspect済みだがMicroVM実行は未検証。production certificate lifecycle・MicroVM launch・runner token/GitHub API、live IAM/network verificationとrolloutは未完了 | fake providers + PostgreSQL E2E、local CI、secret boundary documentation |
 
-Task 41とTask 51のローカル受入は完了しproduction deployment gate待ち。Task 78/79のWebhookローカル作業は完了。Tenant App Tasks 66–72はローカルのAPI/CLI/broker/mTLS/E2E基盤が実装済みで、本番証明書/IAM/worker配備は別の運用ゲートとして追跡する。Task 68もlocal controlsは実装済みだが、alerting/deployment reviewは残る。
+Task 41とTask 51のローカル受入は完了しproduction deployment gate待ち。Task 78/79のWebhookローカル作業は完了。Tenant App Tasks 66–72はローカルのAPI/CLI/broker/mTLS/E2E基盤が実装済みで、本番証明書/IAM/worker配備は別の運用ゲートとして追跡する。Task 68のlocal controls/EMF/alarmsも実装・mock plan検証済みだが、通知先設定/AWS配備レビューは残る。
 
 Claude Code Actionのproduction対応は**まだ未完了**。Task 74のprovenance gate、Task 75のTenant別resolver、Task 76の署名付きguest bootstrapからrunner process・terminal Check/cleanupまでのlocal PostgreSQL E2Eとdigest-pinned ARM64 runner image buildは実装済み。Broker model-credential endpointも合成CA証明書によるTLS 1.3 mTLSハンドシェイク、許可Plane・非許可Plane・証明書なしをローカル検証済み。Task 75のTerraformにはBrokerのdefault-off exact ARN allowlistと、target Tenant reader Roleのtrust/Secret/KMS policy moduleを追加済み。対象AWS accountへのRole provisioningとBroker allowlist apply、production mTLS certificates/deployment、実image/MicroVM実行、AWS/GitHub実環境は残る。Task 52のephemeral runnerとTask 40のLambda MicroVM workerが前提で、既存GitHub App credentialやAWS credentialをClaudeへ流用しない。[Workflow contract](../docs/claude-code-action.md)と[credential boundary](../docs/claude-model-credentials.md)を参照。
 
@@ -351,7 +631,7 @@ Claude Code Actionのproduction対応は**まだ未完了**。Task 74のprovenan
 | 17 | [52 — GitHub Actions Runner Mode](task-52-ephemeral-actions-runner.md) | **ローカル実行経路を実装・E2E検証済み**：admission→Lambda MicroVM launch/bootstrap→ephemeral Guest runner→Checks→cleanup/retry、専用SQS/Lambda Terraformをdefault-offで追加。残りはAWS配備・listener/network検証、複数Plane placement、実GitHub/AWS検証 | 40, 41, 51 |
 | 18 | [53 — Native Pipeline/Agent](task-53-native-pipeline-agent.md) | **進行中**。Broker mTLS経由のWorker task取得、attempt/Run pin検証、launch spec〜署名Ticket〜guest `/run`までのIssue context digest bindingを実装。Issue本文はbounded・memory-onlyでjournal/result/logへ非記録。Factory Service宣言予算とJob/attempt別Service lifecycle managerを追加。Linux `nerdctl` adapterはdigest固定Catalog・internal network・loopback publish・read-only/tmpfs/resource limits・生成credential env-fileを強制し、Podman上でPostgreSQL起動/readiness、生成credential認証、`SELECT 1`、到達可能時の外向きTCP拒否を検証（x86 imageでありnerdctl/ARM64ではない）。固定UIDのPipeline commandへ残余CPU/Memory budgetのfail-closed cgroup v2 scopeを適用し、サービス予約分との合算を制限。ResolverからService managerへの接続はimage configによる明示opt-inで実装、既定は引き続き拒否。Job UID/rootless containerd UID範囲のIPv4/IPv6 loopback-only host egress guardをAgent起動時に適用。terminal resultはRP journalへの永続化後、Lambda MicroVM cleanup確認までCPへ未publish。Tenant `native_agent` credential API/CLI、Repository別default-off gate、provenance検証resolver、RP mTLS Broker clientからGuestのattempt-ticket-bound no-store Start要求へのcredential handoff、credential-capable Factory限定、buffer clear/output redactionを追加。Task 87で一般Workload Artifactの認可付きbytes download API/Gateway/CLIを実装済み。Native Agent成功Runのattempt-scoped ZIP生成→Agent専用changes ticket→Resource Plane S3保存→`agent_changes` result metadata、Anthropic Messages fixed-tool loopと、`HAKO_NATIVE_AGENT_ENABLED=true`かつ固定モデル指定時だけ選択する`cmd/hako-agent` compositionを追加。Migration 000176/PostgreSQL artifact persistenceとfactory default-off/config testsを通過。proposal ZIPの非展開安全検査`hako workload changes inspect`と、Task 89向けのbase検証→proposal overlay→deterministic source archive primitiveを追加。Migration 000181でAgent proposal binding、000183でtrusted result経由のcleanup確認、000184でdigest-bound verifier Checks、000185でsubmission idempotency stateを追加。Factory-enabled時に同一Resource PlaneへVerifier Job/attempt/dispatchを同一transactionで生成し、Resource Plane metadataから限定S3 keyを検証してproposalをbase checkoutへoverlay。Control Plane resolverはcurrent write policyとproposal digestに結び付いたrequired Checkをfail-closedで照合し、publication recordはdeterministic branchとimmutable pinsを保持、branch/PR state遷移を冪等化。PostgreSQL integrationでVerifier dispatch、digest付きCheck保存、base SHAへのGitHub Check非送信、publication retry/conflictを検証。認証済みAPIと`hako workload publication show`で最新attemptの安全な状態情報を表示。Task 89のBroker ARM64イメージと、private ECS/API VPC/mTLS Secretのdefault-off Terraform contract、mock planを追加。未完了: AWS deployment/network/Secret provisioning、MicroVM execution、実効cgroup/egress検証 ([Task 89](task-89-agent-proposal-publishing.md)) | 39, 40, 50, 51 |
 | 19 | [54 — Preview/Catalog/Deploy](task-54-preview-catalog-deploy.md) | Catalog/OIDC検証、Tenant別Preview opt-in/PR lifecycle/fixed expiry/generation fencing、default-off expiry/provision producer、Tenant-scoped Preview list/session API/CLI、bounded generation cleanup retry/worker、Tenant policy/capacity-aware placement、専用Outbox routeとPreview SQS/result consumer、Lambda MicroVM Runtime journal adapter、Tenant App mTLS checkout→immutable SHA archive→S3→Guest WSS one-use install、strict `.hako/preview.yaml` app startup/loopback health check、fixed port 3000 authorizationまでlocal実装。producer/expiry schedule、column-scoped DSQL role、queues/result consumer/source IAMをdefault-off Terraform化し、PostgreSQL E2Eでprovision→app startup→cleanup/result replayをfake provider経由で検証。未完了: matching Guest keyを含むARM64 imageの実行、AWS deployment/DSQL grants、real Lambda MicroVM/Gateway/network/cleanup検証、STS trust/exchangeとdeployment execution。Public Preview URLは発行しない | 43–46, 50, 51 |
-| 20 | [55 — Quota/Usage UX](task-55-quota-usage.md) | **進行中**：Tenant Owner/Admin向けQuota API/CLIにWorkspace/Workload上限、Preview concurrency (default 2/max 5)・lifetime (5分–24時間)、Artifact bytes (default 10 GiB, max 100 GiB)、Workspace Service per-Workspace memory/CPU capを設定。Workload/PR Preview admissionとService admission/releaseはTenant OCC guardsを使用。cleanup-pending PRはquotaを保持し、`hako usage`はWorkload/PR Preview合算値を返す。最大100 MiB/Run Artifact予約、retained metadata usage、`hako service usage`を提供。`hako tenant quota set`は現在の予約使用量を表示し、明示確認またはautomation向け`--yes`後に更新。期限切れArtifact cleanup core/API/client、Control Plane per-Plane secret resolver/map、default-off Resource Plane Lambda schedule、exact-prefix DeleteObject IAMを追加。PostgreSQL統合テストでQuota境界、PR/Workload Preview共有上限、cancel/failure/timeout、重複終端、予約解放・stale予約修復をカバー。実AWS適用・実Secret/ARN mapping・bucket versioning確認と実測resource usageは未完了 | 40, 47, 50 |
+| 20 | [55 — Quota/Usage UX](task-55-quota-usage.md) | **ローカル受入完了**：Tenant Owner/Admin向けQuota API/CLIにWorkspace/Workload上限、Preview concurrency (default 2/max 5)・lifetime (5分–24時間)、Artifact bytes (default 10 GiB, max 100 GiB)、Workspace Service per-Workspace memory/CPU capを設定。Workload/PR Preview admissionとService admission/releaseはTenant OCC guardsを使用。cleanup-pending PRはquotaを保持し、`hako usage`はWorkload/PR Preview合算値を返す。最大100 MiB/Run Artifact予約、retained metadata usage、`hako service usage`を提供。`hako tenant quota set`は現在の予約使用量を表示し、明示確認またはautomation向け`--yes`後に更新。期限切れArtifact cleanup core/API/client、Control Plane per-Plane secret resolver/map、default-off Resource Plane Lambda schedule、exact-prefix DeleteObject IAMを追加。PostgreSQL統合テストでQuota境界、PR/Workload Preview共有上限、cancel/failure/timeout、重複終端、予約解放・stale予約修復をカバー。実AWS適用・実Secret/ARN mapping・bucket versioning確認と実測resource usageは未完了 | 40, 47, 50 |
 | 後続 | [73–77 — Claude Code Action](task-73-claude-code-action.md) | Task 52のephemeral runner上でworkflow provenance、Tenant model credential policy、実行/cleanup、local E2Eを実装 | 40, 41, 50–52 |
 
 ## 直近の実装状態（2026-10-18確認）
@@ -389,10 +669,15 @@ Claude Code Actionのproduction対応は**まだ未完了**。Task 74のprovenan
 
 ## 2026-10-24 追加進捗
 
+- 2026-11-21 local integration refresh: `make test-integration-local` passed with all Go packages against the already-running `hako-dev-postgres`. `make test-managed-runtime-integration` passed its fake-provider Actions/Claude and Workspace idle lifecycle suites. Firecracker v1.18.0 host/KVM check and minimal Guest-init boot smoke passed on this x86_64 host. No AWS or GitHub access was used. This does not yet compose the Hako Workspace Guest, persistent disk, controller, Gateway, or CLI lifecycle.
+- Task 97 checkout-result slice: added a fixed-pin `pending/failed/ready` state store, signed Resource Plane result endpoint and HMAC client. PostgreSQL integration exercises failed→ready retry, same-commit idempotency, conflicting commit rejection, detail projection, and suspend/resume pin retention. `go test ./internal/workspaceruntime ./internal/api ./internal/store/workspaces`, focused API integration, `git diff --check`, and Terraform format check pass. The Guest checkout/token broker is still not connected.
+
+- Task 68 webhook operations: Tenant admission now emits CloudWatch EMF with only fixed `Service`/`Outcome` dimensions for rate-limit denials and shared-limiter failures. Control Plane Terraform defines alarms for sustained denials and any limiter failure. `go test ./internal/githubwebhook ./cmd/hako-api`, focused OpenTofu mock plan (4/4), `tofu fmt -check`, and `git diff --check` pass. AWS notification actions and deployment remain unapplied.
+
 - API/CLI local wiring: localhost HTTP integration coverage exercises Tenant App list/add/disable/select-default/setup/delivery-list; Repository Factory/Preview/ephemeral Runner/workflow policy; Native Agent write/model-access settings; Workload Run create/list/show/cancel; and the protected health CLI route. Tests assert Tenant-scoped URLs, auth, request bodies, immutable commit, idempotency, revision/generation fences, no raw Secret fields, and dormant execution/runtime responses. Malformed Agent policy is rejected before network access. `go test ./cmd/hako -cover` reports 56.4% overall; relevant App/Repository/Workload commands are exercised against fake APIs.
 - Tenant authorization coverage: added fake-row unit cases for successful membership lookup and exact `(tenant_id,user_id)` query scope, non-disclosing missing-member/Tenant results, wrapped database errors, and role allow/deny behavior. `go test ./internal/authz -cover` now reports 95.0% statement coverage; the PostgreSQL integration test also passes.
 - Model credential resolver coverage: unit tests now check invocation guards and printable-ASCII/size bounds for both Actions Runner and Native Agent Secret paths. `go test ./internal/modelcredentialbroker -cover` reports 51.5%; provenance and rotation stay covered by PostgreSQL integration tests, and Native Agent delivery remains disabled.
-- Task 50: Control Plane TerraformにHTTP API stage 5xx/p95 latencyとAurora DSQL QueryTimeouts/sustained OccConflicts alarmを追加し、alarm名をoutputsに公開。Dispatcherはpartial indexで最古の未publish event ageを取得し、低カーディナリティEmbedded Metric Formatとして出力する。5分を2 period超えた場合のlag alarmも追加。Dispatcher/webhook processor/result consumer/Reconcilerの外側ログからraw provider/DB errorを除き、固定failure classとbounded countersを残す。Focused/full Go tests、local PostgreSQL Outbox integration test、OpenTofu fmt/validateを検証した。通知先設定とproduction log/alert reviewは残る。
+- Task 50: Control Plane TerraformにHTTP API stage 5xx/p95 latency、Aurora DSQL QueryTimeouts/sustained OccConflicts、Tenant webhook rate-limit/limiter-failure alarmsを追加し、alarm名をoutputsに公開。Tenant webhookは固定dimensionのEMF admission countersを出力する。Dispatcherはpartial indexで最古の未publish event ageを取得し、低カーディナリティEmbedded Metric Formatとして出力する。5分を2 period超えた場合のlag alarmも追加。Dispatcher/webhook processor/result consumer/Reconcilerの外側ログからraw provider/DB errorを除き、固定failure classとbounded countersを残す。Focused/full Go tests、local PostgreSQL Outbox integration test、OpenTofu fmt/validate/mock planを検証した。通知先設定とproduction log/alert reviewは残る。
 - Task 53: Owner/Admin向けRepository単位Agent branch/PR write policy APIと `hako github repository agent-policy set` を追加。branch prefix、same-repository PR、必須passing Checksを検証し、Factory opt-out時にpolicyを消去する。Resource Plane Runtime profileをWorkload kind単位にし、Job profileのAgent流用を拒否する。PostgreSQLでTenant/RBAC、監査、`execution_enabled=false`のdefault-off応答を検証。Native Agent executor/model credential handoffとTask 89のVerifier→Broker→GitHub publication pathはlocal実装済み。Lambda MicroVM image、target network/resource enforcementが未検証のため、production Run schedulingとAgent write実行は未接続。
 - Task 53 follow-up: Workload image now runs the trusted `hako-agent` as root and drops fixed Go-test/Native catalog child processes to UID/GID `65532:65532` with no supplementary groups. Linux tests verify identity validation and real child UID when privileged. This establishes an identity boundary for a future rootless containerd socket; it does not start/containerize the daemon, enable Service declarations, or enable Agent scheduling.
 - Task 53 runtime follow-up: Added a dedicated Job rootless-containerd supervisor, strict account/subuid/socket/tmpfs validation, and an opt-in `Dockerfile.services` build target requiring a reviewed ARM64 nerdctl archive and SHA-256. `HAKO_JOB_SERVICES_ENABLED` defaults off. Fake lifecycle coverage and `make test-job-services-podman` exercise recovery, cleanup, generated-credential PostgreSQL authentication, `SELECT 1`, loopback-only access, effective Podman cgroup limits, and denial of an external TCP probe from the internal sidecar network; the pinned ARM64 nerdctl runtime and Lambda MicroVM remain unverified. The default resolver rejects Service manifests; opt-in admission still requires target-runtime cgroup/egress validation before production use. The Podman acceptance was rerun successfully on 2026-10-25.
@@ -429,3 +714,49 @@ Claude Code Actionのproduction対応は**まだ未完了**。Task 74のprovenan
 - Task 54 follow-up (2026-10-25): Preview log CLI failure E2E confirms an inactive Gateway Session is revoked after authorization fails; nil context/output and incomplete identity fail before network access. `readGitHubRepositoryPreviewLogsWith` coverage is 82.4%; focused tests pass under `-race`.
 - Task 54 follow-up: Software Catalog CLI tests cover invalid input, missing login/API URL, Tenant `403`, nil output, invalid metadata before API access, and output failure. `parseSoftwareCatalogCLI` is 100%, `runSoftwareCatalogCLI` 89.7% statement-covered; local HTTP only.
 - Resource Plane network observability (2026-10-25): Added a default-off caller-owned VPC Flow Logs contract with ALL traffic, 60-second aggregation, explicit CloudWatch retention/optional KMS, account-and-region-bound service trust, and log-group-scoped writes. OpenTofu mock plan tests cover disabled and enabled configurations. VPC/subnet/routes/NAT/endpoints are not created and no AWS apply was performed; see [Terraform modules](../docs/terraform-modules.md).
+
+- Task 98 initrd packaging follow-up (2026-11-22): added `make build-local-workspace-initrd`, `make test-local-workspace-initrd`, and `scripts/package-local-workspace-initrd.sh`. The build compiles the local Guest PID 1 for the host architecture and packages an extracted Workspace image rootfs as gzip `newc` initramfs, requiring the Guest Agent, sshd, code-server and trusted Agent keys, rejecting an sshd ELF architecture mismatch, and requiring static host-native PID 1. The repeatable packaging target inspects fixture archive entries and rejects a wrong-architecture PID 1; it passes locally. The existing OCI image target still emits ARM64 only; native x86_64 Workspace rootfs build and booting the resulting Hako initrd in Firecracker remain open, as do operation API/deployment and end-to-end CLI composition.
+
+- Task 92 trusted model policy follow-up (2026-11-22): added `AgentCorePolicy`, which accepts only an exact model ID and Region from deployment-owned JSON allowlists, bounds iteration/turn/tool/token/attempt-time settings, and constructs the existing Converse adapter with those call budgets. `execute_with_policy` propagates the validated model and iteration budgets. Official API documentation sets synchronous `InvokeAgentRuntime` to a 15-minute maximum, so policy caps the timeout at 900 seconds and leaves longer asynchronous jobs as a separate contract. Denied model/Region, malformed/duplicate allowlists, over-ceiling and policy-propagation tests pass. `make test-managed-runtime-local` passes all Go/Python local targets (45 Python tests). Runtime entrypoint/client creation, deadline enforcement, fake-provider lifecycle, and deployed behavior remain open; no Bedrock or AWS calls were made.
+
+- Task 90 unverified proposal draft follow-up (2026-11-22): added `propose_changes` and `propose_with_policy` to produce a bounded proposal from digest-verified source using only the allowlisted model and fixed file tools. The response is explicitly an untrusted draft; it does not run tests or claim verification, and remains bound to caller-supplied attempt metadata that still requires authenticated dispatch and current-attempt revalidation. Tests cover model approval, review-time mutation, trusted policy propagation, and proposal identity; the full offline coding-agent suite passes (45 tests). Runtime HTTP entrypoint, regional Bedrock client, authenticated source/result Broker, durable recovery, independent verifier handoff, and cleanup composition remain unimplemented.
+
+- Task 90 local Runtime entrypoint follow-up (2026-11-22): added the stdlib AgentCore HTTP contract (`GET /ping`, strict `POST /invocations`), strict duplicate/unknown JSON field rejection, attempt/source validation, inline archive and proposal limits, safe generic errors, `no-store`, regional Bedrock client creation, optional `boto3` runtime dependency and deadline checks around every model call. Fake-backed tests cover parsing, health/invocation HTTP behavior, proposal digest and deadline stop. Full Python suite now passes (49 tests); `make test-managed-runtime-local` also passes. The HTTP app does not authenticate caller-supplied pins, and an in-flight model request may exceed the local timeout by its 60-second read timeout. Resource Plane authenticated dispatch, Runtime image/deployment, source/result broker, journal deduplication, cleanup and independent verifier handoff remain open; no AWS invocation was made.
+
+- Task 91 topology/workspace follow-up (2026-11-22): documented the per-repository, per-Tenant, and shared Runtime tradeoffs and resource ownership. The source workspace contract is one in-memory snapshot per `execute`, reconstructed only from the digest-verified source archive and discarded after the attempt; source/proposal storage remains Hako-owned and session persistence stays disabled. A unit regression now proves that writes in one attempt cannot mutate another attempt's workspace. Provider-backed restart, quota, cleanup retry, filesystem isolation and deployed IAM/egress evidence remain open.
+
+- Task 98 Hako Guest boot follow-up (2026-11-22): built the native x86_64 Workspace OCI image from digest-pinned public artifacts and exact package pins, then built a 611 MiB gzip initrd with the running host kernel's required modules. The real Firecracker boot unpacks the initrd, loads virtio/vsock modules, mounts the persistent ext4 disk, enables loopback, and starts sshd. Non-root `hako-workspace-agent` exec as UID/GID 100000 fails with `EACCES`; a root-only diagnostic run confirms the executable itself starts, and PID 1 reports full capabilities, `NoNewPrivs=0`, and `Seccomp=0`. Agent heartbeat/orderly-shutdown acceptance, local operation API/deployment, and CLI composition remain open. Focused Guest init, Workspace Agent, and runtime tests pass; no AWS calls were made.
+
+- Task 90 invocation-request follow-up (2026-11-22): added `workloadagentcore.EncodeInvocationRequest`, which validates current-command identity shape, Repository/base-commit/source pins, UTF-8 task bounds, and the archive bytes against the pinned SHA-256 before emitting the exact Runtime v1 JSON/base64 contract. Unit tests reject malformed input and archive mutation; an integration test feeds the Go payload to Python `parse_invocation`. Focused tests pass. This does not authenticate the input pins or implement dispatch/source broker/provider cleanup; no AWS API was called.
+
+- Task 96 AgentCore lifecycle follow-up (2026-11-22): added local `InvokeOnce` composition over the frozen Runtime/session, v1 request builder, durable `Launching`→`Running` CAS claim, and an injectable Runtime provider. Fake tests cover identity rejection and at-most-once behavior after lost responses; focused Go tests pass. Production SQS dispatch, exclusive cancellation lease, recovery/cleanup/result publication and AWS adapter remain.
+
+- Task 90 result-validation follow-up (2026-11-22): added `DecodeInvocationResponse` to bind Runtime response pins, verify the proposal ZIP digest, and run the existing bounded ZIP inspector before returning explicitly unverified bytes. Duplicate/unknown JSON fields, foreign pins, malformed base64/ZIP, protected paths, credential markers and changed bytes are rejected. `go test ./internal/workloadagentcore ./internal/workloadsource ./internal/workloadjournal -count=1` and the Go-to-Python request integration pass. This is early input hygiene, not independent verification; authenticated artifact handoff, AWS dispatch and cleanup/verification composition remain.
+- Task 96 invocation-composition follow-up (2026-11-22): `InvokeOnce` now exposes only a typed attempt-bound draft after strict response and ZIP validation. Invalid or lost provider results remain durably `Running` and cannot be replayed. `workloadcontroller.AgentCoreWorkloadResult` composes validated drafts with the existing attempt-scoped artifact writer and cleanup-before-publish Result path. `make test-managed-runtime-local`, `make test-workload-runtime`, tagged Workload integration tests, race suites, and `git diff --check` pass; invoke/stop dispatch, cancellation/reconciliation lease, and deployed AWS adapter remain.
+- Task 90/96 Workload result bridge follow-up (2026-11-22): `AgentCoreWorkloadResult` rejects attempt, Repository, commit, source digest, deadline, malformed ZIP, and artifact metadata mismatches. Proposal bytes use the existing attempt-scoped change-bundle writer; the ordinary Controller journals results and waits for cleanup confirmation before Control Plane publication. Fake unit tests, `make test-workload-runtime` (race), and tagged Workload integration tests pass. This does not connect an AgentCore provider, cancellation lease, or AWS runtime.
+- Task 96 local stop/cleanup follow-up (2026-11-22): terminal attempts can now strictly restore the frozen Runtime/session and call an injected idempotent stopper using the stable attempt stop token. Provider errors remain unconfirmed; only successful stop plus journal CAS records `CleanupConfirmed`. A journal-CAS attempt lease now gates invocation and stop, supports renewal/release, and fences stale owners. `make test-workload-runtime`, AgentCore/workloadjournal race tests, tagged Workload integration tests, and `git diff --check` pass. Full worker wiring across cancel/result/publish, provider API adapter, and live AWS evidence remain.
+- Task 96 journal composition correction (2026-11-22): frozen AgentCore Runtime/session pins now occupy dedicated journal fields and no longer overwrite the Workload Controller's frozen Workload/source specification. A regression confirms both pins coexist. Focused Go and race tests pass.
+
+
+Task 90/96 lease renewal follow-up (2026-11-22): the AgentCore Worker renews
+the durable attempt lease before InvokeAgentRuntime and at result, cleanup and
+publication boundaries. Its 20-minute minimum lease covers the synchronous
+API's 15-minute ceiling plus margin. Focused/race tests and tagged Workload
+integration tests pass. Renewal is phase-boundary only; there is no background
+heartbeat during source resolution, artifact persistence, cleanup, or publish.
+
+
+Task 94 Terraform guard follow-up (2026-11-22): Python proposal tools and the shared Go ZIP inspector now reject Terraform source and state file formats anywhere in the repository, including case-insensitive `.tf`, `.tfvars`, `.tf.json`, state backups, and the lock file. Rejection is enforced before artifact storage and again during proposal application/publication. Python (49 tests), Go race tests for source/AgentCore/controller/Broker, `go vet ./...`, and `git diff --check` pass. No Terraform profile or plan execution is enabled.
+
+
+Task 90/91/96 managed runtime routing follow-up (2026-11-22): the database-backed scheduler now pins Job attempts to `lambda_microvm` and Agent attempts to `agentcore`; cancellation preserves the same provider. The Outbox Dispatcher routes by provider and pinned Resource Plane to separate queue URLs and fails/retries when a dedicated URL is missing. Resource Plane manifests expose the optional `agentcore_command_queue_url`. Lambda and AgentCore SQS decoders reject messages pinned for the other runtime. Go unit packages and the PostgreSQL Agent Issue scheduling integration test pass. No queue Terraform, AgentCore Lambda deployment, AWS API, or AWS resource was used.
+
+Task 90/92 AgentCore image follow-up (2026-11-22): added a digest-pinned Python 3.13 slim ARM64 Runtime Dockerfile, hash-locked boto3 dependencies, and a Kiri-only local build target. `uv lock --check`, generated-requirements comparison, all 49 Python unit tests, and `git diff --check` pass. Kiri image build is blocked because the Linux Kiri daemon needs root and its BuildKit could not resolve Docker Hub; no Podman fallback or AWS call was used. A successful image build/inspection remains open.
+
+Task 94 verifier eligibility follow-up (2026-11-22): the fixed `go-offline-v1` Native Agent verifier now requires a root Go module and Go source and rejects mixed Python/Java/Rust/TypeScript/JavaScript or Terraform source/state trees before command execution. `go test -race ./internal/workloadagent -run 'NativeAgentGoProfile' -count=1` passes. Other language profiles remain gated on immutable verifier toolchain images; Terraform authorization remains gated on explicit policy/IAM review. Unavailable checks remain fail-closed.
+
+Task 98 local operation API follow-up (2026-11-22): `workspaceruntime.LocalOperationAPI` now adapts the normal Resource Controller command/result contract to `LocalMicroVM`. The Linux startup reconciler serves it over a same-user mode-0600 Unix socket, validates private socket-parent ownership, rejects active/foreign socket replacement, and continues periodic journal recovery. Its launch resolver binds Guest identity and configured Gateway origin to the trusted operation and journal generation. `make test-local-workspace-reconciler` (race tests) and `make build-local-workspace-reconciler` pass. Added `make smoke-local-workspace-controller`; the real Firecracker v1.18.0 KVM Ensure/Suspend/cold-Resume/Delete flow passes, confirms the Agent identity heartbeat before acknowledging running, preserves allocation ID/generation, and removes VM state on Delete. No AWS environment variables or services are used. Full Control Plane/API/CLI lifecycle composition remains.
+
+Task 98 local Outbox worker follow-up (2026-11-22): added a filtered PostgreSQL Outbox claim for only `operation.requested` Workspace events and `cmd/hako-local-workspace-worker`, which sends commands over the private Controller Unix socket, checks response identity pins, applies the standard Operation Result transaction, and acknowledges only after commit. Failed delivery/result persistence releases the lease with bounded backoff; other event families are not leased. `make test-local-workspace-worker` and `make build-local-workspace-worker` provide focused validation. Local API identity/auth configuration, service composition, and authenticated CLI lifecycle remain.
+
+Task 98 local provider projection follow-up (2026-11-22): local runtime results use the distinct `firecracker_local` resource binding kind. Control Plane result decode/validation, resource-binding replacement/deletion, and Workspace connection/idle lease lookup now support both `firecracker_local` and existing `lambda_microvm` bindings. PostgreSQL integration covers local binding persistence, provider-kind replacement, deletion cleanup, and local connection lease/idle lookup. Race tests and focused PostgreSQL integration suites pass. Local API identity/auth, deployment composition, and authenticated CLI flow remain.

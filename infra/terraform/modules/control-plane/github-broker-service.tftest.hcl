@@ -147,6 +147,39 @@ run "github_broker_service_uses_private_network_and_exact_secrets" {
   }
 }
 
+run "tenant_webhook_admission_alarms_use_fixed_dimensions" {
+  command = plan
+
+  variables {
+    aws_region           = "ap-northeast-1"
+    api_lambda_zip_path  = "variables.tf"
+    cognito_issuer_url   = "https://cognito-idp.ap-northeast-1.amazonaws.com/ap-northeast-1_Example123"
+    cognito_user_pool_id = "ap-northeast-1_Example123"
+  }
+
+  assert {
+    condition = alltrue([
+      aws_cloudwatch_metric_alarm.tenant_webhook_rate_limited.namespace == "Hako/ControlPlane",
+      aws_cloudwatch_metric_alarm.tenant_webhook_rate_limited.metric_name == "TenantWebhookAdmission",
+      length(aws_cloudwatch_metric_alarm.tenant_webhook_rate_limited.dimensions) == 2,
+      aws_cloudwatch_metric_alarm.tenant_webhook_rate_limited.dimensions["Service"] == "HakoAPI",
+      aws_cloudwatch_metric_alarm.tenant_webhook_rate_limited.dimensions["Outcome"] == "rate_limited",
+    ])
+    error_message = "The rate-limit alarm must use the low-cardinality Tenant webhook EMF metric dimensions."
+  }
+
+  assert {
+    condition = alltrue([
+      aws_cloudwatch_metric_alarm.tenant_webhook_limiter_unavailable.namespace == "Hako/ControlPlane",
+      aws_cloudwatch_metric_alarm.tenant_webhook_limiter_unavailable.metric_name == "TenantWebhookAdmission",
+      length(aws_cloudwatch_metric_alarm.tenant_webhook_limiter_unavailable.dimensions) == 2,
+      aws_cloudwatch_metric_alarm.tenant_webhook_limiter_unavailable.dimensions["Service"] == "HakoAPI",
+      aws_cloudwatch_metric_alarm.tenant_webhook_limiter_unavailable.dimensions["Outcome"] == "limiter_unavailable",
+    ])
+    error_message = "The limiter failure alarm must use a fixed outcome dimension."
+  }
+}
+
 run "github_broker_service_requires_complete_deployment_contract" {
   command = plan
 

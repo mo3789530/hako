@@ -1,6 +1,6 @@
 # Task 95: Coding Agent Isolation, Credentials and Network
 
-Status: Planned. Priority: P3. Parent: Task 90. Depends on Tasks 37, 53, 89 and 91.
+Status: Blocked on disposable AWS isolation evidence. The trust-boundary baseline, default-off requirement, IAM/network acceptance cases, and local fake-provider boundaries are documented in [Coding Agent Isolation and Credentials](../docs/coding-agent-isolation-and-credentials.md). AgentCore dispatch, effective IAM/metadata/egress enforcement, and cross-Tenant positive/negative tests require an approved disposable AWS environment; local tests cannot establish them. Priority: P3. Parent: Task 90. Depends on Tasks 37, 53, 89 and 91.
 
 ## Goal
 

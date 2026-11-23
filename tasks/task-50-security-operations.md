@@ -2,7 +2,7 @@
 
 残作業の実行単位：[Task 68](task-68-webhook-abuse-controls.md)。親タスクは集約用に保持し、子タスク完了だけで配備済みとはしない。
 
-Status: In Progress (local code/dependency review, pinned OAuth authorization, credential-redirect rejection and CI govulncheck implemented; production gates depend on Tasks 40, 42 and 49). Priority: P2.
+Status: Blocked on production operations review. Local code/dependency review, pinned OAuth authorization, credential-redirect rejection, CI govulncheck, Task 68 webhook admission metrics/alarms, and the documented recovery/logging inventory are implemented and locally verified. Remaining acceptance requires deployed log retention, alert delivery/escalation review, and disposable AWS restore/cleanup drills for Tasks 40, 42 and 49; no AWS operation was authorized in this run. Priority: P2.
 
 Progress (2026-10-24): API requests receive a server-generated `req_…`
 correlation ID returned in `X-Hako-Request-ID`, added to request context, and
@@ -143,11 +143,26 @@ The pinned `govulncheck@v1.8.0` run found reachable GO-2026-6809 in Go
 1.27.2 `crypto/x509` (`Certificate.Verify`). The repository toolchain was
 updated to Go 1.27.3, including the Dev Container, Lambda build images, pinned
 ARM64 Guest build image digest, CI Podman image, and local test fixtures.
-`govulncheck@v1.8.0 ./...` now reports no reachable vulnerabilities;
+`govulncheck@v1.8.0 ./...` initially reported no reachable vulnerabilities;
 `go test -p=1 ./... -count=1`, the Podman/PostgreSQL Software Factory E2E,
-and `go vet ./...` pass under Go 1.27.3. Five dependency advisories remain
-unreachable according to govulncheck. The updated images have not been
-deployed.
+and `go vet ./...` passed under Go 1.27.3. Five dependency advisories were
+unreachable at that time. The updated images have not been deployed.
+
+Security refresh (2026-11-22): a new `govulncheck@v1.8.0 ./...` run found
+reachable GO-2026-6859 in Go 1.27.3 `net/http` and five reachable Echo
+advisories in v5.3.1. Updated the module/toolchain to Go 1.27.4 and Echo
+v5.4.0, refreshed Alpine build tags, the pinned ARM64 Workload Agent toolchain
+digest, and local E2E fixtures. The official Go release identifies 1.27.4 as
+including `net/http` security fixes; Echo's release identifies v5.4.0 as a
+security release. `govulncheck@v1.8.0 ./...` now reports zero reachable
+vulnerabilities (four imported-package and seven module advisories remain
+unreachable). `GOCACHE=/tmp/hako-go-cache go test -p=1 ./... -count=1`,
+`GOCACHE=/tmp/hako-go-cache make test-integration-local`, `go vet ./...`, and
+`make test-managed-runtime-local` pass. The full integration target used its
+default container backend. The explicit `make test-software-factory-kiri`
+target cannot run its container workload here because Kiri reports that its
+Linux runtime needs root and non-interactive sudo is not available; the image
+itself was pulled successfully through Kiri. No AWS resource or API was used.
 
 The migration command now logs only the fixed `failure_class=migration` on
 startup/DDL failure; it does not include the underlying database error, SQL,
@@ -206,3 +221,23 @@ bounded `session_recheck_failed` outcome. Local tests assert the classification
 and ensure the metric contains no Tenant/Workspace identity, ticket, or raw
 lookup error. Production CloudWatch retention, alarms, and escalation review
 remain operational gates.
+
+Local Firecracker Guest log-boundary follow-up (2026-11-22): review of the new
+Task 98 PID 1 Guest found that its process-exit line formatted the wrapped
+startup error, including an executable path and OS error detail. Guest init now
+logs only a bounded `failure_class=guest_init` stage label; the wrapped cause is
+not copied to the serial console. Regression tests prove arbitrary path/token
+text is omitted. `go test ./cmd/hako-local-workspace-guest-init -count=1`, its
+race run, and `git diff --check` pass. The EACCES cause was later isolated to the packaged root directory mode and fixed under Task 98; diagnostic details remain outside production Guest logs.
+
+Local static-analysis follow-up (2026-11-22): the new AgentCore SDK dependency
+surfaced pre-existing `go vet` findings in attempt-lease test fixtures that
+copied a mutex-bearing in-memory store and in two standalone Firecracker smoke
+programs sharing the `scripts` package. Test fixtures now keep the store by
+pointer; smoke programs use explicit build tags and remain invokable as named
+files from their shell scripts. `go vet ./...` passes. The smoke programs also
+compile through their documented `go run <file>` entrypoints; without the
+required five runtime arguments they exit with the expected usage message.
+
+
+Local MicroVM reconciler log-boundary follow-up (2026-11-22): the Task 98 recovery process no longer places raw per-allocation driver errors in JSON reports. A synthetic path/token test confirms the fixed failure message and trusted allocation IDs only.

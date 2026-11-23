@@ -29,6 +29,7 @@ type FileRequest struct {
 	Path      string `json:"path"`
 	Size      int64  `json:"size"`
 	Digest    string `json:"digest,omitempty"`
+	CommitSHA string `json:"commit_sha,omitempty"`
 }
 
 type FileResponse struct {
@@ -77,24 +78,56 @@ func validFileRequest(request FileRequest) bool {
 	}
 	switch request.Operation {
 	case "upload":
-		return request.Path != "/workspace" && request.Size >= 0 && request.Size <= FileMaxBytes && request.Digest == ""
+		return request.Path != "/workspace" && request.Size >= 0 && request.Size <= FileMaxBytes && request.Digest == "" && request.CommitSHA == ""
 	case "download":
-		return request.Size == 0 && request.Digest == ""
+		return request.Size == 0 && request.Digest == "" && request.CommitSHA == ""
 	case "install_archive":
 		digest, err := hex.DecodeString(request.Digest)
-		return request.Path == "/workspace/src" && request.Size > 0 && request.Size <= FileMaxBytes && err == nil && len(digest) == 32 && hex.EncodeToString(digest) == request.Digest
+		return request.Path == "/workspace/src" && request.Size > 0 && request.Size <= FileMaxBytes && request.CommitSHA == "" && err == nil && len(digest) == 32 && hex.EncodeToString(digest) == request.Digest
+	case "install_repository":
+		digest, err := hex.DecodeString(request.Digest)
+		name := strings.TrimPrefix(request.Path, "/workspace/")
+		return request.Path == "/workspace/"+name && name != "" && name != "." && name != ".." &&
+			!strings.ContainsAny(name, "/\\\x00\r\n") && len(name) <= 100 &&
+			validRepositoryName(name) && validCommitSHA(request.CommitSHA) && request.Size > 0 && request.Size <= FileMaxBytes &&
+			err == nil && len(digest) == 32 && hex.EncodeToString(digest) == request.Digest
 	case "start_preview":
-		return request.Path == "/workspace/src/.hako/preview.yaml" && request.Size == 0 && request.Digest == ""
+		return request.Path == "/workspace/src/.hako/preview.yaml" && request.Size == 0 && request.Digest == "" && request.CommitSHA == ""
 	case "preview_logs":
-		return request.Path == "/workspace/src/.hako/preview.log" && request.Size == 0 && request.Digest == ""
+		return request.Path == "/workspace/src/.hako/preview.log" && request.Size == 0 && request.Digest == "" && request.CommitSHA == ""
 	default:
 		return false
 	}
 }
 
+func validRepositoryName(value string) bool {
+	for i, char := range value {
+		valid := char >= 'A' && char <= 'Z' || char >= 'a' && char <= 'z' || char >= '0' && char <= '9' ||
+			(i > 0 && (char == '.' || char == '_' || char == '-'))
+		if !valid {
+			return false
+		}
+	}
+	return len(value) > 0
+}
+
+func validCommitSHA(value string) bool {
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	for _, char := range value {
+		if !(char >= '0' && char <= '9' || char >= 'a' && char <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 func validFileErrorCode(code string) bool {
 	switch code {
-	case "not_found", "not_allowed", "too_large", "transfer_failed":
+	case "not_found", "not_allowed", "too_large", "transfer_failed", "transfer_invalid", "workspace_runtime_unavailable",
+		"workspace_path_unavailable", "workspace_permission_denied", "workspace_read_only", "workspace_storage_failed",
+		"transfer_random_failed", "upload_cancelled", "upload_stream_failed":
 		return true
 	default:
 		return false

@@ -1,6 +1,7 @@
 # Task 39: Idempotent Workload Execution Handler
 
-Status: In Progress (CP/RP libraries, authenticated Agent, Resource Plane worker composition, partial-batch SQS adapter, bounded leased recovery, and default-off queue/schedule Terraform are implemented locally across Tasks 40 and 62–65. AWS deployment, live Lambda MicroVM validation, and the Task 61 image/network PoC remain pending). Priority: P0.
+Status: Local implementation and local acceptance complete (CP/RP libraries, authenticated Agent, Resource Plane worker composition, partial-batch SQS adapter, bounded leased recovery, and default-off queue/schedule Terraform are implemented locally across Tasks 40 and 62–65. AWS deployment, live Lambda MicroVM validation, and the Task 61 image/network PoC remain pending). Priority: P0.
+External acceptance blocked: the AWS Lambda MicroVM/image/network PoC requires a dedicated approved AWS environment; none was used in this local run. `make test-workload-runtime` passed with the race detector on 2026-11-21.
 
 ## Goal
 

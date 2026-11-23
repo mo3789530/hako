@@ -44,6 +44,8 @@ type Registration struct {
 	// keep Workload attempt messages/results away from Workspace Operations.
 	WorkloadCommandQueueURL string `json:"workload_command_queue_url,omitempty"`
 	WorkloadResultQueueURL  string `json:"workload_result_queue_url,omitempty"`
+	// AgentCoreCommandQueueURL is a separate no-fallback route for managed Agent Runs.
+	AgentCoreCommandQueueURL string `json:"agentcore_command_queue_url,omitempty"`
 	// WorkspaceServiceCommandQueueURL is optional until the Service runtime
 	// consumer is deployed in this Resource Plane.
 	WorkspaceServiceCommandQueueURL string `json:"workspace_service_command_queue_url,omitempty"`
@@ -129,6 +131,17 @@ func (manifest Manifest) WorkloadCommandQueueURLs() map[string]string {
 	for _, registration := range manifest.ResourcePlanes {
 		if registration.WorkloadCommandQueueURL != "" {
 			queueURLs[registration.ID] = registration.WorkloadCommandQueueURL
+		}
+	}
+	return queueURLs
+}
+
+// AgentCoreCommandQueueURLs returns the optional managed Coding Agent queue table.
+func (manifest Manifest) AgentCoreCommandQueueURLs() map[string]string {
+	queueURLs := make(map[string]string, len(manifest.ResourcePlanes))
+	for _, registration := range manifest.ResourcePlanes {
+		if registration.AgentCoreCommandQueueURL != "" {
+			queueURLs[registration.ID] = registration.AgentCoreCommandQueueURL
 		}
 	}
 	return queueURLs
@@ -269,6 +282,12 @@ func (manifest *Manifest) Validate() error {
 				struct{ role, url string }{role: "workload command", url: registration.WorkloadCommandQueueURL},
 				struct{ role, url string }{role: "workload result", url: registration.WorkloadResultQueueURL},
 			)
+		}
+		if registration.AgentCoreCommandQueueURL != "" {
+			if err := validateQueueURL(registration.AgentCoreCommandQueueURL, registration.Region, registration.AccountID); err != nil {
+				return fmt.Errorf("resource_planes[%d].agentcore_command_queue_url: %w", i, err)
+			}
+			queues = append(queues, struct{ role, url string }{role: "AgentCore command", url: registration.AgentCoreCommandQueueURL})
 		}
 		if registration.ActionsRunnerStartupQueueURL != "" {
 			if err := validateQueueURL(registration.ActionsRunnerStartupQueueURL, registration.Region, registration.AccountID); err != nil {

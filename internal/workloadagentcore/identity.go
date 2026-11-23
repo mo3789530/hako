@@ -33,3 +33,19 @@ func SessionID(command workloadjournal.Command) (string, error) {
 	digest := sha256.Sum256(identity)
 	return "hako-" + hex.EncodeToString(digest[:]), nil
 }
+
+// StopClientToken is stable for one immutable attempt and operation. It may be
+// reused when retrying StopRuntimeSession after an ambiguous response; it is
+// not an invocation idempotency key or an authorization credential.
+func StopClientToken(command workloadjournal.Command) (string, error) {
+	if _, err := SessionID(command); err != nil {
+		return "", err
+	}
+	identity, err := json.Marshal([]any{"hako-agentcore-stop-v1", command.TenantID, command.WorkloadRunID,
+		command.AttemptID, command.Generation, command.ResourcePlaneID, command.IdempotencyToken})
+	if err != nil {
+		return "", errors.New("encode AgentCore stop request identity")
+	}
+	digest := sha256.Sum256(identity)
+	return "hako-stop-" + hex.EncodeToString(digest[:]), nil
+}

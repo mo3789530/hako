@@ -1,5 +1,7 @@
 # Hako Architecture Design
 
+実装状況の入口は[実装まとめ](docs/implementation-summary.md)、Runtime placementと共有lifecycleは[実行アーキテクチャ](docs/execution-architecture.md)を参照してください。
+
 ## 1. 概要
 
 Hakoは、**Lambda MicroVMを中心としたマルチテナント型Remote Development Platform**です。
@@ -34,7 +36,7 @@ Control Plane != Data Plane
 Hako User Identity != AWS IAM Identity
 ```
 
-将来拡張として、GitHubを開発の入口、Hakoを実行・環境・自動化の中核とする **Hako Software Factory** を計画しています。GitHub App/Webhook、Repository Registry、Pipeline/Job、ephemeral self-hosted runner、Checks API、Agent Workloadを段階導入する構想です。これは未実装のロードマップであり、詳細な権限・信頼境界・実装順は[Hako Software Factory](docs/software-factory.md)を参照してください。
+GitHubを開発の入口、Hakoを実行・環境・自動化の中核とする **Hako Software Factory** を段階的に実装しています。GitHub App/Webhook、Repository Registry、Pipeline/Job、ephemeral self-hosted runner、Checks API、Agent Workloadの仕様と現状は[Hako Software Factory](docs/software-factory.md)、実装済み範囲と受入ゲートは[実装まとめ](docs/implementation-summary.md)を参照してください。
 
 ## 2. 全体アーキテクチャ
 

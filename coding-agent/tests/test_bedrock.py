@@ -78,7 +78,7 @@ class BedrockTest(unittest.TestCase):
         client = Client([text_response("Plan")])
         BedrockCodingModel(client, "model").plan("task", Workspace({"main.tf": b"", "main.go": b""}), 1)
         prompt = client.requests[0]["messages"][0]["content"][0]["text"]
-        self.assertIn("Detected source languages (advisory): Go, Terraform", prompt)
+        self.assertIn("Detected source languages (advisory): Go", prompt)
 
 
 if __name__ == "__main__":

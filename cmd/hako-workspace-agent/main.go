@@ -1,6 +1,7 @@
 // hako-workspace-agent is the unprivileged interactive child process for one
-// Workspace Lambda MicroVM. It inherits only the already-bound Unix listener
-// and strict mount-hook identity from hako-workspace-init.
+// Workspace. It inherits the already-bound Unix listener and strict
+// mount-hook identity from hako-workspace-init. A host-private vsock listener
+// is optional and disabled in the Lambda image by default.
 package main
 
 import (
@@ -110,17 +111,33 @@ func run() error {
 	if err != nil {
 		return errors.New("open inherited Workspace Agent listener")
 	}
+	listeners := []net.Listener{listener}
+	if payload.EnableVsock {
+		vsockListener, err := workspaceagent.ListenWorkspaceAgentVsock(workspaceagent.WorkspaceAgentVsockPort)
+		if err != nil {
+			_ = listener.Close()
+			return errors.New("listen on host-private Workspace Agent vsock")
+		}
+		listeners = append(listeners, vsockListener)
+	}
+	defer func() {
+		for _, active := range listeners {
+			_ = active.Close()
+		}
+	}()
 	server := &http.Server{Handler: agent, ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
-	serveResult := make(chan error, 1)
-	go func() { serveResult <- server.Serve(listener) }()
+	serveResult := make(chan error, len(listeners))
+	for _, active := range listeners {
+		go func(active net.Listener) { serveResult <- server.Serve(active) }(active)
+	}
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(signals)
 	select {
 	case err := <-serveResult:
 		if !errors.Is(err, http.ErrServerClosed) {
-			return errors.New("Workspace Agent Unix listener stopped unexpectedly")
+			return errors.New("Workspace Agent listener stopped unexpectedly")
 		}
 		return nil
 	case <-signals:
@@ -128,7 +145,7 @@ func run() error {
 		defer cancel()
 		if err := server.Shutdown(ctx); err != nil {
 			_ = server.Close()
-			return errors.New("shut down Workspace Agent Unix listener")
+			return errors.New("shut down Workspace Agent listeners")
 		}
 		return nil
 	}

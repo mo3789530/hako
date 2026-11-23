@@ -28,8 +28,39 @@ func TestLoadDeploymentConfigRequiresCompleteSecureConfiguration(t *testing.T) {
 		t.Fatalf("load valid configuration: %v", err)
 	}
 	if cfg.ListenAddress != ":8443" || cfg.MaxConnections != 500 || cfg.MaxConnectionsPerWS != 10 ||
-		cfg.PublicOrigin != "https://gateway.hako.test" || len(cfg.AllowedOrigins) != 2 || cfg.SessionRecheckInterval.String() != "15s" {
+		cfg.PublicOrigin != "https://gateway.hako.test" || cfg.RuntimeImplementation != "lambda-microvm" ||
+		len(cfg.AllowedOrigins) != 2 || cfg.SessionRecheckInterval.String() != "15s" {
 		t.Fatalf("unexpected defaults/config: %+v", cfg)
+	}
+
+	localValues := make(map[string]string, len(values)+3)
+	for key, value := range values {
+		localValues[key] = value
+	}
+	delete(localValues, "HAKO_WORKSPACE_RUNTIME_JOURNAL_BUCKET")
+	delete(localValues, "AWS_REGION")
+	localValues["HAKO_WORKSPACE_RUNTIME_IMPLEMENTATION"] = "firecracker-local"
+	localValues["HAKO_LOCAL_FIRECRACKER_STATE_DIR"] = "/var/lib/hako/firecracker"
+	localValues["HAKO_LOCAL_WORKSPACE_JOURNAL_DIR"] = "/var/lib/hako/workspace-journal"
+	localCfg, err := loadDeploymentConfig(func(key string) string { return localValues[key] })
+	if err != nil || localCfg.RuntimeImplementation != "firecracker-local" || localCfg.JournalBucket != "" {
+		t.Fatalf("load AWS-free local Gateway configuration: cfg=%+v err=%v", localCfg, err)
+	}
+	for name, mutate := range map[string]func(map[string]string){
+		"missing local state":         func(values map[string]string) { delete(values, "HAKO_LOCAL_FIRECRACKER_STATE_DIR") },
+		"S3 journal on local runtime": func(values map[string]string) { values["HAKO_WORKSPACE_RUNTIME_JOURNAL_BUCKET"] = "unexpected" },
+		"unknown runtime":             func(values map[string]string) { values["HAKO_WORKSPACE_RUNTIME_IMPLEMENTATION"] = "unknown" },
+	} {
+		t.Run("local/"+name, func(t *testing.T) {
+			mutated := make(map[string]string, len(localValues))
+			for key, value := range localValues {
+				mutated[key] = value
+			}
+			mutate(mutated)
+			if _, err := loadDeploymentConfig(func(key string) string { return mutated[key] }); err == nil {
+				t.Fatal("invalid local Gateway configuration was accepted")
+			}
+		})
 	}
 
 	for name, value := range map[string]string{

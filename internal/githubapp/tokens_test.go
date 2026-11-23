@@ -349,6 +349,58 @@ func TestResolveAgentIssueContextReturnsImmutableDefaultBranchCommit(t *testing.
 	}
 }
 
+func TestResolveRepositoryDefaultBranchReturnsImmutableHead(t *testing.T) {
+	now := time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC)
+	commit := strings.Repeat("c", 40)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer "+testTokenValue {
+			t.Errorf("unexpected repository head request method/auth: %s %q", r.Method, r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/repos/acme/workspace":
+			_, _ = io.WriteString(w, `{"default_branch":"feature/workspace-bootstrap"}`)
+		case "/repos/acme/workspace/commits":
+			if r.URL.Query().Get("sha") != "feature/workspace-bootstrap" || r.URL.Query().Get("per_page") != "1" {
+				t.Errorf("head lookup was not pinned to the default branch: %s", r.URL.RawQuery)
+			}
+			_, _ = fmt.Fprintf(w, `[{"sha":%q}]`, commit)
+		default:
+			t.Errorf("unexpected repository head path %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := &TokenClient{http: server.Client(), apiURL: server.URL, now: func() time.Time { return now }}
+	token := InstallationToken{value: testTokenValue, expiresAt: now.Add(time.Hour)}
+	got, err := client.ResolveRepositoryDefaultBranch(context.Background(), token, RepositoryAccess{Owner: "acme", Name: "workspace"})
+	if err != nil || got.Name != "feature/workspace-bootstrap" || got.CommitSHA != commit {
+		t.Fatalf("resolved default branch = %+v error=%v", got, err)
+	}
+}
+
+func TestResolveRepositoryDefaultBranchRejectsInvalidOrExpiredPins(t *testing.T) {
+	now := time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/commits") {
+			_, _ = io.WriteString(w, `[{"sha":"bad"}]`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"default_branch":"main"}`)
+	}))
+	defer server.Close()
+	client := &TokenClient{http: server.Client(), apiURL: server.URL, now: func() time.Time { return now }}
+	token := InstallationToken{value: testTokenValue, expiresAt: now.Add(time.Hour)}
+	if _, err := client.ResolveRepositoryDefaultBranch(context.Background(), token, RepositoryAccess{Owner: "acme", Name: "api"}); err == nil {
+		t.Fatal("invalid GitHub commit SHA was accepted")
+	}
+	expired := InstallationToken{value: testTokenValue, expiresAt: now}
+	if _, err := client.ResolveRepositoryDefaultBranch(context.Background(), expired, RepositoryAccess{Owner: "acme", Name: "api"}); err == nil {
+		t.Fatal("expired installation token was accepted")
+	}
+}
+
 func TestResolveAgentIssueContextRejectsPullRequestsAndInvalidSHAs(t *testing.T) {
 	for _, tc := range []struct {
 		name       string

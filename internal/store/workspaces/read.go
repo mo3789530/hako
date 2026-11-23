@@ -17,6 +17,34 @@ type View struct {
 	Status    domain.WorkspaceStatus `json:"status"`
 }
 
+type workspaceRowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanWorkspaceView(row workspaceRowScanner, view *View) error {
+	var installationID, repositoryID *int64
+	var owner, name, defaultBranch, commitSHA, checkoutState *string
+	err := row.Scan(
+		&view.Workspace.ID, &view.Workspace.TenantID, &view.Workspace.OwnerID, &view.Workspace.Name,
+		&view.Workspace.RuntimeClass, &view.Workspace.Image, &view.Workspace.CreatedAt, &view.Workspace.UpdatedAt,
+		&installationID, &repositoryID, &owner, &name, &defaultBranch, &commitSHA, &checkoutState,
+		&view.Status.WorkspaceID, &view.Status.DesiredState, &view.Status.ObservedState, &view.Status.UpdatedAt,
+	)
+	if err != nil {
+		return err
+	}
+	if repositoryID != nil {
+		view.Workspace.Repository = &domain.WorkspaceRepository{
+			InstallationID: *installationID, GitHubRepositoryID: *repositoryID, Owner: *owner,
+			Name: *name, DefaultBranch: *defaultBranch, CheckoutState: *checkoutState,
+		}
+		if commitSHA != nil {
+			view.Workspace.Repository.CommitSHA = *commitSHA
+		}
+	}
+	return nil
+}
+
 type ListResult struct {
 	Items  []View `json:"items"`
 	Total  int64  `json:"total"`
@@ -109,8 +137,11 @@ func ListVisible(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, userI
 		return ListResult{}, fmt.Errorf("count visible Workspaces: %w", err)
 	}
 	rows, err := tx.Query(ctx, `SELECT w.id, w.tenant_id, w.owner_id, w.name, w.runtime_class, w.image, w.created_at, w.updated_at,
+		c.installation_id, c.github_repository_id, c.owner_login, c.repository_name, c.default_branch, c.commit_sha, c.checkout_state,
 		s.workspace_id, s.desired_state, s.observed_state, s.updated_at
-		FROM workspaces w JOIN workspace_status s ON s.workspace_id = w.id
+		FROM workspaces w
+		LEFT JOIN workspace_github_checkouts c ON c.tenant_id=w.tenant_id AND c.workspace_id=w.id
+		JOIN workspace_status s ON s.workspace_id = w.id
 		WHERE w.tenant_id = $1 AND ($3 <> 'member' OR w.owner_id = $2)
 		ORDER BY w.created_at DESC, w.id DESC LIMIT $4 OFFSET $5`, tenantID, userID, role, limit, offset)
 	if err != nil {
@@ -121,11 +152,7 @@ func ListVisible(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, userI
 	result.Items = make([]View, 0)
 	for rows.Next() {
 		var view View
-		if err := rows.Scan(
-			&view.Workspace.ID, &view.Workspace.TenantID, &view.Workspace.OwnerID, &view.Workspace.Name,
-			&view.Workspace.RuntimeClass, &view.Workspace.Image, &view.Workspace.CreatedAt, &view.Workspace.UpdatedAt,
-			&view.Status.WorkspaceID, &view.Status.DesiredState, &view.Status.ObservedState, &view.Status.UpdatedAt,
-		); err != nil {
+		if err := scanWorkspaceView(rows, &view); err != nil {
 			return ListResult{}, fmt.Errorf("scan visible Workspace: %w", err)
 		}
 		result.Items = append(result.Items, view)
@@ -146,14 +173,13 @@ func GetVisible(ctx context.Context, tx pgx.Tx, tenantID domain.TenantID, worksp
 		return View{}, ErrWorkspaceAccessDenied
 	}
 	var view View
-	err := tx.QueryRow(ctx, `SELECT w.id, w.tenant_id, w.owner_id, w.name, w.runtime_class, w.image, w.created_at, w.updated_at,
+	err := scanWorkspaceView(tx.QueryRow(ctx, `SELECT w.id, w.tenant_id, w.owner_id, w.name, w.runtime_class, w.image, w.created_at, w.updated_at,
+		c.installation_id, c.github_repository_id, c.owner_login, c.repository_name, c.default_branch, c.commit_sha, c.checkout_state,
 		s.workspace_id, s.desired_state, s.observed_state, s.updated_at
-		FROM workspaces w JOIN workspace_status s ON s.workspace_id = w.id
-		WHERE w.tenant_id = $1 AND w.id = $2 AND ($4 <> 'member' OR w.owner_id = $3)`, tenantID, workspaceID, userID, role).Scan(
-		&view.Workspace.ID, &view.Workspace.TenantID, &view.Workspace.OwnerID, &view.Workspace.Name,
-		&view.Workspace.RuntimeClass, &view.Workspace.Image, &view.Workspace.CreatedAt, &view.Workspace.UpdatedAt,
-		&view.Status.WorkspaceID, &view.Status.DesiredState, &view.Status.ObservedState, &view.Status.UpdatedAt,
-	)
+		FROM workspaces w
+		LEFT JOIN workspace_github_checkouts c ON c.tenant_id=w.tenant_id AND c.workspace_id=w.id
+		JOIN workspace_status s ON s.workspace_id = w.id
+		WHERE w.tenant_id = $1 AND w.id = $2 AND ($4 <> 'member' OR w.owner_id = $3)`, tenantID, workspaceID, userID, role), &view)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return View{}, ErrWorkspaceAccessDenied
 	}

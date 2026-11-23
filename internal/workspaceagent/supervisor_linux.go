@@ -36,6 +36,7 @@ const (
 	workspaceAgentHeartbeatLease             = 30 * time.Second
 	WorkspaceAgentTrustedKeysFileEnvironment = "HAKO_WORKSPACE_AGENT_TRUSTED_KEYS_FILE"
 	WorkspaceGatewayOriginEnvironment        = "HAKO_GATEWAY_ORIGIN"
+	WorkspaceAgentVsockEnabledEnvironment    = "HAKO_WORKSPACE_AGENT_VSOCK_ENABLED"
 	ChildListenerFileDescriptor              = 3
 )
 
@@ -58,6 +59,7 @@ type WorkspaceAgentLaunch struct {
 	GatewayOrigin    string             `json:"gateway_origin"`
 	TrustedKeysFile  string             `json:"trusted_keys_file"`
 	EnableServices   bool               `json:"enable_services"`
+	EnableVsock      bool               `json:"enable_vsock"`
 	ContainerdSocket string             `json:"containerd_socket,omitempty"`
 }
 
@@ -84,6 +86,7 @@ type WorkspaceAgentSupervisorConfig struct {
 	GatewayOrigin           string
 	ServiceFenceDirectory   string
 	EnableServices          bool
+	EnableVsock             bool
 	EnableSSH               bool
 	HeartbeatInterval       time.Duration
 	HeartbeatLease          time.Duration
@@ -266,8 +269,10 @@ func (s *WorkspaceAgentSupervisor) BindWorkspaceRuntime(microVMID string, spec W
 	if err := os.MkdirAll(filepath.Dir(s.config.SocketPath), 0700); err != nil {
 		return errors.New("prepare Workspace Agent socket directory")
 	}
-	if err := s.config.PrepareRuntimeDirectory(spec.UID, spec.GID); err != nil {
-		return errors.New("prepare private Workspace runtime tmpfs")
+	if s.config.EnableServices {
+		if err := s.config.PrepareRuntimeDirectory(spec.UID, spec.GID); err != nil {
+			return fmt.Errorf("prepare private Workspace runtime tmpfs: %w", err)
+		}
 	}
 	if s.config.EnableServices || s.config.EnableSSH {
 		if err := s.config.PrepareRootlessIdentity(spec.UID, spec.GID); err != nil {
@@ -322,7 +327,10 @@ func (s *WorkspaceAgentSupervisor) BindWorkspaceRuntime(microVMID string, spec W
 			if startedContainerd {
 				s.stopRootlessContainerd()
 			}
-			return errors.New("start Workspace SSH server")
+			if err != nil {
+				return fmt.Errorf("start Workspace SSH server: %w", err)
+			}
+			return errors.New("start Workspace SSH server: no process was returned")
 		}
 		s.sshServer = sshServer
 		startedSSH = true
@@ -361,7 +369,8 @@ func (s *WorkspaceAgentSupervisor) BindWorkspaceRuntime(microVMID string, spec W
 		return errors.New("secure Workspace Agent Unix socket")
 	}
 	launch := WorkspaceAgentLaunch{MicroVMID: microVMID, Mount: spec,
-		GatewayOrigin: s.config.GatewayOrigin, TrustedKeysFile: s.config.TrustedKeysFile, EnableServices: s.config.EnableServices}
+		GatewayOrigin: s.config.GatewayOrigin, TrustedKeysFile: s.config.TrustedKeysFile,
+		EnableServices: s.config.EnableServices, EnableVsock: s.config.EnableVsock}
 	if s.containerd != nil {
 		launch.ContainerdSocket = s.containerd.SocketPath()
 	}
@@ -375,7 +384,10 @@ func (s *WorkspaceAgentSupervisor) BindWorkspaceRuntime(microVMID string, spec W
 		if startedSSH {
 			s.stopSSHServer()
 		}
-		return errors.New("start unprivileged Workspace Agent")
+		if err != nil {
+			return fmt.Errorf("start unprivileged Workspace Agent: %w", err)
+		}
+		return errors.New("start unprivileged Workspace Agent: no process was returned")
 	}
 	if err := s.waitReady(process, launch); err != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -430,6 +442,18 @@ func prepareWorkspaceAgentRuntimeDirectory(uid, gid uint32) error {
 	if err := unix.Mount("tmpfs", runtimeDir, "tmpfs", unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, options); err != nil {
 		return err
 	}
+	// Some minimal Guest kernels accept the tmpfs uid/gid mount options but
+	// report the mount root as root-owned. Set and verify the fixed runtime
+	// identity explicitly before handing the directory to the unprivileged
+	// Agent.
+	if err := os.Chown(runtimeDir, int(uid), int(gid)); err != nil {
+		_ = unix.Unmount(runtimeDir, unix.MNT_DETACH)
+		return err
+	}
+	if err := os.Chmod(runtimeDir, 0700); err != nil {
+		_ = unix.Unmount(runtimeDir, unix.MNT_DETACH)
+		return err
+	}
 	if err := validateWorkspaceRuntimeTmpfs(runtimeDir, uid, gid); err != nil {
 		_ = unix.Unmount(runtimeDir, unix.MNT_DETACH)
 		return err
@@ -447,7 +471,10 @@ func validateWorkspaceRuntimeTmpfs(path string, uid, gid uint32) error {
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || stat.Uid != uid || stat.Gid != gid {
-		return errors.New("Workspace runtime tmpfs ownership is invalid")
+		if !ok {
+			return errors.New("Workspace runtime tmpfs ownership metadata is unavailable")
+		}
+		return fmt.Errorf("Workspace runtime tmpfs ownership is invalid (want %d:%d, got %d:%d)", uid, gid, stat.Uid, stat.Gid)
 	}
 	return nil
 }
@@ -593,6 +620,7 @@ type WorkspaceAgentChildPayload struct {
 	MicroVMID     string             `json:"microvm_id"`
 	Mount         WorkspaceMountSpec `json:"mount"`
 	GatewayOrigin string             `json:"gateway_origin"`
+	EnableVsock   bool               `json:"enable_vsock,omitempty"`
 }
 
 func ReadWorkspaceAgentChildPayload(reader io.Reader) (WorkspaceAgentChildPayload, error) {
@@ -624,7 +652,8 @@ func (l execWorkspaceAgentLauncher) Start(config WorkspaceAgentLaunch, listener 
 	if err != nil {
 		return nil, errors.New("inherit Workspace Agent Unix listener")
 	}
-	payload, err := json.Marshal(WorkspaceAgentChildPayload{MicroVMID: config.MicroVMID, Mount: config.Mount, GatewayOrigin: config.GatewayOrigin})
+	payload, err := json.Marshal(WorkspaceAgentChildPayload{MicroVMID: config.MicroVMID, Mount: config.Mount,
+		GatewayOrigin: config.GatewayOrigin, EnableVsock: config.EnableVsock})
 	if err != nil {
 		_ = file.Close()
 		return nil, errors.New("encode Workspace Agent child configuration")
@@ -642,10 +671,18 @@ func (l execWorkspaceAgentLauncher) Start(config WorkspaceAgentLaunch, listener 
 		}
 		command.Env = append(command.Env, ContainerdSocketEnvironment+"="+config.ContainerdSocket)
 	}
-	command.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: config.Mount.UID, Gid: config.Mount.GID, Groups: []uint32{}}}
+	if config.EnableVsock {
+		command.Env = append(command.Env, WorkspaceAgentVsockEnabledEnvironment+"=true")
+	}
+	// Guest PID 1 starts with no supplementary groups. Instruct os/exec not to
+	// issue setgroups(0, ...): minimal Guest kernels may deny that syscall even
+	// for PID 1, while the child must still switch to the fixed UID/GID.
+	command.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{
+		Uid: config.Mount.UID, Gid: config.Mount.GID, NoSetGroups: true,
+	}}
 	if err := command.Start(); err != nil {
 		_ = file.Close()
-		return nil, errors.New("launch unprivileged Workspace Agent child")
+		return nil, fmt.Errorf("launch unprivileged Workspace Agent child: %w", err)
 	}
 	_ = file.Close()
 	process := &execWorkspaceAgentProcess{command: command, done: make(chan error, 1)}

@@ -88,17 +88,19 @@ The optional `enable_workload_result_queue` (`false` by default) provisions a
 separate encrypted Workload command queue/DLQ and result queue/DLQ, independent
 alarms, and a dedicated queue-only Workload Controller role. The Control Plane
 manifest can include paired `workload_command_queue_url` and
-`workload_result_queue_url` fields. The Dispatcher routes Workload attempt
-dispatch/cancel only to the dedicated command queue and fails closed (leaving
-the Outbox event retryable) when it is absent; Workspace Operation commands
-continue to use `command_queue_url`. The Workload Controller role consumes only
-the dedicated Workload queue and sends results only to its result queue. It
-does not grant access to Workspace queues, Lambda MicroVM APIs, S3, Secrets
-Manager, or GitHub broker. The result queue resource policy permits only the
-configured exact Control Plane Workload result consumer role. No Workload
-Lambda, event source mapping, or Control Plane result consumer is deployed yet.
-The opt-in must not be enabled until consumer identities, queue routing, and
-worker wiring are reviewed.
+`workload_result_queue_url` fields and a separate optional
+`agentcore_command_queue_url`. Scheduling reads the durable Run kind and pins
+`job` attempts to `lambda_microvm` and `agent` attempts to `agentcore` in the
+Outbox command. The Dispatcher routes by that pinned provider plus Resource
+Plane and fails closed (leaving the Outbox event retryable) if the provider's
+queue is absent; it never falls back to another runtime. Workspace Operation
+commands continue to use `command_queue_url`. The Resource Plane Lambda Workload
+consumer rejects an AgentCore command, and the fake-tested AgentCore SQS adapter
+rejects a Lambda-provider command. The Workload Controller role consumes only
+the dedicated Lambda Workload queue and sends results only to its result queue.
+No AgentCore queue resources or Lambda event source/consumer deployment are
+provisioned yet. Review queue policies and event source identities before
+enabling either route.
 
 With `enable_fake_resource_controller = true`, the command queue can trigger
 an optional development-only Lambda using batch size one and

@@ -53,7 +53,7 @@ func SuspendIdle(ctx context.Context, tx pgx.Tx, candidate IdleCandidate, now ti
 		JOIN placements p ON p.workspace_id = w.id
 		JOIN resource_bindings rb ON rb.workspace_id = w.id AND rb.resource_plane_id = p.resource_plane_id
 		WHERE w.tenant_id = $1 AND w.id = $2 AND p.resource_plane_id = $3
-			AND rb.kind = 'lambda_microvm'
+			AND rb.kind IN ('lambda_microvm', 'firecracker_local')
 		FOR UPDATE OF s`, candidate.TenantID, candidate.WorkspaceID, candidate.ResourcePlaneID).
 		Scan(&tenantID, &desired, &observed, &workspaceRevision, &planeID, &microVMID, &generation)
 	if errors.Is(err, pgx.ErrNoRows) {

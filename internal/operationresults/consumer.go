@@ -167,7 +167,8 @@ func decode(payload []byte) (resourcecontroller.Result, error) {
 		}
 		return result, nil
 	}
-	if (result.ResourceKind == "lambda_microvm") != (result.AllocationGeneration > 0) {
+	isMicroVMKind := result.ResourceKind == "lambda_microvm" || result.ResourceKind == "firecracker_local"
+	if (result.ResourceKind != "" && !isMicroVMKind) || isMicroVMKind != (result.AllocationGeneration > 0) {
 		return resourcecontroller.Result{}, errors.New("successful MicroVM result must include its allocation generation")
 	}
 	wantState := domain.ObservedWorkspaceState("")

@@ -25,6 +25,15 @@ class WorkspaceTest(unittest.TestCase):
         self.assertEqual(other.tree_digest(), before)
         self.assertIsNone(other.proposal())
 
+    def test_attempt_workspaces_do_not_share_mutations(self):
+        source = {"src/main.py": b"base\n"}
+        first_attempt = Workspace(source)
+        second_attempt = Workspace(source)
+        first_attempt.write_file("src/main.py", b"first attempt\n")
+        self.assertEqual(first_attempt.read_file("src/main.py"), b"first attempt\n")
+        self.assertEqual(second_attempt.read_file("src/main.py"), b"base\n")
+        self.assertEqual(source["src/main.py"], b"base\n")
+
     def test_rejects_unsafe_writes_without_mutation(self):
         workspace = Workspace({"main.py": b"original"})
         before = workspace.tree_digest()

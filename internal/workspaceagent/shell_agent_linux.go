@@ -243,6 +243,11 @@ func (a *WorkspaceShellAgent) serveExec(w http.ResponseWriter, r *http.Request) 
 			return nil
 		},
 		Handler: func(conn *websocket.Conn) {
+			// net/http cancels the HTTP request context after the WebSocket
+			// connection is hijacked. Use a connection-scoped operation context;
+			// socket reads and writes still fail when the peer disconnects.
+			operationCtx, cancelOperation := context.WithCancel(context.Background())
+			defer cancelOperation()
 			conn.MaxPayloadBytes = workspaceprotocol.MaxExecRequest + 1024
 			conn.PayloadType = websocket.BinaryFrame
 			var payload []byte
@@ -257,7 +262,7 @@ func (a *WorkspaceShellAgent) serveExec(w http.ResponseWriter, r *http.Request) 
 				_ = conn.Close()
 				return
 			}
-			result, err := execs.Run(r.Context(), request)
+			result, err := execs.Run(operationCtx, request)
 			if err != nil {
 				result = workspaceprotocol.ExecResult{ExitCode: -1, Code: "exec_failed"}
 			}
@@ -296,6 +301,11 @@ func (a *WorkspaceShellAgent) serveFiles(w http.ResponseWriter, r *http.Request)
 			return nil
 		},
 		Handler: func(conn *websocket.Conn) {
+			// net/http cancels the HTTP request context after the WebSocket
+			// connection is hijacked. Keep the protocol operation alive until
+			// the WebSocket handler finishes; stream I/O reports peer closure.
+			operationCtx, cancelOperation := context.WithCancel(context.Background())
+			defer cancelOperation()
 			conn.MaxPayloadBytes = maxTerminalFrame
 			conn.PayloadType = websocket.BinaryFrame
 			request, err := workspaceprotocol.ReadFileRequest(conn)
@@ -305,14 +315,22 @@ func (a *WorkspaceShellAgent) serveFiles(w http.ResponseWriter, r *http.Request)
 			}
 			switch request.Operation {
 			case "install_archive":
-				err := files.InstallSourceArchive(r.Context(), request.Size, request.Digest, io.LimitReader(conn, request.Size))
+				err := files.InstallSourceArchive(operationCtx, request.Size, request.Digest, io.LimitReader(conn, request.Size))
+				response := workspaceprotocol.FileResponse{OK: err == nil, Size: request.Size}
+				if err != nil {
+					response = workspaceprotocol.FileResponse{Code: "transfer_failed"}
+				}
+				_ = workspaceprotocol.WriteFileResponse(conn, response)
+			case "install_repository":
+				name := strings.TrimPrefix(request.Path, "/workspace/")
+				err := files.InstallWorkspaceRepositoryArchive(operationCtx, name, request.CommitSHA, request.Size, request.Digest, io.LimitReader(conn, request.Size))
 				response := workspaceprotocol.FileResponse{OK: err == nil, Size: request.Size}
 				if err != nil {
 					response = workspaceprotocol.FileResponse{Code: "transfer_failed"}
 				}
 				_ = workspaceprotocol.WriteFileResponse(conn, response)
 			case "start_preview":
-				port, err := previewApps.Start(r.Context(), files)
+				port, err := previewApps.Start(operationCtx, files)
 				response := workspaceprotocol.FileResponse{OK: err == nil, Port: port}
 				if err != nil {
 					response = workspaceprotocol.FileResponse{Code: "transfer_failed"}
@@ -330,10 +348,10 @@ func (a *WorkspaceShellAgent) serveFiles(w http.ResponseWriter, r *http.Request)
 				}
 				_, _ = conn.Write(logs)
 			case "upload":
-				err := files.Write(r.Context(), request.Path, request.Size, conn)
+				err := files.Write(operationCtx, request.Path, request.Size, conn)
 				response := workspaceprotocol.FileResponse{OK: err == nil, Size: request.Size}
 				if err != nil {
-					response = workspaceprotocol.FileResponse{Code: "transfer_failed"}
+					response = workspaceprotocol.FileResponse{Code: workspaceFileFailureCode(err)}
 				}
 				_ = workspaceprotocol.WriteFileResponse(conn, response)
 			case "download":
@@ -346,7 +364,7 @@ func (a *WorkspaceShellAgent) serveFiles(w http.ResponseWriter, r *http.Request)
 					_ = conn.Close()
 					return
 				}
-				if _, err := files.Read(r.Context(), request.Path, conn); err != nil {
+				if _, err := files.Read(operationCtx, request.Path, conn); err != nil {
 					_ = conn.Close()
 				}
 			}
@@ -390,14 +408,16 @@ func (a *WorkspaceShellAgent) servePort(w http.ResponseWriter, r *http.Request, 
 			return nil
 		},
 		Handler: func(conn *websocket.Conn) {
+			operationCtx, cancelOperation := context.WithCancel(context.Background())
+			defer cancelOperation()
 			conn.MaxPayloadBytes = maxTerminalFrame
 			conn.PayloadType = websocket.BinaryFrame
-			upstream, err := dial(r.Context(), verified.Port)
+			upstream, err := dial(operationCtx, verified.Port)
 			if err != nil {
 				_ = conn.Close()
 				return
 			}
-			proxyWorkspaceRawStream(r.Context(), conn, upstream)
+			proxyWorkspaceRawStream(operationCtx, conn, upstream)
 		},
 	}
 	server.ServeHTTP(w, r)
@@ -495,7 +515,9 @@ func (a *WorkspaceShellAgent) serveShell(w http.ResponseWriter, r *http.Request)
 				_ = conn.Close()
 				return
 			}
-			proxyWorkspaceShell(r.Context(), conn, session.Attachment())
+			operationCtx, cancelOperation := context.WithCancel(context.Background())
+			defer cancelOperation()
+			proxyWorkspaceShell(operationCtx, conn, session.Attachment())
 		},
 	}
 	server.ServeHTTP(w, r)
@@ -544,14 +566,16 @@ func (a *WorkspaceShellAgent) serveVSCode(w http.ResponseWriter, r *http.Request
 			return nil
 		},
 		Handler: func(conn *websocket.Conn) {
+			operationCtx, cancelOperation := context.WithCancel(context.Background())
+			defer cancelOperation()
 			conn.MaxPayloadBytes = maxTerminalFrame
 			conn.PayloadType = websocket.BinaryFrame
-			upstream, err := dial(r.Context())
+			upstream, err := dial(operationCtx)
 			if err != nil {
 				_ = conn.Close()
 				return
 			}
-			proxyWorkspaceRawStream(r.Context(), conn, upstream)
+			proxyWorkspaceRawStream(operationCtx, conn, upstream)
 		},
 	}
 	server.ServeHTTP(w, r)
@@ -586,14 +610,16 @@ func (a *WorkspaceShellAgent) serveSSH(w http.ResponseWriter, r *http.Request) {
 			return nil
 		},
 		Handler: func(conn *websocket.Conn) {
+			operationCtx, cancelOperation := context.WithCancel(context.Background())
+			defer cancelOperation()
 			conn.MaxPayloadBytes = maxTerminalFrame
 			conn.PayloadType = websocket.BinaryFrame
-			upstream, err := dial(r.Context())
+			upstream, err := dial(operationCtx)
 			if err != nil {
 				_ = conn.Close()
 				return
 			}
-			proxyWorkspaceRawStream(r.Context(), conn, upstream)
+			proxyWorkspaceRawStream(operationCtx, conn, upstream)
 		},
 	}
 	server.ServeHTTP(w, r)

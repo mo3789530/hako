@@ -204,7 +204,7 @@ func TestRunOnceRejectsInvalidGitHubCheckEnvelope(t *testing.T) {
 func TestRunOnceRoutesWorkloadDispatchToPinnedResourcePlane(t *testing.T) {
 	store := &fakeStore{events: []outbox.Event{{
 		ID: "evt_attempt", AggregateType: "workload_attempt", AggregateID: "attempt_1", EventType: "workload_attempt.dispatch", Attempt: 1,
-		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_1","attempt_id":"attempt_1","generation":1,"resource_plane_id":"rp_tokyo","idempotency_token":"attempt-fixed"}`),
+		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_1","attempt_id":"attempt_1","generation":1,"resource_plane_id":"rp_tokyo","idempotency_token":"attempt-fixed","runtime_provider":"lambda_microvm"}`),
 	}}}
 	publisher := &fakePublisher{}
 	dispatcher, err := New(store, publisher, map[string]string{"rp_tokyo": "rp-queue"}, Config{WorkloadCommandQueueURLs: map[string]string{"rp_tokyo": "rp-workload-queue"}})
@@ -217,9 +217,46 @@ func TestRunOnceRoutesWorkloadDispatchToPinnedResourcePlane(t *testing.T) {
 	}
 }
 
+func TestRunOnceRoutesAgentCoreDispatchToDedicatedQueue(t *testing.T) {
+	store := &fakeStore{events: []outbox.Event{{
+		ID: "evt_agent_attempt", AggregateType: "workload_attempt", AggregateID: "attempt_agent", EventType: "workload_attempt.dispatch", Attempt: 1,
+		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_agent","attempt_id":"attempt_agent","generation":1,"resource_plane_id":"rp_tokyo","idempotency_token":"agent-fixed","runtime_provider":"agentcore"}`),
+	}}}
+	publisher := &fakePublisher{}
+	d, err := New(store, publisher, map[string]string{"rp_tokyo": "workspace-queue"}, Config{
+		WorkloadCommandQueueURLs:  map[string]string{"rp_tokyo": "lambda-workload-queue"},
+		AgentCoreCommandQueueURLs: map[string]string{"rp_tokyo": "agentcore-queue"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := d.RunOnce(context.Background())
+	if err != nil || stats != (Stats{Claimed: 1, Published: 1}) || len(publisher.queueURLs) != 1 || publisher.queueURLs[0] != "agentcore-queue" {
+		t.Fatalf("Agent Run did not route to AgentCore without fallback: stats=%+v queues=%v err=%v", stats, publisher.queueURLs, err)
+	}
+}
+
+func TestRunOnceFailsClosedWhenAgentCoreQueueMissing(t *testing.T) {
+	store := &fakeStore{events: []outbox.Event{{
+		ID: "evt_agent_attempt", AggregateType: "workload_attempt", AggregateID: "attempt_agent", EventType: "workload_attempt.dispatch", Attempt: 1,
+		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_agent","attempt_id":"attempt_agent","generation":1,"resource_plane_id":"rp_tokyo","idempotency_token":"agent-fixed","runtime_provider":"agentcore"}`),
+	}}}
+	publisher := &fakePublisher{}
+	d, err := New(store, publisher, map[string]string{"rp_tokyo": "workspace-queue"}, Config{
+		WorkloadCommandQueueURLs: map[string]string{"rp_tokyo": "lambda-workload-queue"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := d.RunOnce(context.Background())
+	if err == nil || stats != (Stats{Claimed: 1, Failed: 1}) || len(publisher.queueURLs) != 0 || len(store.retryTimes) != 1 {
+		t.Fatalf("Agent Run fell back without its dedicated queue: stats=%+v queues=%v err=%v", stats, publisher.queueURLs, err)
+	}
+}
+
 func TestRunOnceRoutesWorkloadCancellationToPinnedResourcePlane(t *testing.T) {
 	store := &fakeStore{events: []outbox.Event{{ID: "evt_cancel", AggregateType: "workload_attempt", AggregateID: "attempt_1", EventType: "workload_attempt.cancel", Attempt: 1,
-		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_1","attempt_id":"attempt_1","generation":1,"resource_plane_id":"rp_tokyo","idempotency_token":"attempt-fixed"}`)}}}
+		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_1","attempt_id":"attempt_1","generation":1,"resource_plane_id":"rp_tokyo","idempotency_token":"attempt-fixed","runtime_provider":"lambda_microvm"}`)}}}
 	publisher := &fakePublisher{}
 	d, err := New(store, publisher, map[string]string{"rp_tokyo": "rp-queue"}, Config{WorkloadCommandQueueURLs: map[string]string{"rp_tokyo": "rp-workload-queue"}})
 	if err != nil {
@@ -345,14 +382,14 @@ func TestRunOnceRejectsInvalidWorkspaceServiceEnvelope(t *testing.T) {
 
 func TestRunOnceDoesNotFallbackToWorkspaceCommandQueueForWorkload(t *testing.T) {
 	store := &fakeStore{events: []outbox.Event{{ID: "evt_attempt", AggregateType: "workload_attempt", AggregateID: "attempt_1", EventType: "workload_attempt.dispatch", Attempt: 1,
-		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_1","attempt_id":"attempt_1","generation":1,"resource_plane_id":"rp_tokyo","idempotency_token":"attempt-fixed"}`)}}}
+		Payload: []byte(`{"schema_version":1,"tenant_id":"tenant_1","workload_run_id":"run_1","attempt_id":"attempt_1","generation":1,"resource_plane_id":"rp_tokyo","idempotency_token":"attempt-fixed","runtime_provider":"lambda_microvm"}`)}}}
 	publisher := &fakePublisher{}
 	d, err := New(store, publisher, map[string]string{"rp_tokyo": "workspace-commands"}, Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	stats, err := d.RunOnce(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "no Workload command queue configured") || stats != (Stats{Claimed: 1, Failed: 1}) {
+	if err == nil || !strings.Contains(err.Error(), "no command queue configured for Workload runtime provider") || stats != (Stats{Claimed: 1, Failed: 1}) {
 		t.Fatalf("missing dedicated Workload queue should remain retryable: stats=%+v err=%v", stats, err)
 	}
 	if len(publisher.queueURLs) != 0 || len(store.published) != 0 || len(store.retryTimes) != 1 {

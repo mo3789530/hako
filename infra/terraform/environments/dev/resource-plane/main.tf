@@ -12,6 +12,9 @@ module "resource_plane" {
   workload_controller_vpc_config                  = var.workload_controller_vpc_config
   workload_controller_deployment                  = var.workload_controller_deployment
   enable_workload_result_queue                    = var.enable_workload_result_queue
+  enable_agentcore_command_queue                  = var.enable_agentcore_command_queue
+  agentcore_command_visibility_timeout_seconds    = var.agentcore_command_visibility_timeout_seconds
+  agentcore_worker_deployment                     = var.agentcore_worker_deployment
   actions_runner_vpc_config                       = var.actions_runner_vpc_config
   actions_runner_deployment                       = var.actions_runner_deployment
   actions_runner_cleanup_deployment               = var.actions_runner_cleanup_deployment
@@ -31,6 +34,7 @@ module "resource_plane" {
   workspace_runtime_deployment                    = var.workspace_runtime_deployment
   enable_preview_runtime                          = var.enable_preview_runtime
   preview_runtime_source                          = var.preview_runtime_source
+  workspace_repository_checkout                   = var.workspace_repository_checkout
   tags                                            = var.tags
   alarm_actions                                   = var.alarm_actions
   oldest_message_age_alarm_seconds                = var.oldest_message_age_alarm_seconds

@@ -91,14 +91,14 @@ func TestWorkspaceRuntimeBindingResultAndDeleteAreAtomic(t *testing.T) {
 		OperationID: created.Operation.ID, TenantID: created.Workspace.TenantID, WorkspaceID: created.Workspace.ID,
 		ResourcePlaneID: created.Placement.ResourcePlaneID, Type: domain.OperationEnsureRunning,
 		Status: domain.OperationSucceeded, ObservedState: domain.ObservedWorkspaceRunning,
-		ResourceKind: "lambda_microvm", ExternalResourceID: "microvm-binding-e2e", AllocationGeneration: 1, CompletedAt: completedAt,
+		ResourceKind: "firecracker_local", ExternalResourceID: "firecracker-allocation-e2e", AllocationGeneration: 1, CompletedAt: completedAt,
 	})
 	if err != nil || !applied {
 		t.Fatalf("apply runtime result: applied=%v error=%v", applied, err)
 	}
 	var externalID string
 	var generation int64
-	if err := pool.QueryRow(ctx, `SELECT external_id, allocation_generation FROM resource_bindings WHERE workspace_id = $1 AND resource_plane_id = $2 AND kind = 'lambda_microvm'`, created.Workspace.ID, created.Placement.ResourcePlaneID).Scan(&externalID, &generation); err != nil || externalID != "microvm-binding-e2e" || generation != 1 {
+	if err := pool.QueryRow(ctx, `SELECT external_id, allocation_generation FROM resource_bindings WHERE workspace_id = $1 AND resource_plane_id = $2 AND kind = 'firecracker_local'`, created.Workspace.ID, created.Placement.ResourcePlaneID).Scan(&externalID, &generation); err != nil || externalID != "firecracker-allocation-e2e" || generation != 1 {
 		t.Fatalf("Workspace provider binding = %q generation=%d, %v", externalID, generation, err)
 	}
 	serviceTime := time.Now().UTC()
@@ -176,7 +176,7 @@ func TestWorkspaceRuntimeBindingResultAndDeleteAreAtomic(t *testing.T) {
 		t.Fatalf("Workspace deletion did not retire its current Service runtime generation: retired=%v error=%v", retired, err)
 	}
 	var bindings int
-	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM resource_bindings WHERE workspace_id = $1 AND kind = 'lambda_microvm'`, created.Workspace.ID).Scan(&bindings); err != nil || bindings != 0 {
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM resource_bindings WHERE workspace_id = $1 AND kind IN ('lambda_microvm', 'firecracker_local')`, created.Workspace.ID).Scan(&bindings); err != nil || bindings != 0 {
 		t.Fatalf("deleted Workspace retained MicroVM bindings: count=%d error=%v", bindings, err)
 	}
 }

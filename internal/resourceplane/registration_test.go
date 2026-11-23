@@ -106,6 +106,24 @@ func TestManifestAcceptsSeparateWorkloadQueues(t *testing.T) {
 	}
 }
 
+func TestManifestAcceptsSeparateAgentCoreQueueAndExportsRoute(t *testing.T) {
+	data := strings.Replace(validManifest,
+		`"result_queue_url": "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-results"`,
+		`"result_queue_url": "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-results",
+    "agentcore_command_queue_url": "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-agentcore-commands"`, 1)
+	manifest, err := Parse([]byte(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := manifest.AgentCoreCommandQueueURLs()["rp-tokyo-01"]; got != "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-agentcore-commands" {
+		t.Fatalf("AgentCore command route = %q", got)
+	}
+	duplicate := strings.Replace(data, "rp-tokyo-01-agentcore-commands", "rp-tokyo-01-commands", 1)
+	if _, err := Parse([]byte(duplicate)); err == nil || !strings.Contains(err.Error(), "duplicates another queue") {
+		t.Fatalf("AgentCore route must not reuse the Workspace command queue: %v", err)
+	}
+}
+
 func TestManifestAcceptsSingleActionsRunnerStartupQueue(t *testing.T) {
 	data := strings.Replace(validManifest,
 		`"result_queue_url": "https://sqs.ap-northeast-1.amazonaws.com/123456789012/rp-tokyo-01-results"`,

@@ -1,6 +1,6 @@
 # Task 94: Coding Agent Verification and Terraform Policy
 
-Status: Planned. Priority: P3. Parent: Task 90. Depends on Tasks 53, 89, 91 and 93.
+Status: In Progress; additional language profiles and Terraform authorization are gated on immutable verifier toolchains and an approved policy/IAM boundary. The available runtime has only the fixed offline Go profile, so enabling other profiles without their pinned tools and dependency evidence would risk treating unavailable checks as passes. The Native Agent `go-offline-v1` verifier requires root `go.mod`, at least one Go source file, and rejects Python, Java, Rust, TypeScript/JavaScript, and Terraform source/state files before opening resource limits or running a command. Terraform directories and source/state formats are also denied in Python proposal tools and the shared Go ZIP inspector before storage, materialization, and publication. Fake tests cover root/nested, case-insensitive, tfvars, JSON, state, mixed-language, missing-module, and source-less paths. No non-Go verifier profile, Terraform authorization override, or AWS plan evidence is enabled. See [Verification Policy](../docs/coding-agent-verification-policy.md). Priority: P3. Parent: Task 90. Depends on Tasks 53, 89, 91 and 93.
 
 ## Goal
 

@@ -49,8 +49,15 @@ const factoryE2EWebhookSecret = "synthetic-webhook-secret-for-local-e2e"
 func TestSoftwareFactoryPodmanPostgresAndGitHubCheck(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	const image = "docker.io/library/golang:1.27.3-alpine"
-	if err := exec.CommandContext(ctx, "podman", "image", "exists", image).Run(); err != nil {
+	const image = "docker.io/library/golang:1.27.4-alpine"
+	useKiri := os.Getenv("HAKO_E2E_USE_KIRI") == "1"
+	engine := "podman"
+	if useKiri {
+		engine = "kiri"
+		if output, err := exec.CommandContext(ctx, engine, "image", "inspect", image).CombinedOutput(); err != nil {
+			t.Fatalf("Kiri or required image %s unavailable: %v: %s", image, err, strings.TrimSpace(string(output)))
+		}
+	} else if err := exec.CommandContext(ctx, engine, "image", "exists", image).Run(); err != nil {
 		if os.Getenv("HAKO_E2E_REQUIRE_PODMAN") == "1" {
 			t.Fatalf("required Podman image %s is unavailable", image)
 		}
@@ -162,7 +169,7 @@ func TestSoftwareFactoryPodmanPostgresAndGitHubCheck(t *testing.T) {
 	}
 
 	logs := &recordingArtifacts{}
-	jobRuntime, err := fake.NewJobRuntime(fake.JobRuntimeConfig{GoImage: image})
+	jobRuntime, err := fake.NewJobRuntime(fake.JobRuntimeConfig{GoImage: image, UseKiri: useKiri})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +177,7 @@ func TestSoftwareFactoryPodmanPostgresAndGitHubCheck(t *testing.T) {
 	finished, err := service.ExecuteGoTest(ctx, fake.JobSpec{TenantID: run.TenantID, RunID: run.ID,
 		RepositoryPath: repository, CommitSHA: commit, Timeout: 90 * time.Second, SecretValues: []string{factoryE2ESecret}})
 	if err != nil || finished.State != domain.WorkloadSucceeded {
-		t.Fatalf("execute isolated Podman test for Run %s: state=%s err=%v redacted_logs=%q", runID, finished.State, err, logs.logs)
+		t.Fatalf("execute isolated guest test for Run %s: state=%s err=%v redacted_logs=%q", runID, finished.State, err, logs.logs)
 	}
 	if len(logs.logs) == 0 || strings.Contains(string(logs.logs), factoryE2ESecret) {
 		t.Fatalf("redacted log artifact is empty or exposes a credential for Run %s", runID)
@@ -181,12 +188,12 @@ func TestSoftwareFactoryPodmanPostgresAndGitHubCheck(t *testing.T) {
 	if err != nil || len(artifacts) != 1 || !artifacts[0].Redacted || artifacts[0].SHA256 != logs.sha {
 		t.Fatalf("persisted log artifact is not redacted and digest-bound for Run %s: %+v err=%v", runID, artifacts, err)
 	}
-	assertFactoryE2EContainerCleaned(t, run.TenantID, run.ID)
+	assertFactoryE2EContainerCleaned(t, engine, run.TenantID, run.ID)
 
 	// Simulate a replacement worker receiving the same pending delivery after
 	// the terminal DB commit. It has no process-local result cache; durable Run
 	// state must prevent a second container from starting.
-	restartedRuntime, err := fake.NewJobRuntime(fake.JobRuntimeConfig{GoImage: image})
+	restartedRuntime, err := fake.NewJobRuntime(fake.JobRuntimeConfig{GoImage: image, UseKiri: useKiri})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,9 +204,9 @@ func TestSoftwareFactoryPodmanPostgresAndGitHubCheck(t *testing.T) {
 		t.Fatalf("replacement worker re-executed terminal Run: err=%v", err)
 	}
 	if _, ok := restartedRuntime.Result(run.TenantID, run.ID); ok {
-		t.Fatal("replacement worker started a second Podman Job for a terminal Run")
+		t.Fatal("replacement worker started a second Job for a terminal Run")
 	}
-	assertFactoryE2EContainerCleaned(t, run.TenantID, run.ID)
+	assertFactoryE2EContainerCleaned(t, engine, run.TenantID, run.ID)
 
 	// A second signed delivery exercises a real failing test through the same
 	// Tenant trigger and runtime path, rather than only unit-testing result map.
@@ -224,7 +231,7 @@ func TestSoftwareFactoryPodmanPostgresAndGitHubCheck(t *testing.T) {
 		t.Fatalf("failure-case Run lost its immutable identity: %+v err=%v", failureRun, err)
 	}
 	failureLogs := &recordingArtifacts{}
-	failureRuntime, err := fake.NewJobRuntime(fake.JobRuntimeConfig{GoImage: image})
+	failureRuntime, err := fake.NewJobRuntime(fake.JobRuntimeConfig{GoImage: image, UseKiri: useKiri})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,12 +239,12 @@ func TestSoftwareFactoryPodmanPostgresAndGitHubCheck(t *testing.T) {
 	failed, err := failureService.ExecuteGoTest(ctx, fake.JobSpec{TenantID: failureRun.TenantID, RunID: failureRun.ID,
 		RepositoryPath: failureRepository, CommitSHA: failureCommit, Timeout: 90 * time.Second, SecretValues: []string{factoryE2ESecret}})
 	if err != nil || failed.State != domain.WorkloadFailed || failed.ErrorCode != "test_failed" {
-		t.Fatalf("execute failing Podman test: state=%s code=%s err=%v logs=%q", failed.State, failed.ErrorCode, err, failureLogs.logs)
+		t.Fatalf("execute failing guest test: state=%s code=%s err=%v logs=%q", failed.State, failed.ErrorCode, err, failureLogs.logs)
 	}
 	if len(failureLogs.logs) == 0 || strings.Contains(string(failureLogs.logs), factoryE2ESecret) || !strings.Contains(string(failureLogs.logs), "[REDACTED]") {
 		t.Fatalf("failure artifact is empty or not redacted for Run %s: %q", failureRunID, failureLogs.logs)
 	}
-	assertFactoryE2EContainerCleaned(t, failureRun.TenantID, failureRun.ID)
+	assertFactoryE2EContainerCleaned(t, engine, failureRun.TenantID, failureRun.ID)
 
 	// Cancellation before dispatch must become terminal without creating an
 	// attempt, selecting a placement, or starting the local Runtime.
@@ -486,17 +493,17 @@ func TestSoftwareFactoryPodmanPostgresAndGitHubCheck(t *testing.T) {
 	assertFactorySecretAbsent(t, ctx, pool, checkQueue, fakeAPI, combinedLogs)
 }
 
-func assertFactoryE2EContainerCleaned(t *testing.T, tenantID domain.TenantID, runID domain.WorkloadRunID) {
+func assertFactoryE2EContainerCleaned(t *testing.T, engine string, tenantID domain.TenantID, runID domain.WorkloadRunID) {
 	t.Helper()
-	command := exec.Command("podman", "ps", "--all", "--quiet",
+	command := exec.Command(engine, "ps", "--all", "--quiet",
 		"--filter", "label=hako.tenant-id="+string(tenantID),
 		"--filter", "label=hako.workload-run-id="+string(runID))
 	output, err := command.CombinedOutput()
 	if err != nil {
-		t.Fatalf("inspect terminal Run Podman containers: %v: %s", err, strings.TrimSpace(string(output)))
+		t.Fatalf("inspect terminal Run containers: %v: %s", err, strings.TrimSpace(string(output)))
 	}
 	if strings.TrimSpace(string(output)) != "" {
-		t.Fatalf("terminal Run still has a Podman container after worker completion: %s", strings.TrimSpace(string(output)))
+		t.Fatalf("terminal Run still has a container after worker completion: %s", strings.TrimSpace(string(output)))
 	}
 }
 

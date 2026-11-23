@@ -1,6 +1,6 @@
 # Task 89: Brokered Native Agent Branch and Pull Request Publishing
 
-Status: In Progress (proposal materialization, isolated verifier scheduling,
+Status: Local implementation and fake/PostgreSQL acceptance complete (proposal materialization, isolated verifier scheduling,
 digest-bound Check persistence, publication evidence resolution and durable
 idempotency state, safe status API/CLI, exact-scope Tenant App token minting,
 fake-tested GitHub publisher, and a Control Plane-only mTLS Broker publication

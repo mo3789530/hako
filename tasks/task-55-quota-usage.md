@@ -1,6 +1,6 @@
 # Task 55: Workload/Service Quotas and Usage UX
 
-Status: In Progress (Workspace aggregate quota read API and `hako usage` are
+Status: Local acceptance complete; AWS cleanup schedule/bucket policy deployment and measured live resource usage remain separate follow-ups. Workspace aggregate quota read API and `hako usage` are
 implemented and PostgreSQL integration coverage verifies membership isolation,
 pending-delete reservations, confirmed release, and the fixed limit of 10.
 Concurrent Workload admission reserves one of five Tenant-wide slots in the

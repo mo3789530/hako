@@ -5,7 +5,7 @@ ID. This adapter does not configure credentials, network policy or a sandbox.
 """
 
 import json
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from .languages import detect_languages
 from .workspace import Workspace
@@ -41,13 +41,15 @@ _TOOLS = (
 
 class BedrockCodingModel:
     def __init__(self, client: ConverseClient, model_id: str, *, max_turns: int = 12,
-                 max_tool_calls: int = 32, max_tokens: int = 2048):
+                 max_tool_calls: int = 32, max_tokens: int = 2048,
+                 deadline_check: Callable[[], None] | None = None):
         if (client is None or not isinstance(model_id, str) or not model_id.strip() or
                 len(model_id) > 2048 or not 1 <= max_turns <= 32 or not 1 <= max_tool_calls <= 128 or
                 not 1 <= max_tokens <= 4096 or any(isinstance(v, bool) for v in (max_turns, max_tool_calls, max_tokens))):
             raise ValueError("invalid Bedrock model configuration")
         self.client, self.model_id = client, model_id
         self.max_turns, self.max_tool_calls, self.max_tokens = max_turns, max_tool_calls, max_tokens
+        self.deadline_check = deadline_check
 
     def plan(self, task: str, workspace: Workspace, iteration: int) -> str:
         return self._run("Plan the requested change. Do not modify files. "
@@ -73,12 +75,16 @@ class BedrockCodingModel:
         tool_count = 0
         seen_ids: set[str] = set()
         for _ in range(self.max_turns):
+            if self.deadline_check is not None:
+                self.deadline_check()
             if len(json.dumps(messages, ensure_ascii=True).encode("utf-8")) > _MAX_MESSAGE_BYTES:
                 raise ValueError("model context limit exceeded")
             response = self.client.converse(modelId=self.model_id, messages=messages,
                                             system=[{"text": _SYSTEM}],
                                             inferenceConfig={"maxTokens": self.max_tokens},
                                             toolConfig={"tools": tools})
+            if self.deadline_check is not None:
+                self.deadline_check()
             try:
                 message = response["output"]["message"]
                 blocks = message["content"]

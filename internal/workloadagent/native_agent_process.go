@@ -567,6 +567,9 @@ func (v GoTestNativeAgentVerifier) RunTests(ctx context.Context, plan ExecutionP
 		v.MemoryMB < 256 || v.MemoryMB > 16384 || v.CPUMillis < 250 || v.CPUMillis > 8000 || v.ResourceLimits == nil {
 		return ErrJobResourceLimitsUnavailable
 	}
+	if err := requireNativeAgentGoProfile(plan.RepositoryPath); err != nil {
+		return err
+	}
 	goBinary := v.GoBinary
 	if goBinary == "" {
 		goBinary = "/usr/local/go/bin/go"

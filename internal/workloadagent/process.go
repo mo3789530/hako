@@ -40,6 +40,7 @@ var (
 	ErrAgentExecutorUnavailable     = errors.New("native Agent executor is not configured")
 	ErrProcessExit                  = errors.New("Workload process exited unsuccessfully")
 	ErrJobResourceLimitsUnavailable = errors.New("Job process resource limits are unavailable")
+	ErrVerifierProfileUnavailable   = errors.New("required verifier profile is unavailable")
 	lintDiagnosticPattern           = regexp.MustCompile(`^(.+\.go):([0-9]+)(?::([0-9]+))?:\s*(\S.*)$`)
 )
 

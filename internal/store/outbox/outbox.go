@@ -31,6 +31,17 @@ type Event struct {
 // reclaimed after a crashed dispatcher; deliveries are consequently at least
 // once and consumers must deduplicate using Event.ID / Operation ID.
 func Claim(ctx context.Context, pool transaction.Beginner, policy transaction.Policy, limit int, leaseDuration time.Duration, now time.Time) ([]Event, error) {
+	return claim(ctx, pool, policy, limit, leaseDuration, now, "", "")
+}
+
+// ClaimWorkspaceOperations leases only the Hako Workspace Operation command
+// events. Local execution must not take unrelated Workload, Check, or Service
+// events from the shared Control Plane Outbox.
+func ClaimWorkspaceOperations(ctx context.Context, pool transaction.Beginner, policy transaction.Policy, limit int, leaseDuration time.Duration, now time.Time) ([]Event, error) {
+	return claim(ctx, pool, policy, limit, leaseDuration, now, "operation", "operation.requested")
+}
+
+func claim(ctx context.Context, pool transaction.Beginner, policy transaction.Policy, limit int, leaseDuration time.Duration, now time.Time, aggregateType, eventType string) ([]Event, error) {
 	if limit < 1 || limit > 1000 {
 		return nil, errors.New("outbox claim limit must be 1-1000")
 	}
@@ -49,7 +60,8 @@ func Claim(ctx context.Context, pool transaction.Beginner, policy transaction.Po
 		rows, err := tx.Query(ctx, `SELECT id, aggregate_type, aggregate_id, event_type, payload_json, created_at, attempt
 			FROM outbox_events
 			WHERE published_at IS NULL AND (lease_expires_at IS NULL OR lease_expires_at <= $1)
-			ORDER BY created_at, id LIMIT $2`, now, limit)
+			AND ($2 = '' OR aggregate_type = $2) AND ($3 = '' OR event_type = $3)
+			ORDER BY created_at, id LIMIT $4`, now, aggregateType, eventType, limit)
 		if err != nil {
 			return nil, fmt.Errorf("select pending outbox events: %w", err)
 		}

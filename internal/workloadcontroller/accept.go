@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/workloadjournal"
 )
 
@@ -26,6 +27,7 @@ type Command struct {
 	Generation       int64  `json:"generation"`
 	ResourcePlaneID  string `json:"resource_plane_id"`
 	IdempotencyToken string `json:"idempotency_token"`
+	RuntimeProvider  string `json:"runtime_provider"`
 	CorrelationID    string `json:"correlation_id,omitempty"`
 }
 
@@ -43,7 +45,7 @@ func Decode(data []byte) (Command, error) {
 	if err != nil || start != json.Delim('{') {
 		return Command{}, ErrInvalidCommand
 	}
-	allowed := map[string]bool{"schema_version": true, "tenant_id": true, "workload_run_id": true, "attempt_id": true, "generation": true, "resource_plane_id": true, "idempotency_token": true, "correlation_id": true}
+	allowed := map[string]bool{"schema_version": true, "tenant_id": true, "workload_run_id": true, "attempt_id": true, "generation": true, "resource_plane_id": true, "idempotency_token": true, "runtime_provider": true, "correlation_id": true}
 	seen := make(map[string]bool)
 	for keys.More() {
 		token, err := keys.Token()
@@ -62,7 +64,7 @@ func Decode(data []byte) (Command, error) {
 	}
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
-	if d.Decode(&c) != nil {
+	if d.Decode(&c) != nil || c.RuntimeProvider != string(domain.WorkloadRuntimeLambdaMicroVM) {
 		return Command{}, ErrInvalidCommand
 	}
 	var extra any

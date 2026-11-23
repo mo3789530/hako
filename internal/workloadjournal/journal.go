@@ -53,9 +53,13 @@ type Journal struct {
 	Revision             int64           `json:"revision"`
 	ExecutionState       ExecutionState  `json:"execution_state"`
 	CancelRequested      bool            `json:"cancel_requested"`
+	AttemptLeaseOwner    string          `json:"attempt_lease_owner,omitempty"`
+	AttemptLeaseExpires  time.Time       `json:"attempt_lease_expires_at,omitempty"`
 	RuntimeHandle        string          `json:"runtime_handle,omitempty"`
 	SpecificationHash    string          `json:"specification_hash,omitempty"`
 	SpecificationPayload json.RawMessage `json:"specification_payload,omitempty"`
+	RuntimeSpecHash      string          `json:"runtime_specification_hash,omitempty"`
+	RuntimeSpecPayload   json.RawMessage `json:"runtime_specification_payload,omitempty"`
 	ResultPayload        json.RawMessage `json:"result_payload,omitempty"`
 	ResultPublished      bool            `json:"result_published"`
 	CleanupState         CleanupState    `json:"cleanup_state"`
@@ -87,6 +91,10 @@ func (j Journal) Validate() error {
 	if j.RuntimeHandle != "" && !idPattern.MatchString(j.RuntimeHandle) {
 		return errors.New("Workload attempt journal runtime handle is invalid")
 	}
+	if (j.AttemptLeaseOwner == "") != j.AttemptLeaseExpires.IsZero() ||
+		j.AttemptLeaseOwner != "" && !idPattern.MatchString(j.AttemptLeaseOwner) {
+		return errors.New("Workload attempt journal lease is invalid")
+	}
 	if j.SpecificationHash != "" && !hashPattern.MatchString(j.SpecificationHash) {
 		return errors.New("Workload attempt specification hash is invalid")
 	}
@@ -94,6 +102,15 @@ func (j Journal) Validate() error {
 		digest := sha256.Sum256(j.SpecificationPayload)
 		if len(j.SpecificationPayload) > 16<<10 || !json.Valid(j.SpecificationPayload) || hex.EncodeToString(digest[:]) != j.SpecificationHash {
 			return errors.New("Workload frozen specification does not match its hash")
+		}
+	}
+	if j.RuntimeSpecHash != "" && !hashPattern.MatchString(j.RuntimeSpecHash) {
+		return errors.New("Workload frozen Runtime specification hash is invalid")
+	}
+	if len(j.RuntimeSpecPayload) > 0 {
+		digest := sha256.Sum256(j.RuntimeSpecPayload)
+		if len(j.RuntimeSpecPayload) > 16<<10 || !json.Valid(j.RuntimeSpecPayload) || hex.EncodeToString(digest[:]) != j.RuntimeSpecHash {
+			return errors.New("Workload frozen Runtime specification does not match its hash")
 		}
 	}
 	if terminal(j.ExecutionState) && j.CleanupState == CleanupNotStarted {
@@ -104,6 +121,9 @@ func (j Journal) Validate() error {
 	}
 	if j.ResultPublished && len(j.ResultPayload) == 0 {
 		return errors.New("published Workload result must be durable")
+	}
+	if j.ResultPublished && j.CleanupState != CleanupConfirmed {
+		return errors.New("Workload result cannot be published before cleanup is confirmed")
 	}
 	if len(j.ResultPayload) > 0 {
 		var result struct {
@@ -167,10 +187,19 @@ func ValidateUpdate(current Snapshot, next Journal) error {
 	if old.RuntimeHandle != "" && old.RuntimeHandle != next.RuntimeHandle {
 		return ErrConflict
 	}
+	if old.AttemptLeaseOwner != "" && next.AttemptLeaseOwner != old.AttemptLeaseOwner && old.AttemptLeaseExpires.After(next.UpdatedAt) {
+		return ErrConflict
+	}
 	if old.SpecificationHash != "" && old.SpecificationHash != next.SpecificationHash {
 		return ErrConflict
 	}
 	if len(old.SpecificationPayload) > 0 && !bytes.Equal(old.SpecificationPayload, next.SpecificationPayload) {
+		return ErrConflict
+	}
+	if old.RuntimeSpecHash != "" && old.RuntimeSpecHash != next.RuntimeSpecHash {
+		return ErrConflict
+	}
+	if len(old.RuntimeSpecPayload) > 0 && !bytes.Equal(old.RuntimeSpecPayload, next.RuntimeSpecPayload) {
 		return ErrConflict
 	}
 	if (old.ResultPublished && !next.ResultPublished) || (len(old.ResultPayload) > 0 && !bytes.Equal(old.ResultPayload, next.ResultPayload)) {

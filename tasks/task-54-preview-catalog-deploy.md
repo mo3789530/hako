@@ -1,6 +1,6 @@
 # Task 54: Preview Workspaces, Software Catalog, and OIDC Deploy Policy
 
-Status: In Progress. The Tenant-scoped Software Catalog metadata API/CLI and
+Status: Local implementation and acceptance complete; AWS deployment and runtime validation remain. The Tenant-scoped Software Catalog metadata API/CLI and
 PostgreSQL RBAC/reference integration coverage are implemented. OIDC deploy
 policy API/CLI and fixed-GitHub-issuer RS256/JWKS claim verification are now
 implemented locally; no STS exchange or deployment execution is enabled.

@@ -37,8 +37,9 @@ type MaterializedSource struct {
 }
 
 type SourceArchive struct {
-	Body io.ReadCloser
-	Size int64
+	Body   io.ReadCloser
+	Size   int64
+	SHA256 string
 }
 
 // SourceArchiveReader fetches only the content-addressed archive bound to the
@@ -95,6 +96,17 @@ func (a *Archive) Close() error {
 // symlinks and special files so extraction never follows repository-controlled
 // filesystem links. File order and metadata are normalized for stable retries.
 func CreateArchive(ctx context.Context, root string, maxBytes int64) (*Archive, error) {
+	return createArchive(ctx, root, maxBytes, false)
+}
+
+// CreateWorkspaceRepositoryArchive includes the .git database so an
+// interactive Workspace receives a usable checkout. Credential-bearing
+// remotes must be removed before calling this function.
+func CreateWorkspaceRepositoryArchive(ctx context.Context, root string, maxBytes int64) (*Archive, error) {
+	return createArchive(ctx, root, maxBytes, true)
+}
+
+func createArchive(ctx context.Context, root string, maxBytes int64, includeGit bool) (*Archive, error) {
 	if ctx == nil || strings.TrimSpace(root) == "" {
 		return nil, ErrArchive
 	}
@@ -138,7 +150,7 @@ func CreateArchive(ctx context.Context, root string, maxBytes int64) (*Archive, 
 		if relative == "." {
 			return nil
 		}
-		if entry.Name() == ".git" {
+		if entry.Name() == ".git" && !includeGit {
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}

@@ -37,6 +37,53 @@ variable "enable_workload_result_queue" {
   default     = false
 }
 
+variable "enable_agentcore_command_queue" {
+  description = "Create the default-off AgentCore-only command queue and DLQ; the worker remains separately disabled."
+  type        = bool
+  default     = false
+}
+
+variable "agentcore_command_visibility_timeout_seconds" {
+  description = "AgentCore command queue visibility timeout in seconds."
+  type        = number
+  default     = 1200
+
+  validation {
+    condition     = var.agentcore_command_visibility_timeout_seconds >= 1200 && var.agentcore_command_visibility_timeout_seconds <= 43200
+    error_message = "agentcore_command_visibility_timeout_seconds must be between 1200 and 43200 seconds."
+  }
+}
+
+variable "agentcore_worker_deployment" {
+  description = "Optional default-off AgentCore orchestration Lambda configuration. Repository code runs in AgentCore Runtime. Supply the built ZIP and exact Secret, S3, Runtime, and optional VPC scopes."
+  type = object({
+    zip_path                       = string
+    broker_url                     = string
+    broker_client_cert_secret_arn  = string
+    broker_client_key_secret_arn   = string
+    broker_ca_secret_arn           = string
+    journal_bucket_arn             = string
+    journal_prefix                 = string
+    journal_kms_key_arn            = optional(string, "")
+    source_bucket_arn              = string
+    source_prefix                  = string
+    source_kms_key_arn             = optional(string, "")
+    artifact_bucket_arn            = string
+    artifact_prefix                = string
+    artifact_kms_key_arn           = optional(string, "")
+    runtime_arns                   = list(string)
+    additional_secret_kms_key_arns = optional(list(string), [])
+    lambda_timeout_seconds         = number
+    lambda_memory_size             = number
+    reserved_concurrent_executions = number
+    vpc_config = optional(object({
+      subnet_ids         = list(string)
+      security_group_ids = list(string)
+    }), null)
+  })
+  default = null
+}
+
 variable "actions_runner_vpc_config" {
   description = "Pre-provisioned private subnets and dedicated security group for an explicitly configured Actions Runner worker."
   type = object({
@@ -343,6 +390,22 @@ variable "preview_runtime_source" {
     gateway_origin         = string
     ticket_key_id          = string
     ticket_private_key_arn = string
+  })
+  default = null
+}
+
+variable "workspace_repository_checkout" {
+  description = "Optional Workspace GitHub checkout Broker, Gateway ticket and signed Control Plane report configuration. Provide Secret ARNs only, never secret values."
+  type = object({
+    checkout_broker_url    = string
+    broker_client_cert_arn = string
+    broker_client_key_arn  = string
+    broker_ca_arn          = string
+    gateway_origin         = string
+    ticket_key_id          = string
+    ticket_key_secret_arn  = string
+    report_endpoint        = string
+    report_key_secret_arn  = string
   })
   default = null
 }

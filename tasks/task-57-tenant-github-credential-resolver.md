@@ -2,7 +2,8 @@
 
 残作業の実行単位：[Task 69](task-69-tenant-checkout-broker.md)。親タスクは集約用に保持し、子タスク完了だけで配備済みとはしない。
 
-Status: In Progress (Tenant App proof now has a Control Plane-only mTLS API→Broker path. The Broker re-resolves the draft's exact App/revision/generation and approved Role/Secret/Version from PostgreSQL before invoking the GitHub `GET /app` proof client. Resource references are not sent by the API. API/Broker wiring and a PostgreSQL-backed fake-verifier route test pass locally; production certificate/IAM/network provisioning remains). Priority: P0.
+Status: Blocked on approved deployment provisioning. Tenant App proof and checkout broker wiring, exact DB-resolved Role/Secret/Version pins, and fake/PostgreSQL route tests are implemented locally. Remaining work is broker certificate/private-key lifecycle deployment, cross-account IAM/Secret/network provisioning, and deployed verification; the Resource Plane checkout broker client is composed in Task 69. No AWS or live GitHub credential was used here. Priority: P0.
+External acceptance blocked: production certificate, cross-account IAM, Secret, and network provisioning requires the approved AWS environment; no live credential or AWS resource was used in this local run.
 
 ## Goal
 

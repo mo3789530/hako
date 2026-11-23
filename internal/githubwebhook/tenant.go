@@ -46,6 +46,12 @@ type WebhookAttemptLimiter interface {
 	AllowWebhookAttempt(context.Context, string, time.Time) (bool, error)
 }
 
+// WebhookAdmissionMetrics emits only fixed low-cardinality outcomes. It must
+// never include the integration route or request body as a metric dimension.
+type WebhookAdmissionMetrics interface {
+	RecordWebhookAdmission(outcome string)
+}
+
 // TenantHTTPHandler serves an opaque per-integration route. It never searches
 // all Tenant secrets: exactly one route candidate is resolved, and untrusted
 // body identity is ignored until that candidate's HMAC passes.
@@ -55,6 +61,7 @@ type TenantHTTPHandler struct {
 	inbox        TenantInbox
 	maxBodyBytes int64
 	limiter      WebhookAttemptLimiter
+	metrics      WebhookAdmissionMetrics
 	now          func() time.Time
 }
 
@@ -70,6 +77,11 @@ func NewTenantHTTPHandler(resolver WebhookCredentialResolver, authorizer Webhook
 		limiter = limiters[0]
 	}
 	return &TenantHTTPHandler{resolver: resolver, authorizer: authorizer, inbox: inbox, maxBodyBytes: maxBodyBytes, limiter: limiter, now: time.Now}, nil
+}
+
+// SetWebhookAdmissionMetrics installs the optional fixed-outcome observer.
+func (h *TenantHTTPHandler) SetWebhookAdmissionMetrics(metrics WebhookAdmissionMetrics) {
+	h.metrics = metrics
 }
 
 func (h *TenantHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -108,10 +120,16 @@ func (h *TenantHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.limiter != nil {
 		allowed, err := h.limiter.AllowWebhookAttempt(r.Context(), routeID, h.now().UTC())
 		if err != nil {
+			if h.metrics != nil {
+				h.metrics.RecordWebhookAdmission("limiter_unavailable")
+			}
 			http.Error(w, "webhook temporarily unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		if !allowed {
+			if h.metrics != nil {
+				h.metrics.RecordWebhookAdmission("rate_limited")
+			}
 			w.Header().Set("Retry-After", "60")
 			http.Error(w, "webhook rate limit exceeded", http.StatusTooManyRequests)
 			return

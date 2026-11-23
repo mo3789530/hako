@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/mo3789530/hako/internal/domain"
 	"github.com/mo3789530/hako/internal/idgen"
 	"github.com/mo3789530/hako/internal/workloadjournal"
 )
@@ -74,7 +75,7 @@ func (c *Controller) RecoverPage(ctx context.Context, lister RecoveryJournalList
 		}
 		command := Command{SchemaVersion: 1, TenantID: j.TenantID, WorkloadRunID: j.WorkloadRunID,
 			AttemptID: j.AttemptID, Generation: j.Generation, ResourcePlaneID: j.ResourcePlaneID,
-			IdempotencyToken: j.IdempotencyToken}
+			IdempotencyToken: j.IdempotencyToken, RuntimeProvider: string(domain.WorkloadRuntimeLambdaMicroVM)}
 		data, err := json.Marshal(command)
 		if err == nil {
 			_, err = c.Poll(ctx, data, publisher)

@@ -1,6 +1,6 @@
 # Task 84: Workspace Service runtime reconciliation
 
-Status: In Progress (service instances now carry a monotonic desired revision
+Status: Local implementation and verification complete; AWS MicroVM acceptance remains open. Service instances now carry a monotonic desired revision
 and an observed revision in the domain model and DSQL schema. API responses
 expose both revisions; state transitions increment desired revision while
 idempotent repeated requests preserve it. PostgreSQL integration tests verify
@@ -156,6 +156,18 @@ Podman 5.8.7 accepted `podman network create --internal` and reported
 Running a container on this host was not possible: the cached Alpine image is
 ARM64 and this x86_64 Podman host returned `Exec format error`. This is
 CLI/network metadata evidence only, not a container egress test.
+
+## Local acceptance refresh (2026-11-22)
+
+`make test-workspace-service-runtime-integration` passed again: Workspace Agent
+and Resource Plane runtime tests plus the PostgreSQL-backed authorized Service
+lifecycle/report test. `make test-workspace-podman-network` also passed its
+positive external-egress control and negative internal-network control and
+removed its temporary network. These checks satisfy the local fake-engine,
+transactional lifecycle, and container-network acceptance. ARM64
+nerdctl/containerd execution, cgroup enforcement, MicroVM network isolation,
+and deployment remain external Lambda MicroVM acceptance gates; no AWS apply
+or real Secret Manager operation was performed.
 
 ## Podman egress smoke test (2026-10-25)
 
