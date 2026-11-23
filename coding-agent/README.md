@@ -120,13 +120,15 @@ implemented in Go. Remaining work includes wiring the worker to SQS/Lambda,
 renewing the journal lease during execution, connecting broker-backed source
 and proposal storage in the deployment, completing cancellation behavior, and
 providing deployed IAM/network/isolation evidence. The Runtime image pins the
-official Python 3.13 slim Bookworm multi-architecture manifest digest and all
-Python runtime wheels by SHA-256, runs as UID/GID 10001, and exposes the
-implemented port 8080 HTTP entrypoint. Re-export locked dependencies with
-`uv export --format requirements-txt --extra runtime --no-dev --no-emit-project
---no-annotate --no-header --output-file requirements-runtime.txt` from this
-directory. Build locally with `make build-agentcore-coding-agent-image`; the
-target uses Kiri and builds `linux/arm64` without publishing. AgentCore requires
+official Python 3.14 slim Bookworm images for the x86-64 build stage and ARM64
+runtime by digest, and all Python runtime wheels by SHA-256. It runs as UID/GID
+10001 and exposes the port 8080 HTTP entrypoint. Regenerate locked dependencies
+from the repository root with `pip-compile --generate-hashes --output-file
+coding-agent/requirements-runtime.txt coding-agent/requirements-runtime.in`.
+On an x86-64 host, `make build-agentcore-coding-agent-image` uses Podman and
+installs ARM64 wheels in the native build stage, without QEMU or publishing.
+The build requires compatible ARM64 wheels for every locked dependency.
+AgentCore requires
 ARM64 and its default HTTP contract uses `/ping` and `/invocations` on port
 8080. A tree digest in the local workflow is still only a draft property and
 is not proof of independent verification.

@@ -174,9 +174,9 @@ test-software-factory-e2e:
 test-software-factory-kiri: export HAKO_E2E_USE_KIRI = 1
 test-software-factory-kiri: test-software-factory-e2e
 
-# Builds the digest-pinned, non-root ARM64 AgentCore Runtime image with Kiri; this never publishes it.
+# Builds the non-root ARM64 AgentCore Runtime image on an x86-64 host without publishing.
 build-agentcore-coding-agent-image:
-	kiri build --platform linux/arm64 --tag hako-coding-agent:local -f coding-agent/Dockerfile coding-agent
+	podman build --platform linux/arm64 --tag hako-coding-agent:local -f coding-agent/Dockerfile coding-agent
 
 build-agentcore-worker-lambda:
 	mkdir -p build/agentcore-worker-lambda
