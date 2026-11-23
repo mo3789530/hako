@@ -1,6 +1,6 @@
 # Hako Coding Agent
 
-Python implementation of the coding workflow intended for AgentCore Runtime.
+Python 3.14 implementation of the coding workflow intended for AgentCore Runtime.
 The initial workflow core composes a bounded in-memory workspace, injected
 plan/code/review and verifier adapters, and proposal generation. A Bedrock
 Converse model adapter accepts a configured client and model ID, and exposes
@@ -26,6 +26,8 @@ Install the Python development tools with `python3 -m pip install -e "coding-age
 Run `make lint-python` from the repository root to check formatting, lint rules
 and strict types. Run `make test-python` to execute the coding agent tests with
 pytest.
+Run `make test-python-coverage` to report line and branch coverage, including
+missing lines. CI requires at least 90% combined coverage.
 
 The proposal encoder creates bounded deterministic ZIPs from captured file bytes;
 an integration test passes its output to Hako's Go inspector. It does not capture

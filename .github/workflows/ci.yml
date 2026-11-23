@@ -16,13 +16,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.14"
       - name: Install coding agent development tools
         run: python -m pip install -e "coding-agent[dev]"
       - name: Lint and type check
         run: make lint-python
       - name: Test
-        run: make test-python
+        run: make test-python-coverage
 
   go:
     name: Go checks

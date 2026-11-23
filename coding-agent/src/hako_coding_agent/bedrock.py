@@ -186,7 +186,7 @@ class BedrockCodingModel:
                         "toolUseId": tool_id,
                         "content": [{"json": output}],
                     }
-                except (KeyError, ValueError, UnicodeError):
+                except KeyError, ValueError, UnicodeError:
                     # Do not expose source, path details or provider exceptions.
                     # The model may recover using another allowed tool call.
                     tool_result = {

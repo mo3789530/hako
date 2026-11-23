@@ -36,6 +36,10 @@ lint-python:
 test-python:
 	cd coding-agent && python3 -m pytest
 
+.PHONY: test-python-coverage
+test-python-coverage:
+	cd coding-agent && python3 -m pytest --cov=hako_coding_agent --cov-branch --cov-report=term-missing
+
 test:
 	go test ./...
 
