@@ -96,7 +96,7 @@ func Admit(ctx context.Context, tx pgx.Tx, lease Lease) (AdmissionDenial, error)
 		JOIN resource_bindings rb ON rb.workspace_id = w.id
 		WHERE w.id = $1 AND w.tenant_id = $2 AND p.resource_plane_id = $3
 			AND s.desired_state = 'running' AND s.observed_state = 'running'
-			AND rb.kind IN ('lambda_microvm', 'firecracker_local') AND rb.resource_plane_id = $3
+			AND rb.kind IN ('lambda_microvm', 'cloud_hypervisor_local') AND rb.resource_plane_id = $3
 			AND rb.external_id = $4 AND rb.allocation_generation = $5
 		FOR UPDATE OF s`, lease.WorkspaceID, lease.TenantID, lease.ResourcePlaneID, lease.MicroVMID, lease.AllocationGeneration).Scan(&lockedWorkspace)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -247,7 +247,7 @@ func ListIdleCandidates(ctx context.Context, tx pgx.Tx, idleBefore time.Time, li
 		JOIN placements p ON p.workspace_id = w.id AND p.resource_plane_id = l.resource_plane_id
 		JOIN workspace_status s ON s.workspace_id = w.id
 		JOIN resource_bindings rb ON rb.workspace_id = w.id AND rb.resource_plane_id = p.resource_plane_id
-		WHERE rb.kind IN ('lambda_microvm', 'firecracker_local') AND rb.external_id = l.microvm_id
+		WHERE rb.kind IN ('lambda_microvm', 'cloud_hypervisor_local') AND rb.external_id = l.microvm_id
 			AND rb.allocation_generation = l.allocation_generation
 			AND s.desired_state = 'running' AND s.observed_state = 'running'
 		GROUP BY w.tenant_id, w.id, p.resource_plane_id, rb.external_id, rb.allocation_generation

@@ -1,7 +1,7 @@
 //go:build linux
 
-// hako-local-workspace-guest-init is PID 1 for a host-local Firecracker Guest.
-// The host supplies immutable Workspace identity in Firecracker kernel args;
+// hako-local-workspace-guest-init is PID 1 for a host-local CloudHypervisor Guest.
+// The host supplies immutable Workspace identity in CloudHypervisor kernel args;
 // the only Workspace storage it mounts is the dedicated virtio data disk.
 package main
 
@@ -33,7 +33,7 @@ const (
 
 var (
 	localIDPattern       = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
-	localProviderPattern = regexp.MustCompile(`^fc_[a-f0-9]{32}$`)
+	localProviderPattern = regexp.MustCompile(`^ch_[a-f0-9]{32}$`)
 )
 
 type guestConfig struct {
@@ -157,7 +157,7 @@ func run() error {
 	}
 	cmdline, err := os.ReadFile("/proc/cmdline")
 	if err != nil {
-		return guestInitFailure("kernel_arguments", errors.New("read trusted Firecracker kernel command line"))
+		return guestInitFailure("kernel_arguments", errors.New("read trusted CloudHypervisor kernel command line"))
 	}
 	config, err := parseGuestConfig(cmdline)
 	if err != nil {
@@ -312,10 +312,10 @@ func parseGuestConfig(cmdline []byte) (guestConfig, error) {
 		}
 		key, value, found := strings.Cut(field, "=")
 		if !found || !allowed[key] || value == "" || strings.Contains(value, "=") {
-			return guestConfig{}, errors.New("Firecracker Workspace identity arguments are invalid")
+			return guestConfig{}, errors.New("CloudHypervisor Workspace identity arguments are invalid")
 		}
 		if _, exists := values[key]; exists {
-			return guestConfig{}, errors.New("duplicate Firecracker Workspace identity argument")
+			return guestConfig{}, errors.New("duplicate CloudHypervisor Workspace identity argument")
 		}
 		values[key] = value
 	}
@@ -324,7 +324,7 @@ func parseGuestConfig(cmdline []byte) (guestConfig, error) {
 		GatewayOrigin: values["hako.gateway_origin"]}
 	if !localIDPattern.MatchString(config.TenantID) || !localIDPattern.MatchString(config.WorkspaceID) ||
 		!localIDPattern.MatchString(config.ResourcePlaneID) || !localProviderPattern.MatchString(config.MicroVMID) || !validGatewayOrigin(config.GatewayOrigin) {
-		return guestConfig{}, errors.New("Firecracker Workspace identity arguments are incomplete or invalid")
+		return guestConfig{}, errors.New("CloudHypervisor Workspace identity arguments are incomplete or invalid")
 	}
 	return config, nil
 }

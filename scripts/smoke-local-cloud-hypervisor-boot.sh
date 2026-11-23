@@ -1,50 +1,50 @@
 #!/bin/sh
 set -eu
 
-firecracker_bin=${FIRECRACKER_BIN:-firecracker}
-timeout_seconds=${FIRECRACKER_SMOKE_TIMEOUT_SECONDS:-8}
+cloud_hypervisor_bin=${CLOUD_HYPERVISOR_BIN:-cloud-hypervisor}
+timeout_seconds=${CLOUD_HYPERVISOR_SMOKE_TIMEOUT_SECONDS:-8}
 case "$(uname -m)" in
   x86_64)
     guest_arch=amd64
-		kernel_boot_args='console=tty0 console=ttyS0 panic=1 reboot=k pci=off i8042.noaux i8042.nomux i8042.dumbkbd rdinit=/init'
+		kernel_boot_args='console=tty0 console=ttyS0 panic=1 reboot=k i8042.noaux i8042.nomux i8042.dumbkbd rdinit=/init'
     default_kernel="/boot/vmlinuz-$(uname -r)"
     ;;
   aarch64|arm64)
     guest_arch=arm64
-		kernel_boot_args='keep_bootcon console=tty0 console=ttyS0 panic=1 reboot=k pci=off rdinit=/init'
+		kernel_boot_args='keep_bootcon console=tty0 console=ttyS0 panic=1 reboot=k rdinit=/init'
     default_kernel="/boot/Image-$(uname -r)"
     if [ ! -r "$default_kernel" ] && [ -r /boot/Image ]; then
       default_kernel=/boot/Image
     fi
     ;;
   *)
-    echo "unsupported local Firecracker host architecture: $(uname -m)" >&2
+    echo "unsupported local Cloud Hypervisor host architecture: $(uname -m)" >&2
     exit 1
     ;;
 esac
-kernel_image=${FIRECRACKER_KERNEL:-$default_kernel}
-kernel_config=${FIRECRACKER_KERNEL_CONFIG:-/boot/config-$(uname -r)}
+kernel_image=${CLOUD_HYPERVISOR_KERNEL:-$default_kernel}
+kernel_config=${CLOUD_HYPERVISOR_KERNEL_CONFIG:-/boot/config-$(uname -r)}
 
-FIRECRACKER_BIN="$firecracker_bin" ./scripts/check-local-workspace-microvm-host.sh
+CLOUD_HYPERVISOR_BIN="$cloud_hypervisor_bin" ./scripts/check-local-cloud-hypervisor-host.sh
 if [ ! -r "$kernel_image" ]; then
-  echo "readable host kernel image required: $kernel_image (set FIRECRACKER_KERNEL to override)" >&2
+  echo "readable host kernel image required: $kernel_image (set CLOUD_HYPERVISOR_KERNEL to override)" >&2
   exit 1
 fi
 if [ ! -r "$kernel_config" ] || ! grep -qx 'CONFIG_EXT4_FS=y' "$kernel_config"; then
-  echo "Guest kernel config with built-in ext4 is required: $kernel_config (set FIRECRACKER_KERNEL_CONFIG to override)" >&2
+  echo "Guest kernel config with built-in ext4 is required: $kernel_config (set CLOUD_HYPERVISOR_KERNEL_CONFIG to override)" >&2
   exit 1
 fi
 for tool in go python3 timeout mkfs.ext4 xz; do
   if ! command -v "$tool" >/dev/null 2>&1; then
-    echo "required local Firecracker smoke tool not found: $tool" >&2
+    echo "required local Cloud Hypervisor smoke tool not found: $tool" >&2
     exit 1
   fi
 done
 case "$timeout_seconds" in
-  ''|*[!0-9]*) echo "FIRECRACKER_SMOKE_TIMEOUT_SECONDS must be a positive integer" >&2; exit 1 ;;
+  ''|*[!0-9]*) echo "CLOUD_HYPERVISOR_SMOKE_TIMEOUT_SECONDS must be a positive integer" >&2; exit 1 ;;
 esac
 if [ "$timeout_seconds" -lt 2 ] || [ "$timeout_seconds" -gt 60 ]; then
-  echo "FIRECRACKER_SMOKE_TIMEOUT_SECONDS must be between 2 and 60" >&2
+  echo "CLOUD_HYPERVISOR_SMOKE_TIMEOUT_SECONDS must be between 2 and 60" >&2
   exit 1
 fi
 for config_name in CONFIG_VSOCKETS CONFIG_VIRTIO_VSOCKETS CONFIG_VIRTIO_VSOCKETS_COMMON; do
@@ -54,13 +54,13 @@ for config_name in CONFIG_VSOCKETS CONFIG_VIRTIO_VSOCKETS CONFIG_VIRTIO_VSOCKETS
 	fi
 done
 
-run_dir=$(mktemp -d "${TMPDIR:-/tmp}/hako-firecracker-smoke.XXXXXX")
+run_dir=$(mktemp -d "${TMPDIR:-/tmp}/hch.XXXXXX")
 cleanup() {
-	if [ "${HAKO_KEEP_FIRECRACKER_SMOKE:-}" = 1 ]; then
-		echo "Keeping Firecracker smoke artifacts at $run_dir" >&2
+	if [ "${HAKO_KEEP_CLOUD_HYPERVISOR_SMOKE:-}" = 1 ]; then
+		echo "Keeping Cloud Hypervisor smoke artifacts at $run_dir" >&2
 		return
 	fi
-  python3 -c 'import os,shutil,sys,tempfile; p=os.path.abspath(sys.argv[1]); parent=os.path.abspath(tempfile.gettempdir()); name=os.path.basename(p); shutil.rmtree(p) if os.path.dirname(p)==parent and name.startswith("hako-firecracker-smoke.") and os.path.isdir(p) and not os.path.islink(p) else None' "$run_dir"
+  python3 -c 'import os,shutil,sys,tempfile; p=os.path.abspath(sys.argv[1]); parent=os.path.abspath(tempfile.gettempdir()); name=os.path.basename(p); shutil.rmtree(p) if os.path.dirname(p)==parent and name.startswith("hch.") and os.path.isdir(p) and not os.path.islink(p) else None' "$run_dir"
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -81,7 +81,7 @@ import (
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "HAKO_FIRECRACKER_KVM_GUEST_INIT_FAILED: %v\n", err)
+		fmt.Fprintf(os.Stderr, "HAKO_CLOUD_HYPERVISOR_KVM_GUEST_INIT_FAILED: %v\n", err)
 		os.Exit(1)
 	}
 	for { time.Sleep(time.Hour) }
@@ -117,13 +117,13 @@ func run() error {
 			if _, err := file.Write(marker); err != nil { _ = file.Close(); return err }
 			if err := file.Sync(); err != nil { _ = file.Close(); return err }
 			if err := file.Close(); err != nil { return err }
-			fmt.Fprintln(os.Stdout, "HAKO_FIRECRACKER_FILESYSTEM_WRITE_OK")
+			fmt.Fprintln(os.Stdout, "HAKO_CLOUD_HYPERVISOR_FILESYSTEM_WRITE_OK")
 		} else { return err }
 	case "verify":
 		read, err := os.ReadFile("/workspace/hako-persistence-marker")
 		if err != nil { return err }
 		if string(read) != string(marker) { return errors.New("persistent disk marker differs") }
-		fmt.Fprintln(os.Stdout, "HAKO_FIRECRACKER_FILESYSTEM_RESUME_OK")
+		fmt.Fprintln(os.Stdout, "HAKO_CLOUD_HYPERVISOR_FILESYSTEM_RESUME_OK")
 	default:
 		return errors.New("unknown disk smoke mode")
 	}
@@ -157,7 +157,7 @@ disk_image="$run_dir/workspace-disk.raw"
 truncate -s 64M "$disk_image"
 mkfs.ext4 -q -F -L HAKO_WORKSPACE "$disk_image"
 module_image="$run_dir/virtio_mmio.ko"
-module_source=${FIRECRACKER_VIRTIO_MMIO_MODULE:-}
+module_source=${CLOUD_HYPERVISOR_VIRTIO_MMIO_MODULE:-}
 if [ -z "$module_source" ] && [ "$kernel_image" = "$default_kernel" ]; then
   module_source="$(find "/lib/modules/$(uname -r)" -type f -name 'virtio_mmio.ko*' -print -quit 2>/dev/null || true)"
 fi
@@ -168,7 +168,7 @@ if [ -n "$module_source" ]; then
     *) cp "$module_source" "$module_image" ;;
   esac
 fi
-vsock_module_root=${FIRECRACKER_VSOCK_MODULE_DIR:-/lib/modules/$(uname -r)/kernel/net/vmw_vsock}
+vsock_module_root=${CLOUD_HYPERVISOR_VSOCK_MODULE_DIR:-/lib/modules/$(uname -r)/kernel/net/vmw_vsock}
 prepare_vsock_module() {
   name=$1
   config_name=$2
@@ -236,39 +236,8 @@ PY
 # Exercise the concrete Resource Controller driver against a disposable Guest,
 # including clean guest quiescence, VMM stop, driver reconstruction, cold boot
 # from the same disk, persistence verification, and cleanup.
-go run ./scripts/local_firecracker_driver_smoke.go \
-  "$firecracker_bin" "$kernel_image" "$run_dir/initrd.cpio" \
+go run -tags cloud_hypervisor_driver_smoke ./scripts/local_cloud_hypervisor_driver_smoke.go \
+  "$cloud_hypervisor_bin" "$kernel_image" "$run_dir/initrd.cpio" \
   "$run_dir/driver-state" "$kernel_boot_args"
 
-run_guest() {
-  mode=$1
-  expected=$2
-  python3 - "$run_dir" "$kernel_boot_args" "$mode" <<'PY'
-import json, os, sys
-root, boot_args, mode = sys.argv[1:]
-config_path = os.path.join(root, 'config.json')
-with open(config_path) as source:
-    config = json.load(source)
-config['boot-source']['boot_args'] = boot_args + ' hako_disk_mode=' + mode
-with open(config_path, 'w') as output:
-    json.dump(config, output)
-PY
-  status=0
-  timeout "$timeout_seconds" "$firecracker_bin" \
-    --id "hako-local-smoke-$$-$mode" \
-    --api-sock "$run_dir/api-$mode.sock" \
-    --config-file "$run_dir/config.json" > "$run_dir/firecracker-$mode.log" 2>&1 || status=$?
-  if [ "$status" -ne 124 ] && [ "$status" -ne 0 ]; then
-    cat "$run_dir/firecracker-$mode.log" >&2
-    exit "$status"
-  fi
-  if ! grep -F "$expected" "$run_dir/firecracker-$mode.log"; then
-    cat "$run_dir/firecracker-$mode.log" >&2
-    echo "Firecracker did not complete the ${mode} Guest disk check within ${timeout_seconds}s" >&2
-    exit 1
-  fi
-}
-
-run_guest write HAKO_FIRECRACKER_FILESYSTEM_WRITE_OK
-run_guest verify HAKO_FIRECRACKER_FILESYSTEM_RESUME_OK
-echo "Firecracker KVM boot, ext4 /workspace mount, and persistent file restart passed (kernel: $kernel_image; no Hako Workspace image was used)."
+echo "Cloud Hypervisor KVM boot, ext4 /workspace persistence, orderly suspend, cold resume, and cleanup passed (kernel: $kernel_image)."

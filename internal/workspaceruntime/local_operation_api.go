@@ -15,7 +15,7 @@ import (
 const maxLocalOperationRequestBytes = 64 << 10
 
 // LocalOperationAPI adapts the normal Resource Controller command/result
-// contract to the single-host Firecracker runtime. The transport must provide
+// contract to the single-host Cloud Hypervisor runtime. The transport must provide
 // local-user authentication (the production local command uses a private Unix
 // socket); this handler does not trust caller-selected host paths or images.
 type LocalOperationAPI struct {

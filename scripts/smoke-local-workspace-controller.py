@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the local Resource Controller API against a real Firecracker Guest."""
+"""Exercise the local Resource Controller API against a real Cloud Hypervisor Guest."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ import time
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_KERNEL_ARGS = (
-    "console=tty0 console=ttyS0 panic=1 reboot=k pci=off "
+    "console=tty0 console=ttyS0 panic=1 reboot=k "
     "i8042.noaux i8042.nomux i8042.dumbkbd rdinit=/init"
 )
 
@@ -69,10 +69,10 @@ def operation(revision: int, kind: str) -> dict:
     }
 
 
-def stop_smoke_firecracker(state_dir: pathlib.Path, binary: pathlib.Path) -> bool:
+def stop_smoke_cloud_hypervisor(state_dir: pathlib.Path, binary: pathlib.Path) -> bool:
     """Stop only a process whose private PID record and argv match this smoke."""
     clean = True
-    for record_path in state_dir.glob("fc_*/firecracker-process.json"):
+    for record_path in state_dir.glob("ch_*/cloud-hypervisor-process.json"):
         try:
             record = json.loads(record_path.read_text(encoding="utf-8"))
             pid = record["pid"]
@@ -81,7 +81,7 @@ def stop_smoke_firecracker(state_dir: pathlib.Path, binary: pathlib.Path) -> boo
                 clean = False
                 continue
             command = pathlib.Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
-            expected = [os.fsencode(binary), b"--api-sock", os.fsencode(api_socket)]
+            expected = [os.fsencode(binary), b"--api-socket", os.fsencode("path=" + str(api_socket))]
             if command[:3] != expected:
                 clean = False
                 continue
@@ -106,12 +106,12 @@ def stop_smoke_firecracker(state_dir: pathlib.Path, binary: pathlib.Path) -> boo
 
 def main() -> int:
     if len(sys.argv) != 2:
-        print("usage: smoke-local-workspace-controller.py /path/to/firecracker", file=sys.stderr)
+        print("usage: smoke-local-workspace-controller.py /path/to/cloud_hypervisor", file=sys.stderr)
         return 2
-    firecracker = pathlib.Path(sys.argv[1]).resolve(strict=True)
+    cloud_hypervisor = pathlib.Path(sys.argv[1]).resolve(strict=True)
     kernel_default = pathlib.Path(f"/boot/vmlinuz-{os.uname().release}")
-    kernel = pathlib.Path(os.environ.get("FIRECRACKER_KERNEL", str(kernel_default))).resolve(strict=True)
-    initrd = pathlib.Path(os.environ.get("FIRECRACKER_INITRD", str(REPO / "build/local-workspace/workspace-initrd.cpio.gz"))).resolve(strict=True)
+    kernel = pathlib.Path(os.environ.get("CLOUD_HYPERVISOR_KERNEL", str(kernel_default))).resolve(strict=True)
+    initrd = pathlib.Path(os.environ.get("CLOUD_HYPERVISOR_INITRD", str(REPO / "build/local-workspace/workspace-initrd.cpio.gz"))).resolve(strict=True)
     controller = REPO / "build/hako-local-workspace-reconciler"
     if not controller.is_file() or not os.access("/dev/kvm", os.R_OK | os.W_OK):
         print("built local controller and readable/writable /dev/kvm are required", file=sys.stderr)
@@ -129,7 +129,7 @@ def main() -> int:
         "kernel_image_sha256": file_sha256(kernel),
         "initrd_path": str(initrd),
         "initrd_sha256": file_sha256(initrd),
-        "kernel_boot_args": os.environ.get("FIRECRACKER_KERNEL_ARGS", DEFAULT_KERNEL_ARGS),
+        "kernel_boot_args": os.environ.get("CLOUD_HYPERVISOR_KERNEL_ARGS", DEFAULT_KERNEL_ARGS),
         "vcpu_count": 1,
         "memory_mib": 8192,
         "workspace_disk_size_mib": 128,
@@ -141,10 +141,10 @@ def main() -> int:
     env = {key: value for key, value in os.environ.items() if not key.startswith("AWS_")}
     env.update(
         {
-            "HAKO_LOCAL_FIRECRACKER_STATE_DIR": str(state),
+            "HAKO_LOCAL_CLOUD_HYPERVISOR_STATE_DIR": str(state),
             "HAKO_LOCAL_WORKSPACE_JOURNAL_DIR": str(journal),
-            "HAKO_LOCAL_FIRECRACKER_BINARY": str(firecracker),
-            "HAKO_LOCAL_FIRECRACKER_LAUNCH_SPEC": str(launch_path),
+            "HAKO_LOCAL_CLOUD_HYPERVISOR_BINARY": str(cloud_hypervisor),
+            "HAKO_LOCAL_CLOUD_HYPERVISOR_LAUNCH_SPEC": str(launch_path),
             "HAKO_LOCAL_WORKSPACE_CONTROLLER_SOCKET": str(socket_path),
             "HAKO_LOCAL_RESOURCE_PLANE_ID": "rp_local_smoke",
             "HAKO_LOCAL_WORKSPACE_GATEWAY_ORIGIN": "https://workspace-gateway.invalid",
@@ -191,7 +191,7 @@ def main() -> int:
                 raise RuntimeError(f"local {kind} operation did not reach {expected_state}")
             resource_id = result.get("external_resource_id")
             if kind == "ensure_running":
-                if result.get("resource_kind") != "firecracker_local" or not resource_id or result.get("allocation_generation") != 1:
+                if result.get("resource_kind") != "cloud_hypervisor_local" or not resource_id or result.get("allocation_generation") != 1:
                     raise RuntimeError("Ensure result omitted its local allocation binding")
                 allocation_id = resource_id
             elif kind != "delete" and resource_id != allocation_id:
@@ -213,9 +213,9 @@ def main() -> int:
                     raise RuntimeError("local controller restart did not replay the same Resume result")
                 print("local Resume retry after controller restart reused the allocation")
         if any(state.iterdir()):
-            raise RuntimeError("delete left a Firecracker allocation behind")
+            raise RuntimeError("delete left a Cloud Hypervisor allocation behind")
         completed = True
-        print("LOCAL_CONTROLLER_FIRECRACKER_OPERATION_SMOKE_OK")
+        print("LOCAL_CONTROLLER_CLOUD_HYPERVISOR_OPERATION_SMOKE_OK")
         return 0
     except Exception as error:
         print(f"local Workspace controller smoke failed: {error}", file=sys.stderr)
@@ -234,13 +234,13 @@ def main() -> int:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=5)
-        firecracker_stopped = stop_smoke_firecracker(state, firecracker)
-        if (completed or not any(state.glob("fc_*"))) and firecracker_stopped:
+        cloud_hypervisor_stopped = stop_smoke_cloud_hypervisor(state, cloud_hypervisor)
+        if (completed or not any(state.glob("ch_*"))) and cloud_hypervisor_stopped:
             shutil.rmtree(root, ignore_errors=True)
         else:
             print(f"preserving local smoke state for inspection: {root}", file=sys.stderr)
-        if completed and not firecracker_stopped:
-            raise RuntimeError("real Firecracker process cleanup could not be confirmed")
+        if completed and not cloud_hypervisor_stopped:
+            raise RuntimeError("real Cloud Hypervisor process cleanup could not be confirmed")
 
 
 if __name__ == "__main__":

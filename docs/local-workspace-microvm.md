@@ -1,4 +1,9 @@
-# Local Workspace MicroVM Development
+# Local Workspace MicroVM Development — Firecracker history
+
+> Historical runbook: the host-local runtime has migrated to Cloud Hypervisor.
+> Do not use the Firecracker commands or configuration names below for current
+> deployments. Use [Local Workspace with Cloud Hypervisor](local-workspace-cloud-hypervisor.md).
+> Earlier Firecracker acceptance records below are historical evidence only.
 
 Status: host-level Firecracker boot, the concrete local Firecracker driver's
 ensure/guest-orderly-shutdown/controller-reconstruction/cold-resume/delete

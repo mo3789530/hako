@@ -1,7 +1,7 @@
 BEGIN;
 
 INSERT INTO tenants (id, name, created_at)
-VALUES ('ten_local', 'Local Firecracker Development', now())
+VALUES ('ten_local', 'Local Cloud Hypervisor Development', now())
 ON CONFLICT (id) DO NOTHING;
 
 WITH local_user AS (
@@ -15,7 +15,7 @@ SELECT 'ten_local', id, 'owner', now() FROM local_user
 ON CONFLICT (tenant_id, user_id) DO UPDATE SET role = 'owner';
 
 INSERT INTO resource_planes (id, provider, region, capabilities_json)
-VALUES ('rp-local', 'firecracker', 'local', '["microvm"]')
+VALUES ('rp-local', 'cloud-hypervisor', 'local', '["microvm"]')
 ON CONFLICT (id) DO UPDATE SET provider = EXCLUDED.provider, region = EXCLUDED.region,
     capabilities_json = EXCLUDED.capabilities_json;
 

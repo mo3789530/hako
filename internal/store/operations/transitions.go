@@ -64,7 +64,7 @@ func ApplyResult(ctx context.Context, pool transaction.Beginner, policy transact
 	if len(input.Payload) > 0 && !json.Valid(input.Payload) {
 		return false, errors.New("result payload must be valid JSON")
 	}
-	isMicroVMKind := input.ResourceKind == "lambda_microvm" || input.ResourceKind == "firecracker_local"
+	isMicroVMKind := input.ResourceKind == "lambda_microvm" || input.ResourceKind == "cloud_hypervisor_local"
 	if (input.ResourceKind == "") != (input.ExternalResourceID == "") ||
 		(input.ResourceKind != "" && !isMicroVMKind) ||
 		(isMicroVMKind != (input.AllocationGeneration > 0)) ||
@@ -149,11 +149,11 @@ func ApplyResult(ctx context.Context, pool transaction.Beginner, policy transact
 				WHERE workspace_id = $1 AND resource_plane_id = $2 AND retired = FALSE`, input.WorkspaceID, input.ResourcePlaneID, input.CompletedAt); err != nil {
 				return false, fmt.Errorf("retire deleted Workspace Service runtime generations: %w", err)
 			}
-			if _, err := tx.Exec(ctx, `DELETE FROM resource_bindings WHERE workspace_id = $1 AND resource_plane_id = $2 AND kind IN ('lambda_microvm', 'firecracker_local')`, input.WorkspaceID, input.ResourcePlaneID); err != nil {
+			if _, err := tx.Exec(ctx, `DELETE FROM resource_bindings WHERE workspace_id = $1 AND resource_plane_id = $2 AND kind IN ('lambda_microvm', 'cloud_hypervisor_local')`, input.WorkspaceID, input.ResourcePlaneID); err != nil {
 				return false, fmt.Errorf("delete Workspace MicroVM resource binding: %w", err)
 			}
 		} else if input.Status == domain.OperationSucceeded && input.ResourceKind != "" {
-			if _, err := tx.Exec(ctx, `DELETE FROM resource_bindings WHERE workspace_id = $1 AND kind IN ('lambda_microvm', 'firecracker_local') AND kind <> $2`, input.WorkspaceID, input.ResourceKind); err != nil {
+			if _, err := tx.Exec(ctx, `DELETE FROM resource_bindings WHERE workspace_id = $1 AND kind IN ('lambda_microvm', 'cloud_hypervisor_local') AND kind <> $2`, input.WorkspaceID, input.ResourceKind); err != nil {
 				return false, fmt.Errorf("remove prior Workspace MicroVM provider binding: %w", err)
 			}
 			var boundID string

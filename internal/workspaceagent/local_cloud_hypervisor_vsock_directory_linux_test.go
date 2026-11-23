@@ -21,7 +21,7 @@ import (
 	"golang.org/x/net/websocket"
 )
 
-func TestFirecrackerWorkspaceVsockDirectoryOpensSignedAgentStream(t *testing.T) {
+func TestCloudHypervisorWorkspaceVsockDirectoryOpensSignedAgentStream(t *testing.T) {
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -29,7 +29,7 @@ func TestFirecrackerWorkspaceVsockDirectoryOpensSignedAgentStream(t *testing.T) 
 	issuer := &AgentTicketIssuer{KeyID: "local-gateway-key", PrivateKey: privateKey, TTL: time.Minute}
 	claims := workspacesession.Claims{UserID: "user_local", TenantID: "tenant_local", WorkspaceID: "workspace_local",
 		ResourcePlane: "rp_local", TicketID: "gateway_session_local", Permissions: []workspacesession.Permission{workspacesession.PermissionShell}}
-	providerID := "fc_" + strings.Repeat("a", 32)
+	providerID := "ch_" + strings.Repeat("a", 32)
 	journal := newRunningWorkspaceJournal(t, claims, providerID)
 	journalReader := &workspaceJournalReaderStub{snapshot: workspacejournal.Snapshot{Journal: journal, ETag: `"running-v1"`}}
 	stateRoot := t.TempDir()
@@ -69,7 +69,7 @@ func TestFirecrackerWorkspaceVsockDirectoryOpensSignedAgentStream(t *testing.T) 
 	defer server.Close()
 	serverAddress := strings.TrimPrefix(server.URL, "http://")
 	dialCalls := 0
-	directory := &FirecrackerWorkspaceVsockStreamDirectory{
+	directory := &CloudHypervisorWorkspaceVsockStreamDirectory{
 		ResourcePlaneID: claims.ResourcePlane, Journal: journalReader, StateDirectory: stateRoot,
 		Tickets: issuer, Origin: gatewayOrigin,
 		Dial: func(ctx context.Context, stateDirectory string) (net.Conn, error) {
@@ -97,17 +97,17 @@ func TestFirecrackerWorkspaceVsockDirectoryOpensSignedAgentStream(t *testing.T) 
 	}
 }
 
-func TestFirecrackerWorkspaceVsockDirectoryRejectsForeignAndNonrunningBinding(t *testing.T) {
+func TestCloudHypervisorWorkspaceVsockDirectoryRejectsForeignAndNonrunningBinding(t *testing.T) {
 	claims := workspacesession.Claims{UserID: "user_local", TenantID: "tenant_local", WorkspaceID: "workspace_local",
 		ResourcePlane: "rp_local", Permissions: []workspacesession.Permission{workspacesession.PermissionShell}}
-	providerID := "fc_" + strings.Repeat("b", 32)
+	providerID := "ch_" + strings.Repeat("b", 32)
 	journal := newRunningWorkspaceJournal(t, claims, providerID)
 	root := t.TempDir()
 	if err := os.Chmod(root, 0700); err != nil {
 		t.Fatal(err)
 	}
 	called := 0
-	directory := &FirecrackerWorkspaceVsockStreamDirectory{ResourcePlaneID: claims.ResourcePlane,
+	directory := &CloudHypervisorWorkspaceVsockStreamDirectory{ResourcePlaneID: claims.ResourcePlane,
 		Journal:        &workspaceJournalReaderStub{snapshot: workspacejournal.Snapshot{Journal: journal, ETag: "active"}},
 		StateDirectory: root, Tickets: &AgentTicketIssuer{}, Origin: "https://gateway.local.test",
 		Dial: func(context.Context, string) (net.Conn, error) { called++; return nil, io.EOF },

@@ -1,6 +1,6 @@
-//go:build linux && firecracker_workspace_smoke
+//go:build linux && cloud_hypervisor_workspace_smoke
 
-// local_firecracker_workspace_smoke boots the actual Hako Workspace initrd and
+// local_cloud_hypervisor_workspace_smoke boots the actual Hako Workspace initrd and
 // checks the identity-bound Workspace Agent over the host-private vsock.
 package main
 
@@ -64,7 +64,7 @@ func main() {
 
 func run() error {
 	if len(os.Args) != 6 {
-		return errors.New("usage: local_firecracker_workspace_smoke <firecracker> <kernel> <initrd> <state-dir> <boot-args>")
+		return errors.New("usage: local_cloud_hypervisor_workspace_smoke <cloudHypervisor> <kernel> <initrd> <state-dir> <boot-args>")
 	}
 	inputArgs := os.Args[1:]
 	binary, kernel, initrd, stateDir, bootArgs := inputArgs[0], inputArgs[1], inputArgs[2], inputArgs[3], inputArgs[4]
@@ -77,13 +77,13 @@ func run() error {
 		return err
 	}
 	const tenant, workspace, plane = "tenant_smoke", "workspace_smoke", "plane_smoke"
-	const microVM = "fc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const microVM = "ch_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	args := strings.Join([]string{bootArgs,
 		"hako.tenant_id=" + tenant, "hako.workspace_id=" + workspace,
 		"hako.resource_plane_id=" + plane, "hako.microvm_id=" + microVM,
 		"hako.gateway_origin=https://workspace-gateway.invalid",
 	}, " ")
-	payload, err := json.Marshal(workspaceruntime.FirecrackerLocalLaunchSpec{
+	payload, err := json.Marshal(workspaceruntime.CloudHypervisorLocalLaunchSpec{
 		KernelImagePath: kernel, KernelImageSHA256: kernelSHA,
 		InitrdPath: initrd, InitrdSHA256: initrdSHA,
 		// The gzip initrd expands to >1.6 GiB; keep ample headroom for the
@@ -95,8 +95,8 @@ func run() error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	const allocation = "fc_hako_workspace_smoke"
-	driver, err := workspaceruntime.NewFirecrackerLocalDriver(workspaceruntime.FirecrackerLocalDriverConfig{
+	const allocation = "ch_hako_workspace_smoke"
+	driver, err := workspaceruntime.NewCloudHypervisorLocalDriver(workspaceruntime.CloudHypervisorLocalDriverConfig{
 		BinaryPath: binary, StateDirectory: stateDir, StartupTimeout: 2 * time.Minute,
 		StopTimeout: 20 * time.Second,
 	})
@@ -112,7 +112,7 @@ func run() error {
 		_ = driver.Delete(cleanupCtx, allocation)
 	}()
 	if err := waitForWorkspaceAgent(ctx, filepath.Join(stateDir, allocation), tenant, workspace, plane, microVM); err != nil {
-		logPath := filepath.Join(stateDir, allocation, "firecracker.log")
+		logPath := filepath.Join(stateDir, allocation, "cloud-hypervisor.log")
 		if log, readErr := os.ReadFile(logPath); readErr == nil {
 			fmt.Fprintln(os.Stderr, string(log))
 		}
@@ -126,15 +126,15 @@ func run() error {
 			return fmt.Errorf("suspend Workspace Guest after channel acceptance: %w", err)
 		}
 		if os.Getenv("HAKO_LOCAL_WORKSPACE_SMOKE_KEEP_STATE") == "true" {
-			logPath := filepath.Join(stateDir, allocation, "firecracker.log")
-			if err := preservePrivateSmokeLog(logPath, filepath.Join(stateDir, "firecracker-first-boot-debug.log")); err != nil {
+			logPath := filepath.Join(stateDir, allocation, "cloud-hypervisor.log")
+			if err := preservePrivateSmokeLog(logPath, filepath.Join(stateDir, "cloud-hypervisor-first-boot-debug.log")); err != nil {
 				return fmt.Errorf("suspend succeeded but the private Guest log could not be preserved: %w", err)
 			}
 		}
 		// Reconstruct the controller driver to cover a cold Guest resume after
 		// controller process loss, then verify the same Workspace files and
 		// interactive channels against the resumed Guest.
-		driver, err = workspaceruntime.NewFirecrackerLocalDriver(workspaceruntime.FirecrackerLocalDriverConfig{
+		driver, err = workspaceruntime.NewCloudHypervisorLocalDriver(workspaceruntime.CloudHypervisorLocalDriverConfig{
 			BinaryPath: binary, StateDirectory: stateDir, StartupTimeout: 2 * time.Minute,
 			StopTimeout: 20 * time.Second,
 		})
@@ -151,8 +151,8 @@ func run() error {
 				if err := os.Link(source, filepath.Join(stateDir, "workspace-debug.ext4")); err != nil {
 					return fmt.Errorf("cold resume failed and the Workspace disk snapshot could not be linked: %w", err)
 				}
-				logSource := filepath.Join(stateDir, allocation, "firecracker.log")
-				if err := preservePrivateSmokeLog(logSource, filepath.Join(stateDir, "firecracker-debug.log")); err != nil {
+				logSource := filepath.Join(stateDir, allocation, "cloud-hypervisor.log")
+				if err := preservePrivateSmokeLog(logSource, filepath.Join(stateDir, "cloud-hypervisor-debug.log")); err != nil {
 					return fmt.Errorf("cold resume failed and the private Guest log could not be preserved: %w", err)
 				}
 			}
@@ -171,7 +171,7 @@ func run() error {
 	if _, err := os.Lstat(filepath.Join(stateDir, allocation)); !errors.Is(err, os.ErrNotExist) {
 		return errors.New("Hako Workspace Guest allocation was not removed")
 	}
-	fmt.Println("HAKO_LOCAL_WORKSPACE_INITRD_FIRECRACKER_BOOT_OK")
+	fmt.Println("HAKO_LOCAL_WORKSPACE_INITRD_CLOUD_HYPERVISOR_BOOT_OK")
 	return nil
 }
 
@@ -220,7 +220,7 @@ func exerciseGuestChannels(ctx context.Context, allocationDir, keyPath, tenant, 
 		if issueErr != nil {
 			return nil, errors.New("issue local Workspace smoke ticket")
 		}
-		conn, dialErr := workspaceruntime.DialFirecrackerLocalGuest(ctx, allocationDir)
+		conn, dialErr := workspaceruntime.DialCloudHypervisorLocalGuest(ctx, allocationDir)
 		if dialErr != nil {
 			return nil, errors.New("connect to local Workspace Guest vsock")
 		}
@@ -393,11 +393,11 @@ func exerciseGatewayExec(ctx context.Context, allocationDir, tenant, workspace, 
 		return errors.New("validate local Gateway smoke allocation journal")
 	}
 	agentIssuer := &workspaceagent.AgentTicketIssuer{KeyID: "local_agent", PrivateKey: agentKey, TTL: time.Minute}
-	directory := &workspaceagent.FirecrackerWorkspaceVsockStreamDirectory{
+	directory := &workspaceagent.CloudHypervisorWorkspaceVsockStreamDirectory{
 		ResourcePlaneID: domain.ResourcePlaneID(plane), Journal: smokeWorkspaceJournal{snapshot: snapshot},
 		StateDirectory: filepath.Dir(allocationDir), Tickets: agentIssuer, Origin: "https://workspace-gateway.invalid",
 		Dial: func(ctx context.Context, _ string) (net.Conn, error) {
-			return workspaceruntime.DialFirecrackerLocalGuest(ctx, allocationDir)
+			return workspaceruntime.DialCloudHypervisorLocalGuest(ctx, allocationDir)
 		},
 	}
 	_, sessionPrivate, err := ed25519.GenerateKey(rand.Reader)
@@ -701,11 +701,11 @@ func waitForWorkspaceAgent(ctx context.Context, allocationDir, tenant, workspace
 	defer ticker.Stop()
 	var lastErr error
 	for {
-		if bootErr := guestBootError(filepath.Join(allocationDir, "firecracker.log")); bootErr != nil {
+		if bootErr := guestBootError(filepath.Join(allocationDir, "cloud-hypervisor.log")); bootErr != nil {
 			return bootErr
 		}
 		dialCtx, dialCancel := context.WithTimeout(ctx, time.Second)
-		conn, err := workspaceruntime.DialFirecrackerLocalGuest(dialCtx, allocationDir)
+		conn, err := workspaceruntime.DialCloudHypervisorLocalGuest(dialCtx, allocationDir)
 		dialCancel()
 		if err == nil {
 			_ = conn.SetDeadline(time.Now().Add(2 * time.Second))

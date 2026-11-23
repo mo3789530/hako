@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 
-SCRIPT = Path(__file__).with_name("make-local-firecracker-launch-spec.py")
+SCRIPT = Path(__file__).with_name("make-local-cloud-hypervisor-launch-spec.py")
 
 
 class LocalLaunchProfileTest(unittest.TestCase):
@@ -25,7 +25,7 @@ class LocalLaunchProfileTest(unittest.TestCase):
             profile = json.loads(output.read_text())
             self.assertEqual(profile["kernel_image_sha256"], hashlib.sha256(b"kernel bytes").hexdigest())
             self.assertEqual(profile["initrd_sha256"], hashlib.sha256(b"initrd bytes").hexdigest())
-            self.assertEqual(profile["kernel_boot_args"], "console=ttyS0 panic=1 reboot=k pci=off rdinit=/init")
+            self.assertEqual(profile["kernel_boot_args"], "console=ttyS0 panic=1 reboot=k rdinit=/init")
             self.assertEqual(output.stat().st_mode & 0o777, 0o600)
 
     def test_rejects_symlink_inputs_and_existing_output(self):

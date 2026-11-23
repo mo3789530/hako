@@ -1,7 +1,7 @@
 //go:build linux
 
 // hako-local-workspace-keygen creates private local API/Gateway/Guest keys and
-// a self-signed localhost certificate for a single-host Firecracker setup.
+// a self-signed localhost certificate for a single-host Cloud Hypervisor setup.
 package main
 
 import (

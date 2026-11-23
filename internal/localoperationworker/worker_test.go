@@ -59,7 +59,7 @@ func (s *fakeResultStore) Apply(_ context.Context, result resourcecontroller.Res
 }
 
 func TestRunOnceExecutesThenAppliesAndAcknowledges(t *testing.T) {
-	result := `{"schema_version":2,"workspace_revision":3,"operation_id":"op-1","tenant_id":"ten-1","workspace_id":"wsp-1","resource_plane_id":"rp-local","type":"ensure_running","status":"succeeded","observed_state":"running","resource_kind":"firecracker_local","external_resource_id":"allocation-1","allocation_generation":1,"completed_at":"2026-11-22T00:00:00Z"}`
+	result := `{"schema_version":2,"workspace_revision":3,"operation_id":"op-1","tenant_id":"ten-1","workspace_id":"wsp-1","resource_plane_id":"rp-local","type":"ensure_running","status":"succeeded","observed_state":"running","resource_kind":"cloud_hypervisor_local","external_resource_id":"allocation-1","allocation_generation":1,"completed_at":"2026-11-22T00:00:00Z"}`
 	command := `{"schema_version":2,"workspace_revision":3,"operation_id":"op-1","tenant_id":"ten-1","workspace_id":"wsp-1","resource_plane_id":"rp-local","type":"ensure_running","created_at":"2026-11-22T00:00:00Z"}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/operations" || r.Header.Get("Content-Type") != "application/json" {
@@ -87,7 +87,7 @@ func TestRunOnceExecutesThenAppliesAndAcknowledges(t *testing.T) {
 
 func TestRunOnceReleasesWhenResultApplicationFails(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"schema_version":2,"workspace_revision":3,"operation_id":"op-1","tenant_id":"ten-1","workspace_id":"wsp-1","resource_plane_id":"rp-local","type":"ensure_running","status":"succeeded","observed_state":"running","resource_kind":"firecracker_local","external_resource_id":"allocation-1","allocation_generation":1,"completed_at":"2026-11-22T00:00:00Z"}`))
+		_, _ = w.Write([]byte(`{"schema_version":2,"workspace_revision":3,"operation_id":"op-1","tenant_id":"ten-1","workspace_id":"wsp-1","resource_plane_id":"rp-local","type":"ensure_running","status":"succeeded","observed_state":"running","resource_kind":"cloud_hypervisor_local","external_resource_id":"allocation-1","allocation_generation":1,"completed_at":"2026-11-22T00:00:00Z"}`))
 	}))
 	defer server.Close()
 	now := time.Date(2026, 11, 22, 0, 0, 0, 0, time.UTC)

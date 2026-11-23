@@ -9,7 +9,7 @@
 
 - [Task 97 — Workspace GitHub Repository Option](task-97-workspace-github-repository.md): local implementation/PostgreSQL acceptance complete。`hako create --repository`、Tenant-scoped immutable checkout、mTLS Broker→Guest compositionとlocal-edit-safe retryを実装。Optional Terraform checkout wiringのmock planは5つのSecret ARNを完全一致で検証。実KVM Guest/Gatewayでfirst checkout、readback、同一archive retry、編集保持、cold suspend/resume後のcheckout永続性を受入。deployed AWS runtime gateは残る。
 
-- [Task 98 — Local Workspace MicroVM Runtime](task-98-local-workspace-microvm.md): AWSなしのKVM/Firecracker Workspace。実KVM Guest/GatewayでCLI `exec`、shell、file、Chromium VS Code描画、SSH公開鍵認証を確認。cold-resume後のファイル、Controller restart/retry、Deleteも成功。WebSocket upgrade後のContextとPID 1 orderly shutdownを修正。ローカル受入完了。deployed AWS runtime acceptanceはTask 99で追跡。[仕様・host smoke手順](../docs/local-workspace-microvm.md)
+- [Task 98 — Local Workspace MicroVM Runtime](task-98-local-workspace-microvm.md): host-local runtimeをCloud Hypervisor/KVMへ移行。v54.1の実KVM lifecycle、実Hako initrd、Controller ensure/suspend/resume/restart/retry/deleteを確認済み。interactive channels・checkoutのCloud Hypervisor受入は未実施。Lambda-managed MicroVMのAWS acceptanceはTask 99で追跡。[現行Cloud Hypervisor runbook](../docs/local-workspace-cloud-hypervisor.md)、[過去のFirecracker記録](../docs/local-workspace-microvm.md)
 
 - [Task 99 — Managed Runtime Routing and Acceptance](task-99-managed-runtime-acceptance.md): GitHub Actions・Claude Code Action・VS CodeのLambda MicroVM経路と、Coding AgentのAgentCore経路をステージングで検証する（ローカルunit/PostgreSQL fake-provider lifecycle suite成功。実サービスのステージング受入は未検証）。
 

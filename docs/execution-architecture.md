@@ -19,7 +19,7 @@ select a provider, Runtime, Region, execution role, or session.
 | Standard GitHub Actions job | Ephemeral runner on Lambda MicroVM | One runner per accepted job; report Check/result, then deregister and terminate | Local fake-provider and PostgreSQL lifecycle tests pass; AWS ARM64 image, networking, and deployment acceptance remain gated |
 | Approved Claude Code Action | Same Lambda MicroVM runner, with workflow provenance and Tenant model-credential policy | One-shot workflow execution; credential restricted to approved repository/workflow/job; cleanup follows job completion | Local admission, credential, runner and lifecycle tests pass; deployed IAM and workflow smoke remain gated |
 | Hako Coding Agent Run | Amazon Bedrock AgentCore Runtime | One opaque Runtime session per immutable attempt; attempt-bound source and proposal; independently verify before publication; stop session before terminal publication | Local Python/Go contracts, fake-provider worker tests, AWS SDK adapter and default-off Lambda composition exist; heartbeat, independent verification, Runtime image and deployed isolation/cleanup remain gated |
-| Interactive Workspace | Lambda MicroVM in managed deployments; optional Firecracker/KVM on one Linux host | Durable Workspace journal and persistent `/workspace`; Gateway issues short-lived session tickets and routes streams to the Guest Agent | Managed Lambda path awaits AWS staging acceptance. Local Firecracker driver, operation API, Gateway route and worker are implemented; complete CLI/Gateway lifecycle smoke remains open |
+| Interactive Workspace | Lambda MicroVM in managed deployments; Cloud Hypervisor/KVM on one Linux host | Durable Workspace journal and persistent `/workspace`; Gateway issues short-lived session tickets and routes streams to the Guest Agent | Managed Lambda path awaits AWS staging acceptance. Local Cloud Hypervisor driver, operation API, Gateway route and worker are implemented; see Task 98 for local KVM acceptance |
 
 ```mermaid
 flowchart LR
@@ -27,7 +27,7 @@ flowchart LR
   CLI[Hako Coding Agent Run] --> AR[AgentCore session per attempt]
   DEV[CLI / VS Code] --> CP[Hako Control Plane]
   CP --> MR[Managed Workspace: Lambda MicroVM]
-  CP --> LRW[Local Workspace: Firecracker on KVM]
+  CP --> LRW[Local Workspace: Cloud Hypervisor on KVM]
   MR --> GW[Workspace Gateway]
   LRW --> GW
   AR --> PR[Attempt-bound proposal]
@@ -75,19 +75,16 @@ flowchart LR
 The local Workspace profile uses PostgreSQL, a loopback-only OAuth/JWKS test
 provider, normal Control Plane authorization, local Ed25519 Session signing,
 Plane-fenced HMAC lookup/lease keys, an Outbox worker, a private Unix socket
-Controller, Firecracker on `/dev/kvm`, and the AWS-free Gateway
-`firecracker-local` mode. HTTPS remains enabled with a locally trusted
+Controller, Cloud Hypervisor on `/dev/kvm`, and the AWS-free Gateway
+`cloud-hypervisor-local` mode. HTTPS remains enabled with a locally trusted
 certificate. The identity provider is for one-user local development only.
 
-The real-KVM smoke verifies Firecracker ensure, orderly Guest shutdown, cold
-resume from the same ext4 disk, fixed-port vsock health, and delete. The local
-authenticated CLI/API path also reaches a real Guest and completes create,
-running, and delete. A 2026-11-23 composed smoke found that shell has no visible
-prompt/output, exec cannot start commands, and file upload fails, so the
-interactive route is not accepted yet. VS Code browser, SSH, Workspace file
-persistence, and controller restart/retry remain unverified. Follow
-the [local Workspace MicroVM runbook](local-workspace-microvm.md) and status in
-[Task 98](../tasks/task-98-local-workspace-microvm.md).
+The real-KVM Cloud Hypervisor smoke verifies VM creation, authenticated Guest
+heartbeat, orderly shutdown, cold resume from the same ext4 disk, persistence,
+and delete. The existing full channel/Gateway acceptance history uses
+Firecracker and must be rerun when changes affect Cloud Hypervisor-specific
+behavior. Follow the [Cloud Hypervisor runbook](local-workspace-cloud-hypervisor.md)
+and status in [Task 98](../tasks/task-98-local-workspace-microvm.md).
 
 ## Detailed specifications
 
@@ -97,7 +94,7 @@ the [local Workspace MicroVM runbook](local-workspace-microvm.md) and status in
 - [Lambda MicroVM Workspace contract](workspace-lambda-microvm.md)
 - [Workspace CLI and Gateway behavior](workspace-cli.md)
 - [Workspace session and stream authorization](workspace-gateway.md)
-- [Local KVM/Firecracker Workspace runbook](local-workspace-microvm.md)
+- [Local KVM/Cloud Hypervisor Workspace runbook](local-workspace-cloud-hypervisor.md)
 - [Managed runtime staging acceptance](software-factory-aws-smoke.md)
 - [Implementation task board](../tasks/README.md)
 

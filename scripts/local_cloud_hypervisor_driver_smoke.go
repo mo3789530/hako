@@ -1,7 +1,7 @@
-//go:build linux && firecracker_driver_smoke
+//go:build linux && cloud_hypervisor_driver_smoke
 
-// local_firecracker_driver_smoke exercises the concrete host driver against a
-// disposable Firecracker Guest. It is invoked only by the explicit KVM smoke.
+// local_cloud_hypervisor_driver_smoke exercises the concrete host driver against a
+// disposable CloudHypervisor Guest. It is invoked only by the explicit KVM smoke.
 package main
 
 import (
@@ -24,17 +24,17 @@ import (
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "local Firecracker driver smoke failed:", err)
+		fmt.Fprintln(os.Stderr, "local CloudHypervisor driver smoke failed:", err)
 		os.Exit(1)
 	}
 }
 
 func run() error {
 	if len(os.Args) != 6 {
-		return errors.New("usage: local_firecracker_driver_smoke <firecracker> <kernel> <initrd> <state-dir> <boot-args>")
+		return errors.New("usage: local_cloud_hypervisor_driver_smoke <cloudHypervisor> <kernel> <initrd> <state-dir> <boot-args>")
 	}
 	binary, kernel, initrd, stateDir, bootArgs := os.Args[1], os.Args[2], os.Args[3], os.Args[4], os.Args[5]
-	config := workspaceruntime.FirecrackerLocalDriverConfig{BinaryPath: binary, StateDirectory: stateDir,
+	config := workspaceruntime.CloudHypervisorLocalDriverConfig{BinaryPath: binary, StateDirectory: stateDir,
 		StartupTimeout: 15 * time.Second, StopTimeout: 20 * time.Second}
 	kernelSHA, err := hashFile(kernel)
 	if err != nil {
@@ -44,26 +44,29 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	payload, err := json.Marshal(workspaceruntime.FirecrackerLocalLaunchSpec{KernelImagePath: kernel, InitrdPath: initrd,
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	const allocationID = "ch_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	payload, err := json.Marshal(workspaceruntime.CloudHypervisorLocalLaunchSpec{KernelImagePath: kernel, InitrdPath: initrd,
 		KernelImageSHA256: kernelSHA, InitrdSHA256: initrdSHA,
-		KernelBootArgs: bootArgs + " hako_disk_mode=write hako_enable_vsock=1", VCPUCount: 1, MemoryMiB: 256, WorkspaceDiskSizeMiB: 64})
+		KernelBootArgs: strings.Join([]string{bootArgs, "hako_disk_mode=write", "hako_enable_vsock=1",
+			"hako.tenant_id=tenant_smoke", "hako.workspace_id=workspace_smoke", "hako.resource_plane_id=rp_smoke",
+			"hako.microvm_id=" + allocationID, "hako.gateway_origin=https://workspace-gateway.invalid"}, " "),
+		VCPUCount: 1, MemoryMiB: 256, WorkspaceDiskSizeMiB: 64})
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
-	const allocationID = "fc_driver_smoke"
-	first, err := workspaceruntime.NewFirecrackerLocalDriver(config)
+	first, err := workspaceruntime.NewCloudHypervisorLocalDriver(config)
 	if err != nil {
 		return err
 	}
 	if err := first.EnsureRunning(ctx, allocationID, payload); err != nil {
 		return err
 	}
-	if err := waitForMarker(ctx, filepath.Join(stateDir, allocationID, "firecracker.log"), "HAKO_LOCAL_GUEST_READY_V1"); err != nil {
+	if err := waitForMarker(ctx, filepath.Join(stateDir, allocationID, "cloud-hypervisor.log"), "HAKO_LOCAL_GUEST_READY_V1"); err != nil {
 		return err
 	}
-	if err := waitForMarker(ctx, filepath.Join(stateDir, allocationID, "firecracker.log"), "HAKO_LOCAL_GUEST_VSOCK_READY_V1"); err != nil {
+	if err := waitForMarker(ctx, filepath.Join(stateDir, allocationID, "cloud-hypervisor.log"), "HAKO_LOCAL_GUEST_VSOCK_READY_V1"); err != nil {
 		return err
 	}
 	if err := probeGuest(ctx, stateDir, allocationID); err != nil {
@@ -73,7 +76,7 @@ func run() error {
 		return err
 	}
 	// Recreate the driver as if the Resource Controller process restarted.
-	restarted, err := workspaceruntime.NewFirecrackerLocalDriver(config)
+	restarted, err := workspaceruntime.NewCloudHypervisorLocalDriver(config)
 	if err != nil {
 		return err
 	}
@@ -83,7 +86,7 @@ func run() error {
 	if err := probeGuest(ctx, stateDir, allocationID); err != nil {
 		return err
 	}
-	if err := waitForMarker(ctx, filepath.Join(stateDir, allocationID, "firecracker.log"), "HAKO_LOCAL_DRIVER_DISK_RESTORED_OK"); err != nil {
+	if err := waitForMarker(ctx, filepath.Join(stateDir, allocationID, "cloud-hypervisor.log"), "HAKO_LOCAL_DRIVER_DISK_RESTORED_OK"); err != nil {
 		return err
 	}
 	if err := restarted.EnsureRunning(ctx, allocationID, payload); err != nil {
@@ -93,9 +96,9 @@ func run() error {
 		return err
 	}
 	if _, err := os.Lstat(filepath.Join(stateDir, allocationID)); !errors.Is(err, os.ErrNotExist) {
-		return errors.New("local Firecracker allocation files were not removed")
+		return errors.New("local CloudHypervisor allocation files were not removed")
 	}
-	fmt.Println("HAKO_LOCAL_FIRECRACKER_DRIVER_LIFECYCLE_OK")
+	fmt.Println("HAKO_LOCAL_CLOUD_HYPERVISOR_DRIVER_LIFECYCLE_OK")
 	return nil
 }
 
@@ -107,7 +110,7 @@ func probeGuest(ctx context.Context, stateDir, allocationID string) error {
 	var lastErr error
 	for {
 		dialCtx, cancel := context.WithTimeout(ctx, time.Second)
-		conn, err := workspaceruntime.DialFirecrackerLocalGuest(dialCtx, filepath.Join(stateDir, allocationID))
+		conn, err := workspaceruntime.DialCloudHypervisorLocalGuest(dialCtx, filepath.Join(stateDir, allocationID))
 		cancel()
 		if err == nil {
 			_ = conn.SetDeadline(time.Now().Add(time.Second))

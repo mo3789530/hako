@@ -165,15 +165,15 @@ func buildGateway(awsCfg aws.Config, cfg deploymentConfig) (*workspacegateway.Ga
 	issuer := &workspaceagent.AgentTicketIssuer{KeyID: cfg.AgentTicketKeyID, PrivateKey: privateKey}
 	var directory workspacegateway.StreamDialer
 	switch cfg.RuntimeImplementation {
-	case "firecracker-local":
+	case "cloud-hypervisor-local":
 		journal, err := workspacejournal.NewFileStore(cfg.LocalJournalDirectory)
 		if err != nil {
 			return nil, errors.New("configure local Workspace runtime journal")
 		}
-		directory = &workspaceagent.FirecrackerWorkspaceVsockStreamDirectory{
+		directory = &workspaceagent.CloudHypervisorWorkspaceVsockStreamDirectory{
 			ResourcePlaneID: cfg.ResourcePlaneID, Journal: journal, StateDirectory: cfg.LocalStateDirectory,
 			Tickets: issuer, Origin: cfg.PublicOrigin,
-			Dial: workspaceruntime.DialFirecrackerLocalGuest,
+			Dial: workspaceruntime.DialCloudHypervisorLocalGuest,
 		}
 	case "lambda-microvm":
 		journal, err := workspacejournal.NewS3Store(s3.NewFromConfig(awsCfg), cfg.JournalBucket, cfg.JournalPrefix)
@@ -237,7 +237,7 @@ func loadDeploymentConfig(getenv func(string) string) (deploymentConfig, error) 
 		JournalBucket:           get("HAKO_WORKSPACE_RUNTIME_JOURNAL_BUCKET"),
 		JournalPrefix:           get("HAKO_WORKSPACE_RUNTIME_JOURNAL_PREFIX"),
 		RuntimeImplementation:   defaultValue(get("HAKO_WORKSPACE_RUNTIME_IMPLEMENTATION"), "lambda-microvm"),
-		LocalStateDirectory:     get("HAKO_LOCAL_FIRECRACKER_STATE_DIR"),
+		LocalStateDirectory:     get("HAKO_LOCAL_CLOUD_HYPERVISOR_STATE_DIR"),
 		LocalJournalDirectory:   get("HAKO_LOCAL_WORKSPACE_JOURNAL_DIR"),
 		WorkloadArtifactBucket:  get("HAKO_WORKLOAD_ARTIFACT_BUCKET"),
 		WorkloadArtifactPrefix:  get("HAKO_WORKLOAD_ARTIFACT_PREFIX"),
@@ -276,16 +276,16 @@ func loadDeploymentConfig(getenv func(string) string) (deploymentConfig, error) 
 	switch cfg.RuntimeImplementation {
 	case "lambda-microvm":
 		if cfg.JournalBucket == "" || cfg.Region == "" || cfg.LocalStateDirectory != "" || cfg.LocalJournalDirectory != "" {
-			return deploymentConfig{}, errors.New("Lambda MicroVM Gateway requires its journal bucket and Region and forbids local Firecracker paths")
+			return deploymentConfig{}, errors.New("Lambda MicroVM Gateway requires its journal bucket and Region and forbids local CloudHypervisor paths")
 		}
-	case "firecracker-local":
+	case "cloud-hypervisor-local":
 		if cfg.JournalBucket != "" || cfg.JournalPrefix != "" || !filepath.IsAbs(cfg.LocalStateDirectory) ||
 			filepath.Clean(cfg.LocalStateDirectory) != cfg.LocalStateDirectory || !filepath.IsAbs(cfg.LocalJournalDirectory) ||
 			filepath.Clean(cfg.LocalJournalDirectory) != cfg.LocalJournalDirectory {
-			return deploymentConfig{}, errors.New("local Firecracker Gateway requires clean absolute state/journal directories and forbids the S3 journal")
+			return deploymentConfig{}, errors.New("local CloudHypervisor Gateway requires clean absolute state/journal directories and forbids the S3 journal")
 		}
 	default:
-		return deploymentConfig{}, errors.New("HAKO_WORKSPACE_RUNTIME_IMPLEMENTATION must be lambda-microvm or firecracker-local")
+		return deploymentConfig{}, errors.New("HAKO_WORKSPACE_RUNTIME_IMPLEMENTATION must be lambda-microvm or cloud-hypervisor-local")
 	}
 	if (cfg.WorkloadArtifactBucket == "") != (cfg.WorkloadArtifactPrefix == "") {
 		return deploymentConfig{}, errors.New("HAKO_WORKLOAD_ARTIFACT_BUCKET and HAKO_WORKLOAD_ARTIFACT_PREFIX must be configured together")

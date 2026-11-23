@@ -26,7 +26,7 @@ var (
 
 // WorkspaceMountSpec is non-secret initialization metadata from the trusted
 // Resource Plane. Lambda guests use the exact EFS Access Point; local
-// Firecracker guests use the separately attached persistent disk.
+// Local KVM guests use the separately attached persistent disk.
 type WorkspaceMountSpec struct {
 	TenantID        string `json:"tenant_id"`
 	WorkspaceID     string `json:"workspace_id"`

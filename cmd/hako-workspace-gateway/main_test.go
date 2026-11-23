@@ -39,15 +39,15 @@ func TestLoadDeploymentConfigRequiresCompleteSecureConfiguration(t *testing.T) {
 	}
 	delete(localValues, "HAKO_WORKSPACE_RUNTIME_JOURNAL_BUCKET")
 	delete(localValues, "AWS_REGION")
-	localValues["HAKO_WORKSPACE_RUNTIME_IMPLEMENTATION"] = "firecracker-local"
-	localValues["HAKO_LOCAL_FIRECRACKER_STATE_DIR"] = "/var/lib/hako/firecracker"
+	localValues["HAKO_WORKSPACE_RUNTIME_IMPLEMENTATION"] = "cloud-hypervisor-local"
+	localValues["HAKO_LOCAL_CLOUD_HYPERVISOR_STATE_DIR"] = "/var/lib/hako/cloudHypervisor"
 	localValues["HAKO_LOCAL_WORKSPACE_JOURNAL_DIR"] = "/var/lib/hako/workspace-journal"
 	localCfg, err := loadDeploymentConfig(func(key string) string { return localValues[key] })
-	if err != nil || localCfg.RuntimeImplementation != "firecracker-local" || localCfg.JournalBucket != "" {
+	if err != nil || localCfg.RuntimeImplementation != "cloud-hypervisor-local" || localCfg.JournalBucket != "" {
 		t.Fatalf("load AWS-free local Gateway configuration: cfg=%+v err=%v", localCfg, err)
 	}
 	for name, mutate := range map[string]func(map[string]string){
-		"missing local state":         func(values map[string]string) { delete(values, "HAKO_LOCAL_FIRECRACKER_STATE_DIR") },
+		"missing local state":         func(values map[string]string) { delete(values, "HAKO_LOCAL_CLOUD_HYPERVISOR_STATE_DIR") },
 		"S3 journal on local runtime": func(values map[string]string) { values["HAKO_WORKSPACE_RUNTIME_JOURNAL_BUCKET"] = "unexpected" },
 		"unknown runtime":             func(values map[string]string) { values["HAKO_WORKSPACE_RUNTIME_IMPLEMENTATION"] = "unknown" },
 	} {

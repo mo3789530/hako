@@ -11,7 +11,7 @@ import (
 )
 
 func TestLocalGuestShutdownControlRequiresExactIdentity(t *testing.T) {
-	config := guestConfig{TenantID: "tenant_a", WorkspaceID: "workspace_a", ResourcePlaneID: "rp_a", MicroVMID: "fc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+	config := guestConfig{TenantID: "tenant_a", WorkspaceID: "workspace_a", ResourcePlaneID: "rp_a", MicroVMID: "ch_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
 	shutdown := make(chan struct{}, 1)
 	handler := localGuestShutdownHandler(config, shutdown)
 	valid, err := json.Marshal(localGuestShutdownIdentity{TenantID: config.TenantID, WorkspaceID: config.WorkspaceID,
@@ -50,12 +50,12 @@ func TestLocalGuestShutdownControlRequiresExactIdentity(t *testing.T) {
 }
 
 func TestLocalGuestShutdownControlRejectsMethodQueryAndUnknownFields(t *testing.T) {
-	config := guestConfig{TenantID: "tenant_a", WorkspaceID: "workspace_a", ResourcePlaneID: "rp_a", MicroVMID: "fc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+	config := guestConfig{TenantID: "tenant_a", WorkspaceID: "workspace_a", ResourcePlaneID: "rp_a", MicroVMID: "ch_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
 	handler := localGuestShutdownHandler(config, make(chan struct{}, 1))
 	for _, request := range []*http.Request{
 		httptest.NewRequest(http.MethodGet, "/internal/shutdown", nil),
 		httptest.NewRequest(http.MethodPost, "/internal/shutdown?force=true", bytes.NewReader([]byte(`{}`))),
-		httptest.NewRequest(http.MethodPost, "/internal/shutdown", bytes.NewReader([]byte(`{"tenant_id":"tenant_a","workspace_id":"workspace_a","resource_plane_id":"rp_a","microvm_id":"fc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","force":true}`))),
+		httptest.NewRequest(http.MethodPost, "/internal/shutdown", bytes.NewReader([]byte(`{"tenant_id":"tenant_a","workspace_id":"workspace_a","resource_plane_id":"rp_a","microvm_id":"ch_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","force":true}`))),
 	} {
 		request.Header.Set("Content-Type", "application/json")
 		response := httptest.NewRecorder()

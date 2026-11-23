@@ -175,4 +175,4 @@ test -s "$archive_tmp"
 mv -f "$archive_tmp" "$output"
 cleanup
 trap - EXIT HUP INT TERM
-printf 'built host-architecture Firecracker initrd: %s\n' "$output"
+printf 'built host-architecture Cloud Hypervisor initramfs: %s\n' "$output"

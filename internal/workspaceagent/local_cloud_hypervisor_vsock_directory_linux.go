@@ -19,14 +19,14 @@ import (
 	"golang.org/x/net/websocket"
 )
 
-var localFirecrackerProviderIDPattern = regexp.MustCompile(`^fc_[a-f0-9]{32}$`)
+var localCloudHypervisorProviderIDPattern = regexp.MustCompile(`^ch_[a-f0-9]{32}$`)
 
 type WorkspaceGuestVsockDialer func(context.Context, string) (net.Conn, error)
 
-// FirecrackerWorkspaceVsockStreamDirectory resolves a running allocation from
+// CloudHypervisorWorkspaceVsockStreamDirectory resolves a running allocation from
 // the local durable journal and opens the fixed Guest Agent vsock service. It
 // does not accept an endpoint, allocation ID, or port from the public caller.
-type FirecrackerWorkspaceVsockStreamDirectory struct {
+type CloudHypervisorWorkspaceVsockStreamDirectory struct {
 	ResourcePlaneID domain.ResourcePlaneID
 	Journal         WorkspaceRuntimeJournalReader
 	StateDirectory  string
@@ -35,23 +35,23 @@ type FirecrackerWorkspaceVsockStreamDirectory struct {
 	Dial            WorkspaceGuestVsockDialer
 }
 
-func (d *FirecrackerWorkspaceVsockStreamDirectory) OpenShell(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
+func (d *CloudHypervisorWorkspaceVsockStreamDirectory) OpenShell(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
 	return d.open(ctx, claims, workspacesession.PermissionShell, 0)
 }
 
-func (d *FirecrackerWorkspaceVsockStreamDirectory) OpenExec(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
+func (d *CloudHypervisorWorkspaceVsockStreamDirectory) OpenExec(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
 	return d.open(ctx, claims, workspacesession.PermissionExec, 0)
 }
 
-func (d *FirecrackerWorkspaceVsockStreamDirectory) OpenFileTransfer(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
+func (d *CloudHypervisorWorkspaceVsockStreamDirectory) OpenFileTransfer(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
 	return d.open(ctx, claims, workspacesession.PermissionFileTransfer, 0)
 }
 
-func (d *FirecrackerWorkspaceVsockStreamDirectory) OpenVSCode(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
+func (d *CloudHypervisorWorkspaceVsockStreamDirectory) OpenVSCode(ctx context.Context, claims workspacesession.Claims) (io.ReadWriteCloser, error) {
 	return d.open(ctx, claims, workspacesession.PermissionVSCode, 0)
 }
 
-func (d *FirecrackerWorkspaceVsockStreamDirectory) OpenPort(ctx context.Context, claims workspacesession.Claims, permission workspacesession.Permission, port uint16) (io.ReadWriteCloser, error) {
+func (d *CloudHypervisorWorkspaceVsockStreamDirectory) OpenPort(ctx context.Context, claims workspacesession.Claims, permission workspacesession.Permission, port uint16) (io.ReadWriteCloser, error) {
 	if (permission == workspacesession.PermissionSSHProxy && (port != 22 || !hasWorkspacePermission(claims.Permissions, permission))) ||
 		(permission == workspacesession.PermissionPortForward && (port == 0 || !hasWorkspacePermission(claims.Permissions, permission))) ||
 		(permission != workspacesession.PermissionSSHProxy && permission != workspacesession.PermissionPortForward) {
@@ -60,7 +60,7 @@ func (d *FirecrackerWorkspaceVsockStreamDirectory) OpenPort(ctx context.Context,
 	return d.open(ctx, claims, permission, port)
 }
 
-func (d *FirecrackerWorkspaceVsockStreamDirectory) open(ctx context.Context, claims workspacesession.Claims, permission workspacesession.Permission, port uint16) (io.ReadWriteCloser, error) {
+func (d *CloudHypervisorWorkspaceVsockStreamDirectory) open(ctx context.Context, claims workspacesession.Claims, permission workspacesession.Permission, port uint16) (io.ReadWriteCloser, error) {
 	if d == nil || ctx == nil || claims.UserID == "" || claims.TenantID == "" || claims.WorkspaceID == "" ||
 		claims.ResourcePlane == "" || d.ResourcePlaneID == "" || claims.ResourcePlane != d.ResourcePlaneID ||
 		!hasWorkspacePermission(claims.Permissions, permission) || !localWorkspacePermission(permission) ||
@@ -80,7 +80,7 @@ func (d *FirecrackerWorkspaceVsockStreamDirectory) open(ctx context.Context, cla
 	j := snapshot.Journal
 	if j.TenantID != claims.TenantID || j.WorkspaceID != claims.WorkspaceID || j.ResourcePlaneID != claims.ResourcePlane ||
 		j.State != workspacejournal.Running || j.Tombstone || j.ProviderID == "" ||
-		!localFirecrackerProviderIDPattern.MatchString(j.ProviderID) {
+		!localCloudHypervisorProviderIDPattern.MatchString(j.ProviderID) {
 		return nil, ErrInteractiveChannelUnavailable
 	}
 	ticketPort := port
@@ -191,4 +191,4 @@ var _ interface {
 	OpenFileTransfer(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error)
 	OpenVSCode(context.Context, workspacesession.Claims) (io.ReadWriteCloser, error)
 	OpenPort(context.Context, workspacesession.Claims, workspacesession.Permission, uint16) (io.ReadWriteCloser, error)
-} = (*FirecrackerWorkspaceVsockStreamDirectory)(nil)
+} = (*CloudHypervisorWorkspaceVsockStreamDirectory)(nil)

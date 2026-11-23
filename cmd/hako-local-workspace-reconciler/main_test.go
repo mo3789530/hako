@@ -38,7 +38,7 @@ func TestReadPrivateLaunchSpecRequiresOwnedPrivateRegularFile(t *testing.T) {
 
 func TestReconcileReportRedactsRawDriverError(t *testing.T) {
 	entry := reconcileReportFor(workspaceruntime.LocalReconcileResult{TenantID: "tenant_a", WorkspaceID: "ws_a",
-		ResourcePlaneID: "rp_a", Observed: domain.ObservedWorkspaceFailed, Err: errors.New("/private/firecracker/token=secret")})
+		ResourcePlaneID: "rp_a", Observed: domain.ObservedWorkspaceFailed, Err: errors.New("/private/cloud-hypervisor/token=secret")})
 	if entry.Error != "allocation reconciliation failed" || entry.TenantID != "tenant_a" {
 		t.Fatalf("reconciliation report leaked raw failure details: %+v", entry)
 	}

@@ -1,7 +1,7 @@
 //go:build linux
 
 // hako-local-workspace-worker drains Workspace Operation events from the
-// Control Plane Outbox and applies them through the local Firecracker
+// Control Plane Outbox and applies them through the local Cloud Hypervisor
 // Resource Controller over its private Unix socket.
 package main
 

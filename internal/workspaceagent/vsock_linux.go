@@ -16,7 +16,7 @@ import (
 const WorkspaceAgentVsockPort uint32 = 7000
 
 // ListenWorkspaceAgentVsock creates the host-private Guest listener used by a
-// local Firecracker Gateway. The caller must attach a vsock device to the VM;
+// local KVM Gateway. The caller must attach a vsock device to the VM;
 // the listener itself still serves the normal Workspace Agent HTTP/WebSocket
 // protocol, including its signed Agent-ticket checks.
 func ListenWorkspaceAgentVsock(port uint32) (net.Listener, error) {

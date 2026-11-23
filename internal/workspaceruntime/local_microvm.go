@@ -14,7 +14,7 @@ import (
 	"github.com/mo3789530/hako/internal/workspacejournal"
 )
 
-// LocalMicroVMDriver is the host lifecycle boundary for a local Firecracker
+// LocalMicroVMDriver is the host lifecycle boundary for a local Cloud Hypervisor
 // implementation. Every method must be idempotent for the supplied allocation
 // ID. EnsureRunning must attach the same persistent Workspace disk on retries
 // and after Resume; Delete must stop the VM and remove only that allocation's
@@ -178,7 +178,7 @@ func (r *LocalMicroVM) ResourceBinding(ctx context.Context, command resourcecont
 		j.OperationType != command.Type || j.ProviderID == "" || j.Tombstone {
 		return "", "", 0, workspacejournal.ErrConflict
 	}
-	return "firecracker_local", j.ProviderID, j.AllocationGeneration, nil
+	return "cloud_hypervisor_local", j.ProviderID, j.AllocationGeneration, nil
 }
 
 // Reconcile loads a bounded durable allocation listing and re-reads every
@@ -335,7 +335,7 @@ func localLaunchToken(command workspacejournal.Command, payload []byte) string {
 func localProviderID(j workspacejournal.Journal) string {
 	identity := fmt.Sprintf("%s\x00%s\x00%s\x00%d", j.ResourcePlaneID, j.TenantID, j.WorkspaceID, j.AllocationGeneration)
 	digest := sha256.Sum256([]byte(identity))
-	return "fc_" + hex.EncodeToString(digest[:16])
+	return "ch_" + hex.EncodeToString(digest[:16])
 }
 
 func matchesLocalIdentity(j workspacejournal.Journal, command resourcecontroller.Command) bool {

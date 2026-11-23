@@ -1,7 +1,7 @@
 //go:build linux
 
 // hako-local-workspace-reconciler accepts local Resource Controller operations
-// and restores Firecracker allocations from the durable journal.
+// and restores CloudHypervisor allocations from the durable journal.
 package main
 
 import (
@@ -51,15 +51,15 @@ func run(ctx context.Context, getenv func(string) string, output io.Writer) erro
 	if ctx == nil || getenv == nil || output == nil {
 		return errors.New("local Workspace reconciler dependencies are required")
 	}
-	stateDir := strings.TrimSpace(getenv("HAKO_LOCAL_FIRECRACKER_STATE_DIR"))
+	stateDir := strings.TrimSpace(getenv("HAKO_LOCAL_CLOUD_HYPERVISOR_STATE_DIR"))
 	journalDir := strings.TrimSpace(getenv("HAKO_LOCAL_WORKSPACE_JOURNAL_DIR"))
-	binary := strings.TrimSpace(getenv("HAKO_LOCAL_FIRECRACKER_BINARY"))
-	launchPath := strings.TrimSpace(getenv("HAKO_LOCAL_FIRECRACKER_LAUNCH_SPEC"))
+	binary := strings.TrimSpace(getenv("HAKO_LOCAL_CLOUD_HYPERVISOR_BINARY"))
+	launchPath := strings.TrimSpace(getenv("HAKO_LOCAL_CLOUD_HYPERVISOR_LAUNCH_SPEC"))
 	socketPath := strings.TrimSpace(getenv("HAKO_LOCAL_WORKSPACE_CONTROLLER_SOCKET"))
 	resourcePlaneID := strings.TrimSpace(getenv("HAKO_LOCAL_RESOURCE_PLANE_ID"))
 	gatewayOrigin := strings.TrimSpace(getenv("HAKO_LOCAL_WORKSPACE_GATEWAY_ORIGIN"))
 	if !cleanAbsolute(stateDir) || !cleanAbsolute(journalDir) || !cleanAbsolute(binary) || !cleanAbsolute(launchPath) || !cleanAbsolute(socketPath) || resourcePlaneID == "" || gatewayOrigin == "" {
-		return errors.New("local Firecracker, journal, controller socket, launch-spec paths, Resource Plane ID, and Gateway origin must be configured")
+		return errors.New("local CloudHypervisor, journal, controller socket, launch-spec paths, Resource Plane ID, and Gateway origin must be configured")
 	}
 	interval := defaultReconcileInterval
 	if raw := strings.TrimSpace(getenv("HAKO_LOCAL_RECONCILE_INTERVAL")); raw != "" {
@@ -85,15 +85,15 @@ func run(ctx context.Context, getenv func(string) string, output io.Writer) erro
 	if err != nil {
 		return errors.New("configure local Workspace journal")
 	}
-	resolver, err := workspaceruntime.NewFirecrackerLocalWorkspaceLaunchResolver(payload, store, gatewayOrigin)
+	resolver, err := workspaceruntime.NewCloudHypervisorLocalWorkspaceLaunchResolver(payload, store, gatewayOrigin)
 	if err != nil {
-		return errors.New("validate trusted local Firecracker launch specification")
+		return errors.New("validate trusted local CloudHypervisor launch specification")
 	}
-	driver, err := workspaceruntime.NewFirecrackerLocalDriver(workspaceruntime.FirecrackerLocalDriverConfig{
+	driver, err := workspaceruntime.NewCloudHypervisorLocalDriver(workspaceruntime.CloudHypervisorLocalDriverConfig{
 		BinaryPath: binary, StateDirectory: stateDir,
 	})
 	if err != nil {
-		return errors.New("configure local Firecracker driver")
+		return errors.New("configure local CloudHypervisor driver")
 	}
 	runtime, err := workspaceruntime.NewLocalMicroVM(driver, store, resolver, nil)
 	if err != nil {
@@ -161,7 +161,7 @@ func reconcileReportFor(result workspaceruntime.LocalReconcileResult) reconcileR
 func readPrivateLaunchSpec(path string) ([]byte, error) {
 	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
-		return nil, errors.New("open local Firecracker launch specification")
+		return nil, errors.New("open local CloudHypervisor launch specification")
 	}
 	defer file.Close()
 	info, err := file.Stat()
@@ -173,11 +173,11 @@ func readPrivateLaunchSpec(path string) ([]byte, error) {
 		return value, valid
 	}()
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || info.Size() < 1 || info.Size() > maxLaunchSpecBytes || !ok || stat.Uid != uint32(os.Getuid()) {
-		return nil, errors.New("local Firecracker launch specification must be a private owned regular file")
+		return nil, errors.New("local CloudHypervisor launch specification must be a private owned regular file")
 	}
 	payload, err := io.ReadAll(io.LimitReader(file, maxLaunchSpecBytes+1))
 	if err != nil || len(payload) > maxLaunchSpecBytes {
-		return nil, errors.New("local Firecracker launch specification exceeds its size limit")
+		return nil, errors.New("local CloudHypervisor launch specification exceeds its size limit")
 	}
 	return payload, nil
 }

@@ -167,7 +167,7 @@ func decode(payload []byte) (resourcecontroller.Result, error) {
 		}
 		return result, nil
 	}
-	isMicroVMKind := result.ResourceKind == "lambda_microvm" || result.ResourceKind == "firecracker_local"
+	isMicroVMKind := result.ResourceKind == "lambda_microvm" || result.ResourceKind == "cloud_hypervisor_local"
 	if (result.ResourceKind != "" && !isMicroVMKind) || isMicroVMKind != (result.AllocationGeneration > 0) {
 		return resourcecontroller.Result{}, errors.New("successful MicroVM result must include its allocation generation")
 	}

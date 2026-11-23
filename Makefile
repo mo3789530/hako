@@ -1,32 +1,32 @@
-.PHONY: check-local-workspace-microvm-host smoke-local-workspace-microvm-boot smoke-local-workspace-controller test-local-workspace-reconciler build-local-workspace-reconciler test-local-workspace-worker build-local-workspace-worker test-local-idp build-local-idp test-local-workspace-keygen build-local-workspace-keygen test-local-workspace-profile build-local-workspace-stack build-local-workspace-initrd test-local-workspace-initrd test-local-workspace-initrd-rekey test-managed-runtime-local test-managed-runtime-integration fmt lint test test-integration test-integration-local test-webhook-lifecycle-integration test-tenant-app-proof-integration test-tenant-github-apps-integration test-actions-runner-lifecycle-integration test-software-factory-e2e test-native-agent-e2e test-api-lambda-image-smoke test-api-lambda-rie-smoke test-aws-e2e-guard aws-e2e-preflight test-workload-runtime test-workload-runtime-integration test-job-services-podman test-workspace-service-runtime-integration test-workspace-podman-network test-artifact-retention-integration test-workspace-idle-lifecycle-integration test-preview-expiry-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-workspace-service-controller-lambda build-health-reporter-lambda build-workspace-idle-reconciler-lambda build-preview-expiry-lambda build-preview-runtime-dispatch-lambda build-preview-result-consumer-lambda build-workload-controller-lambda build-actions-runner-lambda build-actions-runner-microvm-image build-workload-microvm-artifact verify-workload-microvm-artifact build-workload-microvm-services-image build-workspace-microvm-image build-github-checks-consumer-image build-github-broker-image build-workspace-gateway-image check-arm64-podman-build terraform-fmt terraform-validate terraform-test test-local-workspace-cli-firecracker
+.PHONY: check-local-workspace-microvm-host smoke-local-workspace-microvm-boot smoke-local-workspace-controller test-local-workspace-reconciler build-local-workspace-reconciler test-local-workspace-worker build-local-workspace-worker test-local-idp build-local-idp test-local-workspace-keygen build-local-workspace-keygen test-local-workspace-profile build-local-workspace-stack build-local-workspace-initrd test-local-workspace-initrd test-local-workspace-initrd-rekey test-managed-runtime-local test-managed-runtime-integration fmt lint test test-integration test-integration-local test-webhook-lifecycle-integration test-tenant-app-proof-integration test-tenant-github-apps-integration test-actions-runner-lifecycle-integration test-software-factory-e2e test-native-agent-e2e test-api-lambda-image-smoke test-api-lambda-rie-smoke test-aws-e2e-guard aws-e2e-preflight test-workload-runtime test-workload-runtime-integration test-job-services-podman test-workspace-service-runtime-integration test-workspace-podman-network test-artifact-retention-integration test-workspace-idle-lifecycle-integration test-preview-expiry-integration test-coverage integration-db-up migrate build-api-lambda build-api-lambda-image build-dispatcher-lambda build-webhook-processor-lambda build-resource-controller-lambda build-workspace-service-controller-lambda build-health-reporter-lambda build-workspace-idle-reconciler-lambda build-preview-expiry-lambda build-preview-runtime-dispatch-lambda build-preview-result-consumer-lambda build-workload-controller-lambda build-actions-runner-lambda build-actions-runner-microvm-image build-workload-microvm-artifact verify-workload-microvm-artifact build-workload-microvm-services-image build-workspace-microvm-image build-github-checks-consumer-image build-github-broker-image build-workspace-gateway-image check-arm64-podman-build terraform-fmt terraform-validate terraform-test test-local-workspace-cli-cloud-hypervisor
 
 TERRAFORM ?= terraform
-FIRECRACKER ?= firecracker
-FIRECRACKER_KERNEL ?= /boot/vmlinuz-$(shell uname -r)
-FIRECRACKER_INITRD ?= build/local-workspace/workspace-initrd.cpio.gz
-FIRECRACKER_KERNEL_CONFIG ?= /boot/config-$(shell uname -r)
-FIRECRACKER_VSOCK_MODULE_DIR ?= /lib/modules/$(shell uname -r)
+CLOUD_HYPERVISOR ?= cloud-hypervisor
+CLOUD_HYPERVISOR_KERNEL ?= /boot/vmlinuz-$(shell uname -r)
+CLOUD_HYPERVISOR_KERNEL_CONFIG ?= /boot/config-$(shell uname -r)
+CLOUD_HYPERVISOR_INITRD ?= build/local-workspace/workspace-initrd.cpio.gz
+CLOUD_HYPERVISOR_VSOCK_MODULE_DIR ?= /lib/modules/$(shell uname -r)
 .PHONY: build-local-workspace-native-rootfs check-workspace-image-build-host smoke-local-workspace-hako-initrd
 
 check-local-workspace-microvm-host:
-	FIRECRACKER_BIN="$(FIRECRACKER)" ./scripts/check-local-workspace-microvm-host.sh
+	CLOUD_HYPERVISOR_BIN="$(CLOUD_HYPERVISOR)" ./scripts/check-local-cloud-hypervisor-host.sh
 
-# Boots a disposable static Guest init on the host kernel through Firecracker/KVM.
+# Boots a disposable static Guest init on the host kernel through Cloud Hypervisor/KVM.
 smoke-local-workspace-microvm-boot:
-	FIRECRACKER_BIN="$(FIRECRACKER)" ./scripts/smoke-local-firecracker-boot.sh
+	CLOUD_HYPERVISOR_BIN="$(CLOUD_HYPERVISOR)" CLOUD_HYPERVISOR_KERNEL="$(CLOUD_HYPERVISOR_KERNEL)" CLOUD_HYPERVISOR_INITRD="$(CLOUD_HYPERVISOR_INITRD)" ./scripts/smoke-local-cloud-hypervisor-boot.sh
 
-# Exercises the private local operation API against a real Firecracker Guest.
+# Exercises the private local operation API against a real Cloud Hypervisor Guest.
 smoke-local-workspace-controller: build-local-workspace-reconciler
-	python3 scripts/smoke-local-workspace-controller.py "$(FIRECRACKER)"
+	python3 scripts/smoke-local-workspace-controller.py "$(CLOUD_HYPERVISOR)"
 
-# Runs the Hako CLI exec client through a real local Gateway and Firecracker Guest.
-test-local-workspace-cli-firecracker:
+# Runs the Hako CLI exec client through a real local Gateway and Cloud Hypervisor Guest.
+test-local-workspace-cli-cloud-hypervisor:
 	@test -n "$(HAKO_LOCAL_WORKSPACE_AGENT_PRIVATE_KEY)" || (echo "set HAKO_LOCAL_WORKSPACE_AGENT_PRIVATE_KEY to the matching local Guest key" >&2; exit 1)
-	HAKO_LOCAL_WORKSPACE_AGENT_PRIVATE_KEY="$(HAKO_LOCAL_WORKSPACE_AGENT_PRIVATE_KEY)" FIRECRACKER_BIN="$(FIRECRACKER)" FIRECRACKER_KERNEL="$(FIRECRACKER_KERNEL)" FIRECRACKER_INITRD="$(FIRECRACKER_INITRD)" go test ./cmd/hako -tags firecracker_workspace_smoke -run '^TestWorkspaceExecCLIThroughFirecrackerGuest$$' -count=1 -v
+	HAKO_LOCAL_WORKSPACE_AGENT_PRIVATE_KEY="$(HAKO_LOCAL_WORKSPACE_AGENT_PRIVATE_KEY)" CLOUD_HYPERVISOR_BIN="$(CLOUD_HYPERVISOR)" CLOUD_HYPERVISOR_KERNEL="$(CLOUD_HYPERVISOR_KERNEL)" CLOUD_HYPERVISOR_INITRD="$(CLOUD_HYPERVISOR_INITRD)" go test ./cmd/hako -tags cloud_hypervisor_workspace_smoke -run '^TestWorkspaceExecCLIThroughCloudHypervisorGuest$$' -count=1 -v
 
-# Boots the built native Workspace initrd and probes its real Agent over vsock.
+# The Cloud Hypervisor Guest initrd uses virtio PCI and vsock devices; build it with native host modules.
 smoke-local-workspace-hako-initrd:
-	FIRECRACKER_BIN="$(FIRECRACKER)" FIRECRACKER_KERNEL_CONFIG="$(FIRECRACKER_KERNEL_CONFIG)" FIRECRACKER_VSOCK_MODULE_DIR="$(FIRECRACKER_VSOCK_MODULE_DIR)" ./scripts/smoke-local-workspace-hako-initrd.sh
+	CLOUD_HYPERVISOR_BIN="$(CLOUD_HYPERVISOR)" CLOUD_HYPERVISOR_KERNEL="$(CLOUD_HYPERVISOR_KERNEL)" CLOUD_HYPERVISOR_KERNEL_CONFIG="$(CLOUD_HYPERVISOR_KERNEL_CONFIG)" CLOUD_HYPERVISOR_INITRD="$(CLOUD_HYPERVISOR_INITRD)" ./scripts/smoke-local-cloud-hypervisor-hako-initrd.sh
 
 # Runs unit/race coverage for the host-local lifecycle and startup reconciler.
 test-local-workspace-reconciler:
@@ -69,14 +69,14 @@ build-local-workspace-stack: build-local-workspace-keygen build-local-idp build-
 test-local-workspace-profile:
 	python3 scripts/test-local-workspace-launch-profile.py
 
-# Packages an extracted native-architecture Workspace image rootfs as a Firecracker initrd.
+# Packages an extracted native-architecture Workspace image rootfs as a Cloud Hypervisor initramfs.
 build-local-workspace-initrd:
 	@test -n "$(HAKO_LOCAL_WORKSPACE_ROOTFS_DIR)" || (echo "set HAKO_LOCAL_WORKSPACE_ROOTFS_DIR to the extracted native-architecture Workspace image rootfs" >&2; exit 1)
 	mkdir -p build/local-workspace
 	@case "$$(uname -m)" in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) echo "unsupported host architecture: $$(uname -m)" >&2; exit 1 ;; esac; \
 	GOOS=linux GOARCH=$$arch CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o build/local-workspace/hako-local-workspace-guest-init ./cmd/hako-local-workspace-guest-init
 	@if [ "$(HAKO_LOCAL_WORKSPACE_INCLUDE_HOST_MODULES)" = true ]; then \
-	  ./scripts/package-local-workspace-initrd.sh "$(HAKO_LOCAL_WORKSPACE_ROOTFS_DIR)" build/local-workspace/hako-local-workspace-guest-init build/local-workspace/workspace-initrd.cpio.gz "$(FIRECRACKER_VSOCK_MODULE_DIR)" "$(FIRECRACKER_KERNEL_CONFIG)"; \
+	  ./scripts/package-local-workspace-initrd.sh "$(HAKO_LOCAL_WORKSPACE_ROOTFS_DIR)" build/local-workspace/hako-local-workspace-guest-init build/local-workspace/workspace-initrd.cpio.gz "$(CLOUD_HYPERVISOR_VSOCK_MODULE_DIR)" "$(CLOUD_HYPERVISOR_KERNEL_CONFIG)"; \
 	else \
 	  ./scripts/package-local-workspace-initrd.sh "$(HAKO_LOCAL_WORKSPACE_ROOTFS_DIR)" build/local-workspace/hako-local-workspace-guest-init build/local-workspace/workspace-initrd.cpio.gz; \
 	fi

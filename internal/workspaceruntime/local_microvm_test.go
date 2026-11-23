@@ -120,7 +120,7 @@ func TestLocalMicroVMLifecycleSurvivesRuntimeReconstruction(t *testing.T) {
 	if resolverCalls != 1 || driver.resumeCalls != 1 {
 		t.Fatalf("resume resolved a new launch or was not run once: resolver=%d resume=%d", resolverCalls, driver.resumeCalls)
 	}
-	if kind, id, generation, err := makeRuntime().ResourceBinding(ctx, resume); err != nil || kind != "firecracker_local" || id == "" || generation != 1 {
+	if kind, id, generation, err := makeRuntime().ResourceBinding(ctx, resume); err != nil || kind != "cloud_hypervisor_local" || id == "" || generation != 1 {
 		t.Fatalf("resource binding = %q %q %d, %v", kind, id, generation, err)
 	}
 

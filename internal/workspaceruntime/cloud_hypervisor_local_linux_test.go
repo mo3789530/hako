@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -21,7 +22,7 @@ import (
 	"github.com/mo3789530/hako/internal/workspacejournal"
 )
 
-func TestDecodeAndValidateFirecrackerLaunchSpec(t *testing.T) {
+func TestDecodeAndValidateCloudHypervisorLaunchSpec(t *testing.T) {
 	dir := t.TempDir()
 	kernel := filepath.Join(dir, "kernel")
 	initrd := filepath.Join(dir, "initrd")
@@ -38,16 +39,16 @@ func TestDecodeAndValidateFirecrackerLaunchSpec(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload, err := json.Marshal(FirecrackerLocalLaunchSpec{KernelImagePath: kernel, KernelImageSHA256: kernelSHA,
+	payload, err := json.Marshal(CloudHypervisorLocalLaunchSpec{KernelImagePath: kernel, KernelImageSHA256: kernelSHA,
 		InitrdPath: initrd, InitrdSHA256: initrdSHA})
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec, err := decodeFirecrackerLaunchSpec(payload)
+	spec, err := decodeCloudHypervisorLaunchSpec(payload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := prepareFirecrackerLaunchSpec(&spec); err != nil {
+	if err := prepareCloudHypervisorLaunchSpec(&spec); err != nil {
 		t.Fatal(err)
 	}
 	if spec.VCPUCount != 1 || spec.MemoryMiB != 512 || spec.WorkspaceDiskSizeMiB != 1024 || spec.KernelBootArgs == "" {
@@ -59,9 +60,9 @@ func TestDecodeAndValidateFirecrackerLaunchSpec(t *testing.T) {
 		`{"kernel_image_path":"/kernel","initrd_path":"/initrd"} {}`,
 		`{"kernel_image_path":"relative","initrd_path":"/initrd"}`,
 	} {
-		decoded, err := decodeFirecrackerLaunchSpec([]byte(invalid))
+		decoded, err := decodeCloudHypervisorLaunchSpec([]byte(invalid))
 		if err == nil {
-			if err := prepareFirecrackerLaunchSpec(&decoded); err == nil {
+			if err := prepareCloudHypervisorLaunchSpec(&decoded); err == nil {
 				t.Fatalf("invalid launch specification was accepted: %s", invalid)
 			}
 		}
@@ -69,24 +70,24 @@ func TestDecodeAndValidateFirecrackerLaunchSpec(t *testing.T) {
 
 	tooLarge := spec
 	tooLarge.WorkspaceDiskSizeMiB = (1 << 20) + 1
-	if err := prepareFirecrackerLaunchSpec(&tooLarge); err == nil {
+	if err := prepareCloudHypervisorLaunchSpec(&tooLarge); err == nil {
 		t.Fatal("oversized Workspace disk was accepted")
 	}
 	badArgs := spec
 	badArgs.KernelBootArgs = "console=ttyS0\nrdinit=/init"
-	if err := prepareFirecrackerLaunchSpec(&badArgs); err == nil {
+	if err := prepareCloudHypervisorLaunchSpec(&badArgs); err == nil {
 		t.Fatal("multiline kernel boot arguments were accepted")
 	}
 	if err := os.WriteFile(kernel, []byte("replaced-kernel"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	replacedImage := spec
-	if err := prepareFirecrackerLaunchSpec(&replacedImage); err == nil {
+	if err := prepareCloudHypervisorLaunchSpec(&replacedImage); err == nil {
 		t.Fatal("image content changed after SHA-256 pin but launch was accepted")
 	}
 }
 
-func TestFirecrackerUnixAPIClient(t *testing.T) {
+func TestCloudHypervisorUnixAPIClient(t *testing.T) {
 	dir := t.TempDir()
 	socket := filepath.Join(dir, "api.sock")
 	listener, err := net.Listen("unix", socket)
@@ -95,7 +96,7 @@ func TestFirecrackerUnixAPIClient(t *testing.T) {
 	}
 	defer listener.Close()
 	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/" {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/vm.info" {
 			http.Error(w, "unexpected request", http.StatusBadRequest)
 			return
 		}
@@ -105,28 +106,40 @@ func TestFirecrackerUnixAPIClient(t *testing.T) {
 	go func() { _ = server.Serve(listener) }()
 	defer server.Close()
 
-	driver := &FirecrackerLocalDriver{}
+	driver := &CloudHypervisorLocalDriver{}
 	state, err := driver.vmState(context.Background(), dir)
 	if err != nil || state != "Running" {
 		t.Fatalf("vmState = %q, %v", state, err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := driver.api(ctx, dir, http.MethodPost, "/unsupported", nil, nil); err == nil || !strings.Contains(err.Error(), "HTTP 400") {
+	if err := driver.api(ctx, dir, http.MethodPost, "/api/v1/unsupported", nil, nil); err == nil || !strings.Contains(err.Error(), "HTTP 400") {
 		t.Fatalf("unexpected API route response error=%v", err)
 	}
 }
 
-func TestPinFirecrackerLaunchSpecIsImmutableAndPrivate(t *testing.T) {
+func TestCloudHypervisorArgsUsePinnedGuestAndWorkspaceResources(t *testing.T) {
+	spec := CloudHypervisorLocalLaunchSpec{KernelImagePath: "/opt/kernel", InitrdPath: "/opt/initrd",
+		KernelBootArgs: "console=ttyS0 rdinit=/init", VCPUCount: 2, MemoryMiB: 512}
+	got := cloudHypervisorArgs("/run/hako/api.sock", "/var/lib/hako/workspace.ext4", "/run/hako/vsock.sock", spec)
+	want := []string{"--api-socket", "path=/run/hako/api.sock", "--kernel", "/opt/kernel", "--initramfs", "/opt/initrd",
+		"--cmdline", "console=ttyS0 rdinit=/init", "--cpus", "boot=2,max=2", "--memory", "size=512M",
+		"--disk", "path=/var/lib/hako/workspace.ext4,image_type=raw", "--vsock", "cid=3,socket=/run/hako/vsock.sock", "--serial", "tty"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Cloud Hypervisor arguments = %#v, want %#v", got, want)
+	}
+}
+
+func TestPinCloudHypervisorLaunchSpecIsImmutableAndPrivate(t *testing.T) {
 	dir := t.TempDir()
 	payload := []byte(`{"kernel_image_path":"/opt/kernel","initrd_path":"/opt/initrd"}`)
-	if err := pinFirecrackerLaunchSpec(dir, payload); err != nil {
+	if err := pinCloudHypervisorLaunchSpec(dir, payload); err != nil {
 		t.Fatal(err)
 	}
-	if err := pinFirecrackerLaunchSpec(dir, payload); err != nil {
+	if err := pinCloudHypervisorLaunchSpec(dir, payload); err != nil {
 		t.Fatalf("identical pin retry: %v", err)
 	}
-	if err := pinFirecrackerLaunchSpec(dir, []byte(`{"kernel_image_path":"/changed"}`)); !errors.Is(err, workspacejournal.ErrConflict) {
+	if err := pinCloudHypervisorLaunchSpec(dir, []byte(`{"kernel_image_path":"/changed"}`)); !errors.Is(err, workspacejournal.ErrConflict) {
 		t.Fatalf("changed launch payload error=%v, want conflict", err)
 	}
 	info, err := os.Stat(filepath.Join(dir, "launch-spec.json"))
@@ -135,52 +148,52 @@ func TestPinFirecrackerLaunchSpecIsImmutableAndPrivate(t *testing.T) {
 	}
 }
 
-func TestFirecrackerGuestQuiescenceRecordPinsAllocationAndPayload(t *testing.T) {
+func TestCloudHypervisorGuestQuiescenceRecordPinsAllocationAndPayload(t *testing.T) {
 	dir := t.TempDir()
 	payload := []byte(`{"kernel_image_path":"/kernel","initrd_path":"/initrd"}`)
-	if err := pinFirecrackerLaunchSpec(dir, payload); err != nil {
+	if err := pinCloudHypervisorLaunchSpec(dir, payload); err != nil {
 		t.Fatal(err)
 	}
-	driver := &FirecrackerLocalDriver{}
-	if err := driver.writeGuestQuiescedRecord(dir, "fc_test"); err != nil {
+	driver := &CloudHypervisorLocalDriver{}
+	if err := driver.writeGuestQuiescedRecord(dir, "ch_test"); err != nil {
 		t.Fatal(err)
 	}
-	if !driver.hasGuestQuiesced(dir, "fc_test") {
+	if !driver.hasGuestQuiesced(dir, "ch_test") {
 		t.Fatal("valid guest quiescence record was rejected")
 	}
-	if driver.hasGuestQuiesced(dir, "fc_other") {
+	if driver.hasGuestQuiesced(dir, "ch_other") {
 		t.Fatal("quiescence record accepted a foreign allocation")
 	}
-	if err := pinFirecrackerLaunchSpec(dir, []byte(`{"kernel_image_path":"/changed"}`)); !errors.Is(err, workspacejournal.ErrConflict) {
+	if err := pinCloudHypervisorLaunchSpec(dir, []byte(`{"kernel_image_path":"/changed"}`)); !errors.Is(err, workspacejournal.ErrConflict) {
 		t.Fatalf("changed payload pin error=%v, want conflict", err)
 	}
 	path := filepath.Join(dir, strings.TrimPrefix(localGuestQuiescedPath, "/"))
 	if err := os.Chmod(path, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if driver.hasGuestQuiesced(dir, "fc_test") {
+	if driver.hasGuestQuiesced(dir, "ch_test") {
 		t.Fatal("quiescence record with group/world-readable permissions was accepted")
 	}
 }
 
-func TestFirecrackerExitedCleanlyRequiresSuccessfulExitRecord(t *testing.T) {
+func TestCloudHypervisorExitedCleanlyRequiresSuccessfulExitRecord(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "firecracker.log")
-	if err := os.WriteFile(path, []byte("Firecracker exiting successfully. exit_code=0\n"), 0600); err != nil {
+	path := filepath.Join(dir, "cloud-hypervisor.log")
+	if err := os.WriteFile(path, []byte("Cloud Hypervisor exiting successfully. exit_code=0\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if !firecrackerExitedCleanly(path) {
-		t.Fatal("successful Firecracker shutdown was not recognized")
+	if !cloudHypervisorExitedCleanly(path) {
+		t.Fatal("successful CloudHypervisor shutdown was not recognized")
 	}
-	if err := os.WriteFile(path, []byte("Firecracker exiting with error. exit_code=1\n"), 0600); err != nil {
+	if err := os.WriteFile(path, []byte("Cloud Hypervisor exiting with error. exit_code=1\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if firecrackerExitedCleanly(path) {
-		t.Fatal("failed Firecracker exit was accepted as guest quiescence")
+	if cloudHypervisorExitedCleanly(path) {
+		t.Fatal("failed CloudHypervisor exit was accepted as guest quiescence")
 	}
 }
 
-func TestStaticFirecrackerLocalLaunchResolverPinsAndCopiesPayload(t *testing.T) {
+func TestStaticCloudHypervisorLocalLaunchResolverPinsAndCopiesPayload(t *testing.T) {
 	dir := t.TempDir()
 	kernel := filepath.Join(dir, "kernel")
 	initrd := filepath.Join(dir, "initrd")
@@ -198,12 +211,12 @@ func TestStaticFirecrackerLocalLaunchResolverPinsAndCopiesPayload(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload, err := json.Marshal(FirecrackerLocalLaunchSpec{KernelImagePath: kernel, KernelImageSHA256: kernelSHA,
+	payload, err := json.Marshal(CloudHypervisorLocalLaunchSpec{KernelImagePath: kernel, KernelImageSHA256: kernelSHA,
 		InitrdPath: initrd, InitrdSHA256: initrdSHA})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolver, err := NewStaticFirecrackerLocalLaunchResolver(payload)
+	resolver, err := NewStaticCloudHypervisorLocalLaunchResolver(payload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +236,7 @@ func TestStaticFirecrackerLocalLaunchResolverPinsAndCopiesPayload(t *testing.T) 
 	}
 }
 
-func TestFirecrackerLocalWorkspaceLaunchResolverBindsIdentityAndReplacementGeneration(t *testing.T) {
+func TestCloudHypervisorLocalWorkspaceLaunchResolverBindsIdentityAndReplacementGeneration(t *testing.T) {
 	dir := t.TempDir()
 	kernel := filepath.Join(dir, "kernel")
 	initrd := filepath.Join(dir, "initrd")
@@ -235,13 +248,13 @@ func TestFirecrackerLocalWorkspaceLaunchResolverBindsIdentityAndReplacementGener
 	}
 	kernelSHA, _ := fileSHA256(kernel)
 	initrdSHA, _ := fileSHA256(initrd)
-	base, err := json.Marshal(FirecrackerLocalLaunchSpec{KernelImagePath: kernel, KernelImageSHA256: kernelSHA,
+	base, err := json.Marshal(CloudHypervisorLocalLaunchSpec{KernelImagePath: kernel, KernelImageSHA256: kernelSHA,
 		InitrdPath: initrd, InitrdSHA256: initrdSHA, KernelBootArgs: "console=ttyS0 rdinit=/init"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	store := newMemoryStore()
-	resolver, err := NewFirecrackerLocalWorkspaceLaunchResolver(base, store, "https://gateway.local.test")
+	resolver, err := NewCloudHypervisorLocalWorkspaceLaunchResolver(base, store, "https://gateway.local.test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +265,7 @@ func TestFirecrackerLocalWorkspaceLaunchResolverBindsIdentityAndReplacementGener
 	if err != nil {
 		t.Fatal(err)
 	}
-	var spec FirecrackerLocalLaunchSpec
+	var spec CloudHypervisorLocalLaunchSpec
 	if err := json.Unmarshal(resolved, &spec); err != nil {
 		t.Fatal(err)
 	}
@@ -299,18 +312,18 @@ func TestFirecrackerLocalWorkspaceLaunchResolverBindsIdentityAndReplacementGener
 
 func TestLocalGuestIdentityFromKernelArgsRequiresOneCompletePinnedIdentity(t *testing.T) {
 	valid := "console=ttyS0 hako.tenant_id=tenant_local hako.workspace_id=workspace_local " +
-		"hako.resource_plane_id=rp_local hako.microvm_id=fc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa " +
+		"hako.resource_plane_id=rp_local hako.microvm_id=ch_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa " +
 		"hako.gateway_origin=https://gateway.local.test"
 	identity, err := localGuestIdentityFromKernelArgs(valid)
 	if err != nil || identity.tenantID != "tenant_local" || identity.workspaceID != "workspace_local" ||
-		identity.resourcePlaneID != "rp_local" || identity.microVMID != "fc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		identity.resourcePlaneID != "rp_local" || identity.microVMID != "ch_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
 		t.Fatalf("valid Workspace Guest identity rejected: %+v err=%v", identity, err)
 	}
 	for name, args := range map[string]string{
 		"missing identity":         "console=ttyS0",
 		"duplicate identity":       valid + " hako.tenant_id=tenant_foreign",
 		"unknown Hako argument":    valid + " hako.extra=value",
-		"invalid MicroVM ID":       strings.Replace(valid, "fc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "foreign_vm", 1),
+		"invalid MicroVM ID":       strings.Replace(valid, "ch_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "foreign_vm", 1),
 		"invalid Gateway origin":   strings.Replace(valid, "https://gateway.local.test", "http://gateway.local.test", 1),
 		"empty identity component": strings.Replace(valid, "hako.workspace_id=workspace_local", "hako.workspace_id=", 1),
 	} {
@@ -322,7 +335,7 @@ func TestLocalGuestIdentityFromKernelArgsRequiresOneCompletePinnedIdentity(t *te
 	}
 }
 
-func TestFirecrackerLocalWorkspaceLaunchResolverRejectsUntrustedBaseArgsAndIdentity(t *testing.T) {
+func TestCloudHypervisorLocalWorkspaceLaunchResolverRejectsUntrustedBaseArgsAndIdentity(t *testing.T) {
 	dir := t.TempDir()
 	kernel := filepath.Join(dir, "kernel")
 	initrd := filepath.Join(dir, "initrd")
@@ -330,22 +343,22 @@ func TestFirecrackerLocalWorkspaceLaunchResolverRejectsUntrustedBaseArgsAndIdent
 	_ = os.WriteFile(initrd, []byte("initrd"), 0600)
 	kernelSHA, _ := fileSHA256(kernel)
 	initrdSHA, _ := fileSHA256(initrd)
-	for name, mutate := range map[string]func(*FirecrackerLocalLaunchSpec){
-		"reserved identity argument": func(spec *FirecrackerLocalLaunchSpec) { spec.KernelBootArgs += " hako.tenant_id=foreign" },
+	for name, mutate := range map[string]func(*CloudHypervisorLocalLaunchSpec){
+		"reserved identity argument": func(spec *CloudHypervisorLocalLaunchSpec) { spec.KernelBootArgs += " hako.tenant_id=foreign" },
 	} {
 		t.Run(name, func(t *testing.T) {
-			spec := FirecrackerLocalLaunchSpec{KernelImagePath: kernel, KernelImageSHA256: kernelSHA,
+			spec := CloudHypervisorLocalLaunchSpec{KernelImagePath: kernel, KernelImageSHA256: kernelSHA,
 				InitrdPath: initrd, InitrdSHA256: initrdSHA, KernelBootArgs: "console=ttyS0"}
 			mutate(&spec)
 			payload, _ := json.Marshal(spec)
-			if _, err := NewFirecrackerLocalWorkspaceLaunchResolver(payload, newMemoryStore(), "https://gateway.local.test"); err == nil {
+			if _, err := NewCloudHypervisorLocalWorkspaceLaunchResolver(payload, newMemoryStore(), "https://gateway.local.test"); err == nil {
 				t.Fatal("reserved identity argument was accepted")
 			}
 		})
 	}
-	specPayload, _ := json.Marshal(FirecrackerLocalLaunchSpec{KernelImagePath: kernel, KernelImageSHA256: kernelSHA,
+	specPayload, _ := json.Marshal(CloudHypervisorLocalLaunchSpec{KernelImagePath: kernel, KernelImageSHA256: kernelSHA,
 		InitrdPath: initrd, InitrdSHA256: initrdSHA})
-	resolver, err := NewFirecrackerLocalWorkspaceLaunchResolver(specPayload, newMemoryStore(), "https://gateway.local.test")
+	resolver, err := NewCloudHypervisorLocalWorkspaceLaunchResolver(specPayload, newMemoryStore(), "https://gateway.local.test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,12 +369,12 @@ func TestFirecrackerLocalWorkspaceLaunchResolverRejectsUntrustedBaseArgsAndIdent
 	}
 }
 
-func TestDialFirecrackerLocalGuestUsesOnlyTheFixedVsockPort(t *testing.T) {
+func TestDialCloudHypervisorLocalGuestUsesOnlyTheFixedVsockPort(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	socket := filepath.Join(dir, strings.TrimPrefix(localFirecrackerVsockPath, "/"))
+	socket := filepath.Join(dir, strings.TrimPrefix(localCloudHypervisorVsockPath, "/"))
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatal(err)
@@ -383,7 +396,7 @@ func TestDialFirecrackerLocalGuestUsesOnlyTheFixedVsockPort(t *testing.T) {
 			serverErr <- errors.New("host did not request the fixed Guest Agent port")
 			return
 		}
-		// Firecracker's ACK and an eager Guest write may arrive in one packet.
+		// Cloud Hypervisor's ACK and an eager Guest write may arrive together.
 		if _, err := io.WriteString(conn, "OK 1073741824\nready"); err != nil {
 			serverErr <- err
 			return
@@ -401,14 +414,14 @@ func TestDialFirecrackerLocalGuestUsesOnlyTheFixedVsockPort(t *testing.T) {
 		serverErr <- err
 	}()
 
-	conn, err := DialFirecrackerLocalGuest(context.Background(), dir)
+	conn, err := DialCloudHypervisorLocalGuest(context.Background(), dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close()
 	ready := make([]byte, len("ready"))
 	if _, err := io.ReadFull(conn, ready); err != nil || string(ready) != "ready" {
-		t.Fatalf("Guest bytes after handshake=%q error=%v", ready, err)
+		t.Fatalf("Guest bytes after CONNECT=%q error=%v", ready, err)
 	}
 	if _, err := io.WriteString(conn, "ping"); err != nil {
 		t.Fatal(err)
@@ -424,7 +437,7 @@ func TestDialFirecrackerLocalGuestUsesOnlyTheFixedVsockPort(t *testing.T) {
 
 func TestLocalGuestFailureStageReadsOnlySafeStageMarker(t *testing.T) {
 	dir := t.TempDir()
-	logPath := filepath.Join(dir, localFirecrackerLogPath)
+	logPath := filepath.Join(dir, localCloudHypervisorLogPath)
 	if err := os.WriteFile(logPath, []byte("Hako local Workspace Guest stopped (failure_class=guest_init stage=\"agent_start_ssh\")\n"), 0600); err != nil {
 		t.Fatal(err)
 	}

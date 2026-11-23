@@ -15,29 +15,29 @@ import (
 	"github.com/mo3789530/hako/internal/workspacejournal"
 )
 
-var firecrackerWorkspaceProviderIDPattern = regexp.MustCompile(`^fc_[a-f0-9]{32}$`)
+var cloudHypervisorWorkspaceProviderIDPattern = regexp.MustCompile(`^ch_[a-f0-9]{32}$`)
 
-// FirecrackerLocalWorkspaceLaunchResolver binds trusted Workspace identity to
+// CloudHypervisorLocalWorkspaceLaunchResolver binds trusted Workspace identity to
 // the Guest kernel command line. All executable/image paths remain in the
 // host-owned base specification; an Operation cannot choose them.
-type FirecrackerLocalWorkspaceLaunchResolver struct {
-	base    FirecrackerLocalLaunchSpec
+type CloudHypervisorLocalWorkspaceLaunchResolver struct {
+	base    CloudHypervisorLocalLaunchSpec
 	journal workspacejournal.Store
 	origin  string
 }
 
-func NewFirecrackerLocalWorkspaceLaunchResolver(payload []byte, journal workspacejournal.Store, gatewayOrigin string) (*FirecrackerLocalWorkspaceLaunchResolver, error) {
+func NewCloudHypervisorLocalWorkspaceLaunchResolver(payload []byte, journal workspacejournal.Store, gatewayOrigin string) (*CloudHypervisorLocalWorkspaceLaunchResolver, error) {
 	if journal == nil || !validLocalGatewayOrigin(gatewayOrigin) {
 		return nil, errors.New("local Workspace launch resolver configuration is invalid")
 	}
-	spec, err := decodeFirecrackerLaunchSpec(payload)
-	if err != nil || prepareFirecrackerLaunchSpec(&spec) != nil || containsReservedGuestKernelArgs(spec.KernelBootArgs) {
+	spec, err := decodeCloudHypervisorLaunchSpec(payload)
+	if err != nil || prepareCloudHypervisorLaunchSpec(&spec) != nil || containsReservedGuestKernelArgs(spec.KernelBootArgs) {
 		return nil, errors.New("local Workspace base launch profile is invalid")
 	}
-	return &FirecrackerLocalWorkspaceLaunchResolver{base: spec, journal: journal, origin: gatewayOrigin}, nil
+	return &CloudHypervisorLocalWorkspaceLaunchResolver{base: spec, journal: journal, origin: gatewayOrigin}, nil
 }
 
-func (r *FirecrackerLocalWorkspaceLaunchResolver) ResolveLocal(ctx context.Context, command resourcecontroller.Command) ([]byte, error) {
+func (r *CloudHypervisorLocalWorkspaceLaunchResolver) ResolveLocal(ctx context.Context, command resourcecontroller.Command) ([]byte, error) {
 	if r == nil || ctx == nil || ctx.Err() != nil || command.Type != domain.OperationEnsureRunning ||
 		!localAllocationIDPattern.MatchString(string(command.TenantID)) || !localAllocationIDPattern.MatchString(string(command.WorkspaceID)) ||
 		!localAllocationIDPattern.MatchString(string(command.ResourcePlaneID)) || command.WorkspaceRevision < 1 ||
@@ -61,7 +61,7 @@ func (r *FirecrackerLocalWorkspaceLaunchResolver) ResolveLocal(ctx context.Conte
 		providerJournal.AllocationGeneration = current.Journal.AllocationGeneration + 1
 	}
 	providerID := localProviderID(providerJournal)
-	if !firecrackerWorkspaceProviderIDPattern.MatchString(providerID) {
+	if !cloudHypervisorWorkspaceProviderIDPattern.MatchString(providerID) {
 		return nil, ErrSpecification
 	}
 	spec := r.base
@@ -95,4 +95,4 @@ func validLocalGatewayOrigin(value string) bool {
 		parsed.Path == "" && parsed.RawQuery == "" && parsed.Fragment == "" && parsed.Hostname() != ""
 }
 
-var _ LocalLaunchSpecResolver = (*FirecrackerLocalWorkspaceLaunchResolver)(nil)
+var _ LocalLaunchSpecResolver = (*CloudHypervisorLocalWorkspaceLaunchResolver)(nil)

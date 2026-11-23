@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write a private Firecracker base launch profile pinned to kernel/initrd bytes."""
+"""Write a private Cloud Hypervisor base launch profile pinned to kernel/initrd bytes."""
 
 import argparse
 import hashlib
@@ -38,7 +38,7 @@ def main() -> int:
         raise ValueError("output path must be a clean absolute path")
     if not 1 <= args.vcpus <= 8 or not 2048 <= args.memory_mib <= 32768 or not 128 <= args.workspace_disk_mib <= 102400:
         raise ValueError("vCPU, memory, or Workspace disk size is outside its allowed bounds")
-    boot_args = "console=ttyS0 panic=1 reboot=k pci=off rdinit=/init"
+    boot_args = "console=ttyS0 panic=1 reboot=k rdinit=/init"
     if re.search(r"(?:^|\s)hako\.[^\s]+", boot_args):
         raise ValueError("base kernel profile must not pin Workspace identity")
     payload = {
@@ -65,7 +65,7 @@ def main() -> int:
         except OSError:
             pass
         raise
-    print(f"wrote private Firecracker profile {args.output}")
+    print(f"wrote private Cloud Hypervisor profile {args.output}")
     return 0
 
 

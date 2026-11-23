@@ -59,11 +59,11 @@ func TestLocalOperationAPIExecutesAndReturnsNormalResourceControllerResult(t *te
 	}
 	if response.Code != http.StatusOK || result.Status != domain.OperationSucceeded || result.ObservedState != domain.ObservedWorkspaceRunning ||
 		result.OperationID != command.OperationID || result.TenantID != command.TenantID || result.WorkspaceID != command.WorkspaceID ||
-		result.ResourceKind != "firecracker_local" || result.ExternalResourceID == "" || result.AllocationGeneration != 1 {
+		result.ResourceKind != "cloud_hypervisor_local" || result.ExternalResourceID == "" || result.AllocationGeneration != 1 {
 		t.Fatalf("local operation response = status %d, result %+v, body %q", response.Code, result, response.Body.String())
 	}
 	if len(driver.states) != 1 {
-		t.Fatalf("local Firecracker allocations = %d, want 1", len(driver.states))
+		t.Fatalf("local Cloud Hypervisor allocations = %d, want 1", len(driver.states))
 	}
 	retry := postLocalOperation(t, api, command)
 	if retry.ExternalResourceID != result.ExternalResourceID || retry.AllocationGeneration != result.AllocationGeneration || len(driver.states) != 1 {
@@ -105,7 +105,7 @@ func TestLocalOperationAPIExecutesFullWorkspaceOperationLifecycle(t *testing.T) 
 		if result.Status != domain.OperationSucceeded || result.ObservedState != step.observed || result.OperationID != command.OperationID {
 			t.Fatalf("operation %s returned %+v, want observed %s", step.typeName, result, step.observed)
 		}
-		if step.typeName != domain.OperationDelete && (result.ResourceKind != "firecracker_local" || result.ExternalResourceID == "") {
+		if step.typeName != domain.OperationDelete && (result.ResourceKind != "cloud_hypervisor_local" || result.ExternalResourceID == "") {
 			t.Fatalf("operation %s omitted active local binding: %+v", step.typeName, result)
 		}
 	}
